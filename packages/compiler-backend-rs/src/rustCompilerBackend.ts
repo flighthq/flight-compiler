@@ -23195,6 +23195,190 @@ function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
   return false;
 }
 
+interface RustExactPresenceAssertionConversionPlan {
+  readonly direction: 'narrow' | 'widen';
+}
+
+interface RustExactUndefinedPresenceShape {
+  readonly payload: Readonly<IrTypeReference>;
+}
+
+// A source assertion may add or remove the one absence channel around an existing declaration-owned
+// enum without changing that enum. Planning is deliberately observational: it resolves declarations
+// and compares identities, but does not emit an operand or allocate an anonymous union/name.
+function getRustExactPresenceAssertionConversionPlanRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): RustExactPresenceAssertionConversionPlan | undefined {
+  const operand = expression.expression;
+  if (!isRustExactPresenceAssertionOperandRust(operand, context)) return undefined;
+  const sourceType = inferIrExpressionTypeRust(operand, context);
+  if (!sourceType) return undefined;
+  const sourceOptional = getRustExactUndefinedPresenceShapeRust(sourceType, context, new Set(), 0);
+  const targetOptional = getRustExactUndefinedPresenceShapeRust(expression.type, context, new Set(), 0);
+  if (Boolean(sourceOptional) === Boolean(targetOptional)) return undefined;
+
+  const direction = sourceOptional ? 'narrow' : 'widen';
+  const optionalPayload = (sourceOptional ?? targetOptional)?.payload;
+  const presentType = sourceOptional ? expression.type : sourceType;
+  if (!optionalPayload) return undefined;
+  const optionalOwner = getRustExactPresenceNominalOwnerRust(optionalPayload, context);
+  const presentOwner = getRustExactPresenceNominalOwnerRust(presentType, context);
+  if (!optionalOwner || !presentOwner || optionalOwner.key !== presentOwner.key) return undefined;
+  return { direction };
+}
+
+function isRustExactPresenceAssertionOperandRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (
+    context.nativeAsyncFunction ||
+    ('presence' in expression && expression.presence === 'narrowedPresent') ||
+    canIrExpressionDenoteTaskRust(expression, context)
+  ) {
+    return false;
+  }
+  if (expression.kind === 'identifier') {
+    return (
+      expression.reference.kind === 'binding' &&
+      !context.moduleStateBindings.has(expression.reference.binding.id) &&
+      !isIrExpressionReferencePlannedRust(expression, context)
+    );
+  }
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.typeArguments.length > 0 ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'binding' ||
+    expression.arguments.some((argument) => argument.kind === 'spread') ||
+    isIrNativeAsyncFunctionCallRust(expression, context)
+  ) {
+    return false;
+  }
+  const declaration = getIrReferencedFunctionRust(expression.callee.reference, context);
+  if (
+    !declaration ||
+    declaration.async ||
+    declaration.typeParameters.length > 0 ||
+    declaration.overloads.length > 0 ||
+    declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+    expression.arguments.length !== declaration.parameters.length ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined
+  ) {
+    return false;
+  }
+  const signature = expression.semantics.signature;
+  return (
+    !signature ||
+    (signature.restParameter === undefined &&
+      signature.providedArgumentCount !== 'dynamic' &&
+      signature.providedArgumentCount === expression.arguments.length &&
+      signature.parameterCount === declaration.parameters.length)
+  );
+}
+
+function getRustExactUndefinedPresenceShapeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactUndefinedPresenceShape | undefined {
+  if (depth > 8) return undefined;
+  if (type.kind === 'union') {
+    if (type.types.length !== 2 || type.types.some((member) => member.kind === 'union')) return undefined;
+    const undefineds = type.types.filter((member) => member.kind === 'undefined');
+    const payloads = type.types.filter((member) => member.kind !== 'undefined');
+    const payload = payloads[0];
+    return undefineds.length === 1 &&
+      payloads.length === 1 &&
+      payload?.kind === 'named' &&
+      payload.typeArguments.length === 0
+      ? { payload }
+      : undefined;
+  }
+  const identity = getIrNamedTypeIdentityRust(type, context);
+  const declaration = identity?.location.declaration;
+  if (
+    !identity ||
+    resolving.has(identity.key) ||
+    declaration?.kind !== 'typeAlias' ||
+    declaration.typeParameters.length > 0
+  ) {
+    return undefined;
+  }
+  return getRustExactUndefinedPresenceShapeRust(
+    declaration.type,
+    context,
+    new Set(resolving).add(identity.key),
+    depth + 1,
+  );
+}
+
+function getRustExactPresenceNominalOwnerRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactNominalTypeIdentity | undefined {
+  const plan = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (
+    plan.kind !== 'nominalEnum' ||
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    plan.valueVariants.length < 2
+  ) {
+    return undefined;
+  }
+  const identity = getIrNamedTypeIdentityRust(plan.owner, context);
+  const declaration = identity?.location.declaration;
+  if (
+    !identity ||
+    declaration?.kind !== 'typeAlias' ||
+    declaration.typeParameters.length > 0 ||
+    declaration.type.kind !== 'union' ||
+    declaration.type.types.some(
+      (member) =>
+        member.kind === 'never' || member.kind === 'null' || member.kind === 'undefined' || member.kind === 'union',
+    ) ||
+    getIrUnionTypeStringLiteralValues(declaration.type) !== undefined ||
+    getIrUnionPrimitiveDomainRust(declaration.type.types, context) !== undefined ||
+    !plan.valueVariants.every((variant) => isRustExactPresenceValueVariantSafeRust(variant, context))
+  ) {
+    return undefined;
+  }
+  return identity;
+}
+
+function isRustExactPresenceValueVariantSafeRust(
+  variant: Readonly<{
+    resolvedType: IrType;
+    sourceAlternative: IrType;
+    sourceAlternatives: readonly IrType[];
+  }>,
+  context: EmitContext,
+): boolean {
+  if (
+    variant.resolvedType.kind === 'primitive' &&
+    (variant.resolvedType.name === 'boolean' ||
+      variant.resolvedType.name === 'number' ||
+      variant.resolvedType.name === 'string')
+  ) {
+    return true;
+  }
+  if (
+    variant.resolvedType.kind === 'literal' &&
+    (typeof variant.resolvedType.value === 'boolean' ||
+      typeof variant.resolvedType.value === 'number' ||
+      typeof variant.resolvedType.value === 'string')
+  ) {
+    return true;
+  }
+  const record = [variant.sourceAlternative, ...variant.sourceAlternatives].find(
+    (alternative) => getIrExactNominalRecordIdentityRust(alternative, context) !== undefined,
+  );
+  return Boolean(record && isIrDualSentinelNominalArmCloneSafeRust(record, context, new Set()));
+}
+
 // An assertion that narrows one union carrier to another is a checked conversion when both carriers are
 // generated enums over the same nominal records: the alternative that is present is moved into the
 // destination's own variant, and anything else is the assertion being wrong at runtime. This is the Rust
@@ -23203,6 +23387,13 @@ function emitGeneralUnionCastRust(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   context: EmitContext,
 ): string | undefined {
+  const presence = getRustExactPresenceAssertionConversionPlanRust(expression, context);
+  if (presence) {
+    const operand = emitOwnedOperandRust(expression.expression, context);
+    return presence.direction === 'narrow'
+      ? `match ${operand} { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), }`
+      : `Some(${operand})`;
+  }
   const sourceType = inferIrExpressionTypeRust(expression.expression, context);
   const targetPlan = createRustUnionRepresentationPlanForTypeRust(expression.type, context);
   if (targetPlan.kind === 'nominalEnum' && sourceType) {

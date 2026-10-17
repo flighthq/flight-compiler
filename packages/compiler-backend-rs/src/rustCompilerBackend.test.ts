@@ -26978,6 +26978,319 @@ describe('emitIrModuleRust assertion recovery', () => {
   });
 });
 
+describe('emitIrModuleRust exact named-union presence assertions', () => {
+  it('narrows and widens scalar, mixed-record, and record-only owners with one operand evaluation', () => {
+    const result = lower(
+      'named-union-presence.ts',
+      `type Slot = string | number;
+       type SlotAlias = Slot;
+       type MaybeSlot = SlotAlias | undefined;
+       interface Point { x: number }
+       type PointSlot = Point | number;
+       interface Left { left: string }
+       type Right = { right: number };
+       type RecordSlot = Left | Right;
+       function maybeSlot(): Slot | undefined { throw new Error('missing'); }
+       function makeSlot(value: Slot): Slot { return value; }
+       export function present(value: Slot | undefined): Slot { return value as Slot; }
+       export function widen(value: Slot): Slot | undefined { return value as Slot | undefined; }
+       export function presentAlias(value: MaybeSlot): SlotAlias { return value as SlotAlias; }
+       export function widenAlias(value: SlotAlias): MaybeSlot { return value as MaybeSlot; }
+       export function presentPoint(value: PointSlot | undefined): PointSlot { return value as PointSlot; }
+       export function widenPoint(value: PointSlot): PointSlot | undefined { return value as PointSlot | undefined; }
+       export function presentRecord(value: RecordSlot | undefined): RecordSlot { return value as RecordSlot; }
+       export function widenRecord(value: RecordSlot): RecordSlot | undefined { return value as RecordSlot | undefined; }
+       export function presentCall(): Slot { return maybeSlot() as Slot; }
+       export function widenCall(value: Slot): Slot | undefined { return makeSlot(value) as Slot | undefined; }
+       export function reuseNarrow(value: Slot | undefined): number {
+         const present = value as Slot;
+         value;
+         return 1;
+       }
+       export function reuseWiden(value: Slot): number {
+         const optional = value as Slot | undefined;
+         value;
+         return 1;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      'return match value { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output).toContain('return Some(value);');
+    expect(output).toContain(
+      'return match maybe_slot() { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output).toContain('return Some(make_slot(value));');
+    expect(output).toContain(
+      'let present: Slot = match value.clone() { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output).toContain('let optional: Option<Slot> = Some(value.clone());');
+    expect(output.match(/\bmaybe_slot\(/gu)).toHaveLength(2);
+    expect(output.match(/\bmake_slot\(/gu)).toHaveLength(2);
+    expect(output).toContain('enum Slot {');
+    expect(output).toContain('enum PointSlot {');
+    expect(output).toContain('enum RecordSlot {');
+  });
+
+  it('uses one canonical owner through an import and type reexport while preserving colliding variants', () => {
+    const recordsSource = ts.createSourceFile(
+      '/flight/packages/math/src/presence-records.ts',
+      `export interface A_B { left: number }
+       export interface AB { right: number }
+       export type Choice = A_B | AB;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/presence-facade.ts',
+      `export type { Choice } from './presence-records.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/presence-consumer.ts',
+      `import type { Choice } from './presence-facade.js';
+       export function present(value: Choice | undefined): Choice { return value as Choice; }
+       export function widen(value: Choice): Choice | undefined { return value as Choice | undefined; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Presence-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/presence-facade.ts',
+          },
+          specifier: './presence-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/presence-records.ts' },
+        },
+        {
+          importer: {
+            name: 'Presence-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/presence-consumer.ts',
+          },
+          specifier: './presence-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/presence-facade.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [recordsResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: recordsSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(recordsResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const records = recordsResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules: [consumer, facade, records],
+      options: {},
+    });
+    const providerOutput = session.emitModule(records)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('AB(AB)');
+    expect(providerOutput).toContain('AB2(AB_2)');
+    expect(consumerOutput).toContain(
+      'return match value { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(consumerOutput).toContain('return Some(value);');
+    expect(consumerOutput).not.toContain('AnonymousUnion');
+  });
+
+  it('keeps unsupported shapes on their existing refusal lanes', () => {
+    const cases: readonly Readonly<{ expected: string; source: string }>[] = [
+      {
+        expected: 'rust-cast-requires-type-directed-lowering',
+        source: 'export function refused(value: string | undefined): string { return value as string; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source: 'export function refused(value: string): string | undefined { return value as string | undefined; }',
+      },
+      {
+        expected: 'rust-cast-requires-type-directed-lowering',
+        source:
+          'interface Point { x: number } export function refused(value: Point | undefined): Point { return value as Point; }',
+      },
+      {
+        expected: 'rust-contextual-general-union-construction-unrepresented',
+        source:
+          'interface Point { x: number } export function refused(value: Point): Point | undefined { return value as Point | undefined; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Left = string | number; type Right = string | boolean; export function refused(value: Left | undefined): Right { return value as Right; }',
+      },
+      {
+        expected: 'rust-cast-requires-type-directed-lowering',
+        source:
+          'type Slot<T> = T | number; export function refused(value: Slot<string> | undefined): Slot<string> { return value as Slot<string>; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Slot = string | number; export function refused(value: Slot | null): Slot { return value as Slot; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Slot = string | number; export function refused(value: Slot | null | undefined): Slot { return value as Slot; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Inner = string | number; type Outer = Inner | boolean; export function refused(value: Outer | undefined): Outer { return value as Outer; }',
+      },
+      {
+        expected: 'rust-reference-shared-class-type-unrepresented',
+        source:
+          'class Item { value = 0; } type Slot = Item | number; export function refused(value: Slot | undefined): Slot { return value as Slot; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Slot = string[] | number; export function refused(value: Slot | undefined): Slot { return value as Slot; }',
+      },
+      {
+        expected: 'rust-union-cast-unsupported',
+        source:
+          'type Slot = (() => string) | number; export function refused(value: Slot | undefined): Slot { return value as Slot; }',
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const result = lower(`named-union-presence-refusal-${String(index)}.ts`, testCase.source);
+      expect(result.diagnostics).toEqual([]);
+      expect(
+        getEmissionRule(() => emitIrModuleRust(result.module)),
+        `refusal case ${String(index)}`,
+      ).toBe(testCase.expected);
+    }
+  });
+
+  it.each([
+    [
+      'a narrowed-present operand',
+      `type Slot = string | number;
+       export function refused(value: Slot | undefined): Slot {
+         if (value !== undefined) return value as Slot;
+         throw new Error('missing');
+       }`,
+      'rust-union-cast-unsupported',
+    ],
+    [
+      'module state',
+      `type Slot = string | number;
+       let current: Slot | undefined = undefined;
+       export function refused(): Slot { return current as Slot; }`,
+      'rust-module-variable-synchronization-unsupported',
+    ],
+    [
+      'an async carrier context',
+      `type Slot = string | number;
+       export async function refused(value: Slot | undefined): Promise<Slot> { return value as Slot; }`,
+      'rust-union-cast-unsupported',
+    ],
+    [
+      'a closure-cell carrier',
+      `type Slot = string | number;
+       export function refused(value: Slot | undefined): () => Slot {
+         let current = value;
+         return () => current as Slot;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('does not claim %s', (_name, source, expected) => {
+    const result = lower('named-union-presence-context-refusal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(expected);
+  });
+
+  it('leaves optional contextual construction ahead of unrelated presence planning', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'named-union-presence-precedence.ts',
+        `interface Alpha { value: number }
+         type Beta = { label: string };
+         type Choice = Alpha | Beta | undefined;
+         export function asserted(alpha: Alpha): Choice { return alpha as Choice; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return Some(ChoicePayload::Alpha(alpha));');
+  });
+
+  it('is repeatable and preserves a valid conversion when an unrelated declaration is salvaged', () => {
+    const repeatedModule = lower(
+      'named-union-presence-repeat.ts',
+      `type Slot = string | number;
+       export function present(value: Slot | undefined): Slot { return value as Slot; }`,
+    ).module;
+    const repeatedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [repeatedModule],
+      options: {},
+    });
+    const first = repeatedSession.emitModule(repeatedModule)[0]!.contents;
+    const second = repeatedSession.emitModule(repeatedModule)[0]!.contents;
+    expect(second).toBe(first);
+
+    const source = `type Slot = string | number;
+export function present(value: Slot | undefined): Slot { return value as Slot; }
+export function broken(value: { value: number }): Slot { return value as Slot; }`;
+    const module = lower('named-union-presence-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-contextual-general-union-construction-unrepresented',
+          message: 'nominal union construction refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      message: 'nominal union construction refused',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 3');
+    expect(placeholder.contents).toContain('// refusal: rust-cast-requires-type-directed-lowering');
+    expect(placeholder.contents).toContain(
+      'return match value { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(placeholder.contents.match(/enum Slot/gu)).toHaveLength(1);
+  });
+});
+
 describe('emitIrModuleRust single-alternative assertion recovery', () => {
   it('refuses an absent nominal alternative or a change of absence sentinel', () => {
     const declarations = 'interface Alpha { a: number } interface Beta { b: number } interface Gamma { c: number }';
