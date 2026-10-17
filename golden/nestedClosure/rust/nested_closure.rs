@@ -20,5 +20,5 @@ pub fn apply_twice(value: f64, transform: Rc<dyn Fn(f64) -> f64>) -> f64 {
 }
 
 pub fn filter_and_map(items: Vec<f64>, threshold: f64) -> Vec<String> {
-  return items.into_iter().filter(|&item| item > threshold).collect::<Vec<_>>().into_iter().map(|item| item.to_string()).collect::<Vec<_>>();
+  return { let array_filter_receiver = &items; let mut array_filter_callback = |item| item > threshold; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result }.into_iter().map(|item| item.to_string()).collect::<Vec<_>>();
 }

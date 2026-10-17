@@ -470,7 +470,7 @@ function emitIrModuleRustWithContext(
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
-  assertArrayPredicateInvocationSemanticsRust(sourceModule);
+  assertArrayCallbackInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
   assertArraySortInvocationSemanticsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -1676,6 +1676,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (isArrayFindIndexCallRust(expression)) return emitArrayFindIndexCallRust(expression, context);
       if (isArrayPredicateCallRust(expression)) {
         return emitArrayPredicateCallRust(expression, getArrayPredicateMemberRust(expression), context);
+      }
+      if (isArraySearchPredicateCallRust(expression)) {
+        return emitArraySearchPredicateCallRust(expression, getArraySearchPredicateMemberRust(expression), context);
       }
       if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
@@ -3809,6 +3812,42 @@ function getArrayPredicateMemberRust(
   return expression.callee.member?.name === 'some' ? 'some' : 'every';
 }
 
+type RustArraySearchPredicateMember = 'filter' | 'find';
+type RustArrayCallbackMember = RustArrayPredicateMember | RustArraySearchPredicateMember;
+
+function isArraySearchPredicateCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  if (expression.callee.kind !== 'property' || expression.callee.member?.receiver !== 'array') return false;
+  const member = expression.callee.member.name;
+  return member === 'filter' || member === 'find';
+}
+
+function getArraySearchPredicateMemberRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+): RustArraySearchPredicateMember {
+  return expression.callee.member?.name === 'find' ? 'find' : 'filter';
+}
+
+function isArrayCallbackCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return isArrayPredicateCallRust(expression) || isArraySearchPredicateCallRust(expression);
+}
+
+function getArrayCallbackMemberRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+): RustArrayCallbackMember {
+  const member = expression.callee.member?.name;
+  return member === 'some' || member === 'every'
+    ? getArrayPredicateMemberRust(expression)
+    : getArraySearchPredicateMemberRust(expression);
+}
+
 function isArrayFillCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3999,6 +4038,48 @@ function emitArrayPredicateCallRust(
       : `let ${callbackName} = &${emitExpression(callback, context)};`;
   const terminal = member === 'some' ? 'any' : 'all';
   const search = `${valuesName}.iter().enumerate().${terminal}(|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')}))`;
+  const release = sharedBinding ? ` drop(${valuesName});` : '';
+  return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${valuesName} = ${receiverValues}; let ${resultName} = ${search};${release} ${resultName} }`;
+}
+
+// `find` and `filter` reuse the predicate staging but project their own result: find clones the one
+// matching element into the Option carrier the observation gate proved, and filter clones every match
+// into a fresh Vec. Both clone before a shared borrow is released.
+function emitArraySearchPredicateCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  member: RustArraySearchPredicateMember,
+  context: EmitContext,
+): string {
+  const callback = expression.arguments[0];
+  const signature = callback ? getRustArrayPredicateCallbackSignatureRust(callback, context) : undefined;
+  if (!callback || !signature || signature.parameters.length > 2) {
+    return emissionError(context, `array.${member} emission requires one statically known fixed predicate`);
+  }
+  const receiverName = getGeneratedTargetNameRust(`array_${member}_receiver`, context);
+  const callbackName = getGeneratedTargetNameRust(`array_${member}_callback`, context);
+  const valuesName = getGeneratedTargetNameRust(`array_${member}_values`, context);
+  const resultName = getGeneratedTargetNameRust(`array_${member}_result`, context);
+  const indexName = getGeneratedTargetNameRust(`array_${member}_index`, context);
+  const elementName = getGeneratedTargetNameRust(`array_${member}_element`, context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const emittedReceiver = sharedBinding
+    ? `&${getBindingTargetNameRust(sharedBinding, context)}`
+    : `&${emitExpression(expression.callee.object, context)}`;
+  const receiverValues = sharedBinding ? `${receiverName}.borrow()` : receiverName;
+  const arguments_ = [
+    ...(signature.parameters.length >= 1 ? [`${elementName}.clone()`] : []),
+    ...(signature.parameters.length === 2 ? [`${indexName} as f64`] : []),
+  ];
+  const callbackInitializer =
+    callback.kind === 'function'
+      ? `let mut ${callbackName} = ${emitExpression(callback, context)};`
+      : `let ${callbackName} = &${emitExpression(callback, context)};`;
+  const predicate = `|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})`;
+  const search =
+    member === 'find'
+      ? `${valuesName}.iter().enumerate().find(${predicate}).map(|(_index, element)| element.clone())`
+      : `${valuesName}.iter().enumerate().filter(${predicate}).map(|(_index, element)| element.clone()).collect::<Vec<_>>()`;
   const release = sharedBinding ? ` drop(${valuesName});` : '';
   return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${valuesName} = ${receiverValues}; let ${resultName} = ${search};${release} ${resultName} }`;
 }
@@ -10168,6 +10249,8 @@ type RustArrayOperationMember =
   | 'concat'
   | 'copyWithin'
   | 'fill'
+  | 'filter'
+  | 'find'
   | 'findIndex'
   | 'every'
   | 'reverse'
@@ -10223,6 +10306,21 @@ interface RustArrayOperationRefusal {
     | 'rust-array-find-index-invocation-unrepresented'
     | 'rust-array-find-index-predicate-result-carrier-unrepresented'
     | 'rust-array-find-index-result-carrier-unrepresented'
+    | 'rust-array-find-alias-borrow-conflict'
+    | 'rust-array-find-callback-carrier-unrepresented'
+    | 'rust-array-find-element-carrier-unrepresented'
+    | 'rust-array-find-invocation-unrepresented'
+    | 'rust-array-find-predicate-result-carrier-unrepresented'
+    | 'rust-array-find-result-carrier-unrepresented'
+    | 'rust-array-find-result-observation-unrepresented'
+    | 'rust-array-find-sparse-receiver-unrepresented'
+    | 'rust-array-filter-alias-borrow-conflict'
+    | 'rust-array-filter-callback-carrier-unrepresented'
+    | 'rust-array-filter-element-carrier-unrepresented'
+    | 'rust-array-filter-invocation-unrepresented'
+    | 'rust-array-filter-predicate-result-carrier-unrepresented'
+    | 'rust-array-filter-result-carrier-unrepresented'
+    | 'rust-array-filter-sparse-receiver-unrepresented'
     | 'rust-array-every-alias-borrow-conflict'
     | 'rust-array-every-callback-carrier-unrepresented'
     | 'rust-array-every-element-carrier-unrepresented'
@@ -10291,11 +10389,11 @@ function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>)
   );
 }
 
-function assertArrayPredicateInvocationSemanticsRust(module: Readonly<IrModule>): void {
-  const unsupported = new Set<RustArrayPredicateMember>();
+function assertArrayCallbackInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  const unsupported = new Set<RustArrayCallbackMember>();
   analyzeIrModuleTraversal(module, {
     expression(expression) {
-      if (expression.kind !== 'call' || !isArrayPredicateCallRust(expression)) return undefined;
+      if (expression.kind !== 'call' || !isArrayCallbackCallRust(expression)) return undefined;
       const signature = expression.semantics.signature;
       if (
         expression.optional ||
@@ -10308,7 +10406,7 @@ function assertArrayPredicateInvocationSemanticsRust(module: Readonly<IrModule>)
         expression.arguments.length !== 1 ||
         expression.arguments[0]?.kind === 'spread'
       ) {
-        unsupported.add(getArrayPredicateMemberRust(expression));
+        unsupported.add(getArrayCallbackMemberRust(expression));
         return false;
       }
       return undefined;
@@ -10504,6 +10602,13 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       member: RustArrayPredicateMember;
     }>
   > = [];
+  const searchPredicateCalls: Array<
+    Readonly<{
+      expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+        Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>;
+      member: RustArraySearchPredicateMember;
+    }>
+  > = [];
   const sortCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
@@ -10556,6 +10661,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           findIndexCalls.push(expression);
         } else if (isArrayPredicateCallRust(expression)) {
           predicateCalls.push({ expression, member: getArrayPredicateMemberRust(expression) });
+        } else if (isArraySearchPredicateCallRust(expression)) {
+          searchPredicateCalls.push({ expression, member: getArraySearchPredicateMemberRust(expression) });
         } else if (isArraySortCallRust(expression)) {
           sortCalls.push(expression);
         } else if (searchMember) {
@@ -10808,6 +10915,158 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         member,
         message: `array.${member} result requires an exact Rust boolean carrier`,
         rule: `rust-array-${member}-result-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    const receiverObject = expression.callee.object;
+    const receiverBindingId =
+      receiverObject.kind === 'identifier' && receiverObject.reference.kind === 'binding'
+        ? receiverObject.reference.binding.id
+        : undefined;
+    const callbackBody = getRustArrayPredicateCallbackBodyRust(callback, context);
+    if (
+      receiverBindingId &&
+      (irExpressionUsesBindingRust(callback, receiverBindingId) ||
+        (callbackBody !== undefined && irExpressionUsesBindingRust(callbackBody, receiverBindingId)))
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} callback captures the receiver while its shared borrow is active`,
+        rule: `rust-array-${member}-alias-borrow-conflict`,
+      });
+    }
+  }
+
+  for (const { expression, member } of searchPredicateCalls) {
+    const callback = expression.arguments[0];
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 1 ||
+      expression.arguments.length !== 1 ||
+      !callback ||
+      callback.kind === 'spread'
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} requires a non-optional invocation with exactly one fixed non-spread callback and no thisArg`,
+        rule: `rust-array-${member}-invocation-unrepresented`,
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind === 'array' && hasIrTypeUndefinedMemberRust(receiver.element)) {
+      refusals.push({
+        member,
+        message: `array.${member} skips holes in the source language, but a dense Rust carrier cannot distinguish an omitted element from a stored undefined value`,
+        rule: `rust-array-${member}-sparse-receiver-unrepresented`,
+      });
+      continue;
+    }
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || !receiverDomain) {
+      refusals.push({
+        member,
+        message: `array.${member} elements require exact dense boolean, number, or string value carriers; union and identity-bearing carriers are not represented`,
+        rule: `rust-array-${member}-element-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    const callbackSignature = getRustArrayPredicateCallbackSignatureRust(callback, context);
+    if (
+      !callbackSignature ||
+      callbackSignature.async ||
+      callbackSignature.dynamicThisUse ||
+      callbackSignature.typeParameterCount > 0 ||
+      callbackSignature.parameters.length > 2 ||
+      callbackSignature.parameters.some((parameter, index) => {
+        if (parameter.optional || parameter.rest || parameter.initializer !== undefined) return true;
+        if (index === 1) {
+          return (
+            getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== 'number' ||
+            emitType(parameter.type, context) !== 'f64'
+          );
+        }
+        return (
+          getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== receiverDomain ||
+          emitType(parameter.type, context) !== emitType(receiver.element, context)
+        );
+      })
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} callback requires one statically known synchronous function with zero to two fixed exact-carrier parameters`,
+        rule: `rust-array-${member}-callback-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    if (
+      getRustDensePrimitiveArrayCarrierDomainRust(callbackSignature.returns, context) !== 'boolean' ||
+      emitType(callbackSignature.returns, context) !== 'bool'
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} predicate result requires an exact Rust bool carrier; truthiness coercion is not represented`,
+        rule: `rust-array-${member}-predicate-result-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+    if (member === 'find') {
+      const payload =
+        result.kind === 'union' && hasIrTypeUndefinedMemberRust(result) && !hasIrTypeNullMemberRust(result)
+          ? result.types.filter((candidate) => candidate.kind !== 'undefined')
+          : [];
+      // A boolean element expands to the `false | true` union in the IR, so an all-boolean-literal
+      // payload is one boolean carrier rather than several alternatives.
+      const payloadType = payload.length === 1 ? payload[0] : undefined;
+      const carrier =
+        payloadType !== undefined
+          ? getRustDensePrimitiveArrayCarrierDomainRust(payloadType, context) === receiverDomain &&
+            emitType(payloadType, context) === emitType(receiver.element, context)
+          : payload.length > 0 &&
+            payload.every((candidate) => candidate.kind === 'literal' && typeof candidate.value === 'boolean') &&
+            receiverDomain === 'boolean';
+      if (!carrier) {
+        refusals.push({
+          member,
+          message: 'array.find result requires one exact dense element carrier behind undefined',
+          rule: 'rust-array-find-result-carrier-unrepresented',
+        });
+        continue;
+      }
+      if (
+        !isRustArrayAbsenceRepresentedUse(uses.get(expression), context.bindingTypes, context.arrayElementBindingIds)
+      ) {
+        refusals.push({
+          member,
+          message: 'array.find can return undefined, but this observed result has no Rust Option carrier',
+          rule: 'rust-array-find-result-observation-unrepresented',
+        });
+        continue;
+      }
+    } else if (
+      result.kind !== 'array' ||
+      result.readonly ||
+      getRustDensePrimitiveArrayCarrierDomainRust(result.element, context) !== receiverDomain ||
+      emitType(result.element, context) !== emitType(receiver.element, context)
+    ) {
+      refusals.push({
+        member,
+        message: 'array.filter result requires a fresh Rust Vec of the receiver element carrier',
+        rule: 'rust-array-filter-result-carrier-unrepresented',
       });
       continue;
     }

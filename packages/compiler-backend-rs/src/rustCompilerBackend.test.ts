@@ -4879,16 +4879,16 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.collect::<Vec<_>>()');
   });
 
-  it('emits array filter as into_iter().filter().collect()', () => {
+  it('emits array filter through the staged filter and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'array-filter.ts',
         'export function positives(items: number[]): number[] { return items.filter((x: number): boolean => x > 0.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.filter(');
+    expect(output).toContain('.iter().enumerate().filter(');
     expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).not.toContain('into_iter().filter');
   });
 
   it('emits array every through the staged all iterator', () => {
@@ -5289,15 +5289,16 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('impl<T: Clone>');
   });
 
-  it('emits array find as into_iter().find()', () => {
+  it('emits array find through the staged find projection', () => {
     const output = emitIrModuleRust(
       lower(
         'array-find.ts',
         'export function first(items: number[]): number | undefined { return items.find((x: number): boolean => x > 0.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.find(');
+    expect(output).toContain('.iter().enumerate().find(');
+    expect(output).toContain('.map(|(_index, element)| element.clone())');
+    expect(output).not.toContain('into_iter().find');
   });
 
   it('emits Map operations with Rust HashMap methods', () => {
@@ -6968,18 +6969,18 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('position');
   });
 
-  it('emits array filter as into_iter().filter().collect()', () => {
+  it('emits array filter through the staged filter and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'arr-filter.ts',
         'export function positives(items: number[]): number[] { return items.filter((x) => x > 0); }',
       ).module,
     ).contents;
-    expect(output).toContain('filter');
+    expect(output).toContain('.iter().enumerate().filter(');
     expect(output).toContain('collect');
   });
 
-  it('emits array find as into_iter().find()', () => {
+  it('emits array find through the staged find projection', () => {
     const output = emitIrModuleRust(
       lower(
         'arr-find.ts',
@@ -6988,7 +6989,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('find');
+    expect(output).toContain('.iter().enumerate().find(');
   });
 
   it('emits array some through the staged any iterator', () => {
@@ -9226,7 +9227,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('(f64, String)');
   });
 
-  it('emits array filter with borrowed element closure', () => {
+  it('emits array filter with the staged callback and element adaptation', () => {
     const output = emitIrModuleRust(
       lower(
         'filter.ts',
@@ -9235,8 +9236,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('filter(');
+    expect(output).toContain('.iter().enumerate().filter(');
     expect(output).toContain('collect');
   });
 
@@ -14907,7 +14907,7 @@ describe('emitIrModuleRust nullish check with == null', () => {
 });
 
 describe('emitIrModuleRust array iterator methods', () => {
-  it('emits .filter() as into_iter().filter()', () => {
+  it('emits .filter() through the staged filter and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'filter.ts',
@@ -14916,8 +14916,7 @@ describe('emitIrModuleRust array iterator methods', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('filter');
+    expect(output).toContain('.iter().enumerate().filter(');
     expect(output).toContain('collect');
   });
 });
@@ -14951,7 +14950,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('fold');
   });
 
-  it('emits array.find as into_iter().find() with borrowed element', () => {
+  it('emits array.find through the staged find projection', () => {
     const output = emitIrModuleRust(
       lower(
         'find.ts',
@@ -14960,8 +14959,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('find');
+    expect(output).toContain('.iter().enumerate().find(');
   });
 
   it('emits array.every through the staged all iterator', () => {
@@ -20613,8 +20611,8 @@ describe('emitIrModuleRust reduce with argument reorder', () => {
   });
 });
 
-describe('emitIrModuleRust array filter with borrowed element', () => {
-  it('emits filter as into_iter().filter() with borrowed element closure', () => {
+describe('emitIrModuleRust array filter element adaptation', () => {
+  it('emits filter through the staged filter chain with cloned elements', () => {
     const output = emitIrModuleRust(
       lower(
         'filter.ts',
@@ -20623,8 +20621,8 @@ describe('emitIrModuleRust array filter with borrowed element', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('.into_iter().filter(');
-    expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).toContain('.iter().enumerate().filter(');
+    expect(output).toContain('.map(|(_index, element)| element.clone()).collect::<Vec<_>>()');
   });
 });
 
@@ -23191,7 +23189,7 @@ describe('emitIrModuleRust array some and every', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-some-result-carrier-unrepresented');
   });
 
-  it('leaves find, filter, map, forEach, and reduce outside the exact predicate path', () => {
+  it('leaves map, forEach, and reduce outside the exact predicate path', () => {
     const output = emitIrModuleRust(
       lower(
         'array-predicate-neighbors.ts',
@@ -23204,9 +23202,172 @@ describe('emitIrModuleRust array some and every', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('into_iter().find(');
+    expect(output).toContain('array_find_');
+    expect(output).not.toContain('into_iter().find');
     expect(output).toContain('into_iter().map(');
     expect(output).not.toContain('array_some_');
     expect(output).not.toContain('array_every_');
+  });
+});
+
+describe('emitIrModuleRust array find and filter', () => {
+  it('stages dense receivers and adapts callback parameters for find and filter', () => {
+    const result = lower(
+      'array-find-filter-exact.ts',
+      `export function findNumber(values: number[]): number | undefined {
+         return values.find((value: number, index: number): boolean => value === index);
+       }
+       export function findString(values: readonly string[]): string | undefined {
+         return values.find((value: string): boolean => value === "match");
+       }
+       export function filterBoolean(values: readonly boolean[]): boolean[] {
+         return values.filter((value: boolean): boolean => value);
+       }
+       export function findZero(values: boolean[]): boolean | undefined {
+         return values.find((): boolean => true);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().find(');
+    expect(output).toContain('.iter().enumerate().filter(');
+    expect(output).toContain('(array_find_callback)(array_find_element.clone(), array_find_index as f64)');
+    expect(output).toContain('.map(|(_index, element)| element.clone())');
+    expect(output).toContain('.map(|(_index, element)| element.clone()).collect::<Vec<_>>()');
+    expect(output).not.toContain('into_iter().find');
+    expect(output).not.toContain('into_iter().filter');
+  });
+
+  it('stages the receiver, then the callback, then the borrow', () => {
+    const result = lower(
+      'array-find-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(log: number[], marker: number): (value: number) => boolean {
+         log.push(marker);
+         return (value: number): boolean => value === 2;
+       }
+       export function evaluated(log: number[]): number | undefined {
+         return recordReceiver(log, 1, [1, 2, 3]).find(recordCallback(log, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_find_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_find_callback = &record_callback(', receiver);
+    const values = output.indexOf('let array_find_values = array_find_receiver;', callback);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(callback);
+  });
+
+  it('releases a shared filter borrow before either alias is reused', () => {
+    const result = lower(
+      'array-filter-shared.ts',
+      `export function kept(): number[] {
+         const values = [1, 2, 3];
+         const alias = values;
+         const selected = alias.filter((value: number): boolean => value > 1);
+         values.push(4);
+         return selected.length > alias.length ? selected : [];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_filter_receiver = &alias;');
+    expect(output).toContain('let array_filter_values = array_filter_receiver.borrow();');
+    expect(output).toContain('drop(array_filter_values);');
+  });
+
+  it('refuses a find result whose observed use cannot carry absence', () => {
+    const result = lower(
+      'array-find-observation.ts',
+      `function consume(value: number | undefined): void {
+         if (value === undefined) return;
+       }
+       export function pick(values: number[]): void {
+         consume(values.find((value: number): boolean => value > 0));
+       }`,
+    );
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-find-result-observation-unrepresented',
+    );
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-find-invocation-unrepresented',
+      source: 'export function pick(values: number[]): number | undefined { return values.find(); }',
+    },
+    {
+      rule: 'rust-array-find-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): number | undefined { return values.find((value: number): boolean => value > 0, undefined); }',
+    },
+    {
+      rule: 'rust-array-filter-invocation-unrepresented',
+      source:
+        'export function pick(values: number[], callbacks: [(value: number) => boolean]): number[] { return values.filter(...callbacks); }',
+    },
+    {
+      rule: 'rust-array-filter-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.filter?.((value: number): boolean => value > 0) ?? []; }',
+    },
+    {
+      rule: 'rust-array-find-element-carrier-unrepresented',
+      source:
+        'export function pick(values: (number | string)[]): number | string | undefined { return values.find((value: number | string): boolean => typeof value === "number"); }',
+    },
+    {
+      rule: 'rust-array-filter-sparse-receiver-unrepresented',
+      source:
+        'export function pick(values: (number | undefined)[]): (number | undefined)[] { return values.filter((value: number | undefined): boolean => value !== undefined); }',
+    },
+    {
+      rule: 'rust-array-find-predicate-result-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number | undefined { return values.find((value: number) => value); }',
+    },
+    {
+      rule: 'rust-array-filter-callback-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.filter((value: number, index: number, all: number[]): boolean => value > index && all.length > 0); }',
+    },
+    {
+      rule: 'rust-array-filter-alias-borrow-conflict',
+      source:
+        'export function pick(values: number[]): number[] { return values.filter((value: number): boolean => values.length > 0 && value > 0); }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-find-filter-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a mutated non-element filter result carrier', () => {
+    const result = lower(
+      'array-filter-result.ts',
+      'export function pick(values: number[]): number[] { return values.filter((value: number): boolean => value > 0); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the filter call');
+    call.expression.semantics.resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-filter-result-carrier-unrepresented',
+    );
   });
 });

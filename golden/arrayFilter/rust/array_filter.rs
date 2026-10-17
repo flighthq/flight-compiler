@@ -2,17 +2,17 @@
 #![forbid(unsafe_code)]
 
 pub fn positives(values: Vec<f64>) -> Vec<f64> {
-  return values.into_iter().filter(|&v| v > 0.0).collect::<Vec<_>>();
+  return { let array_filter_receiver = &values; let mut array_filter_callback = |v| v > 0.0; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
 }
 
 pub fn evens(values: Vec<f64>) -> Vec<f64> {
-  return values.into_iter().filter(|&v| (v % 2.0) == 0.0).collect::<Vec<_>>();
+  return { let array_filter_receiver_2 = &values; let mut array_filter_callback_2 = |v| (v % 2.0) == 0.0; let array_filter_values_2 = array_filter_receiver_2; let array_filter_result_2 = array_filter_values_2.iter().enumerate().filter(|(array_filter_index_2, array_filter_element_2)| (array_filter_callback_2)(array_filter_element_2.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result_2 };
 }
 
 pub fn above(values: Vec<f64>, threshold: f64) -> Vec<f64> {
-  return values.into_iter().filter(|&v| v >= threshold).collect::<Vec<_>>();
+  return { let array_filter_receiver_3 = &values; let mut array_filter_callback_3 = |v| v >= threshold; let array_filter_values_3 = array_filter_receiver_3; let array_filter_result_3 = array_filter_values_3.iter().enumerate().filter(|(array_filter_index_3, array_filter_element_3)| (array_filter_callback_3)(array_filter_element_3.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result_3 };
 }
 
 pub fn count_matching(values: Vec<f64>, threshold: f64) -> f64 {
-  return values.into_iter().filter(|&v| v >= threshold).collect::<Vec<_>>().len() as f64;
+  return { let array_filter_receiver_4 = &values; let mut array_filter_callback_4 = |v| v >= threshold; let array_filter_values_4 = array_filter_receiver_4; let array_filter_result_4 = array_filter_values_4.iter().enumerate().filter(|(array_filter_index_4, array_filter_element_4)| (array_filter_callback_4)(array_filter_element_4.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result_4 }.len() as f64;
 }
