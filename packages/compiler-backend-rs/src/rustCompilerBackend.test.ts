@@ -35921,6 +35921,361 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
   });
 });
 
+describe('emitIrModuleRust exact contextual union-subset conversion', () => {
+  const records = `interface Alpha { id: number; alpha: number }
+                   interface Beta { id: number; beta: number }
+                   interface Gamma { id: number; gamma: number }`;
+
+  it('rebuilds every supported contextual carrier with one ordered owned match', () => {
+    const result = lower(
+      'contextual-union-subset-conversion.ts',
+      `${records}
+       interface Holder { slot: Alpha | Beta | Gamma }
+       function before(): number { return 1; }
+       function after(): number { return 2; }
+       function take(_head: number, _value: Alpha | Beta | Gamma, _tail: number): number { return 3; }
+       export function returned(value: Alpha | Beta): Alpha | Beta | Gamma { return value; }
+       export function passed(value: Alpha | Beta): number { return take(before(), value, after()); }
+       export function initialized(value: Alpha | Beta): number {
+         const widened: Alpha | Beta | Gamma = value;
+         return widened.id;
+       }
+       export function assigned(value: Alpha | Beta): number {
+         let widened: Alpha | Beta | Gamma;
+         widened = value;
+         return widened.id;
+       }
+       export function assignedBeforeRead(value: Alpha | Beta): number {
+         let widened: Alpha | Beta | Gamma;
+         widened = value;
+         return widened.id + value.id;
+       }
+       export function stored(holder: Holder, value: Alpha | Beta): void { holder.slot = value; }
+       export function clonedBeforeRead(value: Alpha | Beta): number {
+         const result = take(0, value, 0);
+         return result + value.id;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const signature = output.match(/pub fn returned\(value: (AnonymousUnion\d*)\) -> (AnonymousUnion\d*) \{/u);
+    if (!signature) throw new Error('expected distinct anonymous source and target carriers');
+    const sourceOwner = signature[1]!;
+    const targetOwner = signature[2]!;
+    expect(sourceOwner).not.toBe(targetOwner);
+    const movedMatch = `match value { ${sourceOwner}::Alpha(value) => ${targetOwner}::Alpha(value), ${sourceOwner}::Beta(value) => ${targetOwner}::Beta(value), }`;
+    const clonedMatch = movedMatch.replace('match value', 'match value.clone()');
+    expect(output).toContain(`return ${movedMatch};`);
+    expect(output).toContain(`take(before(), ${movedMatch}, after())`);
+    expect(output).toContain(`let widened: ${targetOwner} = ${movedMatch};`);
+    expect(output).toContain(`widened = ${movedMatch}`);
+    expect(output).toContain(`widened = ${clonedMatch}`);
+    expect(output).toContain(`holder.slot = ${movedMatch}`);
+    expect(output).toContain(`take(0.0, ${clonedMatch}, 0.0)`);
+    expect(output.match(/match value\.clone\(\)/gu)).toHaveLength(2);
+    const passed = output.match(/pub fn passed[\s\S]*?\n\}/u)?.[0];
+    if (!passed) throw new Error('expected the passed function');
+    expect(passed.match(/\bbefore\(\)/gu)).toHaveLength(1);
+    expect(passed.match(/\bafter\(\)/gu)).toHaveLength(1);
+    expect(passed.indexOf('before()')).toBeLessThan(passed.indexOf('match value'));
+    expect(passed.indexOf('match value')).toBeLessThan(passed.indexOf('after()'));
+    const conversions = output.match(/match value(?:\.clone\(\))? \{[^}]*\}/gu);
+    expect(conversions).toHaveLength(7);
+    for (const conversion of conversions ?? []) {
+      expect(conversion).not.toMatch(/\bGamma\b|_|panic!|unreachable!/u);
+    }
+  });
+
+  it('maps independently allocated collision variants by declaration identity', () => {
+    const result = lower(
+      'contextual-union-subset-collision.ts',
+      `interface A_B { first: number }
+       interface A__B { middle: number }
+       interface AB { last: number }
+       export function widen(value: A_B | AB): A_B | A__B | AB { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const signature = output.match(/pub fn widen\(value: (AnonymousUnion\d*)\) -> (AnonymousUnion\d*) \{/u);
+    if (!signature) throw new Error('expected distinct collision carriers');
+    const sourceOwner = signature[1]!;
+    const targetOwner = signature[2]!;
+    expect(output).toContain(
+      `match value { ${sourceOwner}::AB(value) => ${targetOwner}::AB(value), ${sourceOwner}::AB2(value) => ${targetOwner}::AB3(value), }`,
+    );
+  });
+
+  it.each([
+    [
+      'a null source sentinel',
+      `${records} export function refused(value: Alpha | Beta | null): Alpha | Beta | Gamma {
+         if (value === null) throw new Error('missing');
+         return value;
+       }`,
+    ],
+    [
+      'an undefined source sentinel',
+      `${records} export function refused(value: Alpha | Beta | undefined): Alpha | Beta | Gamma {
+         if (value === undefined) throw new Error('missing');
+         return value;
+       }`,
+    ],
+    [
+      'a dual-sentinel source',
+      `${records} export function refused(value: Alpha | Beta | null | undefined): Alpha | Beta | Gamma {
+         if (value == null) throw new Error('missing');
+         return value;
+       }`,
+    ],
+    [
+      'a null target sentinel',
+      `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma | null { return value; }`,
+    ],
+    [
+      'an undefined target sentinel',
+      `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma | undefined { return value; }`,
+    ],
+    [
+      'a dual-sentinel target',
+      `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma | null | undefined { return value; }`,
+    ],
+    [
+      'a source carrier alias',
+      `${records} type Small = Alpha | Beta; export function refused(value: Small): Alpha | Beta | Gamma { return value; }`,
+    ],
+    [
+      'a target carrier alias',
+      `${records} type Wide = Alpha | Beta | Gamma; export function refused(value: Alpha | Beta): Wide { return value; }`,
+    ],
+    [
+      'an arm alias chain',
+      `${records} type AlphaAlias = Alpha; export function refused(value: AlphaAlias | Beta): Alpha | Beta | Gamma { return value; }`,
+    ],
+    [
+      'a generic arm',
+      `${records} interface Box<Value> { value: Value } export function refused(value: Alpha | Box<number>): Alpha | Box<number> | Gamma { return value; }`,
+    ],
+    [
+      'a structural arm',
+      `${records} export function refused(value: Alpha | { beta: number }): Alpha | Beta | Gamma { return value; }`,
+    ],
+    [
+      'a mapped arm',
+      `${records} export function refused(value: Readonly<Alpha> | Beta): Readonly<Alpha> | Beta | Gamma { return value; }`,
+    ],
+    [
+      'an intersection arm',
+      `${records} export function refused(value: (Alpha & { extra: number }) | Beta): (Alpha & { extra: number }) | Beta | Gamma { return value; }`,
+    ],
+    [
+      'a class arm',
+      `${records} class Delta { value = 1; } export function refused(value: Alpha | Delta): Alpha | Delta | Gamma { return value; }`,
+      'rust-reference-shared-class-return-unrepresented',
+    ],
+    [
+      'a callable arm',
+      `${records} export function refused(value: Alpha | (() => number)): Alpha | (() => number) | Gamma { return value; }`,
+    ],
+    [
+      'an array arm',
+      `${records} export function refused(value: Alpha | number[]): Alpha | number[] | Gamma { return value; }`,
+    ],
+    [
+      'a clone-unsafe record arm',
+      `${records} interface Shared { values: number[] } export function refused(value: Alpha | Shared): Alpha | Shared | Gamma { return value; }`,
+    ],
+    [
+      'a clone-unsafe destination-only arm',
+      `${records} interface Shared { values: number[] } export function refused(value: Alpha | Beta): Alpha | Beta | Shared { return value; }`,
+    ],
+    [
+      'a shared-container record arm',
+      `${records} interface Shared { values: Map<string, number> } export function refused(value: Alpha | Shared): Alpha | Shared | Gamma { return value; }`,
+    ],
+    [
+      'reordered shared arms',
+      `${records} export function refused(value: Alpha | Beta): Beta | Alpha | Gamma { return value; }`,
+    ],
+    [
+      'same-shaped distinct declarations',
+      `${records} interface AlphaCopy { id: number; alpha: number } interface BetaCopy { id: number; beta: number } export function refused(value: AlphaCopy | BetaCopy): Alpha | Beta | Gamma { return value; }`,
+    ],
+    [
+      'a missing target arm',
+      `${records} interface Delta { delta: number } export function refused(value: Alpha | Beta): Alpha | Gamma | Delta { return value; }`,
+    ],
+    ['an equal carrier', `${records} export function refused(value: Alpha | Beta): Alpha | Beta { return value; }`],
+    [
+      'a source superset',
+      `${records} export function refused(value: Alpha | Beta | Gamma): Alpha | Beta { return value; }`,
+    ],
+    [
+      'an individual record arm',
+      `${records} export function refused(value: Alpha): Alpha | Beta | Gamma { return value; }`,
+    ],
+  ])('refuses conversion through %s', (_name, source, expectedRule?: string) => {
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('contextual-union-subset-shape-refusal.ts', source).module)),
+    ).toBe(expectedRule ?? 'rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it.each([
+    [
+      'a call operand',
+      `${records} function make(): Alpha | Beta { throw new Error('missing'); } export function refused(): Alpha | Beta | Gamma { return make(); }`,
+    ],
+    [
+      'a property operand',
+      `${records} interface Source { value: Alpha | Beta } export function refused(source: Source): Alpha | Beta | Gamma { return source.value; }`,
+    ],
+    [
+      'a conditional operand',
+      `${records} export function refused(left: Alpha | Beta, right: Alpha | Beta, chooseLeft: boolean): Alpha | Beta | Gamma { return chooseLeft ? left : right; }`,
+    ],
+    [
+      'a cast operand',
+      `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma { return value as Alpha | Beta; }`,
+    ],
+    [
+      'a spread operand',
+      `${records} function take(_value: Alpha | Beta | Gamma): number { return 1; } export function refused(values: [Alpha | Beta]): number { return take(...values); }`,
+    ],
+  ])('refuses conversion from %s', (_name, source, expectedRule?: string) => {
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('contextual-union-subset-operand-refusal.ts', source).module)),
+    ).toBe(expectedRule ?? 'rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it.each([
+    [
+      'a generic free-call boundary',
+      `${records} function take<Value>(_value: Alpha | Beta | Gamma): number { return 1; } export function refused(value: Alpha | Beta): number { return take<number>(value); }`,
+    ],
+    [
+      'an optional free-call boundary',
+      `${records} function take(_value?: Alpha | Beta | Gamma): number { return 1; } export function refused(value: Alpha | Beta): number { return take(value); }`,
+    ],
+    [
+      'a defaulted free-call boundary',
+      `${records} function fallback(): Alpha | Beta | Gamma { throw new Error('missing'); } function take(_value: Alpha | Beta | Gamma = fallback()): number { return 1; } export function refused(value: Alpha | Beta): number { return take(value); }`,
+    ],
+    [
+      'a rest free-call boundary',
+      `${records} function take(..._values: (Alpha | Beta | Gamma)[]): number { return 1; } export function refused(value: Alpha | Beta): number { return take(value); }`,
+    ],
+    [
+      'a method boundary',
+      `${records} class Consumer { take(_value: Alpha | Beta | Gamma): number { return 1; } } export function refused(consumer: Consumer, value: Alpha | Beta): number { return consumer.take(value); }`,
+    ],
+    [
+      'native async emission',
+      `${records} export async function refused(value: Alpha | Beta): Promise<Alpha | Beta | Gamma> { return value; }`,
+    ],
+    [
+      'an active generic carrier',
+      `${records} export function refused<Value>(value: Alpha | Beta): Alpha | Beta | Gamma { return value; }`,
+    ],
+  ])('leaves %s refused', (_name, source) => {
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('contextual-union-subset-boundary-refusal.ts', source).module)),
+    ).toBe('rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it.each([
+    [
+      'a module-state binding',
+      `${records} function make(): Alpha | Beta { throw new Error('missing'); } let current: Alpha | Beta = make(); export function refused(): Alpha | Beta | Gamma { return current; }`,
+      'rust-module-variable-synchronization-unsupported',
+    ],
+    [
+      'a closure-captured binding',
+      `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma { const capture = () => value; void capture; return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a cell-wrapped captured binding',
+      `${records} export function refused(value: Alpha | Beta): () => Alpha | Beta | Gamma { return () => { value = value; return value; }; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('refuses conversion through %s with its owning rule', (_name, source, rule) => {
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('contextual-union-subset-ownership-refusal.ts', source).module)),
+    ).toBe(rule);
+  });
+
+  it('refuses duplicate and nested carrier evidence without allocating a conversion', () => {
+    const source = `${records} export function refused(value: Alpha | Beta): Alpha | Beta | Gamma { return value; }`;
+    const expectRefusal = (mutate: (declaration: IrFunctionDeclaration) => void) => {
+      const module = structuredClone(lower('contextual-union-subset-mutated-refusal.ts', source).module);
+      const declaration = module.declarations.find(
+        (candidate): candidate is IrFunctionDeclaration =>
+          candidate.kind === 'function' && candidate.binding.name === 'refused',
+      );
+      if (!declaration) throw new Error('expected the refused function');
+      mutate(declaration);
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+        'rust-contextual-general-union-construction-unrepresented',
+      );
+    };
+
+    expectRefusal((declaration) => {
+      const parameter = declaration.parameters[0];
+      if (!parameter || parameter.type.kind !== 'union') throw new Error('expected the source union');
+      (parameter.type.types as unknown as IrType[]).splice(1, 0, structuredClone(parameter.type.types[0]!));
+    });
+    expectRefusal((declaration) => {
+      if (declaration.returns.kind !== 'union') throw new Error('expected the destination union');
+      (declaration.returns.types as unknown as IrType[]).splice(1, 0, structuredClone(declaration.returns.types[0]!));
+    });
+    expectRefusal((declaration) => {
+      const parameter = declaration.parameters[0];
+      if (!parameter || parameter.type.kind !== 'union') throw new Error('expected the source union');
+      const nested = structuredClone(parameter.type.types[1]!);
+      if (declaration.returns.kind !== 'union') throw new Error('expected the destination union');
+      const gamma = structuredClone(declaration.returns.types[2]!);
+      (parameter.type.types as unknown as IrType[])[1] = { kind: 'union', types: [nested, gamma] };
+    });
+  });
+
+  it('leaves assertion, single-sentinel, named-owner, and indexed-projection lanes unchanged', () => {
+    const assertion = emitIrModuleRust(
+      lower(
+        'contextual-union-subset-assertion-control.ts',
+        `${records} export function narrow(value: Alpha | Beta | Gamma): Alpha | Beta { return value as Alpha | Beta; }`,
+      ).module,
+    ).contents;
+    expect(assertion).toContain('_ => panic!("asserted union alternative is not present in the value")');
+
+    const sentinel = emitIrModuleRust(
+      lower(
+        'contextual-union-subset-sentinel-control.ts',
+        `${records} export function preserve(value: Alpha | Beta | undefined): Alpha | Beta | undefined { return value; }`,
+      ).module,
+    ).contents;
+    expect(sentinel).toContain('return value;');
+    expect(sentinel).not.toContain('match value');
+
+    const named = emitIrModuleRust(
+      lower(
+        'contextual-union-subset-named-control.ts',
+        `${records} type Choice = Alpha | Beta | Gamma; export function create(value: Alpha): Choice { return value; }`,
+      ).module,
+    ).contents;
+    expect(named).toContain('return Choice::Alpha(value);');
+    expect(named).not.toContain('match value');
+
+    const indexed = lower(
+      'contextual-union-subset-indexed-control.ts',
+      `${records} type Values = Alpha[] | Beta[]; export function read(values: Values, index: number): Alpha | Beta | undefined { return values[index]; }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(indexed.module))).toBe(
+      'rust-union-array-element-read-identity-unrepresented',
+    );
+  });
+});
+
 describe('emitIrModuleRust exact nominal general-union construction', () => {
   it('constructs exact single-payload Options in return, local, call, and store contexts', () => {
     const result = lower(

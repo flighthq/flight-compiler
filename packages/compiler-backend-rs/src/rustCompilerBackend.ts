@@ -281,6 +281,27 @@ interface RustExactAnonymousSingleSentinelGeneralUnionPlan {
   }>[];
 }
 
+interface RustExactContextualUnionSubsetArmPlan {
+  readonly canonical: string;
+  readonly identityKey: string;
+  readonly sourceAlternative: IrType;
+  readonly variantName: string;
+}
+
+interface RustExactContextualUnionSubsetCarrierPlan {
+  readonly orderedArms: readonly Readonly<RustExactContextualUnionSubsetArmPlan>[];
+  readonly type: Readonly<Extract<IrType, { kind: 'union' }>>;
+}
+
+interface RustExactContextualUnionSubsetConversionPlan {
+  readonly mappings: readonly Readonly<{
+    source: Readonly<RustExactContextualUnionSubsetArmPlan>;
+    target: Readonly<RustExactContextualUnionSubsetArmPlan>;
+  }>[];
+  readonly source: Readonly<RustExactContextualUnionSubsetCarrierPlan>;
+  readonly target: Readonly<RustExactContextualUnionSubsetCarrierPlan>;
+}
+
 interface RustCallableObjectRecord {
   readonly callable: Readonly<{ parameters: readonly string[]; returns: string }>;
   readonly fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
@@ -5802,9 +5823,8 @@ function emitCallArgumentsRust(
         if (
           (referencedFunction?.typeParameters.length ?? 0) > 0 ||
           parameter.rest ||
-          (parameterPlan.kind === 'nominalEnum' &&
-            parameterPlan.sentinels.kind === 'optional' &&
-            (parameter.optional || parameter.initializer !== undefined)) ||
+          parameter.optional ||
+          parameter.initializer !== undefined ||
           argument.kind === 'spread' ||
           representation !== undefined
         ) {
@@ -9589,6 +9609,8 @@ function emitExactContextualGeneralUnionConstructionRust(
     ownership,
   );
   if (anonymousSingleSentinel) return anonymousSingleSentinel;
+  const subsetConversion = emitExactContextualUnionSubsetConversionRust(expression, targetType, context);
+  if (subsetConversion) return subsetConversion;
   const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
   const candidate = hasIrTypeContextualGeneralUnionCandidateRust(targetType, plan, context);
   if (plan.kind !== 'nominalEnum') {
@@ -9656,6 +9678,124 @@ function emitExactContextualGeneralUnionConstructionRust(
     ? `${emitRustOptionalGeneratedEnumOwnerRust(optionalGeneratedEnum.payloadOwner, context)}::${match.name}(${payload})`
     : `${emitType(dualSentinelNominalEnum?.owner ?? plan.owner, context)}::${match.name}(${payload})`;
   return optionalGeneratedEnum ? `Some(${constructed})` : constructed;
+}
+
+// A direct flat anonymous union has its own generated enum identity. Widening such a carrier is
+// representable only by exhaustively rebuilding each source arm into the independently allocated
+// destination enum. These plans are observational: they prove ordered declaration identities before
+// either carrier is rendered (and therefore before anonymous enum allocation can mutate the context).
+function createRustExactContextualUnionSubsetCarrierPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactContextualUnionSubsetCarrierPlan | undefined {
+  if (
+    context.activeTypeParameters.length > 0 ||
+    type.kind !== 'union' ||
+    type.types.length < 2 ||
+    type.types.some(
+      (member) =>
+        member.kind === 'union' || member.kind === 'never' || member.kind === 'null' || member.kind === 'undefined',
+    )
+  ) {
+    return undefined;
+  }
+  const members = getIrUnionTypeMemberRecordsRust(type, context);
+  if (!members || members.length !== type.types.length) return undefined;
+  const orderedArms = type.types.map((sourceAlternative, index) => {
+    const identity = getIrExactNominalRecordIdentityRust(sourceAlternative, context);
+    const member = members[index];
+    return identity && member && isIrDualSentinelNominalArmCloneSafeRust(sourceAlternative, context, new Set())
+      ? {
+          canonical: normalizeCompilerStructuralValueCanonical(sourceAlternative),
+          identityKey: identity.key,
+          sourceAlternative,
+          variantName: member.variantName,
+        }
+      : undefined;
+  });
+  if (orderedArms.some((arm) => arm === undefined)) return undefined;
+  const exactArms = orderedArms as RustExactContextualUnionSubsetCarrierPlan['orderedArms'];
+  if (
+    new Set(exactArms.map((arm) => arm.canonical)).size !== exactArms.length ||
+    new Set(exactArms.map((arm) => arm.identityKey)).size !== exactArms.length
+  ) {
+    return undefined;
+  }
+  return { orderedArms: exactArms, type };
+}
+
+function createRustExactContextualUnionSubsetConversionPlanRust(
+  sourceType: Readonly<IrType>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): RustExactContextualUnionSubsetConversionPlan | undefined {
+  const source = createRustExactContextualUnionSubsetCarrierPlanRust(sourceType, context);
+  const target = createRustExactContextualUnionSubsetCarrierPlanRust(targetType, context);
+  if (!source || !target || source.orderedArms.length >= target.orderedArms.length) return undefined;
+  const chosenTargetIndexes = new Set<number>();
+  let previousTargetIndex = -1;
+  const mappings = source.orderedArms.map((sourceArm) => {
+    const matches = target.orderedArms.flatMap((targetArm, index) =>
+      targetArm.canonical === sourceArm.canonical && targetArm.identityKey === sourceArm.identityKey
+        ? [{ index, targetArm }]
+        : [],
+    );
+    if (
+      matches.length !== 1 ||
+      matches[0]!.index <= previousTargetIndex ||
+      chosenTargetIndexes.has(matches[0]!.index)
+    ) {
+      return undefined;
+    }
+    previousTargetIndex = matches[0]!.index;
+    chosenTargetIndexes.add(previousTargetIndex);
+    return { source: sourceArm, target: matches[0]!.targetArm };
+  });
+  if (mappings.some((mapping) => mapping === undefined)) return undefined;
+  return {
+    mappings: mappings as RustExactContextualUnionSubsetConversionPlan['mappings'],
+    source,
+    target,
+  };
+}
+
+function emitExactContextualUnionSubsetConversionRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    expression.presence === 'narrowedPresent' ||
+    context.moduleStateBindings.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!sourceType) return undefined;
+  const target = createRustExactContextualUnionSubsetCarrierPlanRust(targetType, context);
+  if (!target) return undefined;
+  const plan = createRustExactContextualUnionSubsetConversionPlanRust(sourceType, targetType, context);
+  if (!plan) {
+    if (sourceType.kind === 'union') refuseRustContextualGeneralUnionConstructionRust(context);
+    return undefined;
+  }
+  if (
+    context.nativeAsyncFunction ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const sourceOwner = emitType(plan.source.type, context);
+  const targetOwner = emitType(plan.target.type, context);
+  const operand = emitOwnedOperandRust(expression, context);
+  const arms = plan.mappings.map(
+    (mapping) =>
+      `${sourceOwner}::${mapping.source.variantName}(value) => ${targetOwner}::${mapping.target.variantName}(value),`,
+  );
+  return `match ${operand} { ${arms.join(' ')} }`;
 }
 
 // A flat inline union with one absence state is already stored as Option<AnonymousUnion>. This lane
