@@ -3165,9 +3165,6 @@ function assertRustLocalImportExportSpacesRust(
     resolution: resolveRustExportedTargetNameRust(targetModule, importedName, space, context, new Set()),
     space,
   }));
-  for (const { resolution } of resolutions) {
-    assertRustExportedTargetNameResolutionRust(resolution, targetModule, importedName, context);
-  }
   const typeName = resolutions.find(({ space }) => space === 'type')?.resolution;
   const valueName = resolutions.find(({ space }) => space === 'value')?.resolution;
   if (typeName?.kind === 'resolved' && valueName?.kind === 'resolved' && typeName.name !== valueName.name) {
@@ -3216,10 +3213,16 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
     let declaredName: string | undefined;
     let declaredSpace: 'type' | 'value' = preferredSpace;
     if (targetModule) {
-      const resolution = resolveRustDeclaredExportRust(targetModule, exported.imported, preferredSpace, context);
-      assertRustDeclaredExportResolutionRust(resolution, targetModule, exported.imported, context);
-      declaredName = resolution.kind === 'resolved' ? resolution.name : undefined;
-      if (resolution.kind === 'resolved') declaredSpace = resolution.space;
+      const grounding = resolveRustExplicitExportGroundingRust(
+        targetModule,
+        exported.imported,
+        preferredSpace,
+        context,
+        new Set(),
+      );
+      assertRustExportedTargetNameResolutionRust(grounding, targetModule, exported.imported, context);
+      declaredName = grounding.kind === 'grounded' ? grounding.name : undefined;
+      if (grounding.kind === 'grounded') declaredSpace = grounding.space;
     }
     // Without the declaring module in the graph there is no allocation to read. That is the single-module
     // emission the fixtures exercise, and it keeps the name rule it always had; the module graph is what
@@ -9311,12 +9314,20 @@ type RustExportedTargetNameResolution =
   | Readonly<{ kind: 'absent'; starExports: boolean }>
   | Readonly<{ kind: 'ambiguous'; owners: readonly string[] }>
   | Readonly<{ kind: 'resolved'; name: string }>
+  | Readonly<{ kind: 'ungrounded' }>
   | Readonly<{ kind: 'undetermined' }>;
 
 type RustDeclaredExportResolution =
   | Readonly<{ kind: 'absent'; starExports: boolean }>
   | Readonly<{ kind: 'ambiguous'; owners: readonly string[] }>
   | Readonly<{ kind: 'resolved'; name: string; space: 'type' | 'value' }>
+  | Readonly<{ kind: 'ungrounded' }>
+  | Readonly<{ kind: 'undetermined' }>;
+
+type RustExplicitExportGroundingResolution =
+  | Readonly<{ kind: 'ambiguous'; owners: readonly string[] }>
+  | Readonly<{ kind: 'grounded'; name: string; space: 'type' | 'value' }>
+  | Readonly<{ kind: 'ungrounded' }>
   | Readonly<{ kind: 'undetermined' }>;
 
 /**
@@ -9368,15 +9379,16 @@ function resolveRustExportedTargetNameRust(
     }
     if (exported.kind === 'namespace') return { kind: 'resolved', name: safeRustValueName(exported.exported) };
     const inner = resolveImportModuleRust(exported.specifier, exported.imported, context, module);
-    if (!inner) return { kind: 'resolved', name: getRustNameShapeFallback(exported.exported, exported.typeOnly) };
-    const innerSpace = resolveRustExportedTargetSpaceRust(
+    if (!inner) return { kind: 'undetermined' };
+    const grounding = resolveRustExplicitExportGroundingRust(
       inner,
       exported.imported,
       exported.typeOnly ? 'type' : 'value',
       context,
       nextVisited,
     );
-    return { kind: 'resolved', name: getRustExportAliasName(innerSpace, exported.exported) };
+    if (grounding.kind !== 'grounded') return grounding;
+    return { kind: 'resolved', name: getRustExportAliasName(grounding.space, exported.exported) };
   }
   // The entries left are `export *` (and default, which has no exported name). A star re-exports the
   // names its target publishes verbatim, so the target's allocation is the answer; a type-only star
@@ -9404,6 +9416,7 @@ function resolveRustExportedTargetNameRust(
       continue;
     }
     if (answer.kind === 'undetermined') undetermined = true;
+    else if (answer.kind === 'ungrounded') starExports = true;
     else if (answer.starExports) starExports = true;
   }
   if (owners.size > 1) return { kind: 'ambiguous', owners: [...owners.keys()].sort(compareTextCodeUnits) };
@@ -9411,22 +9424,29 @@ function resolveRustExportedTargetNameRust(
   return undetermined ? { kind: 'undetermined' } : { kind: 'absent', starExports };
 }
 
-// The space a re-export's target lives in decides the alias case convention, so ask in the preferred
-// space and then in the other one.
-function resolveRustExportedTargetSpaceRust(
+// An explicit alias is sound only when its target reaches a declaration. Probe both of TypeScript's
+// independent spaces, bounded by the same module/name/space key as ordinary export resolution. Missing
+// graph edges stay undetermined for legacy isolated emission, while a completely explored chain that
+// reaches no declaration is ungrounded.
+function resolveRustExplicitExportGroundingRust(
   module: Readonly<IrModule>,
   exportedName: string,
   preferredSpace: 'type' | 'value',
   context: EmitContext,
   visited: ReadonlySet<string>,
-): 'type' | 'value' {
-  if (resolveRustExportedTargetNameRust(module, exportedName, preferredSpace, context, visited).kind === 'resolved') {
-    return preferredSpace;
-  }
+): RustExplicitExportGroundingResolution {
+  const preferred = resolveRustExportedTargetNameRust(module, exportedName, preferredSpace, context, visited);
+  if (preferred.kind === 'resolved') return { kind: 'grounded', name: preferred.name, space: preferredSpace };
   const other = preferredSpace === 'type' ? 'value' : 'type';
-  return resolveRustExportedTargetNameRust(module, exportedName, other, context, visited).kind === 'resolved'
-    ? other
-    : preferredSpace;
+  const secondary = resolveRustExportedTargetNameRust(module, exportedName, other, context, visited);
+  if (secondary.kind === 'resolved') return { kind: 'grounded', name: secondary.name, space: other };
+  if (preferred.kind === 'ambiguous') {
+    const owners = new Set([...preferred.owners, ...(secondary.kind === 'ambiguous' ? secondary.owners : [])]);
+    return { kind: 'ambiguous', owners: [...owners].sort(compareTextCodeUnits) };
+  }
+  if (secondary.kind === 'ambiguous') return secondary;
+  if (preferred.kind === 'undetermined' || secondary.kind === 'undetermined') return { kind: 'undetermined' };
+  return { kind: 'ungrounded' };
 }
 
 // TypeScript lets a name change space between the declaration and the use: `export interface X` is a
@@ -9449,6 +9469,7 @@ function resolveRustDeclaredExportRust(
   }
   if (secondary.kind === 'ambiguous') return secondary;
   if (preferred.kind === 'undetermined' || secondary.kind === 'undetermined') return { kind: 'undetermined' };
+  if (preferred.kind === 'ungrounded' || secondary.kind === 'ungrounded') return { kind: 'ungrounded' };
   return { kind: 'absent', starExports: preferred.starExports || secondary.starExports };
 }
 
@@ -9464,7 +9485,7 @@ function assertRustDeclaredExportResolutionRust(
 }
 
 function assertRustExportedTargetNameResolutionRust(
-  resolution: RustDeclaredExportResolution | RustExportedTargetNameResolution,
+  resolution: RustDeclaredExportResolution | RustExplicitExportGroundingResolution | RustExportedTargetNameResolution,
   module: Readonly<IrModule>,
   exportedName: string,
   context: EmitContext,
@@ -9475,6 +9496,13 @@ function assertRustExportedTargetNameResolutionRust(
       context,
       `exported name ${exportedName} of ${subject} is reached through multiple star re-exports (${resolution.owners.join(', ')})`,
       'rust-export-name-ambiguous',
+    );
+  }
+  if (resolution.kind === 'ungrounded') {
+    emissionRuleError(
+      context,
+      `exported name ${exportedName} of ${subject} has no grounded declaration through its explicit re-export chain`,
+      'rust-export-name-ungrounded',
     );
   }
   if (resolution.kind === 'absent' && resolution.starExports) {

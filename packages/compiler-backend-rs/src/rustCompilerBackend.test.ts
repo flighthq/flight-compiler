@@ -22169,6 +22169,207 @@ describe('emitIrModuleRust module-variable refusal diagnostics', () => {
   });
 });
 
+describe('emitIrModuleRust explicit reexport grounding', () => {
+  function createResolutionSession(
+    modules: readonly Readonly<IrModule>[],
+    edges: CompilerModuleResolutionPlan['edges'],
+  ) {
+    return createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
+      modules,
+      options: {},
+    });
+  }
+
+  it('refuses direct pure cycles and missing-name chains deterministically', () => {
+    const first = lower('a.ts', "export { value } from './b.js';").module;
+    const second = lower('b.ts', "export { value } from './a.js';").module;
+    const cycleEdges: CompilerModuleResolutionPlan['edges'] = [
+      { importer: getRustTestModuleIdentity(first), specifier: './b.js', target: getRustTestModuleIdentity(second) },
+      { importer: getRustTestModuleIdentity(second), specifier: './a.js', target: getRustTestModuleIdentity(first) },
+    ];
+    const cycleFailure = captureBackendEmissionFailure(() =>
+      createResolutionSession([first, second], cycleEdges).emitModule(first),
+    );
+    const cycleRepeat = captureBackendEmissionFailure(() =>
+      createResolutionSession([second, first], [...cycleEdges].reverse()).emitModule(first),
+    );
+
+    expect(cycleFailure.rule).toBe('rust-export-name-ungrounded');
+    expect(cycleFailure.classification).toBe('compiler-restriction');
+    expect(cycleFailure.message).toContain('value');
+    expect(cycleRepeat.message).toBe(cycleFailure.message);
+
+    const facade = lower('facade.ts', "export { missing } from './leaf.js';").module;
+    const leaf = lower('leaf.ts', 'export const other = 1;').module;
+    const missingFailure = captureBackendEmissionFailure(() =>
+      createResolutionSession(
+        [facade, leaf],
+        [
+          {
+            importer: getRustTestModuleIdentity(facade),
+            specifier: './leaf.js',
+            target: getRustTestModuleIdentity(leaf),
+          },
+        ],
+      ).emitModule(facade),
+    );
+
+    expect(missingFailure.rule).toBe('rust-export-name-ungrounded');
+    expect(missingFailure.message).toContain('missing');
+    expect(missingFailure.message).toContain('src/leaf.ts#Leaf');
+  });
+
+  it('keeps an alias undetermined when its target module is outside the graph', () => {
+    const middle = lower('middle.ts', "export { missing } from './leaf.js';").module;
+    const facade = lower('facade.ts', "export { missing as publicValue } from './middle.js';").module;
+    const output = createResolutionSession(
+      [facade, middle],
+      [
+        {
+          importer: getRustTestModuleIdentity(facade),
+          specifier: './middle.js',
+          target: getRustTestModuleIdentity(middle),
+        },
+      ],
+    ).emitModule(facade)[0]!.contents;
+
+    expect(output).toContain('pub use crate::middle::missing as public_value;');
+  });
+
+  it('grounds explicit aliases through a star and through a cross-name module cycle', () => {
+    const origin = lower('origin.ts', 'export const value = 1;').module;
+    const barrel = lower('barrel.ts', "export * from './origin.js';").module;
+    const facade = lower('facade.ts', "export { value as publicValue } from './barrel.js';").module;
+    const starOutput = createResolutionSession(
+      [facade, barrel, origin],
+      [
+        {
+          importer: getRustTestModuleIdentity(barrel),
+          specifier: './origin.js',
+          target: getRustTestModuleIdentity(origin),
+        },
+        {
+          importer: getRustTestModuleIdentity(facade),
+          specifier: './barrel.js',
+          target: getRustTestModuleIdentity(barrel),
+        },
+      ],
+    ).emitModule(facade)[0]!.contents;
+
+    expect(starOutput).toContain('pub use crate::barrel::VALUE as public_value;');
+
+    const first = lower(
+      'a.ts',
+      "export const root = 1;\nexport { bridge as publicValue } from './b.js';",
+    ).module;
+    const second = lower('b.ts', "export { root as bridge } from './a.js';").module;
+    const cycleOutput = createResolutionSession(
+      [first, second],
+      [
+        {
+          importer: getRustTestModuleIdentity(first),
+          specifier: './b.js',
+          target: getRustTestModuleIdentity(second),
+        },
+        {
+          importer: getRustTestModuleIdentity(second),
+          specifier: './a.js',
+          target: getRustTestModuleIdentity(first),
+        },
+      ],
+    ).emitModule(first)[0]!.contents;
+
+    expect(cycleOutput).toContain('pub use crate::b::bridge as public_value;');
+  });
+
+  it('preserves type-only grounding and star ambiguity ownership', () => {
+    const types = lower('types.ts', 'export interface Shape { size: number }').module;
+    const middle = lower('middle.ts', "export type { Shape } from './types.js';").module;
+    const facade = lower('facade.ts', "export type { Shape as PublicShape } from './middle.js';").module;
+    const typeOutput = createResolutionSession(
+      [facade, middle, types],
+      [
+        {
+          importer: getRustTestModuleIdentity(middle),
+          specifier: './types.js',
+          target: getRustTestModuleIdentity(types),
+        },
+        {
+          importer: getRustTestModuleIdentity(facade),
+          specifier: './middle.js',
+          target: getRustTestModuleIdentity(middle),
+        },
+      ],
+    ).emitModule(facade)[0]!.contents;
+
+    expect(typeOutput).toContain('pub use crate::middle::Shape as PublicShape;');
+
+    const left = lower('left.ts', 'export const value = 1;').module;
+    const right = lower('right.ts', 'export const value = 2;').module;
+    const barrel = lower('barrel.ts', "export * from './left.js';\nexport * from './right.js';").module;
+    const ambiguous = lower('ambiguous.ts', "export { value } from './barrel.js';").module;
+    const failure = captureBackendEmissionFailure(() =>
+      createResolutionSession(
+        [ambiguous, barrel, right, left],
+        [
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './left.js',
+            target: getRustTestModuleIdentity(left),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './right.js',
+            target: getRustTestModuleIdentity(right),
+          },
+          {
+            importer: getRustTestModuleIdentity(ambiguous),
+            specifier: './barrel.js',
+            target: getRustTestModuleIdentity(barrel),
+          },
+        ],
+      ).emitModule(ambiguous),
+    );
+
+    expect(failure.rule).toBe('rust-export-name-ambiguous');
+    expect(failure.message).toContain('src/left.ts#Left');
+    expect(failure.message).toContain('src/right.ts#Right');
+  });
+
+  it('downgrades an ungrounded alias reached through a star to star-absent', () => {
+    const leaf = lower('leaf.ts', 'export const other = 1;').module;
+    const broken = lower('broken.ts', "export { missing } from './leaf.js';").module;
+    const barrel = lower('barrel.ts', "export * from './broken.js';").module;
+    const consumer = lower('consumer.ts', "import { missing } from './barrel.js';\nexport { missing };").module;
+    const failure = captureBackendEmissionFailure(() =>
+      createResolutionSession(
+        [consumer, barrel, broken, leaf],
+        [
+          {
+            importer: getRustTestModuleIdentity(broken),
+            specifier: './leaf.js',
+            target: getRustTestModuleIdentity(leaf),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './broken.js',
+            target: getRustTestModuleIdentity(broken),
+          },
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './barrel.js',
+            target: getRustTestModuleIdentity(barrel),
+          },
+        ],
+      ).emitModule(consumer),
+    );
+
+    expect(failure.rule).toBe('rust-export-name-unresolved');
+    expect(failure.message).toContain('unreachable through its star re-exports');
+  });
+});
+
 describe('emitIrModuleRust star-barrel name resolution', () => {
   function createStarSession(modules: readonly Readonly<IrModule>[], edges: CompilerModuleResolutionPlan['edges']) {
     return createRustCompilerBackend().createEmissionSession!({

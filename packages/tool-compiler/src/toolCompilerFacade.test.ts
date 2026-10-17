@@ -377,6 +377,68 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     expect(failure?.code).toBe('rust-source-tree-import-target-unselected');
     expect(failure?.message).toContain('which is not selected for this output');
   });
+
+  it('attributes an ungrounded explicit reexport to the refused target module', () => {
+    const consumerIdentity = { name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' };
+    const facadeIdentity = { name: 'Facade', packageName: '@scope/math', source: 'packages/math/src/facade.ts' };
+    const leafIdentity = { name: 'Leaf', packageName: '@scope/math', source: 'packages/math/src/leaf.ts' };
+    const sources = [
+      {
+        packageName: '@scope/math',
+        packageRoot: '/flight/packages/math',
+        sourceFile: parseTypeScriptSource(
+          '/flight/packages/math/src/consumer.ts',
+          "import { ok } from './facade.js';\nexport function read(): number { return ok; }",
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@scope/math',
+        packageRoot: '/flight/packages/math',
+        sourceFile: parseTypeScriptSource(
+          '/flight/packages/math/src/facade.ts',
+          "export const ok = 1;\nexport { missing } from './leaf.js';",
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@scope/math',
+        packageRoot: '/flight/packages/math',
+        sourceFile: parseTypeScriptSource('/flight/packages/math/src/leaf.ts', 'export const other = 2;'),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const run = (orderedSources: typeof sources) => {
+      try {
+        compileTypeScriptPackageGraph({
+          backend: createRustCompilerBackend(),
+          backendOptions: {},
+          bestEffort: true,
+          graph: {
+            entries: [consumerIdentity],
+            moduleDependencies: [
+              { importer: consumerIdentity, specifier: './facade.js', target: facadeIdentity },
+              { importer: facadeIdentity, specifier: './leaf.js', target: leafIdentity },
+            ],
+            packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+            schema: 'flight-compiler-package-graph/1',
+          },
+          sources: orderedSources,
+        });
+      } catch (error) {
+        return error as Readonly<{ code?: string; kind?: string; message?: string }>;
+      }
+      throw new Error('expected finalization to fail');
+    };
+    const first = run(sources);
+    const second = run([...sources].reverse());
+
+    expect(first.kind).toBe('compiler-backend-finalization');
+    expect(first.code).toBe('rust-source-tree-import-target-refused');
+    expect(first.message).toContain('which was refused: rust-export-name-ungrounded:');
+    expect(first.message).toContain('has no grounded declaration through its explicit re-export chain');
+    expect(second.message).toBe(first.message);
+  });
 });
 
 describe('@flighthq/tool-compiler package subpath imports', () => {
