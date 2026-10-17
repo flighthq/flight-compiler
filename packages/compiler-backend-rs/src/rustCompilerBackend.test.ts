@@ -7451,16 +7451,68 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub x: f64');
   });
 
-  it('emits moved binding with clone', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'moved-binding.ts',
-        `export function dup(items: string[]): string[][] {
-          return [items, items];
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.clone()');
+  it('refuses a deep clone that would split observable source identity', () => {
+    const result = lower(
+      'shared-identity-clone.ts',
+      `export function observedLength(): number {
+        const items = [1];
+        const alias = items;
+        alias.push(2);
+        return items.length;
+      }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      expect.objectContaining({
+        classification: 'compiler-restriction',
+        message: expect.stringContaining('deep Rust clone that would split source shared identity'),
+        rule: 'rust-shared-identity-deep-clone-unrepresented',
+      }),
+    );
+  });
+
+  it('refuses an unconstructed contextual callable-union return', () => {
+    const result = lower(
+      'callable-union-return.ts',
+      `type HandlerSlot = ((value: number) => void) | string;
+       export function store(handler: (value?: number) => void): HandlerSlot {
+         return handler;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      expect.objectContaining({
+        classification: 'compiler-restriction',
+        message: expect.stringContaining('requires represented Rust enum construction'),
+        rule: 'rust-contextual-general-union-construction-unrepresented',
+      }),
+    );
+  });
+
+  it('keeps an already constructed general-union carrier valid across a return', () => {
+    const result = lower(
+      'callable-union-identity.ts',
+      `type HandlerSlot = ((value: number) => void) | string;
+       export function preserve(value: HandlerSlot): HandlerSlot { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitIrModuleRust(result.module).contents).toContain('return value;');
+  });
+
+  it('refuses typed ambient Error until Rust has a carrier and member API', () => {
+    const result = lower('typed-error.ts', 'export function message(error: Error): string { return error.message; }');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      expect.objectContaining({
+        classification: 'target-runtime',
+        message: expect.stringContaining('typed ambient Error requires a represented Rust carrier and member API'),
+        rule: 'rust-runtime-error-carrier-incomplete',
+      }),
+    );
   });
 
   it('emits deferred binding initialized in one branch', () => {

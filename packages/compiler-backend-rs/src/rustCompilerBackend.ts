@@ -168,6 +168,7 @@ interface EmitContext {
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   callableObjectRecords: Map<string, RustCallableObjectRecord>;
   deferredBindingIds: ReadonlySet<string>;
+  deepCloneUnsafeBindingIds: ReadonlySet<string>;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
   primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
@@ -269,6 +270,7 @@ function emitIrModuleRustWithContext(
     throw error;
   }
   const closureEvidence = analyzeIrModuleClosureEvidence(module);
+  const ownershipEvidence = analyzeIrModuleOwnershipEvidenceRust(module);
   const bindingTypes = collectIrModuleBindingTypesRust(module);
   const allCellWrappedIds = closureEvidence.closures
     .filter(
@@ -297,6 +299,7 @@ function emitIrModuleRustWithContext(
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
   const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
+  const movedBindingIds = collectIrModuleMovedBindingIdsRust(module);
   const numericEnumNamespaceNames = new Map(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'enum' && getIrEnumNamespaceFunctionsRust(declaration, module).length > 0
@@ -325,8 +328,17 @@ function emitIrModuleRustWithContext(
     borrowedParameterPositions,
     callableObjectRecords: new Map(),
     deferredBindingIds: new Set(
-      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+      ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
+      ),
+    ),
+    deepCloneUnsafeBindingIds: new Set(
+      ownershipEvidence.bindings.flatMap((evidence) =>
+        evidence.storage === 'sharedIdentity' &&
+        evidence.type.kind !== 'function' &&
+        movedBindingIds.has(evidence.binding.id)
+          ? [evidence.binding.id]
+          : [],
       ),
     ),
     primitiveUnionEnums,
@@ -338,9 +350,9 @@ function emitIrModuleRustWithContext(
       ),
     ),
     generatedNames: new Set(targetNames.values()),
-    movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
+    movedBindingIds,
     referentMutatedBindingIds: new Set(
-      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+      ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent'
           ? [evidence.binding.id]
           : [],
@@ -365,7 +377,7 @@ function emitIrModuleRustWithContext(
   };
   // Which bindings hold a union this module lowered to an enum. The type is on the binding, not on
   // the member access, so the access site can only tell that its object is an enum by asking here.
-  for (const evidence of analyzeIrModuleOwnershipEvidenceRust(module).bindings) {
+  for (const evidence of ownershipEvidence.bindings) {
     if (evidence.type.kind !== 'named' || evidence.type.reference.kind !== 'binding') continue;
     const reference = evidence.type.reference;
     const alias = module.declarations.find(
@@ -2427,6 +2439,64 @@ function inferIrExpressionTypeRust(
   }
 }
 
+function hasSameRustRepresentationAsType(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceType = inferIrExpressionTypeRust(expression, context);
+  return sourceType !== undefined && emitType(sourceType, context) === emitType(targetType, context);
+}
+
+function hasIrTypeGeneralUnionCarrierRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  if (type.kind === 'union') {
+    const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type)) return true;
+    if (concrete.length === 1 && concrete.length !== type.types.length) return false;
+    if (getIrUnionPrimitiveDomainRust(concrete, context)) return false;
+    return getOrCreatePrimitiveUnionEnumRust(concrete, context) === undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return false;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, module);
+  if (location?.declaration.kind !== 'typeAlias') return false;
+  const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return false;
+  const typeContext: EmitContext = { ...context, activeTypeParameters: location.declaration.typeParameters };
+  if (location.declaration.type.kind === 'union') {
+    const declared = location.declaration.type;
+    if (getIrUnionTypeStringLiteralValues(declared)) return false;
+    if (getIrUnionTypeMemberRecordsRust(declared, typeContext)) return false;
+    if (
+      !hasIrTypeNullMemberRust(declared) &&
+      !hasIrTypeUndefinedMemberRust(declared) &&
+      !getIrUnionPrimitiveDomainRust(declared.types, typeContext)
+    ) {
+      return true;
+    }
+  }
+  try {
+    const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+    const resolved = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
+    return hasIrTypeGeneralUnionCarrierRust(resolved, context, location.module, new Set(resolving).add(key));
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) return false;
+    throw error;
+  }
+}
+
 function getIrObjectConstructionPropertiesRust(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -2524,8 +2594,16 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
     context.movedBindingIds.has(expression.reference.binding.id)
-  )
+  ) {
+    if (context.deepCloneUnsafeBindingIds.has(expression.reference.binding.id)) {
+      emissionError(
+        context,
+        `binding ${expression.reference.binding.name} requires a deep Rust clone that would split source shared identity`,
+        'rust-shared-identity-deep-clone-unrepresented',
+      );
+    }
     return `${source}.clone()`;
+  }
   if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
     return `${source}.clone()`;
   return source;
@@ -3395,6 +3473,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           }
           const wrapped = emitPrimitiveUnionConstructionRust(statement.expression, targetEnum, context);
           if (wrapped) return [`return ${wrapped};`];
+        }
+        if (
+          hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
+          !hasSameRustRepresentationAsType(statement.expression, context.enclosingReturnType, context)
+        ) {
+          emissionError(
+            context,
+            'returning a contextual general union alternative requires represented Rust enum construction',
+            'rust-contextual-general-union-construction-unrepresented',
+          );
         }
       }
       return [
@@ -4392,6 +4480,14 @@ function getPreferredBindingNameRust(
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
+    if (type.reference.name === 'Error') {
+      emissionError(
+        context,
+        'typed ambient Error requires a represented Rust carrier and member API',
+        'rust-runtime-error-carrier-incomplete',
+        'target-runtime',
+      );
+    }
     const targetName = getCompilerRuntimeExternalSymbolTargetRust(
       type.reference.name,
       'type',
@@ -4543,8 +4639,19 @@ function isAmbientIdentifier(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'ambient';
 }
 
-function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionFailure('rust', context.module, message);
+function emissionError(
+  context: EmitContext,
+  message: string,
+  rule?: string,
+  classification?: 'source-portability' | 'target-runtime',
+): never {
+  throw createBackendEmissionFailure(
+    'rust',
+    context.module,
+    message,
+    rule,
+    classification === undefined ? undefined : { classification },
+  );
 }
 
 function collectStringConcatenationOperands(expression: Readonly<IrExpression>): readonly IrExpression[] {
