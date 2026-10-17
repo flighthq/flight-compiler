@@ -28325,6 +28325,15 @@ describe('emitIrModuleRust static Array.of', () => {
          copy.push(9);
          const flags = Array.from([true, false]);
          const fromEmpty = Array.from<number>([]);
+         let mappedVisits = 0;
+         const mappedSource = [1, 2];
+         const mappedAlias = mappedSource;
+         const mapped = Array.from<number, number>(mappedAlias, (value: number, index: number): number => {
+           mappedVisits = mappedVisits * 10 + value;
+           return value + index;
+         });
+         mappedSource.push(3);
+         mapped.push(9);
          const group = (digit: number): number[] => { calls = calls * 10 + digit; return [digit]; };
          const concatSource = [8];
          const concatAlias = concatSource;
@@ -28336,7 +28345,10 @@ describe('emitIrModuleRust static Array.of', () => {
            emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 4212356 &&
            words.join("") === "abc" && source.reduce((total, value) => total * 10 + value, 0) === 123 &&
            copyAlias.reduce((total, value) => total * 10 + value, 0) === 129 && flags.length === 2 &&
-           fromEmpty.length === 0 && concatCopy.reduce((total, value) => total * 10 + value, 0) === 8 &&
+           fromEmpty.length === 0 && mappedVisits === 12 &&
+           mappedSource.reduce((total, value) => total * 10 + value, 0) === 123 &&
+           mapped.reduce((total, value) => total * 10 + value, 0) === 139 &&
+           concatCopy.reduce((total, value) => total * 10 + value, 0) === 8 &&
            merged.reduce((total, value) => total * 10 + value, 0) === 5688 &&
            concatAlias.reduce((total, value) => total * 10 + value, 0) === 89;
        }`,
@@ -28372,6 +28384,76 @@ describe('emitIrModuleRust static Array.from', () => {
     expect(output).not.toContain('Vec::from');
   });
 
+  it('maps exact dense scalar sources with zero to two fixed callback parameters', () => {
+    const result = lower(
+      'array-from-mapped.ts',
+      `function retain(value: string, index: number): string { return index >= 0 ? value : value; }
+       export function indexed(values: readonly number[]): boolean[] {
+         return Array.from(values, (value: number, index: number): boolean => value > index);
+       }
+       export function zero(values: boolean[]): number[] {
+         return Array.from<boolean, number>(values, (): number => 1);
+       }
+       export function referenced(values: readonly string[]): string[] { return Array.from(values, retain); }
+       export function empty(): string[] {
+         return Array.from<number, string>([], (value: number): string => value.toString());
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().map(');
+    expect(output).toContain('(array_from_callback)(array_from_element.clone(), array_from_index as f64)');
+    expect(output).toContain('(array_from_callback_2)()');
+    expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).toContain('let array_from_source_4 = &Vec::<f64>::new();');
+    expect(output).not.toContain('into_iter().map');
+  });
+
+  it('stages the mapped source, then mapper, once each before borrowing or iterating', () => {
+    const result = lower(
+      'array-from-mapped-evaluation.ts',
+      `function makeSource(log: number[]): number[] { log.push(1); return [2, 3]; }
+       function makeMapper(log: number[]): (value: number, index: number) => number {
+         log.push(2);
+         return (value: number, index: number): number => value + index;
+       }
+       export function mapped(log: number[]): number[] { return Array.from(makeSource(log), makeMapper(log)); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const source = output.indexOf('let array_from_source = &make_source(log);');
+    const callback = output.indexOf('let array_from_callback = &make_mapper(log);', source);
+    const values = output.indexOf('let array_from_values = array_from_source;', callback);
+    expect(source).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(source);
+    expect(values).toBeGreaterThan(callback);
+    expect(output.match(/make_source\(/gu)).toHaveLength(2);
+    expect(output.match(/make_mapper\(/gu)).toHaveLength(2);
+  });
+
+  it('releases a mapped shared-source borrow before source and result mutations', () => {
+    const result = lower(
+      'array-from-mapped-shared.ts',
+      `export function mapped(): number {
+         const source = [1, 2];
+         const alias = source;
+         const result = Array.from(alias, (value: number, index: number): number => value + index);
+         source.push(3);
+         result.push(9);
+         return alias.length * 10 + result.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_from_source = &alias;');
+    expect(output).toContain('let array_from_values = array_from_source.borrow();');
+    expect(output).toContain('drop(array_from_values);');
+    expect(output.indexOf('drop(array_from_values);')).toBeLessThan(output.indexOf('source.borrow_mut().push'));
+  });
+
   it('stages an effectful source once and releases shared borrows before later mutations', () => {
     const result = lower(
       'array-from-identity.ts',
@@ -28401,7 +28483,6 @@ describe('emitIrModuleRust static Array.from', () => {
     'export function values(): number[] { return Array.from(); }',
     'export function values(input: number[][]): number[] { return Array.from(...input); }',
     'export function values(input: number[]): number[] { return Array.from?.(input) ?? []; }',
-    'export function values(input: number[]): string[] { return Array.from(input, value => String(value)); }',
     'export function values(input: number[]): string[] { return Array.from(input, value => String(value), {}); }',
   ])('refuses a non-exact invocation before lowering', (source) => {
     expect(getEmissionRule(() => emitIrModuleRust(lower('array-from-invocation.ts', source).module))).toBe(
@@ -28425,6 +28506,81 @@ describe('emitIrModuleRust static Array.from', () => {
     };
 
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-from-invocation-unrepresented');
+  });
+
+  it('refuses malformed mapped optional-parameter evidence before lowering', () => {
+    const result = lower(
+      'array-from-mapped-signature.ts',
+      'export function values(input: number[]): number[] { return Array.from(input, (value: number): number => value); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the mapped Array.from return');
+    }
+    (returned.expression.semantics as { optionalParameters?: unknown }).optionalParameters = undefined;
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-from-invocation-unrepresented');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-from-source-carrier-unrepresented',
+      source:
+        'export function values(input: Set<number>): number[] { return Array.from(input, (value: number): number => value); }',
+    },
+    {
+      rule: 'rust-array-from-sparse-source-unrepresented',
+      source:
+        'export function values(input: (number | undefined)[]): number[] { return Array.from(input, (value: number | undefined): number => value ?? 0); }',
+    },
+    {
+      rule: 'rust-array-from-element-carrier-unrepresented',
+      source:
+        'export function values(input: number[][]): number[] { return Array.from(input, (value: number[]): number => value.length); }',
+    },
+    {
+      rule: 'rust-array-from-callback-carrier-unrepresented',
+      source:
+        'function pick(value: number, index: number, all?: number[]): number { return value + index + (all?.length ?? 0); } export function values(input: number[]): number[] { return Array.from(input, pick); }',
+    },
+    {
+      rule: 'rust-array-from-alias-borrow-conflict',
+      source:
+        'export function values(input: number[]): number[] { return Array.from(input, (value: number): number => value + input.length); }',
+    },
+  ])('refuses mapped Array.from with $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-from-mapped-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses an unsupported callback return after a represented result carrier', () => {
+    const result = lower(
+      'array-from-mapped-return.ts',
+      'export function values(input: number[]): { value: number }[] { return Array.from(input, (value: number): { value: number } => ({ value })); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the mapped Array.from return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: false,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-from-callback-return-carrier-unrepresented',
+    );
+  });
+
+  it('selects mapped result refusal before callback and source failures', () => {
+    const result = lower(
+      'array-from-mapped-priority.ts',
+      'export function values(input: number[][]): { value: number }[] { return Array.from(input, (value: number[]): { value: number } => ({ value: value.length })); }',
+    );
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-from-result-carrier-unrepresented');
   });
 
   it.each([

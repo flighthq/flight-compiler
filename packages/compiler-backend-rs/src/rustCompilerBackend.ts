@@ -4745,6 +4745,57 @@ function isArrayFromCallRust(
   );
 }
 
+type RustArrayFromInvocationKind = 'copy' | 'mapped';
+
+function getRustArrayFromInvocationKindRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+): RustArrayFromInvocationKind | undefined {
+  const signature = expression.semantics.signature;
+  if (
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.callee.optional ||
+    expression.callee.optionalChain !== undefined ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined ||
+    !signature ||
+    signature.restParameter !== undefined ||
+    signature.providedArgumentCount === 'dynamic' ||
+    signature.providedArgumentCount !== expression.arguments.length ||
+    expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return undefined;
+  }
+  if (
+    expression.arguments.length === 1 &&
+    expression.typeArguments.length <= 1 &&
+    expression.semantics.optionalParameters === undefined &&
+    signature.parameterCount === 1 &&
+    signature.providedArgumentCount === 1
+  ) {
+    return 'copy';
+  }
+  const optional = expression.semantics.optionalParameters;
+  if (
+    expression.arguments.length === 2 &&
+    (expression.typeArguments.length === 0 || expression.typeArguments.length === 2) &&
+    signature.parameterCount === 3 &&
+    signature.providedArgumentCount === 2 &&
+    optional !== undefined &&
+    optional.parameterCount === 3 &&
+    optional.providedArgumentCount === 2 &&
+    optional.optional.length === 1 &&
+    optional.optional[0] === 2 &&
+    optional.omitted.length === 1 &&
+    optional.omitted[0] === 2 &&
+    optional.provided.length === 0
+  ) {
+    return 'mapped';
+  }
+  return undefined;
+}
+
 function isArrayShiftCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -5117,17 +5168,51 @@ function emitArrayFromCallRust(
 ): string {
   const source = expression.arguments[0];
   if (!source) return emissionError(context, 'Array.from emission requires one exact array source');
+  const mapper = expression.arguments[1];
   const sourceName = getGeneratedTargetNameRust('array_from_source', context);
   const sharedBinding = getRustSharedArrayBindingRust(source, context);
   const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+  const sourceType = inferRustArrayGrowthArgumentTypeRust(source, context);
+  const sourceArray = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
+  const signature = mapper ? getRustArrayPredicateCallbackSignatureRust(mapper, context) : undefined;
+  const emptySourceElement = mapper
+    ? sourceArray?.kind === 'array'
+      ? sourceArray.element
+      : (expression.typeArguments[0] ?? signature?.parameters[0]?.type)
+    : result.kind === 'array'
+      ? result.element
+      : undefined;
   const emittedSource =
-    source.kind === 'array' && source.elements.length === 0 && result.kind === 'array'
-      ? `Vec::<${emitType(result.element, context)}>::new()`
+    source.kind === 'array' && source.elements.length === 0 && emptySourceElement
+      ? `Vec::<${emitType(emptySourceElement, context)}>::new()`
       : emitExpression(source, context);
   const sourceInitializer = sharedBinding
     ? `${getBindingTargetNameRust(sharedBinding, context)}.borrow()`
     : `&${emittedSource}`;
-  return `{ let ${sourceName} = ${sourceInitializer}; (*${sourceName}).clone() }`;
+  if (!mapper) return `{ let ${sourceName} = ${sourceInitializer}; (*${sourceName}).clone() }`;
+
+  if (!signature || signature.parameters.length > 2) {
+    return emissionError(context, 'mapped Array.from emission requires one statically known fixed callback');
+  }
+  const callbackName = getGeneratedTargetNameRust('array_from_callback', context);
+  const valuesName = getGeneratedTargetNameRust('array_from_values', context);
+  const resultName = getGeneratedTargetNameRust('array_from_result', context);
+  const indexName = getGeneratedTargetNameRust('array_from_index', context);
+  const elementName = getGeneratedTargetNameRust('array_from_element', context);
+  const arguments_ = [
+    ...(signature.parameters.length >= 1 ? [`${elementName}.clone()`] : []),
+    ...(signature.parameters.length === 2 ? [`${indexName} as f64`] : []),
+  ];
+  const callbackInitializer =
+    mapper.kind === 'function'
+      ? `let mut ${callbackName} = ${emitExpression(mapper, context)};`
+      : `let ${callbackName} = &${emitExpression(mapper, context)};`;
+  const valuesInitializer = sharedBinding ? `${sourceName}.borrow()` : sourceName;
+  const mapped = `${valuesName}.iter().enumerate().map(|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})).collect::<Vec<_>>()`;
+  const release = sharedBinding ? ` drop(${valuesName});` : '';
+  // Array.from evaluates the source before the mapper. The shared borrow starts only after both values
+  // have been staged, and ends before the fresh result is returned or either source alias is reused.
+  return `{ let ${sourceName} = ${sharedBinding ? `&${getBindingTargetNameRust(sharedBinding, context)}` : `&${emittedSource}`}; ${callbackInitializer} let ${valuesName} = ${valuesInitializer}; let ${resultName} = ${mapped};${release} ${resultName} }`;
 }
 
 function emitArrayGrowthCallRust(
@@ -12823,8 +12908,12 @@ interface RustArrayFromRefusal {
   readonly message: string;
   readonly position: number;
   readonly rule:
+    | 'rust-array-from-alias-borrow-conflict'
+    | 'rust-array-from-callback-carrier-unrepresented'
+    | 'rust-array-from-callback-return-carrier-unrepresented'
     | 'rust-array-from-element-carrier-unrepresented'
     | 'rust-array-from-result-carrier-unrepresented'
+    | 'rust-array-from-sparse-source-unrepresented'
     | 'rust-array-from-source-carrier-unrepresented';
 }
 
@@ -12937,24 +13026,7 @@ function assertArrayFromInvocationSemanticsRust(module: Readonly<IrModule>): voi
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind !== 'call' || !isArrayFromCallRust(expression)) return;
-      const signature = expression.semantics.signature;
-      if (
-        expression.optional ||
-        expression.semantics.optionalChain !== undefined ||
-        expression.callee.optional ||
-        expression.callee.optionalChain !== undefined ||
-        expression.typeArguments.length > 1 ||
-        expression.semantics.defaultParameters !== undefined ||
-        expression.semantics.optionalParameters !== undefined ||
-        expression.semantics.overloadImplementation !== undefined ||
-        !signature ||
-        signature.parameterCount !== 1 ||
-        signature.restParameter !== undefined ||
-        signature.providedArgumentCount === 'dynamic' ||
-        signature.providedArgumentCount !== 1 ||
-        expression.arguments.length !== 1 ||
-        expression.arguments[0]?.kind === 'spread'
-      ) {
+      if (getRustArrayFromInvocationKindRust(expression) === undefined) {
         unsupported = true;
         return false;
       }
@@ -12965,7 +13037,7 @@ function assertArrayFromInvocationSemanticsRust(module: Readonly<IrModule>): voi
   throw createBackendEmissionFailure(
     'rust',
     module,
-    'Array.from requires the exact non-optional ambient call with one fixed non-spread source argument',
+    'Array.from requires the exact non-optional ambient copy overload or the exact two-argument mapped overload with no thisArg',
     'rust-array-from-invocation-unrepresented',
     { classification: 'target-runtime' },
   );
@@ -12979,27 +13051,51 @@ function assertArrayFromSemanticsRust(module: Readonly<IrModule>, context: EmitC
       if (expression.kind !== 'call' || !isArrayFromCallRust(expression)) return;
       const currentCall = call;
       call += 1;
+      const invocationKind = getRustArrayFromInvocationKindRust(expression);
+      const mapped = invocationKind === 'mapped';
       const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
       const sourceExpression = expression.arguments[0];
+      const mapper = expression.arguments[1];
+      const callbackSignature =
+        mapped && mapper ? getRustArrayPredicateCallbackSignatureRust(mapper, context) : undefined;
+      const callbackReturn = callbackSignature
+        ? resolveIrTypeAliasValueRust(callbackSignature.returns, context, new Set())
+        : undefined;
+      const callbackReturnCarrier = callbackReturn ? getRustExactScalarCarrierRust(callbackReturn, context) : undefined;
       const sourceType = sourceExpression ? inferRustArrayGrowthArgumentTypeRust(sourceExpression, context) : undefined;
       const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
       const directDenseSource =
         sourceExpression?.kind === 'array' &&
         sourceExpression.elements.every((element) => element !== undefined && element.kind !== 'spread');
+      const mappedSourceElement = expression.typeArguments[0] ?? callbackSignature?.parameters[0]?.type;
       const sourceArray =
         source?.kind === 'array'
           ? source
-          : directDenseSource && result.kind === 'array'
-            ? ({ element: result.element, kind: 'array', readonly: false } as const)
+          : directDenseSource
+            ? mapped && mappedSourceElement
+              ? ({ element: mappedSourceElement, kind: 'array', readonly: false } as const)
+              : !mapped && result.kind === 'array'
+                ? ({ element: result.element, kind: 'array', readonly: false } as const)
+                : undefined
             : undefined;
-      if (
-        result.kind !== 'array' ||
-        result.readonly ||
-        (sourceArray && !directDenseSource && !isRustArrayFromResultCarrierRust(sourceArray, result, context))
-      ) {
+      const resultCarrier =
+        result.kind === 'array' ? getRustExactScalarCarrierRust(result.element, context) : undefined;
+      const resultRepresented = mapped
+        ? result.kind === 'array' &&
+          !result.readonly &&
+          resultCarrier !== undefined &&
+          (callbackReturnCarrier === undefined ||
+            (resultCarrier.domain === callbackReturnCarrier.domain &&
+              resultCarrier.emitted === callbackReturnCarrier.emitted))
+        : result.kind === 'array' &&
+          !result.readonly &&
+          (!sourceArray || directDenseSource || isRustArrayFromResultCarrierRust(sourceArray, result, context));
+      if (!resultRepresented) {
         refusals.push({
           call: currentCall,
-          message: 'Array.from requires one fresh mutable Rust Vec result matching the source array element carrier',
+          message: mapped
+            ? 'mapped Array.from requires one fresh mutable Rust Vec result matching the callback return carrier'
+            : 'Array.from requires one fresh mutable Rust Vec result matching the source array element carrier',
           position: -1,
           rule: 'rust-array-from-result-carrier-unrepresented',
         });
@@ -13013,21 +13109,32 @@ function assertArrayFromSemanticsRust(module: Readonly<IrModule>, context: EmitC
         });
         return;
       }
+      const sparseSource =
+        (sourceExpression?.kind === 'array' && sourceExpression.elements.some((element) => element === undefined)) ||
+        hasIrTypeUndefinedMemberRust(sourceArray.element);
+      if (sparseSource) {
+        refusals.push({
+          call: currentCall,
+          message:
+            'Array.from over a sparse or undefined-bearing source requires an element-presence carrier outside the exact dense Rust Vec profile',
+          position: 0,
+          rule: 'rust-array-from-sparse-source-unrepresented',
+        });
+        return;
+      }
       const sourceCarrier = getRustExactScalarCarrierRust(sourceArray.element, context);
-      const resultCarrier =
-        result.kind === 'array' ? getRustExactScalarCarrierRust(result.element, context) : undefined;
       const denseElementsRepresented =
         !directDenseSource ||
-        (result.kind === 'array' &&
-          sourceExpression.elements.every(
-            (element) =>
-              element !== undefined && isRustArrayGrowthElementRepresentedRust(element, result.element, context),
-          ));
+        sourceExpression.elements.every(
+          (element) =>
+            element !== undefined && isRustArrayGrowthElementRepresentedRust(element, sourceArray.element, context),
+        );
       if (
         !sourceCarrier ||
-        !resultCarrier ||
-        sourceCarrier.domain !== resultCarrier.domain ||
-        sourceCarrier.emitted !== resultCarrier.emitted ||
+        (!mapped &&
+          (!resultCarrier ||
+            sourceCarrier.domain !== resultCarrier.domain ||
+            sourceCarrier.emitted !== resultCarrier.emitted)) ||
         !denseElementsRepresented
       ) {
         refusals.push({
@@ -13037,13 +13144,68 @@ function assertArrayFromSemanticsRust(module: Readonly<IrModule>, context: EmitC
           rule: 'rust-array-from-element-carrier-unrepresented',
         });
       }
+      if (!mapped || !mapper) return;
+      if (
+        !callbackSignature ||
+        callbackSignature.async ||
+        callbackSignature.dynamicThisUse ||
+        callbackSignature.typeParameterCount > 0 ||
+        callbackSignature.parameters.length > 2 ||
+        callbackSignature.parameters.some((parameter, position) => {
+          if (parameter.optional || parameter.rest || parameter.initializer !== undefined) return true;
+          const carrier = getRustExactScalarCarrierRust(parameter.type, context);
+          return position === 0
+            ? !carrier ||
+                !sourceCarrier ||
+                carrier.domain !== sourceCarrier.domain ||
+                carrier.emitted !== sourceCarrier.emitted
+            : !carrier || carrier.domain !== 'number' || carrier.emitted !== 'f64';
+        })
+      ) {
+        refusals.push({
+          call: currentCall,
+          message:
+            'mapped Array.from callback requires one statically known synchronous function with zero to two fixed exact-carrier parameters',
+          position: 1,
+          rule: 'rust-array-from-callback-carrier-unrepresented',
+        });
+      }
+      if (!callbackReturnCarrier) {
+        refusals.push({
+          call: currentCall,
+          message: 'mapped Array.from callback result requires an exact dense bool, f64, or String value carrier',
+          position: 1,
+          rule: 'rust-array-from-callback-return-carrier-unrepresented',
+        });
+      }
+      const sourceBindingId =
+        sourceExpression?.kind === 'identifier' && sourceExpression.reference.kind === 'binding'
+          ? sourceExpression.reference.binding.id
+          : undefined;
+      const callbackBody = getRustArrayPredicateCallbackBodyRust(mapper, context);
+      if (
+        sourceBindingId &&
+        (irExpressionUsesBindingRust(mapper, sourceBindingId) ||
+          (callbackBody !== undefined && irExpressionUsesBindingRust(callbackBody, sourceBindingId)))
+      ) {
+        refusals.push({
+          call: currentCall,
+          message: 'mapped Array.from callback captures the source while its shared borrow is active',
+          position: 1,
+          rule: 'rust-array-from-alias-borrow-conflict',
+        });
+      }
     },
   });
   const refusal = refusals.sort((left, right) => {
     const rank = (candidate: RustArrayFromRefusal): number => {
       if (candidate.rule === 'rust-array-from-result-carrier-unrepresented') return 0;
       if (candidate.rule === 'rust-array-from-source-carrier-unrepresented') return 1;
-      return 2;
+      if (candidate.rule === 'rust-array-from-sparse-source-unrepresented') return 2;
+      if (candidate.rule === 'rust-array-from-element-carrier-unrepresented') return 3;
+      if (candidate.rule === 'rust-array-from-callback-carrier-unrepresented') return 4;
+      if (candidate.rule === 'rust-array-from-callback-return-carrier-unrepresented') return 5;
+      return 6;
     };
     return (
       rank(left) - rank(right) ||

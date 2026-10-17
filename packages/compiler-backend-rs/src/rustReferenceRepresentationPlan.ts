@@ -1852,6 +1852,20 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
+  if (isRustReferenceArrayFromCall(call) && call.arguments.length === 2) {
+    const source = call.arguments[0];
+    const callback = call.arguments[1];
+    if (source?.kind !== 'identifier' || source.reference.kind !== 'binding' || !callback) return;
+    const group = module.sharedArrays.groupByBindingId.get(source.reference.binding.id);
+    if (!group || !expressionUsesRustSharedArrayGroup(callback, group, module)) return;
+    addRustReferenceRefusal(
+      refusals,
+      'rust-reference-shared-array-borrow-conflict',
+      `${moduleKey(module.module)}:${source.reference.binding.id}:${JSON.stringify(path_)}`,
+      'mapped Array.from callback reads the source alias group across its shared borrow',
+    );
+    return;
+  }
   if (
     call.callee.kind !== 'property' ||
     call.callee.member?.receiver !== 'array' ||

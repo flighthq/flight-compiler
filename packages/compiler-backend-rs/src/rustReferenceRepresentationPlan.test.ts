@@ -323,6 +323,59 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
   });
 
+  it('represents an independent mapped Array.from callback over a shared source', () => {
+    const module = lower(
+      'array-from-mapped-shared.ts',
+      `export function mapped(): number {
+         const values = [1, 2];
+         const alias = values;
+         const result = Array.from(alias, (value: number, index: number): number => value + index);
+         values.push(3);
+         result.push(9);
+         return alias.length * 10 + result.length;
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+  });
+
+  it('refuses direct and transitive mapped Array.from captures of the shared source alias group', () => {
+    const direct = lower(
+      'array-from-mapped-direct-conflict.ts',
+      `export function mapped(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const result = Array.from(alias, (value: number): number => value + values.length);
+         values.push(3);
+         return result;
+       }`,
+    );
+    const transitive = lower(
+      'array-from-mapped-transitive-conflict.ts',
+      `export function mapped(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const read = (): number => values.length;
+         const result = Array.from(alias, (value: number): number => value + read());
+         values.push(3);
+         return result;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [direct] }), direct).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [transitive] }), transitive).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]),
+    );
+  });
+
   it('refuses shared-array suspension and escaping closure capture', () => {
     const suspended = lower(
       'alias-suspended.ts',
