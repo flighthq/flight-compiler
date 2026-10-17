@@ -99,9 +99,7 @@ describe('validateCompilerRustRuntimeAbiManifest', () => {
       },
     };
 
-    const failure = captureBackendEmissionFailure(() =>
-      validateCompilerRustRuntimeAbiManifest(module, incomplete),
-    );
+    const failure = captureBackendEmissionFailure(() => validateCompilerRustRuntimeAbiManifest(module, incomplete));
     expect(failure.classification).toBe('target-runtime');
     expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
     expect(failure.message).toContain('missing function::repeat_text');
@@ -288,7 +286,17 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     expect(first.requirements).not.toBe(second.requirements);
     expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
     expect(isDeeplyFrozen(second, new WeakSet())).toBe(true);
-    expect(second.ambientMembers.bindings).toHaveLength(81);
+    // array.copyWithin/fill/sort are intentional native Vec method bindings from the array-identity
+    // lanes (14b55f07, a34e88c5, 432301b4); they add no runtime requirement, only the derived member
+    // snapshot this count tracks.
+    expect(second.ambientMembers.bindings).toHaveLength(84);
+    expect(second.ambientMembers.bindings).toEqual(
+      expect.arrayContaining([
+        { binding: { kind: 'method', targetName: 'copy_within' }, receiver: 'array', sourceMember: 'copyWithin' },
+        { binding: { kind: 'method', targetName: 'fill' }, receiver: 'array', sourceMember: 'fill' },
+        { binding: { kind: 'method', targetName: 'sort_by' }, receiver: 'array', sourceMember: 'sort' },
+      ]),
+    );
     expect(
       second.ambientMembers.bindings.some(
         ({ receiver, sourceMember }) => receiver === 'string' && sourceMember === 'length',
