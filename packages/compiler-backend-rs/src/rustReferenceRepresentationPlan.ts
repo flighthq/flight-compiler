@@ -2642,7 +2642,10 @@ function addRustSharedClassMutatorResultRefusal(
     return;
   }
   const receiverId = assignment.left.object.reference.binding.id;
-  if (assignment.operator !== '=') {
+  if (
+    assignment.operator !== '=' &&
+    !isRustSharedClassCompoundFieldAssignmentSupported(assignment, module, modules, moduleResolution)
+  ) {
     addRustReferenceRefusal(
       refusals,
       'rust-reference-shared-class-use-unrepresented',
@@ -2656,6 +2659,44 @@ function addRustSharedClassMutatorResultRefusal(
     'rust-reference-shared-class-mutator-result-unrepresented',
     `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
     'observed class field assignment result is not represented by the focused mutable field carrier',
+  );
+}
+
+function isRustSharedClassCompoundFieldAssignmentSupported(
+  assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  if (
+    assignment.left.kind !== 'property' ||
+    assignment.left.optional ||
+    assignment.left.structuralAccess ||
+    assignment.left.object.kind !== 'identifier'
+  ) {
+    return false;
+  }
+  const field = getRustReferenceClassField(
+    assignment.left.object,
+    assignment.left.name,
+    module,
+    modules,
+    moduleResolution,
+  );
+  if (!field || !isRustSimpleClassField(field) || field.type.kind !== 'primitive') return false;
+  const exactFieldDomain =
+    assignment.semantics.left.flow === field.type.name &&
+    assignment.semantics.right.flow === field.type.name &&
+    assignment.semantics.result === field.type.name;
+  if (!exactFieldDomain) return false;
+  if (field.type.name === 'string') return assignment.operator === '+=';
+  return (
+    field.type.name === 'number' &&
+    (assignment.operator === '+=' ||
+      assignment.operator === '-=' ||
+      assignment.operator === '*=' ||
+      assignment.operator === '/=' ||
+      assignment.operator === '%=')
   );
 }
 

@@ -2408,16 +2408,63 @@ function emitSharedClassFieldAssignmentRust(
   context: EmitContext,
 ): string | undefined {
   if (
-    expression.operator !== '=' ||
     expression.left.kind !== 'property' ||
     getRustSharedClassBindingRust(expression.left.object, context) === undefined
   ) {
     return undefined;
   }
-  const receiver = emitSharedClassBorrowReceiverRust(expression.left.object, true, context);
-  if (!receiver) return undefined;
+  const fieldName = safeRustValueName(expression.left.name);
+  if (expression.operator === '=') {
+    const receiver = emitSharedClassBorrowReceiverRust(expression.left.object, true, context);
+    if (!receiver) return undefined;
+    const right = emitOwnedOperandRust(expression.right, context);
+    return `${receiver}.${fieldName} = ${normalizeSourceTextGrouping(right)}`;
+  }
+  const fieldType = getIrSharedClassCompoundFieldAssignmentTypeRust(expression, context);
+  if (!fieldType) return undefined;
+  const readReceiver = emitSharedClassBorrowReceiverRust(expression.left.object, false, context);
+  const writeReceiver = emitSharedClassBorrowReceiverRust(expression.left.object, true, context);
+  if (!readReceiver || !writeReceiver) return undefined;
+  const currentName = getGeneratedTargetNameRust('class_field_current', context);
+  const rightName = getGeneratedTargetNameRust('class_field_right', context);
+  const updatedName = getGeneratedTargetNameRust('class_field_updated', context);
+  const current = `${readReceiver}.${fieldName}${fieldType === 'string' ? '.clone()' : ''}`;
   const right = emitOwnedOperandRust(expression.right, context);
-  return `${receiver}.${safeRustValueName(expression.left.name)} = ${normalizeSourceTextGrouping(right)}`;
+  const update =
+    fieldType === 'string'
+      ? `let mut ${updatedName} = ${currentName}; ${updatedName}.push_str(&${rightName});`
+      : `let ${updatedName} = ${currentName} ${expression.operator.slice(0, -1)} ${rightName};`;
+  return `{ let ${currentName} = ${current}; let ${rightName} = ${right}; ${update} ${writeReceiver}.${fieldName} = ${updatedName}; }`;
+}
+
+function getIrSharedClassCompoundFieldAssignmentTypeRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): 'number' | 'string' | undefined {
+  const left = expression.left;
+  if (left.kind !== 'property' || left.optional || left.structuralAccess || left.object.kind !== 'identifier') {
+    return undefined;
+  }
+  const receiver = left.object;
+  const reference = receiver.reference;
+  if (reference.kind !== 'binding') return undefined;
+  const declaration = getIrSharedClassDeclarationRust(reference.binding, context);
+  const field = declaration?.fields.find((candidate) => !candidate.static && candidate.name === left.name);
+  if (!field || !isIrRequiredPrimitiveClassFieldRust(field) || field.type.kind !== 'primitive') return undefined;
+  const exactFieldDomain =
+    expression.semantics.left.flow === field.type.name &&
+    expression.semantics.right.flow === field.type.name &&
+    expression.semantics.result === field.type.name;
+  if (!exactFieldDomain) return undefined;
+  if (field.type.name === 'string' && expression.operator === '+=') return 'string';
+  return field.type.name === 'number' &&
+    (expression.operator === '+=' ||
+      expression.operator === '-=' ||
+      expression.operator === '*=' ||
+      expression.operator === '/=' ||
+      expression.operator === '%=')
+    ? 'number'
+    : undefined;
 }
 
 function emitSharedClassFieldRust(

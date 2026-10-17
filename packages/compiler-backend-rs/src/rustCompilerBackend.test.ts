@@ -10418,6 +10418,149 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
 
+  it('stages discarded shared-class primitive field compound assignments', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-class-compound.ts',
+        `class Counter { value = 20; label = "a"; }
+         function next(value: number): number { return value; }
+         function suffix(): string { return "b"; }
+         export function compoundCounter(): number {
+           const values = new Counter();
+           const alias = values;
+           alias.value += next(1);
+           alias.value -= next(2);
+           alias.value *= next(3);
+           alias.value /= next(4);
+           alias.value %= next(5);
+           alias.label += suffix();
+           return values.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/let class_field_current(?:_\d+)? = alias\.borrow\(\)\.value;/gu)).toHaveLength(5);
+    expect(output.match(/alias\.borrow_mut\(\)\.value = class_field_updated(?:_\d+)?;/gu)).toHaveLength(5);
+    for (const value of [1, 2, 3, 4, 5]) {
+      expect(output.match(new RegExp(`next\\(${String(value)}\\.0\\)`, 'gu'))).toHaveLength(1);
+    }
+    for (const [suffix, operator] of [
+      ['', '+'],
+      ['_2', '-'],
+      ['_3', '*'],
+      ['_4', '/'],
+      ['_5', '%'],
+    ] as const) {
+      expect(output).toContain(
+        `let class_field_updated${suffix} = class_field_current${suffix} ${operator} class_field_right${suffix};`,
+      );
+    }
+    expect(output).toContain('let class_field_current_6 = alias.borrow().label.clone();');
+    expect(output).toContain('let class_field_right_6 = suffix();');
+    expect(output).toContain('class_field_updated_6.push_str(&class_field_right_6);');
+    expect(output).toContain('alias.borrow_mut().label = class_field_updated_6;');
+    expect(output.indexOf('let class_field_current = alias.borrow().value;')).toBeLessThan(
+      output.indexOf('let class_field_right = next(1.0);'),
+    );
+    expect(output.indexOf('let class_field_right = next(1.0);')).toBeLessThan(
+      output.indexOf('alias.borrow_mut().value = class_field_updated;'),
+    );
+  });
+
+  it('stages compound fields after an optional shared-class function parameter is narrowed', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-shared-class-compound.ts',
+        `class Counter { value = 1; label = "a"; }
+         function next(): number { return 2; }
+         function suffix(): string { return "!"; }
+         function update(value?: Counter): void {
+           if (value === undefined) return;
+           value.value += next();
+           value.label += suffix();
+         }
+         export function optionalCompoundCounter(): number {
+           const value = new Counter();
+           update(value);
+           return value.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn update(mut value: Option<Rc<RefCell<Counter>>>)');
+    expect(output).toContain('let class_field_current = value.as_ref().unwrap().borrow().value;');
+    expect(output).toContain('let class_field_right = next();');
+    expect(output).toContain('value.as_ref().unwrap().borrow_mut().value = class_field_updated;');
+    expect(output).toContain('let class_field_current_2 = value.as_ref().unwrap().borrow().label.clone();');
+    expect(output).toContain('class_field_updated_2.push_str(&class_field_right_2);');
+    expect(output).toContain('value.as_ref().unwrap().borrow_mut().label = class_field_updated_2;');
+    expect(output.indexOf('value.as_ref().unwrap().borrow().value')).toBeLessThan(output.indexOf('next();'));
+    expect(output.indexOf('next();')).toBeLessThan(
+      output.indexOf('value.as_ref().unwrap().borrow_mut().value = class_field_updated;'),
+    );
+  });
+
+  it('stages imported shared-class field compounds from project lowering', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/compound-class-provider.ts',
+      `export class Counter { value = 1; label = "a"; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/compound-class-consumer.ts',
+      `import { Counter } from './compound-class-provider.js';
+       export function importedCompoundCounter(): number {
+         const value = new Counter();
+         const alias = value;
+         alias.value += 2;
+         alias.label += "b";
+         return value.value;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Compound-class-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/compound-class-consumer.ts',
+          },
+          specifier: './compound-class-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/compound-class-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('let class_field_current = alias.borrow().value;');
+    expect(output).toContain('let class_field_right = 2.0;');
+    expect(output).toContain('alias.borrow_mut().value = class_field_updated;');
+    expect(output).toContain('let class_field_current_2 = alias.borrow().label.clone();');
+    expect(output).toContain('let class_field_right_2 = "b".to_owned();');
+    expect(output).toContain('class_field_updated_2.push_str(&class_field_right_2);');
+    expect(output).toContain('alias.borrow_mut().label = class_field_updated_2;');
+  });
+
   it('emits an undefined optional shared-class local carrier', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12397,6 +12540,79 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
     expect(captureBackendEmissionFailure(() => emitIrModuleRust(observed)).rule).toBe(
       'rust-reference-shared-class-mutator-result-unrepresented',
+    );
+  });
+
+  it('keeps unsupported shared-class compound assignments inside the stable refusal boundary', () => {
+    const conflict = lower(
+      'alias-class-compound-conflict.ts',
+      `class Counter { value = 1; }
+       export function run(): number {
+         const value = new Counter(); const alias = value;
+         alias.value += value.value;
+         return alias.value;
+       }`,
+    ).module;
+    const observed = lower(
+      'alias-class-compound-result.ts',
+      `class Counter { value = 1; }
+       export function run(): number {
+         const value = new Counter(); const alias = value;
+         return (alias.value += 1);
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(conflict))).toBe('rust-reference-shared-class-borrow-conflict');
+    expect(getEmissionRule(() => emitIrModuleRust(observed))).toBe(
+      'rust-reference-shared-class-mutator-result-unrepresented',
+    );
+
+    const unsupportedOperators: readonly [string, string][] = [
+      ['exponentiation', 'alias.value **= 2;'],
+      ['bitwise', 'alias.value &= 2;'],
+      ['shift', 'alias.value <<= 2;'],
+      ['logical', 'alias.value ||= 2;'],
+      ['nullish', 'alias.value ??= 2;'],
+      ['mixed', 'alias.label += 2;'],
+    ];
+    for (const [name, assignment] of unsupportedOperators) {
+      const module = lower(
+        `alias-class-compound-${name}.ts`,
+        `class Counter { value = 1; label = "a"; }
+         export function run(): number {
+           const value = new Counter(); const alias = value;
+           ${assignment}
+           return value.value;
+         }`,
+      ).module;
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-shared-class-use-unrepresented');
+    }
+
+    const unnarrowedReceiver = lower(
+      'alias-class-compound-unnarrowed.ts',
+      `class Counter { value = 1; }
+       function update(value?: Counter): void { value.value += 1; }
+       export function run(): number { const value = new Counter(); update(value); return value.value; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(unnarrowedReceiver))).toBe(
+      'rust-reference-shared-class-use-unrepresented',
+    );
+
+    const methodMutation = lower(
+      'alias-class-compound-method-boundary.ts',
+      `class Counter {
+         value = 1;
+         mutate(other?: Counter): void {
+           if (other !== undefined) other.value += 1;
+         }
+       }
+       export function run(): number {
+         const value = new Counter(); const alias = value;
+         alias.value += 1;
+         return value.value;
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(methodMutation))).toBe(
+      'rust-reference-shared-class-member-unrepresented',
     );
   });
 
