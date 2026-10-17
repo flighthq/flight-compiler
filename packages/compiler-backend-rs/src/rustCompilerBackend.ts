@@ -64,6 +64,8 @@ import type {
   CompilerRefusalClassification,
   CompilerRefusalPlaceholderRequest,
   CompilerRuntimeExternalConstructorInvocation,
+  CompilerRustModuleStateBindingPlan,
+  CompilerRustModuleStatePlan,
   CompilerRustReferenceRepresentation,
   CompilerRustReferenceRepresentationPlan,
   CompilerRustSourceTreeFilePlan,
@@ -123,6 +125,7 @@ import {
 // Emission's spelling rules. The public-binding plan reads the same record, so a name that is later
 // collision-suffixed cannot be allocated differently by the plan than by the emitted source.
 const { pascalCase, safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
+import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
   collectIrModuleMovedBindingIdsRust,
@@ -410,6 +413,7 @@ interface EmitContext {
   // Declarations this module exports through `export { name }`: the IR records the local export
   // entry rather than a second exported flag on the declaration.
   moduleExportBindingIds: ReadonlySet<string>;
+  moduleStateBindings: ReadonlyMap<string, RustModuleStateEmission>;
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
@@ -470,12 +474,23 @@ interface RustSourceTreeEmissionContext {
   readonly sourceFile: Readonly<CompilerRustSourceTreeFilePlan>;
 }
 
+interface RustModuleStateEmission {
+  readonly plan: Readonly<CompilerRustModuleStateBindingPlan>;
+  readonly readName: string;
+  readonly storageName: string;
+  readonly writeName: string;
+}
+
 type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refusal: string }>;
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
       const referenceRepresentationPlan = createCompilerRustReferenceRepresentationPlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
+      const moduleStatePlan = createCompilerRustModuleStatePlan({
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
       });
@@ -500,7 +515,16 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       let suppressedPlaceholderKeys: ReadonlySet<string> | undefined;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
-          return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
+          return [
+            emitIrModuleRustWithContext(
+              module,
+              modules,
+              moduleResolution,
+              options,
+              referenceRepresentationPlan,
+              moduleStatePlan,
+            ),
+          ];
         },
         emitRefusalPlaceholder(
           module: Readonly<IrModule>,
@@ -530,6 +554,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                 moduleResolution,
                 options,
                 referenceRepresentationPlan,
+                moduleStatePlan,
                 { references: planned.references, sourceFile: planned.sourceFile },
                 salvage,
               ),
@@ -576,10 +601,18 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
               },
               ...(moduleResolution ? { moduleResolution } : {}),
               reemitModule: ({ module, references, sourceFile }) =>
-                emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan, {
-                  references,
-                  sourceFile,
-                }),
+                emitIrModuleRustWithContext(
+                  module,
+                  modules,
+                  moduleResolution,
+                  options,
+                  referenceRepresentationPlan,
+                  moduleStatePlan,
+                  {
+                    references,
+                    sourceFile,
+                  },
+                ),
               semanticModules: modules,
             });
           } catch (error) {
@@ -598,7 +631,20 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
       });
-      return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
+      const moduleStatePlan = createCompilerRustModuleStatePlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
+      return [
+        emitIrModuleRustWithContext(
+          module,
+          modules,
+          moduleResolution,
+          options,
+          referenceRepresentationPlan,
+          moduleStatePlan,
+        ),
+      ];
     },
     name: 'rust',
     runtimeAbi: createCompilerRustRuntimeAbiManifest,
@@ -615,6 +661,7 @@ export function emitIrModuleRust(
     undefined,
     options,
     createCompilerRustReferenceRepresentationPlan({ modules: [sourceModule] }),
+    createCompilerRustModuleStatePlan({ modules: [sourceModule] }),
   );
 }
 
@@ -636,6 +683,7 @@ function emitIrModuleRustWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<RustCompilerBackendOptions>,
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
+  moduleStatePlan: Readonly<CompilerRustModuleStatePlan>,
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
   salvage?: RustSalvageRequest | undefined,
 ): EmittedFile {
@@ -672,6 +720,9 @@ function emitIrModuleRustWithContext(
     moduleResolution,
   );
   const referenceModulePlan = referenceRepresentationPlan.modules.find((candidate) =>
+    isRustCompilerModuleIdentityEqual(candidate.module, module),
+  );
+  const moduleStateModulePlan = moduleStatePlan.modules.find((candidate) =>
     isRustCompilerModuleIdentityEqual(candidate.module, module),
   );
   const referenceRefusal = referenceModulePlan?.refusals[0];
@@ -854,6 +905,7 @@ function emitIrModuleRustWithContext(
     ),
   );
   const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
+  const moduleStateBindings = new Map<string, RustModuleStateEmission>();
   const adaptedNativeFutureArgumentPositions = new Map<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>();
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
@@ -867,6 +919,7 @@ function emitIrModuleRustWithContext(
     anonymousUnionEnums: new Map(),
     apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module, moduleExportBindingIds),
     moduleExportBindingIds,
+    moduleStateBindings,
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
@@ -946,6 +999,21 @@ function emitIrModuleRustWithContext(
     targetNameMaps: createRustTargetNameMaps(replaceIrModuleBackendContext(sourceModules, module)),
     targetNames,
   };
+  for (const bindingPlan of moduleStateModulePlan?.bindings ?? []) {
+    const targetName = targetNames.get(bindingPlan.bindingId);
+    if (!targetName) {
+      emissionError(
+        context,
+        `planned module-state binding ${bindingPlan.bindingId} has no Rust target name allocation`,
+      );
+    }
+    moduleStateBindings.set(bindingPlan.bindingId, {
+      plan: bindingPlan,
+      readName: getGeneratedTargetNameRust(`read_module_state_${safeRustValueName(targetName)}`, context),
+      storageName: getGeneratedTargetNameRust(`MODULE_STATE_${constantRustName(targetName)}`, context),
+      writeName: getGeneratedTargetNameRust(`write_module_state_${safeRustValueName(targetName)}`, context),
+    });
+  }
   // Which bindings hold a union this module lowered to an enum. The type is on the binding, not on
   // the member access, so the access site can only tell that its object is an enum by asking here.
   for (const evidence of ownershipEvidence.bindings) {
@@ -1619,6 +1687,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           'rust-overloaded-callable-construction-unrepresented',
         );
       }
+      if (expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding') {
+        const moduleState = context.moduleStateBindings.get(expression.left.reference.binding.id);
+        if (moduleState) {
+          if (expression.operator !== '=') {
+            refuseRustModuleVariableSynchronization(expression.left.reference.binding, context);
+          }
+          // Evaluate the entire user expression before the helper acquires the lock. In particular,
+          // a call on the right may read or write this same cell without retaining a guard.
+          const stagedValue = getGeneratedTargetNameRust('module_state_value', context);
+          const right = emitExpression(expression.right, context);
+          return `{ let ${stagedValue} = ${normalizeSourceTextGrouping(right)}; ${moduleState.writeName}(${stagedValue}) }`;
+        }
+      }
       const asyncMethodSelfAssignment = emitAsyncMethodSelfFieldAssignmentRust(expression, context);
       if (asyncMethodSelfAssignment) return asyncMethodSelfAssignment;
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
@@ -2239,6 +2320,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'function':
       return emitFunctionExpressionRust(expression, context);
     case 'identifier': {
+      if (expression.reference.kind === 'binding') {
+        const moduleState = context.moduleStateBindings.get(expression.reference.binding.id);
+        if (moduleState) return `${moduleState.readName}()`;
+      }
       if (expression.reference.kind === 'binding') {
         const representation = getRustSharedClassBindingRepresentationRust(expression.reference.binding, context);
         if (isRustOptionalSharedClassRepresentation(representation)) {
@@ -12291,6 +12376,8 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
       'binding patterns require destructuring lowering before Rust emission',
       'rust-binding-pattern-lowering-required',
     );
+  const moduleState = context.moduleStateBindings.get(declaration.binding.id);
+  if (moduleState) return emitModuleStateDeclarationRust(moduleState);
   if (!declaration.initializer || !declaration.type) {
     emissionRuleError(
       context,
@@ -12299,15 +12386,35 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     );
   }
   if (declaration.mutable) {
-    emissionRuleError(
-      context,
-      `mutable module variable ${declaration.binding.name} requires synchronization lowering`,
-      'rust-module-variable-synchronization-unsupported',
-    );
+    refuseRustModuleVariableSynchronization(declaration.binding, context);
   }
   return [
     `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
+}
+
+function emitModuleStateDeclarationRust(state: Readonly<RustModuleStateEmission>): string[] {
+  const rustType = state.plan.scalar === 'number' ? 'f64' : 'bool';
+  return [
+    `static ${state.storageName}: std::sync::Mutex<${rustType}> = std::sync::Mutex::new(${emitLiteral(state.plan.initializer)});`,
+    '',
+    `fn ${state.readName}() -> ${rustType} {`,
+    `  *${state.storageName}.lock().unwrap_or_else(|poisoned| poisoned.into_inner())`,
+    '}',
+    '',
+    `fn ${state.writeName}(value: ${rustType}) -> ${rustType} {`,
+    `  *${state.storageName}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = value;`,
+    '  value',
+    '}',
+  ];
+}
+
+function refuseRustModuleVariableSynchronization(binding: Readonly<IrBindingIdentity>, context: EmitContext): never {
+  emissionRuleError(
+    context,
+    `mutable module variable ${binding.name} requires synchronization lowering`,
+    'rust-module-variable-synchronization-unsupported',
+  );
 }
 
 function getBindingTargetNameRust(
