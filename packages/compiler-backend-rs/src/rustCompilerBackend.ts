@@ -545,9 +545,10 @@ function emitIrModuleRustWithContext(
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
 ): EmittedFile {
-  // Method arity must be refused before the shared extra-argument pass, whose target ABI cannot
+  // Invocation shape must be refused before the shared extra-argument pass, whose target ABI cannot
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
   // after erasing extra arguments.
+  assertArrayConstructorInvocationSemanticsRust(sourceModule);
   assertArrayIsArrayInvocationSemanticsRust(sourceModule);
   assertArrayOfInvocationSemanticsRust(sourceModule);
   assertArrayFromInvocationSemanticsRust(sourceModule);
@@ -928,6 +929,7 @@ function emitIrModuleRustWithContext(
     nativeFutureLocalBindingIds.add(bindingId);
   }
   collectPrimitiveUnionBindingsRust(module, context);
+  assertArrayConstructorSemanticsRust(module, context);
   assertArrayIsArraySemanticsRust(module, context);
   assertArrayOfSemanticsRust(module, context);
   assertArrayFromSemanticsRust(module, context);
@@ -2078,6 +2080,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const constructorPlan = assertIrConstructorInvocationAbiRust(expression, context);
       {
+        if (isArrayConstructorRust(expression)) return emitArrayConstructorRust(expression, context);
         const constructor = emitConstructorReferenceRust(expression.callee.reference, context);
         if (
           expression.callee.reference.kind === 'ambient' &&
@@ -3949,6 +3952,17 @@ function hasOnlyOrdinaryArrayReceiverRust(expression: Readonly<Extract<IrExpress
   return expression.semantics.receivers.length === 1 && expression.semantics.receivers[0] === 'array';
 }
 
+function isArrayConstructorRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'new' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'identifier' }> }> {
+  return (
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
+    expression.callee.reference.name === 'Array'
+  );
+}
+
 function emitGuardedArrayGetRust(receiver: string, index: Readonly<IrExpression>, context: EmitContext): string {
   const indexName = getGeneratedTargetNameRust('array_index', context);
   const emittedIndex = emitNumericEnumOperandRust(index, context);
@@ -4291,6 +4305,15 @@ function emitArrayIsArrayCallRust(
         ? emitIdentifierReferenceRust(argument.reference, context)
         : emitExpression(argument, context);
   return `{ let ${valueName} = &${value}; let _ = ${valueName}; ${domain === 'array' ? 'true' : 'false'} }`;
+}
+
+function emitArrayConstructorRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  context: EmitContext,
+): string {
+  const element = expression.typeArguments[0];
+  if (!element) return emissionError(context, 'Array construction emission requires one explicit element type');
+  return `Vec::<${emitType(element, context)}>::new()`;
 }
 
 function emitArrayOfCallRust(
@@ -11475,6 +11498,141 @@ interface RustArrayOperationRefusal {
     | 'rust-array-sort-identity-carrier-unrepresented'
     | 'rust-array-sort-invocation-unrepresented'
     | 'rust-array-sort-result-carrier-unrepresented';
+}
+
+interface RustArrayConstructorRefusal {
+  readonly call: number;
+  readonly message: string;
+  readonly position: number;
+  readonly rule:
+    | 'rust-array-constructor-element-carrier-unrepresented'
+    | 'rust-array-constructor-element-form-unrepresented'
+    | 'rust-array-constructor-sparse-length-unrepresented';
+}
+
+function assertArrayConstructorInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupportedInvocation = false;
+  let unsupportedElementForm = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'new' || !isArrayConstructorRust(expression)) return;
+      const signature = expression.semantics.signature;
+      const optional = expression.semantics.optionalParameters;
+      const exactOptionalEvidence =
+        signature?.restParameter === 0
+          ? optional === undefined
+          : optional !== undefined &&
+            optional.parameterCount === 1 &&
+            optional.providedArgumentCount === expression.arguments.length &&
+            optional.optional.length === 1 &&
+            optional.optional[0] === 0 &&
+            optional.omitted.length === (expression.arguments.length === 0 ? 1 : 0) &&
+            (optional.omitted.length === 0 || optional.omitted[0] === 0) &&
+            optional.provided.length === expression.arguments.length &&
+            (optional.provided.length === 0 || optional.provided[0]?.position === 0);
+      if (
+        expression.typeArguments.length !== 1 ||
+        expression.semantics.construction !== undefined ||
+        expression.semantics.defaultParameters !== undefined ||
+        expression.semantics.overloadImplementation !== undefined ||
+        !signature ||
+        signature.parameterCount !== 1 ||
+        (signature.restParameter !== undefined && signature.restParameter !== 0) ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== expression.arguments.length ||
+        !exactOptionalEvidence ||
+        expression.arguments.some((argument) => argument.kind === 'spread')
+      ) {
+        unsupportedInvocation = true;
+        return;
+      }
+      if (expression.arguments.length > 1) {
+        unsupportedElementForm = true;
+        return;
+      }
+      return undefined;
+    },
+  });
+  if (unsupportedInvocation) {
+    throw createBackendEmissionFailure(
+      'rust',
+      module,
+      'Array construction requires exactly one explicit type argument and zero or one fixed non-spread argument with exact ambient constructor evidence',
+      'rust-array-constructor-invocation-unrepresented',
+      { classification: 'target-runtime' },
+    );
+  }
+  if (unsupportedElementForm) {
+    throw createBackendEmissionFailure(
+      'rust',
+      module,
+      'Array construction with multiple element arguments is not represented; use Array.of for a dense element list',
+      'rust-array-constructor-element-form-unrepresented',
+      { classification: 'target-runtime' },
+    );
+  }
+}
+
+function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+  const refusals: RustArrayConstructorRefusal[] = [];
+  let call = 0;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'new' || !isArrayConstructorRust(expression)) return;
+      const currentCall = call;
+      call += 1;
+      const elementType = expression.typeArguments[0];
+      if (!elementType) return;
+      if (!getRustExactScalarCarrierRust(elementType, context)) {
+        refusals.push({
+          call: currentCall,
+          message: 'Array construction requires an exact bool, f64, or String element carrier',
+          position: -1,
+          rule: 'rust-array-constructor-element-carrier-unrepresented',
+        });
+      }
+      const argument = expression.arguments[0];
+      if (!argument || (argument.kind === 'literal' && typeof argument.value === 'number' && argument.value === 0)) {
+        return;
+      }
+      const argumentType = inferRustArrayGrowthArgumentTypeRust(argument, context);
+      const argumentCarrier = argumentType ? getRustExactScalarCarrierRust(argumentType, context) : undefined;
+      if (argumentCarrier?.domain === 'number') {
+        refusals.push({
+          call: currentCall,
+          message:
+            'Array construction with a length other than a direct numeric literal zero needs JavaScript sparse holes and length validation that Rust Vec does not represent',
+          position: 0,
+          rule: 'rust-array-constructor-sparse-length-unrepresented',
+        });
+        return;
+      }
+      refusals.push({
+        call: currentCall,
+        message:
+          'Array construction with one element or an unresolved length-versus-element form is not represented; use Array.of for a dense element',
+        position: 0,
+        rule: 'rust-array-constructor-element-form-unrepresented',
+      });
+    },
+  });
+  const refusal = refusals.sort((left, right) => {
+    const rank = (candidate: RustArrayConstructorRefusal): number => {
+      if (candidate.rule === 'rust-array-constructor-element-form-unrepresented') return 0;
+      if (candidate.rule === 'rust-array-constructor-sparse-length-unrepresented') return 1;
+      return 2;
+    };
+    return (
+      rank(left) - rank(right) ||
+      left.call - right.call ||
+      left.position - right.position ||
+      compareTextCodeUnits(left.message, right.message)
+    );
+  })[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
 }
 
 type RustArrayIsArrayDomain = 'array' | 'empty' | 'mixed' | 'nonArray' | 'unresolved';

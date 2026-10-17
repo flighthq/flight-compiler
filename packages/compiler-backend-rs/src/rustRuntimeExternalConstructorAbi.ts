@@ -12,7 +12,7 @@ export function createCompilerRuntimeExternalConstructorAbiPlanRust(): CompilerR
 }
 
 const rustRuntimeExternalConstructorAbis = [
-  createRustRuntimeExternalConstructorAbi('Array'),
+  createRustRuntimeExternalConstructorAbi('Array', [0, 1]),
   createRustRuntimeExternalConstructorAbi('ArrayBuffer', [1]),
   createRustRuntimeExternalConstructorAbi('DataView', [1, 2, 3]),
   createRustRuntimeExternalConstructorAbi('Float32Array', [0, 1, 2, 3]),

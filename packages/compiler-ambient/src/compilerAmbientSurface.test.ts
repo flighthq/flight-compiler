@@ -40,6 +40,8 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('toUpperCase(): string;');
     expect(source).toContain('interface WeakMap<K extends object, V>');
     expect(source).toContain('interface ArrayLike<T>');
+    expect(source).toContain('new <T>(length?: number): T[];');
+    expect(source).toContain('new <T>(...items: T[]): T[];');
     expect(source).toContain('from<T>(source: Iterable<T> | ArrayLike<T>): T[];');
     expect(source).toContain(
       'from<T, U>(source: Iterable<T> | ArrayLike<T>, map: (value: T, index: number) => U, thisArg?: unknown): U[];',

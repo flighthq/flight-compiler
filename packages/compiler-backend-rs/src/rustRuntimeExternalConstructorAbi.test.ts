@@ -66,6 +66,11 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     expect(plan.constructors).toHaveLength(14);
     expect(plan.constructors).toContainEqual({
       dynamicArguments: false,
+      externalSymbol: { sourceName: 'Array', space: 'value' },
+      fixedArgumentCounts: [0, 1],
+    });
+    expect(plan.constructors).toContainEqual({
+      dynamicArguments: false,
       externalSymbol: { sourceName: 'Uint8Array', space: 'value' },
       fixedArgumentCounts: [0, 1, 2, 3],
     });
@@ -105,6 +110,8 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     expect(
       analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
         [
+          { externalSymbol: { sourceName: 'Array', space: 'value' }, providedArgumentCount: 0 },
+          { externalSymbol: { sourceName: 'Array', space: 'value' }, providedArgumentCount: 1 },
           { externalSymbol: { sourceName: 'Map', space: 'value' }, providedArgumentCount: 0 },
           { externalSymbol: { sourceName: 'Set', space: 'value' }, providedArgumentCount: 0 },
         ],
@@ -137,6 +144,22 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
         { externalSymbol: { sourceName: 'RangeError', space: 'value' }, providedArgumentCount: 1 },
         { externalSymbol: { sourceName: 'Set', space: 'value' }, providedArgumentCount: 1 },
         { externalSymbol: { sourceName: 'TypeError', space: 'value' }, providedArgumentCount: 1 },
+      ],
+    });
+  });
+
+  it.each([2, 'dynamic'] as const)('keeps Array constructor arity %s outside the coarse ABI plan', (arity) => {
+    const plan = createCompilerRuntimeExternalConstructorAbiPlanRust();
+
+    expect(
+      analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
+        [{ externalSymbol: { sourceName: 'Array', space: 'value' }, providedArgumentCount: arity }],
+        plan,
+      ),
+    ).toMatchObject({
+      kind: 'incomplete',
+      missingExternalConstructors: [
+        { externalSymbol: { sourceName: 'Array', space: 'value' }, providedArgumentCount: arity },
       ],
     });
   });
@@ -219,6 +242,6 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     (first.constructors as unknown[]).pop();
     (first.constructors[0]!.fixedArgumentCounts as number[]).push(1);
     expect(second.constructors).toHaveLength(14);
-    expect(second.constructors[0]?.fixedArgumentCounts).toEqual([0]);
+    expect(second.constructors[0]?.fixedArgumentCounts).toEqual([0, 1]);
   });
 });

@@ -156,6 +156,7 @@ interface Array<T> {
 
 interface ArrayConstructor {
   new <T>(length?: number): T[];
+  new <T>(...items: T[]): T[];
   from<T>(source: Iterable<T> | ArrayLike<T>): T[];
   from<T, U>(source: Iterable<T> | ArrayLike<T>, map: (value: T, index: number) => U, thisArg?: unknown): U[];
   isArray(value: unknown): boolean;

@@ -1369,14 +1369,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it('refuses runtime constructor arities absent from the versioned Rust ABI plan', () => {
     const result = lower(
       'runtime-constructor-argument.ts',
-      'export function create(): Array<number> { return new Array(3); }',
+      'export function create(): Map<string, number> { return new Map([["key", 1]]); }',
     );
 
     expect(() => emitIrModuleRust(result.module)).toThrow(
       expect.objectContaining({
         classification: 'target-runtime',
         message: expect.stringContaining(
-          'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
+          'runtime external constructor ABI plan is incomplete (missing: Map[value](1))',
         ),
         rule: 'rust-runtime-external-constructor-abi-incomplete',
       }),
@@ -26062,6 +26062,170 @@ describe('emitIrModuleRust static Array.isArray', () => {
   });
 });
 
+describe('emitIrModuleRust exact Array construction', () => {
+  it('constructs only empty exact scalar vectors, including direct literal-zero forms', () => {
+    const result = lower(
+      'array-constructor-scalars.ts',
+      `type Count = number;
+       type Flag = true | false;
+       export function numbers(): number[] { return new Array<number>(); }
+       export function counts(): Count[] { return new Array<Count>(0); }
+       export function flags(): Flag[] { return new Array<Flag>(); }
+       export function labels(): string[] { return new Array<string>(0); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/Vec::<(?:Count|Flag|String|f64)>::new\(\)/gu)).toHaveLength(4);
+    expect(output).toContain('return Vec::<Count>::new();');
+    expect(output).toContain('return Vec::<Flag>::new();');
+    expect(output).toContain('return Vec::<String>::new();');
+    expect(output).not.toContain('with_capacity');
+  });
+
+  it('lets ordinary shared-array planning wrap each fresh result', () => {
+    const result = lower(
+      'array-constructor-shared.ts',
+      `export function lengths(): number {
+         const values: number[] = new Array<number>();
+         const alias = values;
+         const other: number[] = new Array<number>(0);
+         values.push(2);
+         return alias.length * 10 + other.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Rc::new(RefCell::new(Vec::<f64>::new()))');
+    expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);');
+    expect(output).toContain('let other: Vec<f64> = Vec::<f64>::new();');
+  });
+
+  it.each([
+    ['an inferred element type', 'export function values() { return new Array(); }'],
+    ['a dynamic spread', 'export function values(input: number[]): number[] { return new Array<number>(...input); }'],
+  ])('refuses the invocation shape for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-invocation.ts', source).module))).toBe(
+      'rust-array-constructor-invocation-unrepresented',
+    );
+  });
+
+  it('refuses mutated invocation evidence before element-form evidence', () => {
+    const result = lower(
+      'array-constructor-signature.ts',
+      `export function dense(): number[] { return new Array<number>(1, 2); }
+       export function empty(): number[] { return new Array<number>(); }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'empty',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'new') {
+      throw new Error('expected the Array constructor return');
+    }
+    (returned.expression.semantics as { signature: unknown }).signature = {
+      parameterCount: 2,
+      providedArgumentCount: 0,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-constructor-invocation-unrepresented',
+    );
+  });
+
+  it('refuses missing optional-parameter evidence for the length overload', () => {
+    const result = lower(
+      'array-constructor-optional-evidence.ts',
+      'export function empty(): number[] { return new Array<number>(); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'new') {
+      throw new Error('expected the Array constructor return');
+    }
+    (returned.expression.semantics as { optionalParameters?: unknown }).optionalParameters = undefined;
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-constructor-invocation-unrepresented',
+    );
+  });
+
+  it.each([
+    ['one string element', 'export function values(): string[] { return new Array<string>("x"); }'],
+    ['one boolean element', 'export function values(): boolean[] { return new Array<boolean>(true); }'],
+    ['multiple numeric elements', 'export function values(): number[] { return new Array<number>(1, 2); }'],
+    [
+      'an unresolved scalar union',
+      'export function values(value: number | string): (number | string)[] { return new Array<number | string>(value); }',
+    ],
+  ])('refuses the dedicated element form for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-elements.ts', source).module))).toBe(
+      'rust-array-constructor-element-form-unrepresented',
+    );
+  });
+
+  it.each([
+    ['a positive literal', 'export function values(): number[] { return new Array<number>(3); }'],
+    ['a negative literal', 'export function values(): number[] { return new Array<number>(-1); }'],
+    ['a fractional literal', 'export function values(): number[] { return new Array<number>(0.5); }'],
+    ['a numeric parameter', 'export function values(length: number): number[] { return new Array<number>(length); }'],
+    ['an indirect zero', 'export function values(): number[] { const zero = 0; return new Array<number>(zero); }'],
+    ['an arithmetic zero', 'export function values(): number[] { return new Array<number>(0 + 0); }'],
+  ])('refuses sparse-length semantics for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-length.ts', source).module))).toBe(
+      'rust-array-constructor-sparse-length-unrepresented',
+    );
+  });
+
+  it.each([
+    ['nested arrays', 'export function values(): number[][] { return new Array<number[]>(); }'],
+    ['objects', 'interface Row { value: number } export function values(): Row[] { return new Array<Row>(0); }'],
+    ['mixed scalar unions', 'export function values(): (number | string)[] { return new Array<number | string>(); }'],
+    [
+      'nullable scalars',
+      'export function values(): (number | undefined)[] { return new Array<number | undefined>(); }',
+    ],
+  ])('refuses the dedicated element carrier for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-carrier.ts', source).module))).toBe(
+      'rust-array-constructor-element-carrier-unrepresented',
+    );
+  });
+
+  it('orders element-form, sparse-length, and element-carrier refusals independently of call order', () => {
+    const elementFirst = lower(
+      'array-constructor-priority-element.ts',
+      `interface Row { value: number }
+       export function sparse(): Row[] { return new Array<Row>(3); }
+       export function element(): Row[] { return new Array<Row>({ value: 1 }); }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(elementFirst.module))).toBe(
+      'rust-array-constructor-element-form-unrepresented',
+    );
+
+    const sparseFirst = lower(
+      'array-constructor-priority-sparse.ts',
+      'interface Row { value: number } export function values(): Row[] { return new Array<Row>(3); }',
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(sparseFirst.module))).toBe(
+      'rust-array-constructor-sparse-length-unrepresented',
+    );
+  });
+
+  it('does not intercept a local constructor with the same spelling', () => {
+    const result = lower(
+      'array-constructor-local.ts',
+      `class Array<T> { value: T; constructor(value: T) { this.value = value; } }
+       export function local(): number { return new Array<number>(1).value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'class Array constructor class parameter requires exact readonly primitive projections',
+    );
+  });
+});
+
 describe('emitIrModuleRust static Array.of', () => {
   it('constructs empty and populated exact scalar vectors', () => {
     const result = lower(
@@ -26240,12 +26404,6 @@ describe('emitIrModuleRust static Array.of', () => {
     expect(localOutput).toContain('FlightTask::ready(1.0)');
     expect(localOutput).not.toContain('array_of_value');
 
-    expect(() =>
-      emitIrModuleRust(
-        lower('array-of-constructor.ts', 'export function empty(): number[] { return new Array<number>(); }').module,
-      ),
-    ).toThrow('missing required constructor argument at position 0');
-
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/array-of-namespace.ts',
       'export function of(value: number): number[] { return [value]; }',
@@ -26294,13 +26452,20 @@ describe('emitIrModuleRust static Array.of', () => {
     expect(importedOutput).not.toContain('array_of_value');
   });
 
-  it.skipIf(!rustcAvailable)('runs the exact scalar Array.of and Array.from checkpoint', () => {
+  it.skipIf(!rustcAvailable)('runs the exact scalar array construction and statics checkpoint', () => {
     const result = lower(
       'array-of-checkpoint.ts',
       `export function arrayOfCheckpoint(): boolean {
          let calls = 0;
          const mark = (digit: number): number => { calls = calls * 10 + digit; return digit; };
          const empty = Array.of<number>();
+         const constructed: number[] = new Array<number>();
+         const constructedAlias = constructed;
+         const zeroWords: string[] = new Array<string>(0);
+         const constructedFlags: boolean[] = new Array<boolean>();
+         constructed.push(4);
+         zeroWords.push("z");
+         constructedFlags.push(true);
          const values = Array.of(mark(1), mark(2));
          const alias = values;
          const independent = Array.of(9);
@@ -26316,7 +26481,8 @@ describe('emitIrModuleRust static Array.of', () => {
          copy.push(9);
          const flags = Array.from([true, false]);
          const fromEmpty = Array.from<number>([]);
-         return empty.length === 0 && alias.length === 3 && independent.length === 1 && calls === 123 &&
+         return empty.length === 0 && constructedAlias.length === 1 && zeroWords.join("") === "z" &&
+           constructedFlags.length === 1 && alias.length === 3 && independent.length === 1 && calls === 123 &&
            words.join("") === "abc" && source.reduce((total, value) => total * 10 + value, 0) === 123 &&
            copyAlias.reduce((total, value) => total * 10 + value, 0) === 129 && flags.length === 2 &&
            fromEmpty.length === 0;

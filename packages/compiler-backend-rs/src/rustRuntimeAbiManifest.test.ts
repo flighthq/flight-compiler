@@ -314,7 +314,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     expect(unboundTaskMember.classification).toBe('target-runtime');
 
     const unboundConstructor = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(lower('export function create(): number[] { return new Array<number>(3); }')),
+      emitIrModuleRust(lower('export function create(): Map<string, number> { return new Map([["key", 1]]); }')),
     );
     expect(unboundConstructor.rule).toBe('rust-runtime-external-constructor-abi-incomplete');
     expect(unboundConstructor.classification).toBe('target-runtime');
