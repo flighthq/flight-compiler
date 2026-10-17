@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/contextualUnionRemap.ts: contextual general-union construction requires one non-generic named owner and one exact declared record alternative; structural, mismatched-absence, generic, reference-planned, ambiguous, and anonymous carriers do not select an enum arm
+rust emission failed for @flighthq/golden/packages/golden/src/contextualUnionRemap.ts: returning a contextual general union alternative requires represented Rust enum construction
