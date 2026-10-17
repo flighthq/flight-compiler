@@ -35168,6 +35168,150 @@ describe('emitIrModuleRust array join', () => {
 });
 
 describe('emitIrModuleRust exact nominal general-union construction', () => {
+  it('constructs exact single-payload Options in return, local, call, and store contexts', () => {
+    const result = lower(
+      'single-payload-option-construction.ts',
+      `interface Item { value: number }
+       interface Box { item: Item | undefined }
+       interface Source { item: Item; option: Item | undefined }
+       class Consumer { consume(_value: Item | undefined): number { return 1; } }
+       function maybe(value: Item): Item | undefined { return value; }
+       function consume(_value: Item | undefined): number { return 1; }
+
+       export function absent(): Item | undefined { return undefined; }
+       export function present(item: Item): Item | undefined { return item; }
+       export function preserved(value: Item | undefined): Item | undefined { return value; }
+       export function returnedCall(item: Item): Item | undefined { return maybe(item); }
+       export function returnedProperty(source: Source): Item | undefined { return source.item; }
+       export function preservedProperty(source: Source): Item | undefined { return source.option; }
+       export function stored(item: Item, option: Item | undefined, box: Box): Item | undefined {
+         let value: Item | undefined = undefined;
+         box.item = undefined;
+         box.item = item;
+         box.item = option;
+         value = item;
+         value = option;
+         return value;
+       }
+       export function passed(item: Item, option: Item | undefined, consumer: Consumer): number {
+         return consume(undefined) + consume(item) + consume(option) + consume(maybe(item)) + consumer.consume(item);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn absent() -> Option<Item> {');
+    expect(output).toContain('return None;');
+    expect(output).toContain('pub fn present(item: Item) -> Option<Item> {');
+    expect(output).toContain('return Some(item);');
+    expect(output).toContain('pub fn preserved(value: Option<Item>) -> Option<Item> {');
+    expect(output).toContain('return value;');
+    expect(output).toContain('return maybe(item);');
+    expect(output).toContain('return Some(source.item);');
+    expect(output).toContain('return source.option;');
+    expect(output).toContain('let mut value: Option<Item> = None;');
+    expect(output).toContain('value = Some(item)');
+    expect(output).toContain('value = option');
+    expect(output).toContain('box_.item = None');
+    expect(output).toContain('box_.item = Some(item.clone())');
+    expect(output).toContain('box_.item = option.clone()');
+    expect(output).toContain('consume(None)');
+    expect(output).toContain('consume(Some(item.clone()))');
+    expect(output).toContain('consume(option)');
+    expect(output).toContain('consume(maybe(item.clone()))');
+    expect(output).toContain('consumer.consume(Some(item.clone()))');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it('refuses unproven single-payload Options while preserving multi-arm construction ownership', () => {
+    const unproven = lower(
+      'single-payload-option-refusal.ts',
+      `interface Item { value: number }
+       export function refused(value: { value: number }): Item | undefined { return value; }`,
+    );
+    expect(unproven.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(unproven.module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+    const manufactured = lower(
+      'single-payload-option-cast-refusal.ts',
+      `interface Item { value: number }
+       export function refused(value: number): Item | undefined { return { value } as Item; }`,
+    );
+    expect(manufactured.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(manufactured.module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+
+    const named = lower(
+      'single-payload-option-multi-arm-control.ts',
+      `interface Alpha { value: number }
+       interface Beta { label: string }
+       type Choice = Alpha | Beta;
+       export function kept(value: Alpha): Choice { return value; }`,
+    );
+    expect(named.diagnostics).toEqual([]);
+    expect(emitIrModuleRust(named.module).contents).toContain('return Choice::Alpha(value);');
+
+    const inline = lower(
+      'single-payload-option-inline-control.ts',
+      `interface Alpha { value: number }
+       interface Beta { label: string }
+       export function refused(value: Alpha): Alpha | Beta { return value; }`,
+    );
+    expect(inline.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(inline.module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('keeps single-payload Option refusal and salvage output deterministic', () => {
+    const source = `interface Item { value: number }
+export function broken(value: { value: number }): Item | undefined { return value; }
+export function keep(value: Item): Item | undefined { return value; }
+export function absent(): Item | undefined { return undefined; }
+export function preserved(value: Item | undefined): Item | undefined { return value; }`;
+    const module = lower('single-payload-option-salvage.ts', source).module;
+    const refusal = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const repeated = captureBackendEmissionFailure(() => emitIrModuleRust(structuredClone(module)));
+    expect(refusal.rule).toBe('rust-contextual-general-union-construction-unrepresented');
+    expect(repeated.rule).toBe(refusal.rule);
+    expect(repeated.message).toBe(refusal.message);
+
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-contextual-general-union-construction-unrepresented',
+          message: refusal.message,
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: refusal.message, sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 2');
+    expect(placeholder.contents).toContain('// refusal: rust-contextual-general-union-construction-unrepresented');
+    expect(placeholder.contents).toContain('pub fn keep(value: Item) -> Option<Item>');
+    expect(placeholder.contents).toContain('return Some(value);');
+    expect(placeholder.contents).toContain('pub fn absent() -> Option<Item>');
+    expect(placeholder.contents).toContain('return None;');
+    expect(placeholder.contents).toContain('pub fn preserved(value: Option<Item>) -> Option<Item>');
+    expect(placeholder.contents).toContain('return value;');
+    expect(placeholder.contents).not.toContain('AnonymousUnion');
+  });
+
   it('constructs the representation-plan arm in each supported contextual position', () => {
     const result = lower(
       'nominal-union-construction.ts',

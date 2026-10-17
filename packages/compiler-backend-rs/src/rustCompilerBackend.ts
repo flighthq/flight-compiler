@@ -268,6 +268,11 @@ interface RustSingleSentinelUnionShape {
   readonly payloadType: Readonly<Extract<IrType, { kind: 'union' }>>;
 }
 
+interface RustSinglePayloadOptionShape {
+  readonly absence: 'null' | 'undefined';
+  readonly payloadType: Readonly<IrType>;
+}
+
 interface RustCallableObjectRecord {
   readonly callable: Readonly<{ parameters: readonly string[]; returns: string }>;
   readonly fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
@@ -2218,14 +2223,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           }
         }
         if (targetType) {
-          const wrapped = emitExactNominalGeneralUnionConstructionRust(expression.right, targetType, context);
-          if (wrapped) return `${emitExpression(expression.left, context)} = ${wrapped}`;
+          const wrapped = emitExactContextualGeneralUnionConstructionRust(
+            expression.right,
+            targetType,
+            context,
+            'direct',
+          );
+          if (wrapped) return `${emitIdentifierReferenceRust(expression.left.reference, context)} = ${wrapped}`;
         }
       }
       if (expression.operator === '=' && expression.left.kind === 'property' && !expression.left.optional) {
         const targetType = expression.left.type;
         if (targetType) {
-          const wrapped = emitExactNominalGeneralUnionConstructionRust(expression.right, targetType, context);
+          const wrapped = emitExactContextualGeneralUnionConstructionRust(expression.right, targetType, context);
           if (wrapped) return `${emitAssignmentTargetRust(expression.left, context)} = ${wrapped}`;
         }
       }
@@ -5742,23 +5752,43 @@ function emitCallArgumentsRust(
     if (parameter) {
       const parameterType = parameter.rest && parameter.type.kind === 'array' ? parameter.type.element : parameter.type;
       const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
-      if (!optionalSharedClass && hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context)) {
+      const singlePayloadOption = getIrSinglePayloadOptionShapeRust(parameterType, context);
+      if (
+        !optionalSharedClass &&
+        (singlePayloadOption || hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context))
+      ) {
         if (
           (referencedFunction?.typeParameters.length ?? 0) > 0 ||
           parameter.rest ||
-          (parameterPlan.kind === 'nominalEnum' &&
-            parameterPlan.sentinels.kind === 'optional' &&
+          ((singlePayloadOption ||
+            (parameterPlan.kind === 'nominalEnum' && parameterPlan.sentinels.kind === 'optional')) &&
             (parameter.optional || parameter.initializer !== undefined)) ||
           argument.kind === 'spread' ||
           representation !== undefined
         ) {
           refuseRustContextualGeneralUnionConstructionRust(context);
         }
-        const constructed = emitExactNominalGeneralUnionConstructionRust(argument, parameterType, context);
+        const constructed = emitExactContextualGeneralUnionConstructionRust(argument, parameterType, context);
         if (constructed) return constructed;
       }
     }
     const methodParameter = referencedMethod?.method.parameters[index];
+    const methodSinglePayloadOption = methodParameter
+      ? getIrSinglePayloadOptionShapeRust(methodParameter.type, context)
+      : undefined;
+    if (!optionalSharedClass && methodParameter && methodSinglePayloadOption) {
+      if (
+        methodParameter.rest ||
+        methodParameter.optional ||
+        methodParameter.initializer !== undefined ||
+        argument.kind === 'spread' ||
+        representation !== undefined
+      ) {
+        refuseRustContextualGeneralUnionConstructionRust(context);
+      }
+      const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameter.type, context);
+      if (constructed) return constructed;
+    }
     if (
       !optionalSharedClass &&
       methodParameter &&
@@ -8796,7 +8826,11 @@ function emitContextualReturnValueRust(
     }
     const callableUnion = emitContextualCallableUnionConstructionRust(expression, context.enclosingReturnType, context);
     if (callableUnion) return callableUnion;
-    const nominalUnion = emitExactNominalGeneralUnionConstructionRust(expression, context.enclosingReturnType, context);
+    const nominalUnion = emitExactContextualGeneralUnionConstructionRust(
+      expression,
+      context.enclosingReturnType,
+      context,
+    );
     if (nominalUnion) return nominalUnion;
     if (
       hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
@@ -9392,15 +9426,42 @@ interface RustExactNominalTypeIdentity {
   readonly location: RustNamedTypeDeclarationLocation;
 }
 
-// A closed named union can accept an existing declared record without changing its representation:
-// the enum arm owns exactly that record. The proof is declaration identity, never structural shape.
-// Keeping the construction in one helper makes returns, stores, calls, and assertions agree about
-// which evidence is strong enough to select an arm.
-function emitExactNominalGeneralUnionConstructionRust(
+// Contextual unions get one construction boundary for returns, stores, calls, and assertions. A
+// single payload plus one sentinel is the Option carrier Rust already uses, and must be claimed
+// before nominal-enum construction. Both paths require exact representation evidence; evaluating an
+// unproved expression first lets its narrower emitter retain refusal ownership without leaking the
+// raw result into a different carrier.
+function emitExactContextualGeneralUnionConstructionRust(
   expression: Readonly<IrExpression>,
   targetType: Readonly<IrType>,
   context: EmitContext,
+  ownership: 'direct' | 'owned' = 'owned',
 ): string | undefined {
+  const singlePayloadOption = getIrSinglePayloadOptionShapeRust(targetType, context);
+  if (singlePayloadOption) {
+    const emitOperand = ownership === 'owned' ? emitOwnedOperandRust : emitExpression;
+    const sourceType = getIrExpressionExactContextualConstructionTypeRust(expression, context);
+    const hasTargetRepresentation =
+      sourceType !== undefined && emitType(sourceType, context) === emitType(targetType, context);
+    const hasPayloadRepresentation =
+      sourceType !== undefined && emitType(sourceType, context) === emitType(singlePayloadOption.payloadType, context);
+    const sentinel = getIrSharedClassSentinelExpressionRust(expression);
+    if (sentinel) {
+      if (sentinel === singlePayloadOption.absence) return 'None';
+      refuseRustContextualGeneralUnionConstructionRust(context);
+    }
+    if (hasTargetRepresentation) return emitOperand(expression, context);
+    if (isIrExpressionOptionShapedRust(expression, context)) {
+      if (hasPayloadRepresentation) return emitOperand(expression, context);
+      emitOperand(expression, context);
+      refuseRustContextualGeneralUnionConstructionRust(context);
+    }
+    if (hasPayloadRepresentation) {
+      return `Some(${emitOperand(expression, context)})`;
+    }
+    emitOperand(expression, context);
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
   if (expression.kind === 'cast') {
     const assertedSource = inferIrExpressionTypeRust(expression.expression, context);
     // Union-source assertions belong to checked carrier recovery even when that carrier is itself
@@ -9518,6 +9579,15 @@ function getIrExpressionExactNominalRecordTypeRust(
   }
 }
 
+function getIrExpressionExactContextualConstructionTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return expression.kind === 'cast' || expression.kind === 'object' || expression.kind === 'property'
+    ? getIrExpressionExactNominalRecordTypeRust(expression, context)
+    : inferIrExpressionTypeRust(expression, context);
+}
+
 function getIrExactNominalRecordIdentityRust(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -9562,16 +9632,22 @@ function hasIrTypeContextualGeneralUnionCandidateRust(
     return plan.valueVariants.some((variant) => variant.sourceAlternative.kind === 'named');
   }
   if (type.kind === 'union') {
-    return flattenIrUnionTypesRust(type.types).some((member) => member.kind === 'named');
+    const values = flattenIrUnionTypesRust(type.types).filter(
+      (member) => member.kind !== 'never' && member.kind !== 'null' && member.kind !== 'undefined',
+    );
+    return values.length >= 2 && values.some((member) => member.kind === 'named');
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.space !== 'type') {
     return false;
   }
   return getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set()).some(
-    (location) =>
-      location.declaration.kind === 'typeAlias' &&
-      location.declaration.type.kind === 'union' &&
-      flattenIrUnionTypesRust(location.declaration.type.types).some((member) => member.kind === 'named'),
+    (location) => {
+      if (location.declaration.kind !== 'typeAlias' || location.declaration.type.kind !== 'union') return false;
+      const values = flattenIrUnionTypesRust(location.declaration.type.types).filter(
+        (member) => member.kind !== 'never' && member.kind !== 'null' && member.kind !== 'undefined',
+      );
+      return values.length >= 2 && values.some((member) => member.kind === 'named');
+    },
   );
 }
 
@@ -15029,7 +15105,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${wrapped};`;
       }
     }
-    const nominalUnion = emitExactNominalGeneralUnionConstructionRust(variable.initializer, variable.type, context);
+    const nominalUnion = emitExactContextualGeneralUnionConstructionRust(variable.initializer, variable.type, context);
     if (nominalUnion) {
       const mutable =
         variable.mutable ||
@@ -23719,7 +23795,11 @@ function emitGeneralUnionCastRust(
   // An unrepresented union source remains a cast refusal; only a non-union source can be an exact
   // record alternative for the contextual constructor below.
   if (!source && (!sourceType || resolveIrCastUnionTypeRust(sourceType, context).kind !== 'union')) {
-    const constructed = emitExactNominalGeneralUnionConstructionRust(expression.expression, expression.type, context);
+    const constructed = emitExactContextualGeneralUnionConstructionRust(
+      expression.expression,
+      expression.type,
+      context,
+    );
     if (constructed) return constructed;
   }
   const destination = getIrCastUnionCarrierRust(expression.type, context);
@@ -23959,6 +24039,24 @@ function getIrCastUnionCarrierRust(type: Readonly<IrType>, context: EmitContext)
 
 function flattenIrUnionTypesRust(types: readonly Readonly<IrType>[]): readonly Readonly<IrType>[] {
   return types.flatMap((member) => (member.kind === 'union' ? flattenIrUnionTypesRust(member.types) : [member]));
+}
+
+function getIrSinglePayloadOptionShapeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustSinglePayloadOptionShape | undefined {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'union') return undefined;
+  const members = flattenIrUnionTypesRust(resolved.types);
+  const sentinels = members.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const values = members.filter(
+    (member) => member.kind !== 'never' && member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (sentinels.length !== 1 || values.length !== 1) return undefined;
+  return { absence: sentinels[0]!.kind, payloadType: values[0]! };
 }
 
 function getIrSingleSentinelUnionShapeRust(type: Readonly<IrType>): RustSingleSentinelUnionShape | undefined {
