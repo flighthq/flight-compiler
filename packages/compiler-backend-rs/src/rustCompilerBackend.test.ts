@@ -14341,6 +14341,17 @@ describe('emitIrModuleRust assertion recovery', () => {
 });
 
 describe('emitIrModuleRust single-alternative assertion recovery', () => {
+  it('refuses an absent nominal alternative or a change of absence sentinel', () => {
+    const declarations = 'interface Alpha { a: number } interface Beta { b: number } interface Gamma { c: number }';
+    for (const source of [
+      'export function narrow(value: Alpha | Beta): Gamma | undefined { return value as Gamma | undefined; }',
+      'export function narrow(value: Alpha | Beta | null): Alpha | undefined { return value as Alpha | undefined; }',
+    ]) {
+      const module = lower('invalid-single-assertion.ts', `${declarations} ${source}`).module;
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-cast-unsupported');
+    }
+  });
+
   it('selects one alternative out of a carrier as the Option the destination declares', () => {
     const output = emitIrModuleRust(
       lower(

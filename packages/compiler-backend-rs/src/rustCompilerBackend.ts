@@ -6050,7 +6050,12 @@ function emitGeneralUnionCastRust(
     // A destination that is one alternative plus one sentinel is the `Option` the target stores, and the
     // assertion selects that alternative out of the carrier. A bare alternative (no sentinel) or a
     // dual-sentinel destination is not this shape and keeps the refusal.
-    if (single?.absence === 'null' || single?.absence === 'undefined') {
+    if (
+      single &&
+      (single.absence === 'null' || single.absence === 'undefined') &&
+      (source.absence === 'none' || source.absence === single.absence) &&
+      source.members.some((member) => member.name === single.name && member.targetName === single.targetName)
+    ) {
       return emitIrCastSingleAlternativeUnionRust(expression, source, single, context);
     }
   }
