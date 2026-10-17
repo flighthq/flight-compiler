@@ -2,7 +2,7 @@ import ts from 'typescript';
 
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
-import type { CompilerModuleResolutionPlan, IrModule } from '../../compiler-types/src/index.js';
+import type { CompilerModuleResolutionPlan, IrExpression, IrModule } from '../../compiler-types/src/index.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
 
 describe('createCompilerRustReferenceRepresentationPlan', () => {
@@ -1565,6 +1565,109 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('plans required explicit single-sentinel class method parameters locally and across modules', () => {
+    const local = lower(
+      'explicit-sentinel-class-method.ts',
+      `class Counter {
+         value = 0;
+         inspectNull(scale: number, other: Counter | null): number {
+           return other === null ? this.value : other.value * scale;
+         }
+         writeUndefined(other: Counter | undefined): void {
+           if (other === undefined) return;
+           other.value += 1;
+         }
+       }
+       export function run(): number {
+         const receiver = new Counter(); const receiverAlias = receiver;
+         const other = new Counter(); const otherAlias = other;
+         receiverAlias.writeUndefined(undefined);
+         receiver.writeUndefined(otherAlias);
+         return receiverAlias.inspectNull(2, null) + receiver.inspectNull(3, otherAlias);
+       }`,
+    );
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/explicit-sentinel-class-method-provider.ts',
+      `export class Counter {
+         value = 0;
+         inspect(other: Counter | undefined): number {
+           return other === undefined ? this.value : other.value;
+         }
+         write(other: Counter | null): void { if (other !== null) other.value += 1; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/explicit-sentinel-class-method-consumer.ts',
+      `import { Counter } from './explicit-sentinel-class-method-provider.js';
+       function relay(receiver: Counter, other: Counter | null): void { receiver.write(other); }
+       export function run(): number {
+         const receiver = new Counter(); const receiverAlias = receiver;
+         const other = new Counter(); const otherAlias = other;
+         const nullable: Counter | null = otherAlias;
+         relay(receiverAlias, nullable);
+         return receiver.inspect(undefined) + receiverAlias.inspect(otherAlias);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Explicit-sentinel-class-method-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/explicit-sentinel-class-method-consumer.ts',
+          },
+          specifier: './explicit-sentinel-class-method-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/explicit-sentinel-class-method-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const localPlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [local] }), local);
+    const importedPlan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+
+    expect(localPlan.refusals).toEqual([]);
+    expect(localPlan.callables).toEqual([]);
+    expect(localPlan.referentMutatedBindings.map(({ name }) => name)).toEqual(expect.arrayContaining(['other']));
+    expect(getModulePlan(importedPlan, provider).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, provider).callables).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'relay' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 1, representation: 'optional-null-shared-ref-cell-class' },
+          ],
+        }),
+      ]),
+    );
+    expect(getModulePlan(importedPlan, consumer).referentMutatedBindings.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['other', 'nullable']),
+    );
+  });
+
   it('propagates optional class method argument mutation through local function wrappers', () => {
     const module = lower(
       'optional-class-method-mutation-propagation.ts',
@@ -1654,6 +1757,50 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('requires explicit class method arity, sentinel, identity, and disjoint receiver ownership', () => {
+    const missingArgument = lower(
+      'explicit-sentinel-class-method-missing.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(null); }`,
+    );
+    const run = missingArgument.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const returned = run?.kind === 'function' ? run.body[1] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected explicit sentinel class method call');
+    (call.arguments as IrExpression[]).length = 0;
+    const wrongSentinel = lower(
+      'explicit-sentinel-class-method-wrong-sentinel.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(undefined as never); }`,
+    );
+    const wrongIdentity = lower(
+      'explicit-sentinel-class-method-wrong-identity.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       class Other { value = 2; }
+       export function run(): number { const value = new Counter(); return value.inspect(new Other() as never); }`,
+    );
+    const overlap = lower(
+      'explicit-sentinel-class-method-overlap.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(value); }`,
+    );
+
+    for (const module of [missingArgument, wrongSentinel, wrongIdentity]) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-call-unrepresented' })]),
+      );
+    }
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [overlap] }), overlap).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
+    );
+  });
+
   it('preserves optional class method mutation conflict, result, operator, and domain refusals', () => {
     const cases = [
       [
@@ -1692,7 +1839,8 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       `class Counter { value = 1; read(other?: Counter): number { const captured = (): number => other === undefined ? 0 : other.value; return captured(); } }`,
       `class Counter { value = 1; read(other?: Counter): number { const escaped = other; return escaped === undefined ? 0 : escaped.value; } }`,
       `class Counter { value = 1; read(other?: Counter): number { return other?.value ?? 0; } }`,
-      `class Counter { value = 1; read(other: Counter | undefined): number { return other === undefined ? 0 : other.value; } }`,
+      `class Counter { value = 1; read(other: Counter | undefined, scale: number): number { return other === undefined ? 0 : other.value * scale; } }`,
+      `class Counter { value = 1; read(other: Counter | null | undefined): number { return other == null ? 0 : other.value; } }`,
       `class Counter { value = 1; read(other: Counter = new Counter()): number { return other.value; } }`,
       `class Counter { value = 1; read(other?: Counter, scale?: number): number { return other === undefined ? 0 : other.value * (scale ?? 1); } }`,
       `class Counter { value = 1; read(first?: Counter, second?: Counter): number { return first === undefined || second === undefined ? 0 : first.value + second.value; } }`,

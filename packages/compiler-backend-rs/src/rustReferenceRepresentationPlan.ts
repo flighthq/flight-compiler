@@ -74,7 +74,7 @@ interface RustSimpleClassMethodPlan {
   readonly mutatedOptionalClassParameterPositions: ReadonlySet<number>;
   readonly optionalClassParameters: ReadonlyMap<
     number,
-    RustSharedClassCarrierType & Readonly<{ representation: 'optional-undefined-shared-ref-cell-class' }>
+    RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>
   >;
 }
 
@@ -357,10 +357,15 @@ function createRustReferenceModuleRecords(
         for (const [position, carrier] of methodPlan?.optionalClassParameters ?? []) {
           const parameter = method.parameters[position];
           if (!parameter) continue;
-          record.bindingTypes.set(parameter.binding.id, {
-            kind: 'union',
-            types: [carrier.classType, { kind: 'undefined' }],
-          });
+          record.bindingTypes.set(
+            parameter.binding.id,
+            parameter.optional
+              ? {
+                  kind: 'union',
+                  types: [carrier.classType, { kind: 'undefined' }],
+                }
+              : parameter.type,
+          );
         }
       }
     }
@@ -3349,7 +3354,7 @@ function addRustOptionalClassMethodRefusals(
         refusals,
         'rust-reference-shared-class-member-unrepresented',
         getRustSimpleClassMethodIdentity(module, declaration, method),
-        `class method ${declaration.binding.name}.${method.name} is outside the bounded trailing optional simple-class parameter carrier`,
+        `class method ${declaration.binding.name}.${method.name} is outside the bounded final single-sentinel simple-class parameter carrier`,
       );
     }
   }
@@ -3383,7 +3388,7 @@ function addRustOptionalClassMethodRefusals(
           refusals,
           'rust-reference-shared-class-member-unrepresented',
           `${getRustSimpleClassMethodIdentity(location.module, location.declaration, location.method)}:${JSON.stringify(path_)}`,
-          `class method ${location.declaration.binding.name}.${location.method.name} is outside the bounded trailing optional simple-class parameter carrier`,
+          `class method ${location.declaration.binding.name}.${location.method.name} is outside the bounded final single-sentinel simple-class parameter carrier`,
         );
         return;
       }
@@ -3392,7 +3397,7 @@ function addRustOptionalClassMethodRefusals(
         refusals,
         'rust-reference-shared-class-call-unrepresented',
         `${plan.identity}:${moduleKey(module.module)}:${JSON.stringify(path_)}`,
-        `class method ${location.declaration.binding.name}.${location.method.name} lacks exact optional invocation evidence or one matching simple-class argument carrier`,
+        `class method ${location.declaration.binding.name}.${location.method.name} lacks exact arity, sentinel evidence, or one matching simple-class argument carrier`,
       );
     },
   });
@@ -4851,11 +4856,18 @@ function getRustSimpleClassMethodCall(
     const argument = call.arguments[position];
     const carrier = plan.optionalClassParameters.get(position);
     if (carrier) {
-      if (!hasRustReferenceOptionalParameterInvocationEvidence(call, location.method.parameters, position)) {
+      const parameter = location.method.parameters[position];
+      if (
+        parameter?.optional &&
+        !hasRustReferenceOptionalParameterInvocationEvidence(call, location.method.parameters, position)
+      ) {
+        return undefined;
+      }
+      if (!argument) {
+        if (parameter?.optional) continue;
         return undefined;
       }
       if (
-        argument &&
         !isRustReferenceClassCarrierExpressionCompatible(
           argument,
           carrier,
@@ -4871,7 +4883,14 @@ function getRustSimpleClassMethodCall(
     }
     if (!argument) return undefined;
   }
-  if (plan.optionalClassParameters.size === 0 && call.semantics.optionalParameters !== undefined) return undefined;
+  if (
+    ![...plan.optionalClassParameters.keys()].some(
+      (position) => location.method.parameters[position]?.optional === true,
+    ) &&
+    call.semantics.optionalParameters !== undefined
+  ) {
+    return undefined;
+  }
   return {
     ...location,
     mutating: getRustSimpleClassMutatingMethodNames(location.declaration).has(location.method.name),
@@ -5008,7 +5027,7 @@ function getRustSimpleClassMethodPlan(
   }
   const optionalClassParameters = new Map<
     number,
-    RustSharedClassCarrierType & Readonly<{ representation: 'optional-undefined-shared-ref-cell-class' }>
+    RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>
   >();
   for (const [position, parameter] of method.parameters.entries()) {
     if (
@@ -5019,17 +5038,26 @@ function getRustSimpleClassMethodPlan(
     ) {
       continue;
     }
+    if (position !== method.parameters.length - 1 || parameter.initializer !== undefined || parameter.rest) {
+      return undefined;
+    }
+    const carrier = parameter.optional
+      ? parameter.type.kind === 'named' && parameter.type.typeArguments.length === 0
+        ? ({
+            classType: parameter.type,
+            representation: 'optional-undefined-shared-ref-cell-class',
+            sentinel: 'undefined',
+          } as const)
+        : undefined
+      : getRustSharedClassCarrierTypeCandidate(parameter.type, module.module, module.classBindingIds);
     if (
-      position !== method.parameters.length - 1 ||
-      parameter.initializer !== undefined ||
-      !parameter.optional ||
-      parameter.rest ||
-      parameter.type.kind !== 'named' ||
-      parameter.type.typeArguments.length > 0
+      !carrier ||
+      (carrier.representation !== 'optional-null-shared-ref-cell-class' &&
+        carrier.representation !== 'optional-undefined-shared-ref-cell-class')
     ) {
       return undefined;
     }
-    const location = getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution);
+    const location = getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution);
     if (!location) return undefined;
     const selfReference =
       moduleKey(location.module.module) === moduleKey(module.module) &&
@@ -5046,11 +5074,10 @@ function getRustSimpleClassMethodPlan(
     ) {
       return undefined;
     }
-    optionalClassParameters.set(position, {
-      classType: parameter.type,
-      representation: 'optional-undefined-shared-ref-cell-class',
-      sentinel: 'undefined',
-    });
+    optionalClassParameters.set(
+      position,
+      carrier as RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>,
+    );
   }
   if (optionalClassParameters.size > 1) return undefined;
   const mutatedOptionalClassParameterPositions = getRustSimpleClassMethodBodyMutationPositions(
@@ -5116,6 +5143,12 @@ function getRustSimpleClassMethodBodyMutationPositions(
       return parameter ? [[parameter.binding.id, parameter] as const] : [];
     }),
   );
+  const optionalCarriersById = new Map(
+    [...optionalClassParameters].flatMap(([position, carrier]) => {
+      const parameter = method.parameters[position];
+      return parameter ? [[parameter.binding.id, carrier] as const] : [];
+    }),
+  );
   const optionalParameterPositionsById = new Map(
     [...optionalClassParameters.keys()].flatMap((position) => {
       const parameter = method.parameters[position];
@@ -5155,8 +5188,9 @@ function getRustSimpleClassMethodBodyMutationPositions(
               left.object.presence === 'narrowedPresent'
                 ? optionalParametersById.get(left.object.reference.binding.id)
                 : undefined;
-            const location = parameter
-              ? getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution)
+            const carrier = parameter ? optionalCarriersById.get(parameter.binding.id) : undefined;
+            const location = carrier
+              ? getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution)
               : undefined;
             const field =
               left.kind === 'property'
@@ -5184,11 +5218,16 @@ function getRustSimpleClassMethodBodyMutationPositions(
             [expression.right, expression.left],
           ] as const;
           for (const [candidate, sentinel] of pairs) {
+            const expectedSentinel =
+              candidate.kind === 'identifier' && candidate.reference.kind === 'binding'
+                ? optionalCarriersById.get(candidate.reference.binding.id)?.sentinel
+                : undefined;
             if (
               candidate.kind === 'identifier' &&
               candidate.reference.kind === 'binding' &&
               optionalParametersById.has(candidate.reference.binding.id) &&
-              isRustReferenceSentinelExpression(sentinel, 'undefined')
+              expectedSentinel !== undefined &&
+              isRustReferenceSentinelExpression(sentinel, expectedSentinel)
             ) {
               allowedOptionalReferences.add(candidate);
               sentinelCheckedOptionalParameterIds.add(candidate.reference.binding.id);
@@ -5227,7 +5266,10 @@ function getRustSimpleClassMethodBodyMutationPositions(
         ) {
           const parameter = optionalParametersById.get(expression.object.reference.binding.id);
           if (parameter) {
-            const location = getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution);
+            const carrier = optionalCarriersById.get(parameter.binding.id);
+            const location = carrier
+              ? getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution)
+              : undefined;
             const field = location?.declaration.fields.find(
               (candidate) => !candidate.static && candidate.name === expression.name,
             );

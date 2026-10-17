@@ -12194,6 +12194,53 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.borrow_mut().merge(Some(Rc::clone(&other_alias)))');
   });
 
+  it('emits required explicit single-sentinel class method carriers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'explicit-sentinel-class-method.ts',
+        `class Counter {
+           value: number;
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+           inspectNull(scale: number, other: Counter | null): number {
+             return other === null ? this.value : other.value * scale;
+           }
+           inspectUndefined(other: Counter | undefined): number {
+             return other === undefined ? this.value : other.value;
+           }
+           writeNull(other: Counter | null): void {
+             if (other === null) return;
+             other.value = this.value;
+             other.value += 2;
+             other.label += "!";
+           }
+         }
+         export function run(): number {
+           const receiver = new Counter(3, "receiver"); const receiverAlias = receiver;
+           const other = new Counter(1, "other"); const otherAlias = other;
+           const nullable: Counter | null = otherAlias;
+           receiver.writeNull(null);
+           receiverAlias.writeNull(nullable);
+           return receiver.inspectNull(2, null) + receiverAlias.inspectNull(3, otherAlias) +
+             receiver.inspectUndefined(undefined) + receiverAlias.inspectUndefined(otherAlias);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn inspect_null(&self, scale: f64, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('fn inspect_undefined(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('fn write_null(&self, mut other: Option<Rc<RefCell<Counter>>>)');
+    expect(output).toContain('.borrow().write_null(None)');
+    expect(output).toContain('.borrow().write_null(nullable.clone())');
+    expect(output).toContain('.borrow().inspect_null(2.0, None)');
+    expect(output).toContain('.borrow().inspect_null(3.0, Some(Rc::clone(&other_alias)))');
+    expect(output).toContain('.borrow().inspect_undefined(None)');
+    expect(output).toContain('other.as_ref().unwrap().borrow().value');
+    expect(output).toMatch(
+      /let class_field_right(?:_\d+)? = self\.value; other\.as_ref\(\)\.unwrap\(\)\.borrow_mut\(\)\.value = class_field_right(?:_\d+)?;/u,
+    );
+  });
+
   it('stages direct optional class method field mutation without changing receiver mutability', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12275,6 +12322,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          constructor(value: number) { this.value = value; }
          inspect(other?: Counter): number { return other !== undefined ? other.value : this.value; }
          write(other?: Counter): void { if (other !== undefined) other.value += this.value; }
+         inspectNull(other: Counter | null): number { return other !== null ? other.value : this.value; }
+         writeNull(other: Counter | null): void { if (other !== null) other.value += this.value; }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -12286,11 +12335,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          if (other === undefined) return;
          receiver.write(other);
        }
+       function relayNull(receiver: Counter, other: Counter | null): void { receiver.writeNull(other); }
        export function run(): number {
          const receiver: Counter = new Counter(1); const receiverAlias: Counter = receiver;
          const other: Counter = new Counter(4); const otherAlias: Counter = other;
+         const nullable: Counter | null = otherAlias;
          relay(receiverAlias, otherAlias);
-         return receiverAlias.inspect(otherAlias) + receiver.inspect();
+         relayNull(receiverAlias, nullable);
+         return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null);
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -12333,13 +12385,19 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(providerOutput).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
     expect(providerOutput).toContain('fn write(&self, mut other: Option<Rc<RefCell<Counter>>>)');
+    expect(providerOutput).toContain('fn inspect_null(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(providerOutput).toContain('fn write_null(&self, mut other: Option<Rc<RefCell<Counter>>>)');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
     expect(consumerOutput).toContain('fn relay(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
     expect(consumerOutput).toContain('receiver.write(other.clone())');
+    expect(consumerOutput).toContain('fn relay_null(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
+    expect(consumerOutput).toContain('receiver.write_null(other.clone())');
     expect(consumerOutput).toContain('relay(&*receiver_alias.borrow(), Some(Rc::clone(&other_alias)))');
+    expect(consumerOutput).toContain('relay_null(&*receiver_alias.borrow(), nullable.clone())');
     expect(consumerOutput).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
     expect(consumerOutput).toContain('.borrow().inspect(None)');
+    expect(consumerOutput).toContain('.borrow().inspect_null(None)');
   });
 
   it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
@@ -12383,6 +12441,66 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
   });
 
+  it('refuses inexact explicit single-sentinel class method boundaries', () => {
+    const missingArgument = lower(
+      'explicit-sentinel-class-method-missing.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(null); }`,
+    ).module;
+    const run = missingArgument.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const returned = run?.kind === 'function' ? run.body[1] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected explicit sentinel class method call');
+    (call.arguments as unknown as unknown[]).length = 0;
+    if (!call.semantics.signature || call.semantics.signature.providedArgumentCount === 'dynamic') {
+      throw new Error('Expected fixed explicit sentinel class method signature evidence');
+    }
+    (call.semantics.signature as { providedArgumentCount: number }).providedArgumentCount = 0;
+    const wrongSentinel = lower(
+      'explicit-sentinel-class-method-wrong-sentinel.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(undefined as never); }`,
+    ).module;
+    const wrongIdentity = lower(
+      'explicit-sentinel-class-method-wrong-identity.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       class Other { value = 2; }
+       export function run(): number { const value = new Counter(); return value.inspect(new Other() as never); }`,
+    ).module;
+    const overlap = lower(
+      'explicit-sentinel-class-method-overlap.ts',
+      `class Counter { value = 1; inspect(other: Counter | null): number { return other === null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.inspect(value); }`,
+    ).module;
+    const nonFinal = lower(
+      'explicit-sentinel-class-method-nonfinal.ts',
+      `class Counter { value = 1; inspect(other: Counter | null, scale: number): number { return other === null ? 0 : other.value * scale; } }
+       export function run(): number { const value = new Counter(); return value.value; }`,
+    ).module;
+    const dualSentinel = lower(
+      'explicit-sentinel-class-method-dual.ts',
+      `class Counter { value = 1; inspect(other: Counter | null | undefined): number { return other == null ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.value; }`,
+    ).module;
+
+    for (const module of [missingArgument, wrongSentinel, wrongIdentity]) {
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(
+        'rust-reference-shared-class-call-unrepresented',
+      );
+    }
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(overlap)).rule).toBe(
+      'rust-reference-shared-class-borrow-conflict',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(nonFinal)).rule).toBe(
+      'rust-reference-shared-class-type-unrepresented',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(dualSentinel)).rule).toBe(
+      'rust-reference-shared-class-type-unrepresented',
+    );
+  });
+
   it.skipIf(!rustcAvailable)('runs the combined optional simple-class parameter checkpoint', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12397,6 +12515,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              other.value = this.value;
              other.value += 2;
              other.label += "!";
+           }
+           writeNullable(other: Counter | null): void {
+             if (other === null) return;
+             other.value = this.value;
+             other.value += 2;
+             other.label += "?";
            }
          }
          class Snapshot {
@@ -12423,6 +12547,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const distinctMethod = receiver.inspect(otherAlias);
            const mutatedMethod = new Counter(1, "method"); const mutatedMethodAlias = mutatedMethod;
            receiverAlias.write(mutatedMethodAlias);
+           const nullableMethod = new Counter(1, "nullable"); const nullableMethodAlias = nullableMethod;
+           const nullableMethodCarrier: Counter | null = nullableMethodAlias;
+           receiver.writeNullable(null);
+           receiverAlias.writeNullable(nullableMethodCarrier);
            const compound = new Counter(2, "a"); const compoundAlias = compound;
            const optionalCompound: Counter | undefined = compoundAlias;
            let compoundOrder = 0;
@@ -12441,6 +12569,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
              receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
+             nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
              compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
              compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,
