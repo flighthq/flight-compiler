@@ -237,6 +237,7 @@ type RustAsyncTryDirectAwaitStep =
     }>;
 
 interface RustAsyncTryFinallyCompletionPlan {
+  readonly catchRethrowBinding?: Readonly<IrBindingIdentity> | undefined;
   readonly catchStatements?: readonly Readonly<IrStatement>[] | undefined;
   readonly finallyStatements: readonly Readonly<IrStatement>[];
   readonly tryStatements: readonly Readonly<IrStatement>[];
@@ -6648,15 +6649,73 @@ function getIrAsyncTrySourceThrowMessageRust(
 
 function areIrAsyncTryStraightLineStatementsRust(
   statements: readonly Readonly<IrStatement>[],
-  allowTerminalSourceThrow = false,
+  allowTerminalThrow = false,
 ): boolean {
   return statements.every(
     (statement, index) =>
       statement.kind === 'expression' ||
       statement.kind === 'variable' ||
-      ((statement.kind === 'return' || (allowTerminalSourceThrow && statement.kind === 'throw')) &&
+      ((statement.kind === 'return' || (allowTerminalThrow && statement.kind === 'throw')) &&
         index === statements.length - 1),
   );
+}
+
+function doesIrExpressionReferenceBindingRust(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  let referencesBinding = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (
+        candidate.kind === 'identifier' &&
+        candidate.reference.kind === 'binding' &&
+        candidate.reference.binding.id === bindingId
+      ) {
+        referencesBinding = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return referencesBinding;
+}
+
+function isIrAsyncTryCatchBindingMutatedRust(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  let mutated = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      const target =
+        expression.kind === 'assignment'
+          ? expression.left
+          : expression.kind === 'unary' && (expression.operator === '++' || expression.operator === '--')
+            ? expression.operand
+            : undefined;
+      if (target && doesIrExpressionReferenceBindingRust(target, bindingId)) {
+        mutated = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return mutated;
+}
+
+function getIrAsyncTryCatchRethrowBindingRust(
+  statement: Readonly<IrStatement> | undefined,
+  binding: Readonly<IrBindingIdentity> | undefined,
+  catchBody: Readonly<IrStatement> | undefined,
+): Readonly<IrBindingIdentity> | undefined {
+  if (
+    !statement ||
+    !binding ||
+    statement.kind !== 'throw' ||
+    statement.expression.kind !== 'identifier' ||
+    statement.expression.reference.kind !== 'binding' ||
+    statement.expression.reference.binding.id !== binding.id ||
+    !catchBody ||
+    isIrAsyncTryCatchBindingMutatedRust(catchBody, binding.id)
+  ) {
+    return undefined;
+  }
+  return binding;
 }
 
 function getAsyncTryFinallyCompletionPlanRust(
@@ -6681,26 +6740,34 @@ function getAsyncTryFinallyCompletionPlanRust(
     return step ? [step] : [];
   });
   const tryTail = tryStatements.at(-1);
+  const catchTail = catchStatements?.at(-1);
   const protectedThrowMessage = tryTail ? getIrAsyncTrySourceThrowMessageRust(tryTail, context) : undefined;
+  const catchRethrowBinding = getIrAsyncTryCatchRethrowBindingRust(
+    catchTail,
+    statement.catchClause?.binding,
+    statement.catchClause?.body,
+  );
   const permittedReturns = new Set(
-    [tryStatements.at(-1), catchStatements?.at(-1)].filter(
-      (candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return',
-    ),
+    [tryTail, catchTail].filter((candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return'),
   );
   const permittedTryCompletions = new Set([
     ...permittedReturns,
     ...(tryTail?.kind === 'throw' && protectedThrowMessage ? [tryTail] : []),
+  ]);
+  const permittedCatchCompletions = new Set([
+    ...permittedReturns,
+    ...(catchTail?.kind === 'throw' && catchRethrowBinding ? [catchTail] : []),
   ]);
   const flatBodies =
     !(statement.tryBody.kind === 'block' && statement.tryBody.label) &&
     !(statement.catchClause?.body.kind === 'block' && statement.catchClause.body.label) &&
     !(statement.finallyBody.kind === 'block' && statement.finallyBody.label) &&
     areIrAsyncTryStraightLineStatementsRust(tryStatements, true) &&
-    (catchStatements === undefined || areIrAsyncTryStraightLineStatementsRust(catchStatements)) &&
+    (catchStatements === undefined || areIrAsyncTryStraightLineStatementsRust(catchStatements, true)) &&
     finallyStatements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable');
   const exactCompletions =
     tryEvidence.abruptStatements.every((candidate) => permittedTryCompletions.has(candidate)) &&
-    (catchEvidence?.abruptStatements.every((candidate) => permittedReturns.has(candidate)) ?? true) &&
+    (catchEvidence?.abruptStatements.every((candidate) => permittedCatchCompletions.has(candidate)) ?? true) &&
     finallyEvidence.abruptStatements.length === 0;
   const exactSuspensions =
     trySteps.length > 0 &&
@@ -6710,11 +6777,12 @@ function getAsyncTryFinallyCompletionPlanRust(
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms or one terminal protected Error(String) throw, direct try awaits, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct try awaits, and a non-abrupt finally',
       'rust-async-try-completion-unrepresented',
     );
   }
   return {
+    ...(catchRethrowBinding ? { catchRethrowBinding } : {}),
     ...(catchStatements ? { catchStatements } : {}),
     finallyStatements,
     tryStatements,
@@ -7099,12 +7167,27 @@ function emitAsyncTryFinallyTryCompletionRust(
 
 function emitAsyncTryFinallyCatchCompletionRust(
   statements: readonly Readonly<IrStatement>[],
+  rethrowBinding: Readonly<IrBindingIdentity> | undefined,
   context: EmitContext,
 ): string[] {
   const tail = statements.at(-1);
-  const body = tail?.kind === 'return' ? statements.slice(0, -1) : statements;
-  const lines = emitStatements(body, context);
-  if (tail?.kind !== 'return') return [...lines, 'None'];
+  const hasAbruptTail = tail?.kind === 'return' || tail?.kind === 'throw';
+  const body = hasAbruptTail ? statements.slice(0, -1) : statements;
+  const bodyContext = rethrowBinding
+    ? { ...context, movedBindingIds: new Set([...context.movedBindingIds, rethrowBinding.id]) }
+    : context;
+  const lines = emitStatements(body, bodyContext);
+  if (tail?.kind === 'throw') {
+    if (!rethrowBinding) {
+      emissionRuleError(
+        context,
+        'catch throw requires the unchanged active String rejection binding',
+        'rust-async-try-completion-unrepresented',
+      );
+    }
+    return [...lines, `Err(${getBindingTargetNameRust(rethrowBinding, context)})`];
+  }
+  if (tail?.kind !== 'return') return [...lines, 'Ok(None)'];
   if (!tail.expression) {
     if (context.returnsSharedClass) {
       emissionRuleError(
@@ -7113,10 +7196,10 @@ function emitAsyncTryFinallyCatchCompletionRust(
         'rust-reference-shared-class-return-unrepresented',
       );
     }
-    return [...lines, 'Some(())'];
+    return [...lines, 'Ok(Some(()))'];
   }
   const value = normalizeSourceTextGrouping(emitContextualOwnedReturnValueRust(tail.expression, context));
-  return [...lines, `Some(${value})`];
+  return [...lines, `Ok(Some(${value}))`];
 }
 
 function emitAsyncTryFinallyCompletionRust(
@@ -7140,11 +7223,13 @@ function emitAsyncTryFinallyCompletionRust(
       ? getBindingTargetNameRust(statement.catchClause.binding, context)
       : '_';
     lines.push(
-      `let ${completion}: Option<${returnType}> = match ${pending} {`,
+      `let ${completion}: Result<Option<${returnType}>, String> = match ${pending} {`,
       ...indentSourceLines([
-        `Ok(${carried}) => ${carried},`,
+        `Ok(${carried}) => Ok(${carried}),`,
         `Err(${catchBinding}) => {`,
-        ...indentSourceLines(emitAsyncTryFinallyCatchCompletionRust(plan.catchStatements, context)),
+        ...indentSourceLines(
+          emitAsyncTryFinallyCatchCompletionRust(plan.catchStatements, plan.catchRethrowBinding, context),
+        ),
         '}',
       ]),
       '};',
@@ -7154,13 +7239,16 @@ function emitAsyncTryFinallyCompletionRust(
   const value = getGeneratedTargetNameRust('try_return_value', context);
   const tryCanCompleteNormally =
     plan.tryStatements.at(-1)?.kind !== 'return' && plan.tryStatements.at(-1)?.kind !== 'throw';
-  const catchCanCompleteNormally = plan.catchStatements?.at(-1)?.kind !== 'return';
+  const catchCanCompleteNormally =
+    plan.catchStatements?.at(-1)?.kind !== 'return' && plan.catchStatements?.at(-1)?.kind !== 'throw';
   if (plan.catchStatements) {
+    const error = getGeneratedTargetNameRust('try_error', context);
     lines.push(
       `match ${completion} {`,
       ...indentSourceLines([
-        `Some(${value}) => return ${value},`,
-        `None => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
+        `Ok(Some(${value})) => return ${value},`,
+        `Ok(None) => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
+        `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
       ]),
       '}',
     );

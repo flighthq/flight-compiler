@@ -3831,6 +3831,128 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ).not.toThrow();
   });
 
+  it('preserves an exact terminal catch-binding rethrow until after finally', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-rethrow.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { record(error, log); throw error; } finally { record("finally", log); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(output).toContain('record(error.clone(), log)');
+    expect(output).toMatch(/Err\(error\)[\s\S]*record\("finally"\.to_owned\(\), log\)[\s\S]*unhandled task rejection/);
+  });
+
+  it.skipIf(!rustcAvailable)('rethrows a task rejection after catch effects and one finally cleanup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-rethrow-task-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { record(error, log); throw error; } finally { record("finally", log); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(output).toContain('record(error.clone(), log)');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("task"), &mut log))));
+         assert_eq!(log, vec!["task".to_owned(), "finally".to_owned()]);
+         let payload = panic.expect_err("rethrow must panic after catch and cleanup");
+         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
+         assert_eq!(message, Some("unhandled task rejection: task"));`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('rethrows a terminal protected source throw after one finally cleanup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-rethrow-source-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<void>, message: string, log: string[]): Promise<void> { try { await task; record("try", log); throw new Error(message); } catch (error) { record(error, log); throw error; } finally { record("finally", log); } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(()), "source".to_owned(), &mut log))));
+         assert_eq!(log, vec!["try".to_owned(), "source".to_owned(), "finally".to_owned()]);
+         let payload = panic.expect_err("source rethrow must panic after cleanup");
+         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
+         assert_eq!(message, Some("unhandled task rejection: source"));`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('skips catch rethrow for a fulfilled return and runs finally once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-rethrow-ready-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { record(error, log); throw error; } finally { record("finally", log); } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), &mut log)), 4.0);
+         assert_eq!(log, vec!["finally".to_owned()]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'without a catch binding',
+      'export async function attempt(task: Promise<number>, other: string, log: string[]): Promise<number> { try { return await task; } catch { throw other; } finally { log.push("finally"); } }',
+    ],
+    [
+      'of a different binding',
+      'export async function attempt(task: Promise<number>, other: string, log: string[]): Promise<number> { try { return await task; } catch (error) { throw other; } finally { log.push("finally"); } }',
+    ],
+    [
+      'through an alias',
+      'export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { const alias = error; throw alias; } finally { log.push("finally"); } }',
+    ],
+    [
+      'of an arbitrary value',
+      'export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { throw "other"; } finally { log.push("finally"); } }',
+    ],
+    [
+      'of a new Error',
+      'export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { throw new Error("other"); } finally { log.push("finally"); } }',
+    ],
+    [
+      'before a later statement',
+      'export async function attempt(task: Promise<number>, log: string[]): Promise<number> { try { return await task; } catch (error) { throw error; log.push("later"); } finally { log.push("finally"); } }',
+    ],
+    [
+      'from nested control',
+      'export async function attempt(task: Promise<number>, enabled: boolean, log: string[]): Promise<number> { try { return await task; } catch (error) { if (enabled) throw error; return 0; } finally { log.push("finally"); } }',
+    ],
+    [
+      'more than once',
+      'export async function attempt(task: Promise<number>, enabled: boolean, log: string[]): Promise<number> { try { return await task; } catch (error) { if (enabled) throw error; throw error; } finally { log.push("finally"); } }',
+    ],
+    [
+      'after mutating the catch binding',
+      'export async function attempt(task: Promise<number>, replacement: string, log: string[]): Promise<number> { try { return await task; } catch (error) { error = replacement; throw error; } finally { log.push("finally"); } }',
+    ],
+  ])('stably refuses catch rethrow %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('unsupported-catch-rethrow.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+    expect(failure.message).toContain('unchanged catch binding');
+  });
+
   it.each([
     [
       'a non-tail source throw',
@@ -3847,10 +3969,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     [
       'a non-string Error message',
       'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; throw new Error(1 as never); } finally { log.push(1); } }',
-    ],
-    [
-      'a catch throw',
-      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch (error) { throw error; } finally { log.push(1); } }',
     ],
     [
       'a throwing finally',
