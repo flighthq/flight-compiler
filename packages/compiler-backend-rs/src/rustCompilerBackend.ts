@@ -482,6 +482,7 @@ interface RustModuleStateEmission {
   readonly plan: Readonly<CompilerRustModuleStateBindingPlan>;
   readonly readName: string;
   readonly storageName: string;
+  readonly updateName: string | undefined;
   readonly writeName: string;
 }
 
@@ -1017,6 +1018,10 @@ function emitIrModuleRustWithContext(
       plan: bindingPlan,
       readName: getGeneratedTargetNameRust(`read_module_state_${safeRustValueName(targetName)}`, context),
       storageName: getGeneratedTargetNameRust(`MODULE_STATE_${constantRustName(targetName)}`, context),
+      updateName:
+        bindingPlan.update === 'number-increment-decrement'
+          ? getGeneratedTargetNameRust(`update_module_state_${safeRustValueName(targetName)}`, context)
+          : undefined,
       writeName: getGeneratedTargetNameRust(`write_module_state_${safeRustValueName(targetName)}`, context),
     });
   }
@@ -2621,6 +2626,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'unary': {
       if (expression.operator === '++' || expression.operator === '--') {
+        const moduleStateUpdate = emitModuleStateUpdateUnaryRust(expression, context);
+        if (moduleStateUpdate) return moduleStateUpdate;
         const asyncMethodSelfUpdate = emitAsyncMethodSelfFieldUpdateRust(expression, context);
         if (asyncMethodSelfUpdate) return asyncMethodSelfUpdate;
         return emitNumericUpdateUnaryRust(expression, context);
@@ -12416,18 +12423,33 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
 
 function emitModuleStateDeclarationRust(state: Readonly<RustModuleStateEmission>): string[] {
   const rustType = state.plan.scalar === 'number' ? 'f64' : 'bool';
-  return [
+  const lines = [
     `static ${state.storageName}: std::sync::Mutex<${rustType}> = std::sync::Mutex::new(${emitLiteral(state.plan.initializer)});`,
     '',
     `fn ${state.readName}() -> ${rustType} {`,
     `  *${state.storageName}.lock().unwrap_or_else(|poisoned| poisoned.into_inner())`,
     '}',
+  ];
+  if (state.updateName) {
+    lines.push(
+      '',
+      `fn ${state.updateName}(increment: bool) -> (${rustType}, ${rustType}) {`,
+      `  let mut guard = ${state.storageName}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());`,
+      '  let previous = *guard;',
+      '  let updated = if increment { previous + 1.0 } else { previous - 1.0 };',
+      '  *guard = updated;',
+      '  (previous, updated)',
+      '}',
+    );
+  }
+  lines.push(
     '',
     `fn ${state.writeName}(value: ${rustType}) -> ${rustType} {`,
     `  *${state.storageName}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = value;`,
     '  value',
     '}',
-  ];
+  );
+  return lines;
 }
 
 function refuseRustModuleVariableSynchronization(binding: Readonly<IrBindingIdentity>, context: EmitContext): never {
@@ -17692,6 +17714,25 @@ function emitNumericUpdateUnaryRust(
   if (!expression.postfix) return `{ ${name} ${arithmetic}= 1.0; ${name} }`;
   const previous = getGeneratedTargetNameRust('update_previous', context);
   return `{ let ${previous} = ${name}; ${name} ${arithmetic}= 1.0; ${previous} }`;
+}
+
+function emitModuleStateUpdateUnaryRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.operand.kind !== 'identifier' || expression.operand.reference.kind !== 'binding') return undefined;
+  const moduleState = context.moduleStateBindings.get(expression.operand.reference.binding.id);
+  if (!moduleState) return undefined;
+  if (
+    moduleState.plan.scalar !== 'number' ||
+    moduleState.plan.update !== 'number-increment-decrement' ||
+    !moduleState.updateName ||
+    expression.semantics.operand.flow !== 'number' ||
+    expression.semantics.result !== 'number'
+  ) {
+    refuseRustModuleVariableSynchronization(expression.operand.reference.binding, context);
+  }
+  return `${moduleState.updateName}(${expression.operator === '++' ? 'true' : 'false'}).${expression.postfix ? '0' : '1'}`;
 }
 
 function emitPrefixUnaryOperatorRust(

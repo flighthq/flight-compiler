@@ -72,13 +72,15 @@ function createRustModuleStateBindingPlans(
   if (declaration.exported || !scalar || isRustModuleStateBindingExported(module, declaration.binding.id)) return [];
   if (!hasOnlyEvaluationTrivialRustModuleDeclarations(module, declaration)) return [];
   if (hasIncidentRustModuleRuntimeDependency(module, modules, moduleResolution)) return [];
-  if (!hasOnlySupportedRustModuleStateUses(module, declaration.binding.id)) return [];
+  const update = getRustModuleStateUpdateCapability(module, declaration.binding.id, scalar.scalar);
+  if (!update) return [];
   return [
     {
       bindingId: declaration.binding.id,
       declarationPath: ['declarations', module.declarations.indexOf(declaration)],
       initializer: scalar.initializer,
       scalar: scalar.scalar,
+      update,
     },
   ];
 }
@@ -212,31 +214,51 @@ function resolveRelativeRustModuleStateTarget(
   );
 }
 
-function hasOnlySupportedRustModuleStateUses(module: Readonly<IrModule>, bindingId: string): boolean {
+function getRustModuleStateUpdateCapability(
+  module: Readonly<IrModule>,
+  bindingId: string,
+  scalar: 'boolean' | 'number',
+): 'none' | 'number-increment-decrement' | undefined {
   const inventory = collectRustModuleStateUseInventory(module, bindingId);
-  return inventory.references.every((referencePath) => {
-    if (referencePath[0] !== 'declarations' || typeof referencePath[1] !== 'number') return false;
+  let hasNumberUpdate = false;
+  for (const referencePath of inventory.references) {
+    if (referencePath[0] !== 'declarations' || typeof referencePath[1] !== 'number') return undefined;
     const declaration = module.declarations[referencePath[1]];
-    if (declaration?.kind !== 'function' || declaration.async || referencePath[2] !== 'body') return false;
+    if (declaration?.kind !== 'function' || declaration.async || referencePath[2] !== 'body') return undefined;
     if (
       inventory.functionExpressions.some((functionPath) => isRustModuleStatePathPrefix(functionPath, referencePath))
     ) {
-      return false;
+      return undefined;
     }
     const assignment = inventory.assignments.find(({ path: assignmentPath }) =>
       isRustModuleStatePathPrefix([...assignmentPath, 'left'], referencePath),
     );
     if (assignment) {
-      return (
-        assignment.expression.operator === '=' &&
-        referencePath.length === assignment.path.length + 1 &&
-        referencePath.at(-1) === 'left'
-      );
+      if (
+        assignment.expression.operator !== '=' ||
+        referencePath.length !== assignment.path.length + 1 ||
+        referencePath.at(-1) !== 'left'
+      ) {
+        return undefined;
+      }
+      continue;
     }
-    return !inventory.updates.some(({ path: updatePath }) =>
+    const update = inventory.updates.find(({ path: updatePath }) =>
       isRustModuleStatePathPrefix([...updatePath, 'operand'], referencePath),
     );
-  });
+    if (!update) continue;
+    if (
+      scalar !== 'number' ||
+      update.expression.semantics.operand.flow !== 'number' ||
+      update.expression.semantics.result !== 'number' ||
+      referencePath.length !== update.path.length + 1 ||
+      referencePath.at(-1) !== 'operand'
+    ) {
+      return undefined;
+    }
+    hasNumberUpdate = true;
+  }
+  return hasNumberUpdate ? 'number-increment-decrement' : 'none';
 }
 
 function collectRustModuleStateUseInventory(

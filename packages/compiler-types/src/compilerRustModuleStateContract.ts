@@ -8,6 +8,7 @@ export interface CompilerRustModuleStateBindingPlan {
   readonly declarationPath: CompilerIrTraversalPath;
   readonly initializer: boolean | number;
   readonly scalar: 'boolean' | 'number';
+  readonly update: 'none' | 'number-increment-decrement';
 }
 
 export interface CompilerRustModuleStateModulePlan {
