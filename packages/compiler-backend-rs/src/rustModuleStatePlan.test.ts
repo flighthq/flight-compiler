@@ -6,6 +6,10 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import {
+  createCompilerModuleEvaluationPlan,
+  filterCompilerModuleEvaluationPlan,
+} from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleFacadePlan,
@@ -195,9 +199,15 @@ export function keep(value: number): number { return value + 1; }`;
 
     expect(failure.rule).toBe('rust-module-variable-synchronization-unsupported');
     expect(failure.line).toBe(1);
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const moduleEvaluation = createEvaluation([module]);
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
+      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -241,10 +251,16 @@ export function keep(value: number): number { return value + 1; }`;
 
   it('reuses the accepted plan during source-tree re-emission', () => {
     const module = lower('counter.ts', 'let counter = 0; export function increment(): number { return ++counter; }');
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const moduleEvaluation = createEvaluation([module]);
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options: {},
+    });
     const initial = session.emitModule(module)[0]!;
     const finalized = session.finalizePackageGraph!({
       facade: createFacade([module]),
+      moduleEvaluation,
       moduleFiles: [{ file: initial, module: identity(module) }],
     });
     const replacement = finalized.moduleFileReplacements?.find(({ module: owner }) => owner.name === module.name)?.file;
@@ -253,15 +269,67 @@ export function keep(value: number): number { return value + 1; }`;
     expect(replacement?.contents).toContain('static MODULE_STATE_COUNTER: std::sync::Mutex<f64>');
     expect(replacement?.contents).toContain('fn update_module_state_counter(increment: bool) -> (f64, f64)');
     expect(replacement?.contents).toContain('return update_module_state_counter(true).1;');
+
+    expect(() =>
+      session.finalizePackageGraph!({
+        facade: createFacade([module]),
+        moduleEvaluation: { ...moduleEvaluation, entries: [] },
+        moduleFiles: [{ file: initial, module: identity(module) }],
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'rust-module-evaluation-finalization-mismatch',
+        kind: 'compiler-backend-finalization',
+      }),
+    );
+  });
+
+  it('accepts one whole cyclic evaluation candidate during finalization', () => {
+    const first = lower('first.ts', "import './second.js'; export function first(): number { return 1; }");
+    const second = lower('second.ts', "import './first.js'; export function second(): number { return 2; }");
+    const firstIdentity = identity(first);
+    const secondIdentity = identity(second);
+    const dependencies = [
+      { importer: firstIdentity, specifier: './second.js', target: secondIdentity },
+      { importer: secondIdentity, specifier: './first.js', target: firstIdentity },
+    ];
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies,
+      entries: [firstIdentity],
+      modules: [first, second],
+    });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution: { edges: dependencies, schema: 'flight-compiler-module-resolution/1' },
+      modules: [first, second],
+      options: {},
+    });
+
+    expect(moduleEvaluation.groups).toEqual([
+      expect.objectContaining({ cyclic: true, modules: expect.arrayContaining([firstIdentity, secondIdentity]) }),
+    ]);
+    expect(
+      session.finalizePackageGraph!({
+        facade: createFacade([]),
+        moduleEvaluation,
+        moduleFiles: [],
+      }),
+    ).toEqual({ moduleFileReplacements: [], packageFiles: [] });
   });
 
   it('preserves declaration-local salvage attribution for an unsupported mutable binding', () => {
     const source = `export let counter = 0;
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('salvage.ts', source);
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const moduleEvaluation = createEvaluation([module]);
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
+      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -291,9 +359,15 @@ export function keep(value: number): number { return value + 1; }`;
 export function broken(value: unknown): { value: number } { return value as { value: number }; }
 export function keep(): number { return counter++; }`;
     const module = lower('state-salvage.ts', source);
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const moduleEvaluation = createEvaluation([module]);
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
+      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -344,6 +418,10 @@ function captureEmissionFailure(run: () => unknown) {
     throw error;
   }
   throw new Error('expected Rust emission to refuse and it did not');
+}
+
+function createEvaluation(modules: readonly Readonly<IrModule>[]) {
+  return createCompilerModuleEvaluationPlan({ dependencies: [], entries: modules, modules });
 }
 
 function createFacade(modules: readonly Readonly<IrModule>[]): CompilerModuleFacadePlan {

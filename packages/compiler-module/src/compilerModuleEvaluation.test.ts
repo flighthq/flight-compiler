@@ -9,7 +9,11 @@ import type {
   IrExpression,
   IrModule,
 } from '../../compiler-types/src/index.js';
-import { createCompilerModuleEvaluationPlan, isCompilerModuleEvaluationFailure } from './compilerModuleEvaluation.js';
+import {
+  createCompilerModuleEvaluationPlan,
+  filterCompilerModuleEvaluationPlan,
+  isCompilerModuleEvaluationFailure,
+} from './compilerModuleEvaluation.js';
 
 describe('createCompilerModuleEvaluationPlan', () => {
   it('plans instantiation, temporal access, live imports, mutation, and source-ordered evaluation', () => {
@@ -329,6 +333,53 @@ describe('createCompilerModuleEvaluationPlan', () => {
       expect.objectContaining({ code: 'top-level-await' }),
     );
     expect(() => createCompilerModuleEvaluationPlan(createInput([nested], [], [nested]))).not.toThrow();
+  });
+});
+
+describe('filterCompilerModuleEvaluationPlan', () => {
+  it('retains candidate evidence and order deterministically without mutation', () => {
+    const first = lowerModule('first.ts', 'export const first = 1;');
+    const second = lowerModule('second.ts', 'export const second = 2;');
+    const candidate = createCompilerModuleEvaluationPlan(createInput([second, first], [], [second, first]));
+    const snapshot = structuredClone(candidate);
+
+    const projected = filterCompilerModuleEvaluationPlan(candidate, [first, second]);
+
+    expect(projected).toEqual(candidate);
+    expect(projected).not.toBe(candidate);
+    expect(projected.modules.map(({ module }) => module.source)).toEqual(
+      candidate.modules.map(({ module }) => module.source),
+    );
+    expect(candidate).toEqual(snapshot);
+    expect(isDeeplyFrozen(projected, new WeakSet())).toBe(true);
+  });
+
+  it('rejects a selection that is not dependency closed', () => {
+    const dependency = lowerModule('dependency.ts', 'export const value = 1;');
+    const entry = lowerModule('entry.ts', "import { value } from './dependency.js'; export const result = value;");
+    const candidate = createCompilerModuleEvaluationPlan(
+      createInput([entry, dependency], [createDependency(entry, './dependency.js', dependency)], [entry]),
+    );
+
+    expect(() => filterCompilerModuleEvaluationPlan(candidate, [entry])).toThrowError(
+      expect.objectContaining({ code: 'non-closed-selection', kind: 'compiler-module-evaluation' }),
+    );
+  });
+
+  it('rejects a selection that splits an SCC', () => {
+    const first = lowerModule('first.ts', "import { second } from './second.js'; export const first = second;");
+    const second = lowerModule('second.ts', "import { first } from './first.js'; export const second = first;");
+    const candidate = createCompilerModuleEvaluationPlan(
+      createInput(
+        [first, second],
+        [createDependency(first, './second.js', second), createDependency(second, './first.js', first)],
+        [first],
+      ),
+    );
+
+    expect(() => filterCompilerModuleEvaluationPlan(candidate, [first])).toThrowError(
+      expect.objectContaining({ code: 'partial-scc-selection', kind: 'compiler-module-evaluation' }),
+    );
   });
 });
 

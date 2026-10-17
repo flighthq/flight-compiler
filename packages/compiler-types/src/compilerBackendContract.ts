@@ -1,5 +1,6 @@
 import type { CompilerCppPublicBindingPlan, CompilerHaxeDualBindingPlan } from './compilerHaxeDualBindingContract.js';
 import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
+import type { CompilerModuleEvaluationPlan } from './compilerModuleEvaluationContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
@@ -49,6 +50,8 @@ export interface CompilerBackendPackageFile {
 /** Final package-graph facts available only after module refusal filtering and facade construction. */
 export interface CompilerBackendPackageGraphFinalization {
   readonly facade: CompilerModuleFacadePlan;
+  /** Authoritative evaluation projection after all emission refusals and collisions have propagated. */
+  readonly moduleEvaluation: CompilerModuleEvaluationPlan;
   /** Ordered by module identity, then emitted path. Refused, placeholder, and unselected outputs are absent. */
   readonly moduleFiles: readonly CompilerBackendModuleFile[];
   /**
@@ -88,6 +91,11 @@ export interface BackendEmitContext<Options> {
    */
   readonly modules: readonly IrModule[];
   readonly options: Readonly<Options>;
+}
+
+/** Whole-graph context prepared only after neutral module evaluation has reached its fixed point. */
+export interface CompilerBackendEmissionSessionContext<Options> extends BackendEmitContext<Options> {
+  readonly moduleEvaluation: CompilerModuleEvaluationPlan;
 }
 
 export type CompilerBackendPublicBindingPlan =
@@ -142,7 +150,7 @@ export interface CompilerBackend<Options = Record<string, never>> {
    * it builds here is what makes an emitted module resolve a dependency this run does not emit.
    */
   readonly createEmissionSession?:
-    | ((context: BackendEmitContext<Options>) => CompilerBackendEmissionSession)
+    | ((context: CompilerBackendEmissionSessionContext<Options>) => CompilerBackendEmissionSession)
     | undefined;
   /** Versioned target-owned public identities reported beside the target-neutral package facade. */
   readonly createPublicBindingPlan?:

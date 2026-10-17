@@ -37,6 +37,7 @@ import {
   isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
+import { filterCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import {
   analyzeCompilerRuntimeExternalConstructorAbiCompleteness,
   analyzeCompilerRuntimeExternalSymbolCompleteness,
@@ -61,6 +62,7 @@ import type {
   CompilerIrTraversalPath,
   CompilerLoweringPass,
   CompilerModuleIdentity,
+  CompilerModuleEvaluationPlan,
   CompilerModuleResolutionPlan,
   CompilerRefusalClassification,
   CompilerRefusalPlaceholderRequest,
@@ -556,7 +558,7 @@ type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refus
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
   return {
-    createEmissionSession({ moduleResolution, modules, options }) {
+    createEmissionSession({ moduleEvaluation, moduleResolution, modules, options }) {
       const referenceRepresentationPlan = createCompilerRustReferenceRepresentationPlan({
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
@@ -644,6 +646,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         },
         finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
           try {
+            assertRustModuleEvaluationFinalization(moduleEvaluation, finalization.moduleEvaluation);
             suppressedPlaceholderKeys = new Set(
               (finalization.refusals ?? [])
                 .filter((refusal) => refusal.code === 'duplicate-emitted-path')
@@ -19342,6 +19345,41 @@ function createRustBackendFinalizationFailure(
     kind: 'compiler-backend-finalization' as const,
     subjects: [...failure.subjects],
   });
+  result.name = 'CompilerBackendFinalizationError';
+  return result;
+}
+
+function assertRustModuleEvaluationFinalization(
+  candidate: Readonly<CompilerModuleEvaluationPlan>,
+  authoritative: Readonly<CompilerModuleEvaluationPlan>,
+): void {
+  let projected: CompilerModuleEvaluationPlan;
+  try {
+    projected = filterCompilerModuleEvaluationPlan(
+      candidate,
+      authoritative.modules.map(({ module }) => module),
+    );
+  } catch (cause) {
+    throw createRustModuleEvaluationFinalizationFailure(cause);
+  }
+  if (
+    normalizeCompilerStructuralValueCanonical(projected) !== normalizeCompilerStructuralValueCanonical(authoritative)
+  ) {
+    throw createRustModuleEvaluationFinalizationFailure();
+  }
+}
+
+function createRustModuleEvaluationFinalizationFailure(cause?: unknown): CompilerBackendFinalizationFailure {
+  const result = Object.assign(
+    new Error('Rust finalization module evaluation is not an exact projection of the emission candidate', {
+      ...(cause === undefined ? {} : { cause }),
+    }),
+    {
+      backend: 'rust',
+      code: 'rust-module-evaluation-finalization-mismatch',
+      kind: 'compiler-backend-finalization' as const,
+    },
+  );
   result.name = 'CompilerBackendFinalizationError';
   return result;
 }

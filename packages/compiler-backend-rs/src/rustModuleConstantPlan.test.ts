@@ -6,6 +6,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleFacadePlan,
@@ -16,6 +17,8 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 import { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
+
+const emptyModuleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 describe('createCompilerRustModuleConstantPlan', () => {
   it('deeply freezes a deterministic primitive const plan without mutating inputs', () => {
@@ -121,6 +124,7 @@ describe('createCompilerRustModuleConstantPlan', () => {
       getModulePlan(createCompilerRustModuleConstantPlan({ modules: [provider, consumer] }).modules, consumer).refusals,
     ).toEqual([expect.objectContaining({ reason: 'import-not-exact' })]);
     const emitted = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: acyclicResolution,
       modules: [provider, consumer],
       options: {},
@@ -207,6 +211,7 @@ describe('createCompilerRustModuleConstantPlan', () => {
     ]);
     const failure = captureEmissionFailure(() =>
       createRustCompilerBackend().createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
         moduleResolution: resolution,
         modules: [provider!, facade!, consumer!],
         options: {},
@@ -266,6 +271,7 @@ export function read(): number { return imported.length; }`;
     );
     const failure = captureEmissionFailure(() =>
       createRustCompilerBackend().createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
         moduleResolution: resolution,
         modules: [provider!, consumer!],
         options: {},
@@ -339,8 +345,13 @@ export function readRuntime(): number { return runtime; }`;
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.line).toBe(3);
 
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -381,6 +392,7 @@ export function readAgain(): number { return read(); }`;
       resolution,
     );
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolution,
       modules: [consumer!, provider!],
       options: {},
@@ -388,6 +400,7 @@ export function readAgain(): number { return read(); }`;
     const providerFailure = captureEmissionFailure(() => session.emitModule(provider!));
     const consumerFailure = captureEmissionFailure(() => session.emitModule(consumer!));
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createFacade([provider!, consumer!]),
       moduleFiles: [],
       placeholderModules: [provider!, consumer!],
@@ -436,6 +449,7 @@ export function readAgain(): number { return read(); }`;
         resolution,
       );
       const session = createRustCompilerBackend().createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
         moduleResolution: resolution,
         modules: [provider!, consumer!],
         options: {},
@@ -443,6 +457,7 @@ export function readAgain(): number { return read(); }`;
       const providerFailure = captureEmissionFailure(() => session.emitModule(provider!));
       const consumerFailure = captureEmissionFailure(() => session.emitModule(consumer!));
       session.finalizePackageGraph!({
+        moduleEvaluation: emptyModuleEvaluation,
         facade: createFacade([provider!, consumer!]),
         moduleFiles: [],
         placeholderModules: [provider!, consumer!],
@@ -469,8 +484,13 @@ export function readAgain(): number { return read(); }`;
 export const runtime: number = seed();
 export function keep(): number { return 1; }`;
     const module = lower('salvage-import.ts', source);
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -491,9 +511,14 @@ export function keep(): number { return 1; }`;
 
   it('reuses the accepted constant plan during finalized source-tree emission', () => {
     const module = lower('reuse.ts', 'export const base = 2; export const total = base * 3;');
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     const initial = session.emitModule(module)[0]!;
     const finalized = session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createFacade([module]),
       moduleFiles: [{ file: initial, module: identity(module) }],
     });
@@ -507,7 +532,11 @@ export function keep(): number { return 1; }`;
   it('defensively refuses a module whose declaration no longer matches the session plan', () => {
     const original = lower('mismatch.ts', 'export function keep(): number { return 1; }');
     const changed = lower('mismatch.ts', 'export const added: number = 1;');
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [original], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [original],
+      options: {},
+    });
     const failure = captureEmissionFailure(() => session.emitModule(changed));
 
     expect(failure.rule).toBe('rust-module-constant-initializer-unsupported');

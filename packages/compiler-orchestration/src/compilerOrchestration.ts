@@ -7,6 +7,7 @@ import {
   validateCompilerEmittedSourceSyntax,
   validateCompilerTargetCompilationSmoke,
 } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
@@ -31,7 +32,33 @@ export function compileIrModules<BackendOptions>(
     modules,
     options: options.backendOptions,
   };
-  const emissionSession = options.backend.createEmissionSession?.(emitContext);
+  const emissionSession = options.backend.createEmissionSession?.({
+    ...emitContext,
+    moduleEvaluation: createCompilerModuleEvaluationPlan({
+      dependencies: (options.moduleResolution?.edges ?? []).flatMap((edge) => {
+        const target = modules.find(
+          (module) => module.packageName === edge.target.packageName && module.source === edge.target.source,
+        );
+        if (!target) return [];
+        const importers = edge.importer
+          ? modules.filter(
+              (module) =>
+                module.packageName === edge.importer!.packageName &&
+                module.source === edge.importer!.source &&
+                module.name === edge.importer!.name,
+            )
+          : modules.filter((module) => module.imports.some((imported) => imported.specifier === edge.specifier));
+        return importers.map((importer) => ({
+          importer,
+          ...(edge.importedNames ? { importedNames: edge.importedNames } : {}),
+          specifier: edge.specifier,
+          target,
+        }));
+      }),
+      entries: modules,
+      modules,
+    }),
+  });
   const files = modules
     .flatMap((module) =>
       emissionSession ? emissionSession.emitModule(module) : options.backend.emitModule(module, emitContext),

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendEmissionSession,
@@ -24,6 +25,7 @@ import { createCompilerRustSourceTreePlan, isCompilerRustSourceTreePlanningFailu
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const rustcAvailable = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0;
+const emptyModuleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 function captureBackendEmissionFailure(run: () => unknown) {
   try {
@@ -281,6 +283,7 @@ function emitRustModuleInGraph(
   edges: CompilerModuleResolutionPlan['edges'],
 ): string {
   const session = createRustCompilerBackend().createEmissionSession!({
+    moduleEvaluation: emptyModuleEvaluation,
     moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
     modules,
     options: {},
@@ -295,6 +298,7 @@ function createRustSourceTreeFinalization(
 ): CompilerBackendPackageGraphFinalization {
   return {
     facade: createRustSourceTreeFacade(facadeModules),
+    moduleEvaluation: emptyModuleEvaluation,
     moduleFiles: retainedModules.map((module) => ({
       file: session.emitModule(module)[0]!,
       module: getRustTestModuleIdentity(module),
@@ -315,9 +319,13 @@ describe('createRustCompilerBackend', () => {
     expect(first).not.toBe(second);
     expect(first.name).toBe('rust');
     expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleRust(module)]);
-    expect(first.createEmissionSession!({ modules: [module], options: {} }).emitModule(module)).toEqual([
-      emitIrModuleRust(module),
-    ]);
+    expect(
+      first.createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
+        modules: [module],
+        options: {},
+      }).emitModule(module),
+    ).toEqual([emitIrModuleRust(module)]);
   });
 
   it('finalizes retained modules into deterministic canonical same- and cross-crate source trees', () => {
@@ -350,11 +358,17 @@ describe('createRustCompilerBackend', () => {
     const modules = [filtered, value, secret, point, root];
     const retainedModules = [secret, root, value, point];
     const facadeModules = [point, root, value];
-    const session = createRustCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const first = session.finalizePackageGraph!(
       createRustSourceTreeFinalization(session, retainedModules, facadeModules),
     );
     const reversedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: { ...moduleResolution, edges: [...moduleResolution.edges].reverse() },
       modules: [...modules].reverse(),
       options: {},
@@ -412,6 +426,7 @@ describe('createRustCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -475,6 +490,7 @@ describe('createRustCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [index, tools],
       options: {},
@@ -517,10 +533,12 @@ describe('createRustCompilerBackend', () => {
     ).module;
     const control = lower('control.ts', 'export function keep(value: number): number { return value + 1; }').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [mixed],
       options: {},
     });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([mixed]),
       moduleFiles: [],
       placeholderModules: [mixed],
@@ -561,8 +579,13 @@ describe('createRustCompilerBackend', () => {
       `export function sortAll(values: number[]): number[] { return values.sort(); }
        export function keep(value: number): number { return value + 1; }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -625,8 +648,13 @@ describe('createRustCompilerBackend', () => {
     },
   ] as const)('salvages a supported sibling around a UTF-16 $member refusal', ({ member, rule, source }) => {
     const module = lower(`string-salvage-${member}.ts`, source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -657,8 +685,13 @@ describe('createRustCompilerBackend', () => {
 export function ranges(s: string): string { return s.slice(0, 1); }
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('string-declarations.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -693,8 +726,13 @@ export namespace Kind { export function size(s: string): number { return s.lengt
 export function keep(value: number): number { return value + 1; }`;
     const result = lower('string-namespace.ts', source);
     expect(result.diagnostics).toEqual([]);
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [result.module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [result.module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([result.module]),
       moduleFiles: [],
       placeholderModules: [result.module],
@@ -722,6 +760,7 @@ export function keep(value: number): number { return value + 1; }`;
     const gamma = lower('gamma.ts', 'export const g = 3;').module;
     const keep = lower('keep.ts', 'export function keep(value: number): number { return value + 1; }').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [alpha, beta, gamma, keep],
       options: {},
     });
@@ -750,12 +789,14 @@ export function keep(value: number): number { return value + 1; }`;
     const myWidget = lower('myWidget.ts', 'export const a = 1;').module;
     const myWidgetLower = lower('my_widget.ts', 'export const b = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [myWidget, myWidgetLower],
       options: {},
     });
     let failure: unknown;
     try {
       session.finalizePackageGraph!({
+        moduleEvaluation: emptyModuleEvaluation,
         facade: createRustSourceTreeFacade([]),
         moduleFiles: [],
         placeholderModules: [myWidget, myWidgetLower],
@@ -798,6 +839,7 @@ export function keep(value: number): number { return value + 1; }`;
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [point, root],
       options: {},
@@ -863,11 +905,13 @@ export function keep(value: number): number { return value + 1; }`;
       },
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [tools, entry],
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade,
       moduleFiles: [entry, tools].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -1033,6 +1077,7 @@ export function keep(value: number): number { return value + 1; }`;
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -1075,6 +1120,7 @@ export function keep(value: number): number { return value + 1; }`;
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, facade, provider],
       options: {},
@@ -1108,6 +1154,7 @@ export function keep(value: number): number { return value + 1; }`;
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [provider, consumer],
       options: {},
@@ -1181,8 +1228,13 @@ export function merge(): number[] {
 }
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('owned-array-refusal-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -1218,8 +1270,13 @@ export function keep(value: number): number { return value + 1; }`;
 }
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('unowned-array-refusal-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -1260,6 +1317,7 @@ export function keep(value: number): number { return value + 1; }`;
        }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolve('./owned-array-provider.js', provider, consumer),
       modules: [provider, consumer],
       options: {},
@@ -1306,6 +1364,7 @@ export function keep(value: number): number { return value + 1; }`;
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [sink, bridge, provider],
       options: {},
@@ -1340,6 +1399,7 @@ export function keep(value: number): number { return value + 1; }`;
        }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolve('./owned-array-fresh-provider.js', provider, sink),
       modules: [provider, sink],
       options: {},
@@ -1370,6 +1430,7 @@ export function keep(value: number): number { return value + 1; }`;
        }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolve('./legacy-array-provider.js', provider, consumer),
       modules: [provider, consumer],
       options: {},
@@ -1394,6 +1455,7 @@ export function keep(value: number): number { return value + 1; }`;
        }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolve('./owned-array-stale-provider.js', provider, consumer),
       modules: [provider, consumer],
       options: {},
@@ -1422,11 +1484,13 @@ export function merge(values: number[]): number[] {
 export function keep(value: number): number { return value + 1; }`;
     const consumer = lower('owned-array-guard-consumer.ts', source).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: resolve('./owned-array-guard-provider.js', provider, consumer),
       modules: [provider, consumer],
       options: {},
     });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([provider]),
       moduleFiles: [
         {
@@ -3060,6 +3124,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -3254,6 +3319,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
        export function start(value: number): Promise<number> { return load(value); }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -3301,6 +3367,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
        export function start(value: number): Promise<number> { return forward(value, load(value)); }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -3606,6 +3673,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
        export async function run(): Promise<number> { try { return await load(); } catch { return 0; } }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -3766,6 +3834,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -3961,6 +4030,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -12345,6 +12415,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -12552,6 +12623,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -12760,6 +12832,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -12872,6 +12945,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -12975,6 +13049,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -13499,11 +13574,13 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
     });
     const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [provider, consumer],
       options: {},
@@ -13580,11 +13657,13 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
     });
     const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [provider, consumer],
       options: {},
@@ -13668,11 +13747,13 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
     });
     const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [provider, consumer],
       options: {},
@@ -13817,6 +13898,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -13941,6 +14023,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -14037,6 +14120,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -14084,6 +14168,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -14616,6 +14701,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15086,6 +15172,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15192,6 +15279,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15475,6 +15563,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15538,6 +15627,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15673,6 +15763,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -15894,6 +15985,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -16004,6 +16096,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -16159,6 +16252,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       schema: 'flight-compiler-module-resolution/1',
     } as const;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -24963,6 +25057,7 @@ describe('emitIrModuleRust import emission', () => {
       "import * as localTools from './util.js';\nexport { localTools as PublicTools };",
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -25002,6 +25097,7 @@ describe('emitIrModuleRust import emission', () => {
       "import { Dual } from './provider.js';\nexport { Dual };",
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -26865,6 +26961,7 @@ describe('emitIrModuleRust overloaded callable carrier', () => {
        }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -26968,8 +27065,13 @@ describe('emitIrModuleRust overloaded callable carrier', () => {
       }
       export function keep(value: number): number { return value + 1; }`;
     const module = lower('overload-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -27123,8 +27225,13 @@ describe('emitIrModuleRust dense literal array construction', () => {
       `export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[1] = 2; return values; }
        export function unproven(): number[] { return new Array<number>(3); }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -27155,8 +27262,13 @@ describe('emitIrModuleRust dense literal array construction', () => {
       `export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[1] = 2; return values; }
        export function broken(value: unknown): { value: number } { return value as { value: number }; }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -27243,6 +27355,7 @@ describe('emitIrModuleRust identity assertions', () => {
        export function same(point: Point): Point { return point as Point; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -27344,8 +27457,13 @@ describe('emitIrModuleRust identity assertions', () => {
        export function same(point: Point): Point { return point as Point; }
        export function wrong(point: Point): Other { return point as Other; }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -27465,6 +27583,7 @@ describe('emitIrModuleRust exact numeric enum assertions', () => {
        export function value(color: Color): number { return color as number; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -27524,6 +27643,7 @@ describe('emitIrModuleRust exact numeric enum assertions', () => {
       `import { ${importedName} } from '${specifier}';\n${consumerSource}`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -27547,8 +27667,13 @@ describe('emitIrModuleRust exact numeric enum assertions', () => {
        export function numeric(): number { return Color.Red as number; }
        export function wrong(point: Point): string { return point as string; }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -27825,6 +27950,7 @@ describe('emitIrModuleRust imported enum member reads', () => {
        export function wrong(point: Point): string { return point as string; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -27839,6 +27965,7 @@ describe('emitIrModuleRust imported enum member reads', () => {
       options: {},
     });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([api, module]),
       moduleFiles: [{ file: session.emitModule(api)[0]!, module: getRustTestModuleIdentity(api) }],
       placeholderModules: [module],
@@ -27869,6 +27996,7 @@ describe('emitIrModuleRust imported enum member reads', () => {
        export function red(): Color { return Color.Red; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -27883,6 +28011,7 @@ describe('emitIrModuleRust imported enum member reads', () => {
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([api, consumer]),
       moduleFiles: [api, consumer].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -28086,6 +28215,7 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
        export function wrong(point: Point): string { return point as string; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -28100,6 +28230,7 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
       options: {},
     });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([api, module]),
       moduleFiles: [{ file: session.emitModule(api)[0]!, module: getRustTestModuleIdentity(api) }],
       placeholderModules: [module],
@@ -28129,6 +28260,7 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
        export function green(): number { return Color.Green as number; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -28143,6 +28275,7 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([api, consumer]),
       moduleFiles: [api, consumer].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -28316,6 +28449,7 @@ describe('emitIrModuleRust exact string enum assertions', () => {
        export function wrong(point: Point): number { return point as number; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -28330,6 +28464,7 @@ describe('emitIrModuleRust exact string enum assertions', () => {
       options: {},
     });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([api, module]),
       moduleFiles: [{ file: session.emitModule(api)[0]!, module: getRustTestModuleIdentity(api) }],
       placeholderModules: [module],
@@ -28362,6 +28497,7 @@ describe('emitIrModuleRust exact string enum assertions', () => {
        export function second(): string { return Label.B as string; }`,
       ).module;
       const session = createRustCompilerBackend().createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
         moduleResolution: {
           edges: [
             {
@@ -28376,6 +28512,7 @@ describe('emitIrModuleRust exact string enum assertions', () => {
         options: {},
       });
       const finalized = session.finalizePackageGraph!({
+        moduleEvaluation: emptyModuleEvaluation,
         facade: createRustSourceTreeFacade([api, consumer]),
         moduleFiles: [api, consumer].map((module) => ({
           file: session.emitModule(module)[0]!,
@@ -28514,6 +28651,7 @@ describe('emitIrModuleRust closed Object.keys enumeration', () => {
        export function refused(config: Config): string[] { return Object.keys(config); }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -28536,6 +28674,7 @@ describe('emitIrModuleRust closed Object.keys enumeration', () => {
        export function keys(): string[] { return Object.keys({ beta: 2, alpha: 1 }); }`,
     ).module;
     const literalSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -28560,8 +28699,13 @@ describe('emitIrModuleRust closed Object.keys enumeration', () => {
       `export function good(): string[] { return Object.keys({ a: 1 }); }
        export function bad(value: { a: number }): string[] { return Object.keys(value); }`,
     ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -28599,6 +28743,7 @@ describe('emitIrModuleRust explicit reexport grounding', () => {
     edges: CompilerModuleResolutionPlan['edges'],
   ) {
     return createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
       modules,
       options: {},
@@ -28929,6 +29074,7 @@ describe('emitIrModuleRust explicit reexport grounding', () => {
 describe('emitIrModuleRust star-barrel name resolution', () => {
   function createStarSession(modules: readonly Readonly<IrModule>[], edges: CompilerModuleResolutionPlan['edges']) {
     return createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
       modules,
       options: {},
@@ -29094,6 +29240,7 @@ describe('emitIrModuleRust star-barrel name resolution', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [origin, barrel, consumer],
       options: {},
@@ -29124,6 +29271,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
     const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [rootIndex, nestedIndex],
       options: {},
     });
@@ -29136,6 +29284,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const first = lower('a/util.ts', 'export const aValue = 1;').module;
     const second = lower('b/util.ts', 'export const bValue = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [first, second],
       options: {},
     });
@@ -29158,6 +29307,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [importer, target],
       options: {},
@@ -29172,6 +29322,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const dashed = lower('foo-bar.ts', 'export const first = 1;').module;
     const underscored = lower('foo_bar.ts', 'export const second = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [dashed, underscored],
       options: {},
     });
@@ -29210,6 +29361,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
     const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [rootIndex, nestedIndex],
       options: {},
     });
@@ -29226,6 +29378,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
     const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [rootIndex, nestedIndex],
       options: {},
     });
@@ -29244,6 +29397,7 @@ describe('createRustCompilerBackend provisional module paths', () => {
     const first = lower('a/util.ts', 'export const aValue = 1;').module;
     const second = lower('b/util.ts', 'export const bValue = 2;').module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       modules: [first, second],
       options: {},
     });
@@ -29278,9 +29432,14 @@ describe('createRustCompilerBackend finalization failures', () => {
 
   it('wraps a recognized source-tree failure with its backend, code, subjects, and cause', () => {
     const consumer = lower('consumer.ts', "import { value } from './value.js';\nexport { value };").module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [consumer], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [consumer],
+      options: {},
+    });
     const finalization: CompilerBackendPackageGraphFinalization = {
       facade: createRustSourceTreeFacade([consumer]),
+      moduleEvaluation: emptyModuleEvaluation,
       moduleFiles: [{ file: session.emitModule(consumer)[0]!, module: getRustTestModuleIdentity(consumer) }],
     };
 
@@ -29303,10 +29462,15 @@ describe('createRustCompilerBackend finalization failures', () => {
 
   it('rethrows a contract defect unchanged instead of wrapping it', () => {
     const consumer = lower('consumer.ts', 'export const value = 1;').module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [consumer], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [consumer],
+      options: {},
+    });
     const facade = { ...createRustSourceTreeFacade([consumer]), schema: 'not-a-facade' };
     const finalization = {
       facade: facade as unknown as CompilerModuleFacadePlan,
+      moduleEvaluation: emptyModuleEvaluation,
       moduleFiles: [{ file: session.emitModule(consumer)[0]!, module: getRustTestModuleIdentity(consumer) }],
     };
 
@@ -29320,6 +29484,7 @@ describe('createRustCompilerBackend finalization failures', () => {
 describe('emitIrModuleRust package specifier modules', () => {
   function packageSession(modules: readonly Readonly<IrModule>[], edges: CompilerModuleResolutionPlan['edges']) {
     return createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
       modules,
       options: {},
@@ -29426,6 +29591,7 @@ export { exportedFn, exportedConst, ExportedClass, ExportedEnum, Shape, Impl, Na
     const provider = lower('provider.ts', 'function f(): number { return 1; }\nexport { f as g };').module;
     const consumer = lower('consumer.ts', "import { g } from './provider.js';\nexport { g };").module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -30734,6 +30900,7 @@ describe('emitIrModuleRust static Array.isArray', () => {
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -31452,6 +31619,7 @@ describe('emitIrModuleRust static Array.of', () => {
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -31910,6 +32078,7 @@ describe('emitIrModuleRust static Array.from', () => {
     const provider = providerResult!.module;
     const consumer = consumerResult!.module;
     const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, provider],
       options: {},
@@ -32165,6 +32334,7 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     const facade = facadeResult!.module;
     const consumer = consumerResult!.module;
     const output = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, facade, records],
       options: {},
@@ -32420,6 +32590,7 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     const facade = facadeResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, facade, records],
       options: {},
@@ -32564,8 +32735,13 @@ export function broken(value: { value: number }): Choice { return value; }
 export function keep(value: Alpha): Choice { return value; }
 export function absent(): Choice { return undefined; }`;
     const module = lower('dual-sentinel-nominal-union-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -32742,6 +32918,7 @@ export function absent(): Choice { return undefined; }`;
     const facade = facadeResult!.module;
     const consumer = consumerResult!.module;
     const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
       modules: [consumer, facade, records],
       options: {},
@@ -32878,8 +33055,13 @@ type Choice = Alpha | Beta | undefined;
 export function broken(value: { value: number }): Choice { return value; }
 export function keep(value: Alpha): Choice { return value; }`;
     const module = lower('optional-nominal-union-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],
@@ -33019,8 +33201,13 @@ type Choice = Alpha | Beta;
 export function broken(value: { value: number }): Choice { return value; }
 export function keep(value: Alpha): Choice { return value; }`;
     const module = lower('nominal-union-salvage.ts', source).module;
-    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
     session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([module]),
       moduleFiles: [],
       placeholderModules: [module],

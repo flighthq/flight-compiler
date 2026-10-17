@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { createRustCompilerPublicBindingBackend } from './rustCompilerPublicBindingBackend.js';
+
+const emptyModuleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 describe('createRustCompilerPublicBindingBackend', () => {
   it('attaches the versioned public binding planner without changing the emission backend', () => {
@@ -33,10 +36,11 @@ describe('createRustCompilerPublicBindingBackend', () => {
       schema: 'flight-rust-public-binding-plan/2',
     });
     expect(
-      backend.createEmissionSession!({ modules: [], options: {} }).finalizePackageGraph?.({
-        facade: emptyFacade,
-        moduleFiles: [],
-      }),
+      backend.createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
+        modules: [],
+        options: {},
+      }).finalizePackageGraph?.({ moduleEvaluation: emptyModuleEvaluation, facade: emptyFacade, moduleFiles: [] }),
     ).toEqual({ moduleFileReplacements: [], packageFiles: [] });
   });
 });

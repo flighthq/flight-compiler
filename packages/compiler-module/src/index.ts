@@ -1,4 +1,8 @@
-export { createCompilerModuleEvaluationPlan, isCompilerModuleEvaluationFailure } from './compilerModuleEvaluation.js';
+export {
+  createCompilerModuleEvaluationPlan,
+  filterCompilerModuleEvaluationPlan,
+  isCompilerModuleEvaluationFailure,
+} from './compilerModuleEvaluation.js';
 export { createCompilerModuleFacadeIdentities, isCompilerModuleFacadeFailure } from './compilerModuleFacadeIdentity.js';
 export {
   createCompilerModuleFacadePlan,

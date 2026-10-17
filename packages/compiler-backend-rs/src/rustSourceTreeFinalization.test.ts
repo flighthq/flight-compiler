@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 import { createCompilerGeneratedFileHeader } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendModuleFile,
@@ -18,6 +19,8 @@ import {
   emitEmittedFileSourceFragmentRust,
   isCompilerRustSourceTreeFinalizationFailure,
 } from './rustSourceTreeFinalization.js';
+
+const emptyModuleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 describe('createCompilerRustSourceTreeFinalization', () => {
   it('re-emits exact source owners and creates deterministic skeletons from one canonical plan', () => {
@@ -42,6 +45,7 @@ describe('createCompilerRustSourceTreeFinalization', () => {
     };
     const finalization: CompilerBackendPackageGraphFinalization = {
       facade: createFacade([point]),
+      moduleEvaluation: emptyModuleEvaluation,
       moduleFiles: [
         retained(privateValue, 'legacy/private.rs'),
         retained(point, 'lib.rs'),
@@ -120,6 +124,7 @@ describe('createCompilerRustSourceTreeFinalization', () => {
     const root = lower('@scope/math', 'index.ts', 'export const root = 1;');
     const finalization: CompilerBackendPackageGraphFinalization = {
       facade: createFacade([root]),
+      moduleEvaluation: emptyModuleEvaluation,
       moduleFiles: [retained(root, 'legacy.rs')],
     };
     const reemitModule = ({ module, sourceFile }: Readonly<CompilerRustSourceTreeModuleReemissionRequest>) => ({
@@ -247,6 +252,7 @@ describe('emitEmittedFileSourceFragmentRust', () => {
     };
     const base = {
       facade: createFacade([root]),
+      moduleEvaluation: emptyModuleEvaluation,
       moduleFiles: [retained(root, 'consumer.rs')],
       refusals: [{ code: 'rust-placeholder-test', message: 'provider refused', module: identity(provider) }],
     } satisfies CompilerBackendPackageGraphFinalization;
@@ -333,6 +339,7 @@ describe('emitEmittedFileSourceFragmentRust', () => {
     const outcome = finalize(
       {
         facade: createFacade([tools]),
+        moduleEvaluation: emptyModuleEvaluation,
         moduleFiles: [retained(tools, 'geometry/tools.rs')],
         placeholderModules: [index],
         refusals: [{ code: 'rust-placeholder-test', message: 'index refused', module: identity(index) }],

@@ -4,6 +4,7 @@ import type {
   CompilerBackend,
   CompilerBackendModuleFileReplacement,
   CompilerBackendPackageGraphFinalization,
+  CompilerModuleEvaluationPlan,
   CompilerModuleIdentity,
   CompilerPackageCompilationProgress,
   CompilerPackageGraph,
@@ -27,21 +28,31 @@ describe('compileTypeScriptPackageGraph', () => {
     );
     const modelIdentity = identity(model, 'Model');
     const rendererIdentity = identity(renderer, 'Renderer');
+    let sessionEvaluation: Readonly<CompilerModuleEvaluationPlan> | undefined;
+    let finalizedEvaluation: Readonly<CompilerModuleEvaluationPlan> | undefined;
     const backend: CompilerBackend = {
-      createEmissionSession: ({ modules }) => ({
-        emitModule(module) {
-          expect(modules).toHaveLength(2);
-          return module.packageName === '@flighthq/types'
-            ? [{ contents: 'model', dependencies: ['flight/runtime.hpp'], path: 'flight/types/model.hpp' }]
-            : [
-                {
-                  contents: 'renderer',
-                  dependencies: ['flight/types/model.hpp', 'flight/runtime.hpp'],
-                  path: 'flight/render_wgpu/renderer.hpp',
-                },
-              ];
-        },
-      }),
+      createEmissionSession: ({ moduleEvaluation, modules }) => {
+        sessionEvaluation = moduleEvaluation;
+        return {
+          emitModule(module) {
+            expect(moduleEvaluation.modules).toHaveLength(2);
+            expect(modules).toHaveLength(2);
+            return module.packageName === '@flighthq/types'
+              ? [{ contents: 'model', dependencies: ['flight/runtime.hpp'], path: 'flight/types/model.hpp' }]
+              : [
+                  {
+                    contents: 'renderer',
+                    dependencies: ['flight/types/model.hpp', 'flight/runtime.hpp'],
+                    path: 'flight/render_wgpu/renderer.hpp',
+                  },
+                ];
+          },
+          finalizePackageGraph(finalization) {
+            finalizedEvaluation = finalization.moduleEvaluation;
+            return { packageFiles: [] };
+          },
+        };
+      },
       emitModule: () => {
         throw new Error('compatibility entry point must not be used');
       },
@@ -89,6 +100,8 @@ describe('compileTypeScriptPackageGraph', () => {
       modelIdentity,
       rendererIdentity,
     ]);
+    expect(sessionEvaluation).toEqual(result.report.initialization);
+    expect(finalizedEvaluation).toBe(result.report.initialization);
     expect(result.report.exports).toMatchObject({
       modules: [
         {
@@ -748,28 +761,37 @@ describe('compileTypeScriptPackageGraph', () => {
     const dependentIdentity = identity(dependent, 'Dependent');
     let sessionPlaceholderCalls = 0;
     let backendPlaceholderCalls = 0;
+    const candidates: Readonly<CompilerModuleEvaluationPlan>[] = [];
+    const finalizations: Readonly<CompilerModuleEvaluationPlan>[] = [];
     const backend: CompilerBackend = {
-      createEmissionSession: () => ({
-        emitModule(module) {
-          if (module.name !== 'Dependent') {
-            throw createBackendEmissionFailure(
-              'fixture',
-              module,
-              `unsupported ${module.name}`,
-              'fixture-session-placeholder',
-            );
-          }
-          return [{ contents: module.name, path: `${module.name}.txt` }];
-        },
-        emitRefusalPlaceholder(module, failure) {
-          sessionPlaceholderCalls += 1;
-          expect(failure.rule).toBe('fixture-session-placeholder');
-          return {
-            contents: `// session placeholder for ${module.name}: ${failure.rule}`,
-            path: `placeholder/${module.name}.txt`,
-          };
-        },
-      }),
+      createEmissionSession: ({ moduleEvaluation }) => {
+        candidates.push(moduleEvaluation);
+        return {
+          emitModule(module) {
+            if (module.name !== 'Dependent') {
+              throw createBackendEmissionFailure(
+                'fixture',
+                module,
+                `unsupported ${module.name}`,
+                'fixture-session-placeholder',
+              );
+            }
+            return [{ contents: module.name, path: `${module.name}.txt` }];
+          },
+          emitRefusalPlaceholder(module, failure) {
+            sessionPlaceholderCalls += 1;
+            expect(failure.rule).toBe('fixture-session-placeholder');
+            return {
+              contents: `// session placeholder for ${module.name}: ${failure.rule}`,
+              path: `placeholder/${module.name}.txt`,
+            };
+          },
+          finalizePackageGraph(finalization) {
+            finalizations.push(finalization.moduleEvaluation);
+            return { packageFiles: [] };
+          },
+        };
+      },
       emitModule: () => {
         throw new Error('compatibility entry point must not be used');
       },
@@ -785,7 +807,7 @@ describe('compileTypeScriptPackageGraph', () => {
         backendOptions: {},
         ...(bestEffort ? { bestEffort: true } : {}),
         graph: graph(
-          [],
+          [dependentIdentity],
           [{ importer: dependentIdentity, specifier: './badA.js', target: badAIdentity }],
           [{ dependencies: [], name: '@local/source', root: dependent.packageRoot }],
         ),
@@ -798,11 +820,18 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(strict.report.bestEffort).toBeUndefined();
     expect(sessionPlaceholderCalls).toBe(0);
     expect(backendPlaceholderCalls).toBe(0);
+    expect(strict.report.initialization.modules).toEqual([]);
 
     const best = compile(true);
     // The dependency-incomplete module keeps its real output; the refused one leaves a replaceable path.
     expect(best.compilation.files.map((file) => file.path)).toEqual(['Dependent.txt', 'placeholder/BadA.txt']);
     expect(best.report.bestEffort?.schema).toBe('flight-compiler-best-effort/1');
+    expect(best.report.initialization.modules).toEqual([]);
+    expect(candidates).toHaveLength(2);
+    expect(candidates.every((plan) => plan.modules.length === 2)).toBe(true);
+    expect(finalizations).toEqual([strict.report.initialization, best.report.initialization]);
+    expect(finalizations[0]).toBe(strict.report.initialization);
+    expect(finalizations[1]).toBe(best.report.initialization);
     expect(best.report.bestEffort?.modules.map((module) => [module.module.name, module.status, module.path])).toEqual([
       ['BadA', 'refused-placeholder', 'placeholder/BadA.txt'],
       ['Dependent', 'dependency-incomplete', 'Dependent.txt'],

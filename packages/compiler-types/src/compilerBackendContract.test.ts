@@ -186,6 +186,22 @@ describe('compiler backend contracts', () => {
           typeValueLanes: 'independent',
         },
       },
+      moduleEvaluation: {
+        entries: [],
+        groups: [],
+        modules: [],
+        schema: 'flight-compiler-module-evaluation/1',
+        semantics: {
+          cycles: 'strongly-connected-live-environment',
+          dependencyEvaluation: 'depth-first-request-order',
+          importAccess: 'read-only-live-alias',
+          localExportAccess: 'live-alias',
+          phaseOrder: ['link', 'instantiate', 'evaluate-dependencies', 'evaluate'],
+          temporalAccess: 'throw-reference-error',
+          topLevelAwait: 'refuse',
+          typeOnlyLinking: 'link-without-evaluation',
+        },
+      },
       moduleFiles: [{ file: { contents: 'module', path: 'module.rs' }, module: identity }],
     };
     const session: CompilerBackendEmissionSession = {

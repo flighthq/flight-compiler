@@ -11,6 +11,7 @@ import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js'
 import {
   createCompilerModuleFacadePlanForEntries,
   createCompilerModuleEvaluationPlan,
+  filterCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
@@ -150,6 +151,13 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const bestEffort = options.bestEffort === true;
   const emitPathPrefixes = options.emitPathPrefixes;
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
+  const candidateModuleEvaluation = createCompilerPackageGraphInitialization(
+    records,
+    graphEntries,
+    moduleDependencies,
+    bestEffort,
+  );
+  propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
 
   // The emission context is what the backend may CONSULT, and the emission scope is what it must WRITE. Two
   // different sets, and conflating them is silent: the backend resolves an imported owner or alias by looking the
@@ -175,7 +183,10 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     schema: 'flight-compiler-package-compilation-progress/1',
     state: 'started',
   });
-  const emissionSession = options.backend.createEmissionSession?.(emitContext);
+  const emissionSession = options.backend.createEmissionSession?.({
+    ...emitContext,
+    moduleEvaluation: candidateModuleEvaluation,
+  });
   observeCompilerPackageCompilationProgress(options.observeProgress, {
     moduleCount: emissionModules.length,
     phase: 'emission-session',
@@ -217,13 +228,13 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   }
   refuseCompilerPackageGraphOutputCollisions(records);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
-  const initialization = createCompilerPackageGraphInitialization(
-    records,
-    graphEntries,
-    moduleDependencies,
-    bestEffort,
+  const initialization = filterCompilerModuleEvaluationPlan(
+    candidateModuleEvaluation,
+    candidateModuleEvaluation.modules.flatMap(({ module }) => {
+      const record = records.get(getCompilerPackageGraphModuleKey(module));
+      return record?.refusals.length === 0 ? [module] : [];
+    }),
   );
-  propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
   // A placeholder capability can live on either emission level: the session sees the whole graph,
@@ -237,6 +248,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const finalization = createCompilerBackendPackageGraphFinalization(
     records,
     exports,
+    initialization,
     bestEffort,
     emitPathPrefixes,
     placeholderModules,
@@ -474,6 +486,7 @@ function collectCompilerPackageGraphPlaceholderModules(
 function createCompilerBackendPackageGraphFinalization(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   facade: Readonly<CompilerBackendPackageGraphFinalization['facade']>,
+  moduleEvaluation: Readonly<CompilerBackendPackageGraphFinalization['moduleEvaluation']>,
   bestEffort: boolean,
   emitPathPrefixes: readonly string[] | undefined,
   placeholderModules: readonly Readonly<IrModule>[],
@@ -495,14 +508,13 @@ function createCompilerBackendPackageGraphFinalization(
     records,
     new Set(moduleFiles.map(({ module }) => getCompilerPackageGraphModuleKey(module))),
   );
-  return freezeCompilerBackendPackageGraphValue(
-    structuredClone({
-      facade,
-      moduleFiles,
-      ...(placeholderModules.length === 0 ? {} : { placeholderModules }),
-      ...(refusals.length === 0 ? {} : { refusals }),
-    }),
-  );
+  const cloned = structuredClone({
+    facade,
+    moduleFiles,
+    ...(placeholderModules.length === 0 ? {} : { placeholderModules }),
+    ...(refusals.length === 0 ? {} : { refusals }),
+  });
+  return freezeCompilerBackendPackageGraphValue({ ...cloned, moduleEvaluation });
 }
 
 // A backend asked to finalize cannot see why a module it expected is missing; it sees only that the module

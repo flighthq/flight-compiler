@@ -95,6 +95,138 @@ export function createCompilerModuleEvaluationPlan(
   });
 }
 
+/**
+ * Projects an already-validated candidate onto the modules that remain available after emission. The candidate is
+ * the authority on all evidence and ordering: filtering never reconstructs bindings, dependencies, steps, or SCCs.
+ */
+export function filterCompilerModuleEvaluationPlan(
+  candidate: Readonly<CompilerModuleEvaluationPlan>,
+  availableModules: readonly Readonly<CompilerModuleIdentity>[],
+): CompilerModuleEvaluationPlan {
+  assertCompilerModuleEvaluationFilterCandidate(candidate);
+  if (!Array.isArray(availableModules)) {
+    throw createCompilerModuleEvaluationFailure(
+      'invalid-selection',
+      'availableModules',
+      'Module evaluation filtering requires an available-module array',
+    );
+  }
+  const candidateByKey = new Map(
+    candidate.modules.map((modulePlan) => [getCompilerModuleEvaluationIdentityKey(modulePlan.module), modulePlan]),
+  );
+  const availableKeys = new Set<string>();
+  for (const [index, value] of availableModules.entries()) {
+    const subject = `availableModules[${String(index)}]`;
+    const identity = normalizeCompilerModuleEvaluationIdentity(value, 'invalid-selection', subject);
+    const key = getCompilerModuleEvaluationIdentityKey(identity);
+    if (availableKeys.has(key)) {
+      throw createCompilerModuleEvaluationFailure(
+        'duplicate-selection',
+        key,
+        `Module evaluation selection duplicates ${identity.packageName}/${identity.source}`,
+        identity,
+      );
+    }
+    if (!candidateByKey.has(key)) {
+      throw createCompilerModuleEvaluationFailure(
+        'invalid-selection',
+        key,
+        `Module evaluation selection is not present in the candidate: ${identity.packageName}/${identity.source}`,
+        identity,
+      );
+    }
+    availableKeys.add(key);
+  }
+
+  for (const group of candidate.groups) {
+    const selected = group.modules.filter((module) =>
+      availableKeys.has(getCompilerModuleEvaluationIdentityKey(module)),
+    );
+    if (selected.length !== 0 && selected.length !== group.modules.length) {
+      const module = selected[0]!;
+      throw createCompilerModuleEvaluationFailure(
+        'partial-scc-selection',
+        getCompilerModuleEvaluationIdentityKey(module),
+        'Module evaluation selection cannot retain only part of a strongly connected component',
+        module,
+      );
+    }
+  }
+  for (const modulePlan of candidate.modules) {
+    const moduleKey = getCompilerModuleEvaluationIdentityKey(modulePlan.module);
+    if (!availableKeys.has(moduleKey)) continue;
+    const missing = modulePlan.dependencies.find(
+      (dependency) => !availableKeys.has(getCompilerModuleEvaluationIdentityKey(dependency.target)),
+    );
+    if (missing) {
+      throw createCompilerModuleEvaluationFailure(
+        'non-closed-selection',
+        `${moduleKey}:${missing.specifier}`,
+        `Module evaluation selection omits dependency ${missing.target.packageName}/${missing.target.source}`,
+        modulePlan.module,
+      );
+    }
+  }
+
+  const entries = candidate.entries.filter((entry) => availableKeys.has(getCompilerModuleEvaluationIdentityKey(entry)));
+  const reachableKeys = new Set<string>();
+  const pending = [...entries];
+  while (pending.length > 0) {
+    const module = pending.pop()!;
+    const key = getCompilerModuleEvaluationIdentityKey(module);
+    if (reachableKeys.has(key)) continue;
+    reachableKeys.add(key);
+    pending.push(...candidateByKey.get(key)!.dependencies.map((dependency) => dependency.target));
+  }
+  const groups = candidate.groups.filter((group) =>
+    group.modules.some((module) => reachableKeys.has(getCompilerModuleEvaluationIdentityKey(module))),
+  );
+  if (
+    groups.some((group) =>
+      group.modules.some((module) => !reachableKeys.has(getCompilerModuleEvaluationIdentityKey(module))),
+    )
+  ) {
+    throw createCompilerModuleEvaluationFailure(
+      'partial-scc-selection',
+      'reachableModules',
+      'Module evaluation projection cannot split a strongly connected component',
+    );
+  }
+  return cloneCompilerModuleEvaluationValue({
+    entries,
+    groups,
+    modules: candidate.modules.filter((modulePlan) =>
+      reachableKeys.has(getCompilerModuleEvaluationIdentityKey(modulePlan.module)),
+    ),
+    schema: candidate.schema,
+    semantics: candidate.semantics,
+  });
+}
+
+function assertCompilerModuleEvaluationFilterCandidate(candidate: unknown): void {
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    !('schema' in candidate) ||
+    candidate.schema !== 'flight-compiler-module-evaluation/1' ||
+    !('entries' in candidate) ||
+    !Array.isArray(candidate.entries) ||
+    !('groups' in candidate) ||
+    !Array.isArray(candidate.groups) ||
+    !('modules' in candidate) ||
+    !Array.isArray(candidate.modules) ||
+    !('semantics' in candidate) ||
+    !candidate.semantics ||
+    typeof candidate.semantics !== 'object'
+  ) {
+    throw createCompilerModuleEvaluationFailure(
+      'invalid-selection',
+      'candidate',
+      'Module evaluation filtering requires a valid candidate plan',
+    );
+  }
+}
+
 export function isCompilerModuleEvaluationFailure(value: unknown): value is CompilerModuleEvaluationFailure {
   return (
     value instanceof Error &&
@@ -710,7 +842,10 @@ function isCompilerModuleEvaluationIdentity(value: unknown): value is CompilerMo
 
 function normalizeCompilerModuleEvaluationIdentity(
   value: unknown,
-  code: Extract<CompilerModuleEvaluationFailureCode, 'invalid-dependency' | 'invalid-entry' | 'invalid-module'>,
+  code: Extract<
+    CompilerModuleEvaluationFailureCode,
+    'invalid-dependency' | 'invalid-entry' | 'invalid-module' | 'invalid-selection'
+  >,
   subject: string,
 ): CompilerModuleIdentity {
   if (!isCompilerModuleEvaluationIdentity(value)) {
@@ -766,11 +901,15 @@ const compilerModuleEvaluationFailureCodes = new Set<CompilerModuleEvaluationFai
   'duplicate-dependency',
   'duplicate-entry',
   'duplicate-module',
+  'duplicate-selection',
   'invalid-declaration-kind',
   'invalid-dependency',
   'invalid-entry',
   'invalid-module',
+  'invalid-selection',
   'missing-dependency',
+  'non-closed-selection',
+  'partial-scc-selection',
   'top-level-await',
   'unexpected-dependency',
   'unreachable-module',

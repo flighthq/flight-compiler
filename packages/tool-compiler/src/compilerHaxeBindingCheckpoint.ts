@@ -106,7 +106,11 @@ export function produceCompilerHaxeBindingCheckpoint(
   const refused = lowerCompilerHaxeBindingCheckpointSource(options, refusedSource);
   const modules = healthy.map((source) => source.module);
   const moduleRefusal = readCompilerHaxeBindingCheckpointRefusal(options.cppDirectory, refused.module);
-  const facade = createCompilerHaxeBindingCheckpointFacade(modules);
+  const moduleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: modules, modules });
+  const facade = createCompilerModuleFacadePlanForEntries(
+    { evaluation: moduleEvaluation, modules },
+    moduleEvaluation.entries,
+  );
   const cppOptions = {
     packageTargets: Object.fromEntries(
       healthySources.map((source) => [
@@ -136,6 +140,7 @@ export function produceCompilerHaxeBindingCheckpoint(
   assertCompilerHaxeBindingCheckpointPlan(plan);
 
   const laneA = createHaxeCompilerBackend().createEmissionSession?.({
+    moduleEvaluation,
     modules,
     options: { dualBindingPlan: plan, emissionMode: 'extern', rootPackage: 'flight' },
   });
@@ -155,7 +160,15 @@ export function produceCompilerHaxeBindingCheckpoint(
   }
   writeFileSync(path.join(planArtifactDirectory, 'flight-folded.json'), `${JSON.stringify(plan, null, 2)}\n`, 'utf8');
 
-  const refusedFacade = createCompilerHaxeBindingCheckpointFacade([refused.module]);
+  const refusedEvaluation = createCompilerModuleEvaluationPlan({
+    dependencies: [],
+    entries: [refused.module],
+    modules: [refused.module],
+  });
+  const refusedFacade = createCompilerModuleFacadePlanForEntries(
+    { evaluation: refusedEvaluation, modules: [refused.module] },
+    refusedEvaluation.entries,
+  );
   const refusedCpp = createCppCompilerPublicBindingPlan({
     facade: refusedFacade,
     modules: [refused.module],
@@ -243,12 +256,6 @@ function lowerCompilerHaxeBindingCheckpointSource(
     );
   }
   return { absolutePath, module: result.module, spec, text };
-}
-
-function createCompilerHaxeBindingCheckpointFacade(modules: readonly Readonly<IrModule>[]) {
-  const entries = modules.map(getCompilerHaxeBindingCheckpointModuleIdentity);
-  const evaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries, modules });
-  return createCompilerModuleFacadePlanForEntries({ evaluation, modules }, entries);
 }
 
 function getCompilerHaxeBindingCheckpointModuleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
