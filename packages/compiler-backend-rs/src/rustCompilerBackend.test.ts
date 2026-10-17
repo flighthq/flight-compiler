@@ -8646,6 +8646,161 @@ describe('emitIrModuleRust', () => {
     }
   });
 
+  it('compares shared class aliases by identity before and after mutation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-identity.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         export function classIdentity(): number {
+           const first = new Counter(1);
+           const alias = first;
+           const second = new Counter(1);
+           const same = first === alias;
+           const distinct = first !== second;
+           alias.value = 4;
+           const after = first === alias;
+           return first.value * 10 + (same ? 1 : 0) + (distinct ? 2 : 0) + (after ? 4 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
+    expect(output).toContain('!Rc::ptr_eq(');
+    expect(output).toContain('alias.borrow_mut().value = 4.0;');
+    expect(output).toContain('first.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(class_identity(), 47.0);')).not.toThrow();
+    }
+  });
+
+  it('evaluates strict class identity operands once from left to right', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-identity-order.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         export function classIdentityOrder(): number {
+           let state = 0;
+           const next = (value: number): number => { state = state * 10 + value; return value; };
+           const same = new Counter(next(1)) === new Counter(next(2));
+           return state + (same ? 100 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/next\(1\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/next\(2\.0\)/gu)).toHaveLength(1);
+    expect(output).toMatch(
+      /let identity_left = &Rc::new\(RefCell::new\(Counter::new\(next\(1\.0\)\)\)\); let identity_right = &Rc::new\(RefCell::new\(Counter::new\(next\(2\.0\)\)\)\); Rc::ptr_eq\(identity_left, identity_right\)/u,
+    );
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(class_identity_order(), 12.0);')).not.toThrow();
+    }
+  });
+
+  it('compares local and imported returned class aliases by identity', () => {
+    const provider = lower(
+      'identity-provider.ts',
+      `export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+       }
+       export function makeCounter(): Counter {
+         const value = new Counter(1);
+         const alias = value;
+         alias.value = 2;
+         return value;
+       }`,
+    ).module;
+    const consumer = lower(
+      'identity-consumer.ts',
+      `import { Counter, makeCounter } from './identity-provider.js';
+       function forward(): Counter { return makeCounter(); }
+       export function importedIdentity(): number {
+         const returned: Counter = forward();
+         const alias: Counter = returned;
+         const same = returned === alias;
+         const distinct = forward() !== forward();
+         alias.value = 5;
+         return same && distinct && returned === alias ? returned.value : 0;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './identity-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn make_counter() -> Rc<RefCell<Counter>>');
+    expect(output).toContain('fn forward() -> Rc<RefCell<Counter>>');
+    expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
+    expect(output).toContain('!Rc::ptr_eq(');
+    expect(output).toContain('alias.borrow_mut().value = 5.0;');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair(
+          'identity_provider',
+          providerOutput,
+          'identity_consumer',
+          output,
+          'assert_eq!(identity_consumer::imported_identity(), 5.0);',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('stable-refuses unsupported class identity boundaries', () => {
+    const cases = [
+      `class Counter { value = 0; } class Other { value = 0; }
+       export function compare(): boolean { const left = new Counter(); const right = new Other(); return left === right; }`,
+      `class Base { value = 0; } class Counter extends Base {}
+       export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left === right; }`,
+      `class Counter { stored = 0; get value(): number { return this.stored; } }
+       export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left === right; }`,
+      `class Child { value = 0; } class Counter { child = new Child(); }
+       export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left === right; }`,
+      `class Counter { value = 0; }
+       export function compare(left: Counter, right: any): boolean { return left === right; }`,
+      `class Counter { value = 0; } class Other { value = 0; }
+       export function compare(left: Counter | Other, right: Counter): boolean { return left === right; }`,
+      `class Counter { value = 0; }
+       export function compare(left: Counter | undefined, right: Counter): boolean { return left === right; }`,
+      `class Counter { value = 0; }
+       export function compare(left: Counter): boolean { return left === null; }`,
+      `class Counter { value = 0; }
+       export function compare(left: Counter, right: object): boolean { return left === right; }`,
+      `class Counter { value = 0; }
+       export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left == right; }`,
+      `class Counter { value = 0; }
+       export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left < right; }`,
+      `class Counter { value = 0; }
+       export function compare(left: Counter, right: Counter): boolean { return left === right; }`,
+    ];
+
+    for (const [index, source] of cases.entries()) {
+      expect(
+        getEmissionRule(() => emitIrModuleRust(lower(`identity-refusal-${String(index)}.ts`, source).module)),
+      ).toBe('rust-reference-shared-class-identity-unrepresented');
+    }
+  });
+
   it('returns an imported shared class identity for caller mutation', () => {
     const provider = lower(
       'return-counter-provider.ts',

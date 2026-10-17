@@ -1318,6 +1318,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return emitStringConcatenationRust(expression, context);
       }
+      {
+        const sharedClassIdentity = emitSharedClassIdentityComparisonRust(expression, context);
+        if (sharedClassIdentity) return sharedClassIdentity;
+      }
       if (
         (expression.operator === '==' ||
           expression.operator === '===' ||
@@ -3770,6 +3774,94 @@ function emitSharedClassReturnedExpressionRust(expression: Readonly<IrExpression
     );
   }
   return `Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+}
+
+function emitSharedClassIdentityComparisonRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.operator !== '===' && expression.operator !== '!==') return undefined;
+  const leftType = getIrSharedClassIdentityExpressionTypeRust(expression.left, context);
+  const rightType = getIrSharedClassIdentityExpressionTypeRust(expression.right, context);
+  const leftOwner = leftType ? getIrClassTypeIdentityRust(leftType, context) : undefined;
+  const rightOwner = rightType ? getIrClassTypeIdentityRust(rightType, context) : undefined;
+  if (!leftOwner || leftOwner !== rightOwner) return undefined;
+  const left = emitSharedClassIdentityCarrierReferenceRust(expression.left, context);
+  const right = emitSharedClassIdentityCarrierReferenceRust(expression.right, context);
+  if (!left || !right) return undefined;
+  context.needsRcImport.add('Rc');
+  const leftName = getGeneratedTargetNameRust('identity_left', context);
+  const rightName = getGeneratedTargetNameRust('identity_right', context);
+  const comparison = `Rc::ptr_eq(${leftName}, ${rightName})`;
+  return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${expression.operator === '!==' ? `!${comparison}` : comparison} }`;
+}
+
+function emitSharedClassIdentityCarrierReferenceRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedClassBindingIds.has(expression.reference.binding.id)
+  ) {
+    return `&${emitIdentifierReferenceRust(expression.reference, context)}`;
+  }
+  if (isIrSharedClassReturnCallRust(expression, context)) return `&${emitExpression(expression, context)}`;
+  if (expression.kind !== 'new') return undefined;
+  context.needsRcImport.add('Rc');
+  context.needsRefCellImport.add('RefCell');
+  return `&Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+}
+
+function getIrSharedClassIdentityExpressionTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind !== 'new') return inferIrExpressionTypeRust(expression, context);
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  return {
+    kind: 'named',
+    reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+    typeArguments: [],
+  };
+}
+
+function getIrClassTypeIdentityRust(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.typeArguments.length > 0 ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0
+  ) {
+    return undefined;
+  }
+  const typeBinding = type.reference.binding;
+  const modules = [context.module, ...context.sourceModules];
+  const declarationModule = modules.find((module) =>
+    module.declarations.some((candidate) => candidate.kind === 'class' && candidate.binding.id === typeBinding.id),
+  );
+  const local = declarationModule?.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBinding.id,
+  );
+  if (local?.kind === 'class' && declarationModule) {
+    return `${declarationModule.packageName}\0${declarationModule.source}\0${local.binding.id}`;
+  }
+  const importer = modules.find((module) =>
+    module.imports.some((item) => item.bindings.some((binding) => binding.binding.id === typeBinding.id)),
+  );
+  const imported = importer?.imports
+    .flatMap((item) => item.bindings.map((binding) => ({ binding, specifier: item.specifier })))
+    .find(({ binding }) => binding.binding.id === typeBinding.id);
+  if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') return undefined;
+  const target = resolveImportModuleRust(imported.specifier, imported.binding.imported, context, importer);
+  const declaration = target?.declarations.find(
+    (candidate) =>
+      candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.binding.imported,
+  );
+  return declaration?.kind === 'class' && target
+    ? `${target.packageName}\0${target.source}\0${declaration.binding.id}`
+    : undefined;
 }
 
 function emitContextualCallableUnionConstructionRust(

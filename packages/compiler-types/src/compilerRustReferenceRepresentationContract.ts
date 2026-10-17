@@ -44,6 +44,7 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-shared-class-closure-escape-unrepresented'
   | 'rust-reference-shared-class-construction-unrepresented'
   | 'rust-reference-shared-class-field-unrepresented'
+  | 'rust-reference-shared-class-identity-unrepresented'
   | 'rust-reference-shared-class-member-unrepresented'
   | 'rust-reference-shared-class-mutator-result-unrepresented'
   | 'rust-reference-shared-class-return-unrepresented'
