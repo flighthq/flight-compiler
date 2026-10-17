@@ -16224,11 +16224,17 @@ function createRustArrayBoundsPlan(
 
 type RustArrayBoundsProofKind = 'dual-bound' | 'monotone';
 
-interface RustArrayBoundsProvenGuard {
-  readonly arrayBindingId: string;
-  readonly indexBindingId: string;
-  readonly kind: RustArrayBoundsProofKind;
-}
+type RustArrayBoundsProvenGuard = Readonly<{
+  arrayBindingId: string;
+  indexBindingId: string;
+}> &
+  (
+    | Readonly<{ kind: 'dual-bound' }>
+    | Readonly<{
+        kind: 'monotone';
+        monotoneLoop: Readonly<Extract<IrStatement, { kind: 'while' }>>;
+      }>
+  );
 
 interface RustArrayIndexWrite {
   readonly node: Readonly<Extract<IrExpression, { kind: 'assignment' | 'unary' }>>;
@@ -16250,6 +16256,10 @@ interface RustArrayBoundsProvenReadContext {
   readonly integerEvidence: ReadonlyMap<string, RustArrayIndexEvidence>;
   readonly integerProven: Set<string>;
   readonly integerVisiting: Set<string>;
+  readonly loopInitializerBindingIds: ReadonlyMap<
+    Readonly<Extract<IrStatement, { kind: 'while' }>>,
+    ReadonlySet<string>
+  >;
   readonly proven: Map<Readonly<Extract<IrExpression, { kind: 'element' }>>, RustArrayBoundsProofKind>;
   readonly writeTargetElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
 }
@@ -16272,17 +16282,37 @@ function collectRustProvenBoundsElementReadsRust(
     integerEvidence: collectRustArrayIndexEvidenceRust(module),
     integerProven: new Set(),
     integerVisiting: new Set(),
+    loopInitializerBindingIds: collectRustArrayLoopInitializerBindingIdsRust(module),
     proven: new Map(),
     writeTargetElements,
   };
   for (const declaration of module.declarations) {
     if (declaration.kind === 'function') {
-      walkRustGuardedStatementsRust(declaration.body, [], context);
+      walkRustGuardedStatementsRust(
+        declaration.body,
+        [],
+        context,
+        !declaration.async && declaration.typeParameters.length === 0,
+      );
       continue;
     }
     if (declaration.kind !== 'class') continue;
-    if (declaration.classConstructor) walkRustGuardedStatementsRust(declaration.classConstructor.body, [], context);
-    for (const method of declaration.methods) walkRustGuardedStatementsRust(method.body, [], context);
+    if (declaration.classConstructor) {
+      walkRustGuardedStatementsRust(
+        declaration.classConstructor.body,
+        [],
+        context,
+        declaration.typeParameters.length === 0,
+      );
+    }
+    for (const method of declaration.methods) {
+      walkRustGuardedStatementsRust(
+        method.body,
+        [],
+        context,
+        !method.async && declaration.typeParameters.length === 0 && method.typeParameters.length === 0,
+      );
+    }
   }
   return context.proven;
 }
@@ -16389,9 +16419,12 @@ function walkRustGuardedStatementsRust(
   statements: readonly IrStatement[],
   guards: readonly RustArrayBoundsProvenGuard[],
   context: RustArrayBoundsProvenReadContext,
+  triangularScopeEligible: boolean,
 ): readonly RustArrayBoundsProvenGuard[] {
   let active = guards;
-  for (const statement of statements) active = walkRustGuardedStatementRust(statement, active, context);
+  for (const statement of statements) {
+    active = walkRustGuardedStatementRust(statement, active, context, triangularScopeEligible);
+  }
   return active;
 }
 
@@ -16399,17 +16432,18 @@ function walkRustGuardedStatementRust(
   statement: Readonly<IrStatement>,
   guards: readonly RustArrayBoundsProvenGuard[],
   context: RustArrayBoundsProvenReadContext,
+  triangularScopeEligible: boolean,
 ): readonly RustArrayBoundsProvenGuard[] {
   switch (statement.kind) {
     case 'block':
-      return walkRustGuardedStatementsRust(statement.statements, guards, context);
+      return walkRustGuardedStatementsRust(statement.statements, guards, context, triangularScopeEligible);
     case 'break':
     case 'continue':
       return guards;
     case 'do': {
       // A do-while condition does not dominate the first body execution, and inherited proofs do not
       // survive across iterations. The body and condition keep no inherited proof.
-      walkRustGuardedStatementRust(statement.body, [], context);
+      walkRustGuardedStatementRust(statement.body, [], context, triangularScopeEligible);
       markRustGuardedExpressionReadsRust(statement.condition, [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
@@ -16439,7 +16473,7 @@ function walkRustGuardedStatementRust(
       }
       if (statement.condition) markRustGuardedExpressionReadsRust(statement.condition, [], context);
       if (statement.increment) markRustGuardedExpressionReadsRust(statement.increment, [], context);
-      walkRustGuardedStatementRust(statement.body, [], context);
+      walkRustGuardedStatementRust(statement.body, [], context, triangularScopeEligible);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'forIn': {
@@ -16448,7 +16482,7 @@ function walkRustGuardedStatementRust(
         collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.object),
       );
       markRustGuardedExpressionReadsRust(statement.object, objectGuards, context);
-      walkRustGuardedStatementRust(statement.body, [], context);
+      walkRustGuardedStatementRust(statement.body, [], context, triangularScopeEligible);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'forOf': {
@@ -16457,7 +16491,7 @@ function walkRustGuardedStatementRust(
         collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.iterable),
       );
       markRustGuardedExpressionReadsRust(statement.iterable, iterableGuards, context);
-      walkRustGuardedStatementRust(statement.body, [], context);
+      walkRustGuardedStatementRust(statement.body, [], context, triangularScopeEligible);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'if': {
@@ -16471,8 +16505,10 @@ function walkRustGuardedStatementRust(
         provenGuard && !statementContainsFunctionExpressionRust(statement.consequent)
           ? [...conditionGuards, provenGuard]
           : conditionGuards;
-      walkRustGuardedStatementRust(statement.consequent, consequentGuards, context);
-      if (statement.otherwise) walkRustGuardedStatementRust(statement.otherwise, conditionGuards, context);
+      walkRustGuardedStatementRust(statement.consequent, consequentGuards, context, triangularScopeEligible);
+      if (statement.otherwise) {
+        walkRustGuardedStatementRust(statement.otherwise, conditionGuards, context, triangularScopeEligible);
+      }
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'return':
@@ -16488,7 +16524,7 @@ function walkRustGuardedStatementRust(
         if (switchCase.expression) {
           markRustGuardedExpressionReadsRust(switchCase.expression, subjectGuards, context);
         }
-        walkRustGuardedStatementsRust(switchCase.statements, subjectGuards, context);
+        walkRustGuardedStatementsRust(switchCase.statements, subjectGuards, context, triangularScopeEligible);
       }
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
@@ -16496,9 +16532,13 @@ function walkRustGuardedStatementRust(
       markRustGuardedExpressionReadsRust(statement.expression, guards, context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     case 'try': {
-      let active = walkRustGuardedStatementRust(statement.tryBody, guards, context);
-      if (statement.catchClause) active = walkRustGuardedStatementRust(statement.catchClause.body, active, context);
-      if (statement.finallyBody) active = walkRustGuardedStatementRust(statement.finallyBody, active, context);
+      let active = walkRustGuardedStatementRust(statement.tryBody, guards, context, triangularScopeEligible);
+      if (statement.catchClause) {
+        active = walkRustGuardedStatementRust(statement.catchClause.body, active, context, triangularScopeEligible);
+      }
+      if (statement.finallyBody) {
+        active = walkRustGuardedStatementRust(statement.finallyBody, active, context, triangularScopeEligible);
+      }
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'variable': {
@@ -16521,7 +16561,19 @@ function walkRustGuardedStatementRust(
         ? undefined
         : (createRustArrayBoundsProvenGuardRust(statement.condition, context) ??
           createRustMonotoneArrayBoundsProvenGuardRust(statement, context));
-      walkRustGuardedStatementRust(statement.body, provenGuard ? [provenGuard] : [], context);
+      const triangularGuards = createRustTriangularArrayBoundsProvenGuardsRust(
+        statement,
+        provenGuard,
+        guards,
+        context,
+        triangularScopeEligible,
+      );
+      walkRustGuardedStatementRust(
+        statement.body,
+        triangularGuards ?? (provenGuard ? [provenGuard] : []),
+        context,
+        triangularScopeEligible,
+      );
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
   }
@@ -16772,7 +16824,141 @@ function createRustMonotoneArrayBoundsProvenGuardRust(
   ) {
     return undefined;
   }
-  return { arrayBindingId: upper.array.id, indexBindingId: upper.index.id, kind: 'monotone' };
+  return {
+    arrayBindingId: upper.array.id,
+    indexBindingId: upper.index.id,
+    kind: 'monotone',
+    monotoneLoop: statement,
+  };
+}
+
+// A nested loop normally drops every inherited bound. The one exception is a triangular scan over
+// the same owned number array: the child starts exactly one position after the outer index, and both
+// indices retain their independently proven strict monotone bounds. Keeping the loop identities on
+// the guards makes this a read-only provenance refinement rather than a new write capability.
+function createRustTriangularArrayBoundsProvenGuardsRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  provenGuard: Readonly<RustArrayBoundsProvenGuard> | undefined,
+  inheritedGuards: readonly RustArrayBoundsProvenGuard[],
+  context: RustArrayBoundsProvenReadContext,
+  triangularScopeEligible: boolean,
+): readonly RustArrayBoundsProvenGuard[] | undefined {
+  if (!triangularScopeEligible || inheritedGuards.length !== 1) return undefined;
+  const outer = inheritedGuards[0];
+  if (!outer || outer.kind !== 'monotone') return undefined;
+  const child =
+    provenGuard?.kind === 'monotone'
+      ? provenGuard
+      : createRustDerivedMonotoneArrayBoundsProvenGuardRust(statement, outer.indexBindingId, context);
+  if (!child) return undefined;
+  if (outer.arrayBindingId !== child.arrayBindingId || outer.indexBindingId === child.indexBindingId) {
+    return undefined;
+  }
+  if (!context.loopInitializerBindingIds.get(outer.monotoneLoop)?.has(outer.indexBindingId)) return undefined;
+  if (!context.loopInitializerBindingIds.get(statement)?.has(child.indexBindingId)) return undefined;
+  const arrayType = context.bindingTypes.get(child.arrayBindingId);
+  if (
+    arrayType?.kind !== 'array' ||
+    arrayType.element.kind !== 'primitive' ||
+    arrayType.element.name !== 'number' ||
+    context.sharedArrayBindingIds.has(child.arrayBindingId)
+  ) {
+    return undefined;
+  }
+  const childEvidence = context.integerEvidence.get(child.indexBindingId);
+  if (!childEvidence || !isRustDerivedUnitIndexInitializerRust(childEvidence.initializer, outer.indexBindingId)) {
+    return undefined;
+  }
+  if (!hasOnlyRustTriangularNestedControlFlowRust(outer.monotoneLoop.body, statement)) return undefined;
+  if (collectRustArrayIndexWriteNodesRust(statement.body, outer.indexBindingId).size !== 0) return undefined;
+  const invalidations = collectRustGuardedStatementInvalidatingBindingIdsRust(outer.monotoneLoop);
+  if (invalidations.has(child.arrayBindingId)) return undefined;
+  return [outer, child];
+}
+
+function createRustDerivedMonotoneArrayBoundsProvenGuardRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  outerIndexBindingId: string,
+  context: RustArrayBoundsProvenReadContext,
+): RustArrayBoundsProvenGuard | undefined {
+  const upper = parseRustArrayBoundsGuardConjunctRust(statement.condition);
+  if (!upper || upper.kind !== 'upper') return undefined;
+  const indexType = context.bindingTypes.get(upper.index.id);
+  if (indexType?.kind !== 'primitive' || indexType.name !== 'number') return undefined;
+  const arrayType = context.bindingTypes.get(upper.array.id);
+  if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive' || arrayType.element.name !== 'number') {
+    return undefined;
+  }
+  if (context.sharedArrayBindingIds.has(upper.array.id)) return undefined;
+  const evidence = context.integerEvidence.get(upper.index.id);
+  if (!evidence || !evidence.declared || evidence.parameter) return undefined;
+  if (!isRustDerivedUnitIndexInitializerRust(evidence.initializer, outerIndexBindingId)) return undefined;
+  if (!isRustIntegerProvenBindingRust(upper.index.id, context)) return undefined;
+  const bodyWrites = collectRustArrayIndexWriteNodesRust(statement.body, upper.index.id);
+  if (bodyWrites.size !== evidence.writes.length) return undefined;
+  if (
+    evidence.writes.some((write) => !bodyWrites.has(write.node) || !isRustExactUnitIndexStepRust(write, upper.index.id))
+  ) {
+    return undefined;
+  }
+  return {
+    arrayBindingId: upper.array.id,
+    indexBindingId: upper.index.id,
+    kind: 'monotone',
+    monotoneLoop: statement,
+  };
+}
+
+function isRustDerivedUnitIndexInitializerRust(
+  expression: Readonly<IrExpression> | undefined,
+  outerIndexBindingId: string,
+): boolean {
+  if (!expression || expression.kind !== 'binary' || expression.operator !== '+') return false;
+  const sameOuterIndex = (candidate: Readonly<IrExpression>): boolean =>
+    candidate.kind === 'identifier' &&
+    candidate.reference.kind === 'binding' &&
+    candidate.reference.binding.id === outerIndexBindingId;
+  const literalOne = (candidate: Readonly<IrExpression>): boolean =>
+    candidate.kind === 'literal' && typeof candidate.value === 'number' && candidate.value === 1;
+  return (
+    (sameOuterIndex(expression.left) && literalOne(expression.right)) ||
+    (literalOne(expression.left) && sameOuterIndex(expression.right))
+  );
+}
+
+function hasOnlyRustTriangularNestedControlFlowRust(
+  statement: Readonly<IrStatement>,
+  childLoop: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+): boolean {
+  let childSeen = false;
+  const visit = (node: Readonly<IrStatement>, allowedChild: boolean): boolean => {
+    switch (node.kind) {
+      case 'block':
+        return node.statements.every((child) => visit(child, allowedChild));
+      case 'break':
+      case 'expression':
+      case 'return':
+      case 'throw':
+      case 'variable':
+        return true;
+      case 'continue':
+      case 'do':
+      case 'for':
+      case 'forIn':
+      case 'forOf':
+      case 'try':
+        return false;
+      case 'if':
+        return visit(node.consequent, allowedChild) && (!node.otherwise || visit(node.otherwise, allowedChild));
+      case 'switch':
+        return node.cases.every((switchCase) => switchCase.statements.every((child) => visit(child, allowedChild)));
+      case 'while':
+        if (!allowedChild || node !== childLoop || childSeen) return false;
+        childSeen = true;
+        return visit(node.body, false);
+    }
+  };
+  return visit(statement, true) && childSeen;
 }
 
 function isRustNonnegativeIntegerLiteralRust(expression: Readonly<IrExpression> | undefined): boolean {
@@ -16936,6 +17122,67 @@ function collectRustArrayIndexEvidenceRust(module: Readonly<IrModule>): Readonly
     },
   });
   return evidence;
+}
+
+function collectRustArrayLoopInitializerBindingIdsRust(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<Extract<IrStatement, { kind: 'while' }>>, ReadonlySet<string>> {
+  const loopInitializers = new Map<Readonly<Extract<IrStatement, { kind: 'while' }>>, ReadonlySet<string>>();
+  const visitStatements = (statements: readonly IrStatement[]): void => {
+    for (const [index, statement] of statements.entries()) {
+      const previous = statements[index - 1];
+      if (statement.kind === 'while' && previous?.kind === 'variable' && previous.declarations.length === 1) {
+        const declaration = previous.declarations[0];
+        if (declaration && 'binding' in declaration) {
+          loopInitializers.set(statement, new Set([declaration.binding.id]));
+        }
+      }
+      visitStatement(statement);
+    }
+  };
+  const visitStatement = (statement: Readonly<IrStatement>): void => {
+    switch (statement.kind) {
+      case 'block':
+        visitStatements(statement.statements);
+        return;
+      case 'do':
+      case 'for':
+      case 'forIn':
+      case 'forOf':
+      case 'while':
+        visitStatement(statement.body);
+        return;
+      case 'if':
+        visitStatement(statement.consequent);
+        if (statement.otherwise) visitStatement(statement.otherwise);
+        return;
+      case 'switch':
+        for (const switchCase of statement.cases) visitStatements(switchCase.statements);
+        return;
+      case 'try':
+        visitStatement(statement.tryBody);
+        if (statement.catchClause) visitStatement(statement.catchClause.body);
+        if (statement.finallyBody) visitStatement(statement.finallyBody);
+        return;
+      case 'break':
+      case 'continue':
+      case 'expression':
+      case 'return':
+      case 'throw':
+      case 'variable':
+        return;
+    }
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') {
+      visitStatements(declaration.body);
+      continue;
+    }
+    if (declaration.kind !== 'class') continue;
+    if (declaration.classConstructor) visitStatements(declaration.classConstructor.body);
+    for (const method of declaration.methods) visitStatements(method.body);
+  }
+  return loopInitializers;
 }
 
 function isRustIntegerProvenBindingRust(bindingId: string, context: RustArrayBoundsProvenReadContext): boolean {

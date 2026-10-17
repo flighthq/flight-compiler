@@ -30651,6 +30651,396 @@ describe('emitIrModuleRust monotone while-loop array reads', () => {
   });
 });
 
+describe('emitIrModuleRust triangular nested monotone array reads', () => {
+  it('reads both indices in an exact triangular pair over a readonly number array', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'triangular-pair.ts',
+        `export function pairTotal(values: readonly number[]): number {
+          let total = 0;
+          for (let i = 0; i < values.length; i++) {
+            for (let j = i + 1; j < values.length; j++) { total = total + values[i]! + values[j]!; }
+          }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('total = (total + values[i as usize]) + values[j as usize];');
+  });
+
+  it('accepts mirrored strict bounds and the mirrored exact child initializer', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'triangular-mirror.ts',
+        `export function pairTotal(values: number[]): number {
+          let total = 0;
+          for (let i = 0; values.length > i; i = i + 1) {
+            for (let j = 1 + i; values.length > j; j = j + 1) {
+              total = total + values[i]! + values[j]!;
+            }
+          }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('while (values.len() as f64) > i {');
+    expect(output).toContain('while (values.len() as f64) > j {');
+    expect(output).toContain('(total + values[i as usize]) + values[j as usize]');
+  });
+
+  it('keeps nested conditionals and breaks deterministic', () => {
+    const result = lower(
+      'triangular-break.ts',
+      `export function findPair(values: number[], target: number): number {
+        let found = -1;
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            if (values[i]! + values[j]! === target) { found = i * 100 + j; break; }
+          }
+          if (found >= 0) { break; }
+        }
+        return found;
+      }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('if (values[i as usize] + values[j as usize]) == target {');
+    expect(output).toContain('break;');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it.each([
+    {
+      name: 'an outer negative initializer',
+      source: `export function read(values: number[]): number {
+        for (let i = -1; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an outer fractional initializer',
+      source: `export function read(values: number[]): number {
+        for (let i = 0.5; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an outer nonliteral initializer',
+      source: `export function read(values: number[], start: number): number {
+        for (let i = start; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an independent inner initializer',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = 0; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a non-unit derived inner initializer',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 2; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a non-strict outer guard',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i <= values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a non-strict inner guard',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j <= values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a different inner receiver bound',
+      source: `export function read(values: number[], other: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < other.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a larger outer step',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i += 2) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a larger inner step',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j += 2) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an outer initializer outside the owning loop pair',
+      source: `export function read(values: number[]): number {
+        let i = 0;
+        const marker = 0;
+        while (i < values.length) {
+          let j = i + 1;
+          while (j < values.length) { return values[i]! + values[j]!; }
+          i += 1;
+        }
+        return marker;
+      }`,
+    },
+    {
+      name: 'an inner initializer outside the owning loop pair',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          let j = i + 1;
+          const marker = 0;
+          while (j < values.length) { return values[i]! + values[j]! + marker; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an inner write outside its owning loop',
+      source: `export function read(values: number[]): number {
+        let i = 0;
+        while (i < values.length) {
+          let j = i + 1;
+          while (j < values.length) { return values[i]! + values[j]!; }
+          j += 1;
+          i += 1;
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an outer write inside the inner loop',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            const result = values[i]! + values[j]!;
+            i += 1;
+            return result;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an outer read after its increment',
+      source: `export function read(values: number[]): number {
+        let i = 0;
+        while (i < values.length) {
+          i += 1;
+          let j = i + 1;
+          while (j < values.length) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an inner read after its increment',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            j += 1;
+            return values[i]! + values[j]!;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a continue in the pair',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            if (values[i]! + values[j]! < 0) { continue; }
+            return values[i]! + values[j]!;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a do-while child',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          let j = i + 1;
+          do { return values[i]! + values[j]!; } while (j < values.length);
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a third nested loop',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            for (let k = 0; k < 1; k++) { return values[i]! + values[j]!; }
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a try statement',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            try { return values[i]! + values[j]!; } finally {}
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an async scope',
+      source: `export async function read(values: number[]): Promise<number> {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a generic scope',
+      source: `export function read<T>(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an aliased shared receiver',
+      source: `export function read(): number {
+        const values = [1, 2, 3];
+        const alias = values;
+        alias.push(4);
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a receiver rebind',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            const result = values[i]! + values[j]!;
+            values = [];
+            return result;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a receiver length write',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            const result = values[i]! + values[j]!;
+            values.length = 0;
+            return result;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a receiver method invalidation',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            const result = values[i]! + values[j]!;
+            values.push(0);
+            return result;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a receiver call invalidation',
+      source: `function touch(values: number[]): void {}
+      export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            const result = values[i]! + values[j]!;
+            touch(values);
+            return result;
+          }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a string array receiver',
+      source: `export function read(values: string[]): string {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]! + values[j]!; }
+        }
+        return '';
+      }`,
+    },
+    {
+      name: 'a nested array receiver',
+      source: `export function read(values: number[][]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) { return values[i]!.length + values[j]!.length; }
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a staged element write',
+      source: `export function read(values: number[]): number {
+        for (let i = 0; i < values.length; i++) {
+          for (let j = i + 1; j < values.length; j++) {
+            values[j] += values[i]!;
+            return values[j]!;
+          }
+        }
+        return 0;
+      }`,
+    },
+  ])('keeps $name on the absence refusal', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('triangular-refused.ts', source).module))).toBe(
+      'rust-array-index-result-absence-unrepresented',
+    );
+  });
+});
+
 describe('emitIrModuleRust optional-chained array element receivers', () => {
   it('maps a record element field through the element Option and coalesces it', () => {
     const result = lower(
