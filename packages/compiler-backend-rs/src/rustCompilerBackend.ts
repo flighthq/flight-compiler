@@ -221,6 +221,12 @@ type RustOptionalSharedClassRepresentation = Exclude<RustSharedClassRepresentati
 interface IrClassConstructorParameterPlanRust {
   readonly borrowedPositions: ReadonlySet<number>;
   readonly optionalClassPositions: ReadonlySet<number>;
+  readonly retainedClassPositions: ReadonlySet<number>;
+}
+
+interface IrClassRetainedFieldPlanRust {
+  readonly field: Readonly<IrClassField>;
+  readonly module: Readonly<IrModule>;
 }
 
 interface IrClassMethodParameterPlanRust {
@@ -368,6 +374,7 @@ interface EmitContext {
   allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
   asyncMethodOwner?: Readonly<IrClassDeclaration> | undefined;
   asyncMethodReceiver?: string | undefined;
+  classMethodOwner?: Readonly<IrClassDeclaration> | undefined;
   assignableBindingIds: ReadonlySet<string>;
   // The declaration currently being emitted. A refusal names where in the source to look, and the
   // declaration is the granularity the IR retains an origin at.
@@ -412,6 +419,7 @@ interface EmitContext {
   primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
+  retainedClassParameterIds: ReadonlySet<string>;
   sharedArrayBindingIds: ReadonlySet<string>;
   sharedClassBindingIds: ReadonlySet<string>;
   sharedClassBindingRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
@@ -798,6 +806,7 @@ function emitIrModuleRustWithContext(
       );
     }),
   );
+  const retainedClassParameterIds = new Set<string>();
   const sharedClassReturnRepresentations = new Map<string, RustSharedClassRepresentation>(
     referenceModulePlan?.callables.flatMap((callable) =>
       callable.returns ? [[callable.binding.id, callable.returns] as const] : [],
@@ -898,6 +907,7 @@ function emitIrModuleRustWithContext(
       ...plannedReferentMutatedBindingIds,
     ]),
     referentMutatedParameterIds,
+    retainedClassParameterIds,
     sharedArrayBindingIds,
     sharedClassBindingIds,
     sharedClassBindingRepresentations,
@@ -998,6 +1008,10 @@ function emitIrModuleRustWithContext(
         kind: 'union',
         types: [parameter.type, { kind: 'undefined' }],
       });
+    }
+    for (const position of plan?.retainedClassPositions ?? []) {
+      const parameter = declaration.classConstructor?.parameters[position];
+      if (parameter) retainedClassParameterIds.add(parameter.binding.id);
     }
     for (const method of declaration.methods) {
       const methodPlan = getIrClassMethodParameterPlanRust(method, declaration, module, context);
@@ -1165,6 +1179,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     !declaration.classConstructor ||
     (declaration.classConstructor.parameters.length === 0 && declaration.classConstructor.body.length === 0);
   const instanceFields = declaration.fields.filter((field) => !field.static);
+  const retainedField = getIrClassRetainedFieldPlanRust(declaration, context.module, context)?.field;
   if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields && !compositionInit) {
     emissionError(
       context,
@@ -1197,9 +1212,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     lines.push(`    ${safeRustValueName('base')}: ${getBindingTargetNameRust(concreteBase.binding, context)},`);
   }
   for (const field of instanceFields) {
-    lines.push(
-      `    ${field.visibility === 'public' ? 'pub ' : ''}${safeRustValueName(field.name)}: ${emitType(field.type, context)},`,
-    );
+    const fieldType =
+      field === retainedField
+        ? emitSharedClassCarrierTypeRust(field.type, 'shared-ref-cell-class', context)
+        : emitType(field.type, context);
+    lines.push(`    ${field.visibility === 'public' ? 'pub ' : ''}${safeRustValueName(field.name)}: ${fieldType},`);
   }
   lines.push('}');
   // A field initializer is a constructor obligation, and the neutral plan already decides when each
@@ -1217,7 +1234,8 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  ${structVisibility}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
       '    Self {',
       ...constructorFields.map(
-        (field) => `      ${safeRustValueName(field.name)}: ${emitOwnedOperandRust(field.value, context)},`,
+        (field) =>
+          `      ${safeRustValueName(field.name)}: ${field.name === retainedField?.name ? emitExpression(field.value, context) : emitOwnedOperandRust(field.value, context)},`,
       ),
       '    }',
       '  }',
@@ -1305,6 +1323,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
         allowedNativeFutureCall: undefined,
         asyncMethodOwner: declaration,
         asyncMethodReceiver: receiver,
+        classMethodOwner: declaration,
         enclosingReturnType: awaitedType,
         insideProtectedTry: false,
         nativeAsyncFunction: true,
@@ -1332,6 +1351,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const sharedClassReturnRepresentation = methodPlan?.returnClass?.representation;
     const methodContext: EmitContext = {
       ...context,
+      classMethodOwner: declaration,
       enclosingReturnType: method.returns,
       returnsAbsent: hasIrTypeAbsentMember(method.returns),
       returnsSharedClass: sharedClassReturnRepresentation === 'shared-ref-cell-class',
@@ -2761,7 +2781,9 @@ function emitSharedClassFieldAssignmentRust(
 ): string | undefined {
   if (
     expression.left.kind !== 'property' ||
-    getRustSharedClassBindingRust(expression.left.object, context) === undefined
+    (getRustSharedClassBindingRust(expression.left.object, context) === undefined &&
+      (expression.left.object.kind !== 'property' ||
+        getIrClassRetainedFieldProjectionRust(expression.left.object, context) === undefined))
   ) {
     return undefined;
   }
@@ -2828,13 +2850,17 @@ function getIrSharedClassCompoundFieldAssignmentTypeRust(
   context: EmitContext,
 ): 'number' | 'string' | undefined {
   const left = expression.left;
-  if (left.kind !== 'property' || left.optional || left.structuralAccess || left.object.kind !== 'identifier') {
+  if (left.kind !== 'property' || left.optional || left.structuralAccess) {
     return undefined;
   }
-  const receiver = left.object;
-  const reference = receiver.reference;
-  if (reference.kind !== 'binding') return undefined;
-  const declaration = getIrSharedClassDeclarationRust(reference.binding, context);
+  const binding = getRustSharedClassBindingRust(left.object, context);
+  const retained =
+    left.object.kind === 'property' ? getIrClassRetainedFieldProjectionRust(left.object, context) : undefined;
+  const declaration = binding
+    ? getIrSharedClassDeclarationRust(binding, context)
+    : retained
+      ? getIrSharedClassDeclarationForTypeRust(retained.field.type, context, retained.module)
+      : undefined;
   const field = declaration?.fields.find((candidate) => !candidate.static && candidate.name === left.name);
   if (!field || !isIrRequiredPrimitiveClassFieldRust(field) || field.type.kind !== 'primitive') return undefined;
   const exactFieldDomain =
@@ -2857,12 +2883,22 @@ function emitSharedClassFieldRust(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): string | undefined {
+  const projectedCarrier = emitRetainedClassFieldCarrierRust(expression, context);
+  if (projectedCarrier) return projectedCarrier;
   const binding = getRustSharedClassBindingRust(expression.object, context);
   const returned = isIrSharedClassReturnCallRust(expression.object, context);
-  if (!binding && !returned) return undefined;
+  const retainedOwner =
+    expression.object.kind === 'property'
+      ? getIrClassRetainedFieldProjectionRust(expression.object, context)
+      : undefined;
+  if (!binding && !returned && !retainedOwner) return undefined;
   const declaration = binding
     ? getIrSharedClassDeclarationRust(binding, context)
-    : getIrSharedClassDeclarationForTypeRust(inferIrExpressionTypeRust(expression.object, context), context);
+    : getIrSharedClassDeclarationForTypeRust(
+        retainedOwner?.field.type ?? inferIrExpressionTypeRust(expression.object, context),
+        context,
+        retainedOwner?.module ?? context.module,
+      );
   const field = declaration?.fields.find((candidate) => !candidate.static && candidate.name === expression.name);
   if (!field) return undefined;
   const owned = isIrTypeCopyValueRust(field.type) ? '' : '.clone()';
@@ -4305,7 +4341,7 @@ function assertIrConstructorInvocationAbiRust(
   context: EmitContext,
 ): IrClassConstructorParameterPlanRust {
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') {
-    return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
+    return { borrowedPositions: new Set(), optionalClassPositions: new Set(), retainedClassPositions: new Set() };
   }
   // A class this module declares has an associated `new` whenever its constructor was lowered to one,
   // so the call is emitted; a class whose constructor was refused has nothing to call.
@@ -4370,11 +4406,26 @@ function assertIrConstructorInvocationAbiRust(
             );
           }
         }
+        for (const position of constructorPlan.retainedClassPositions) {
+          const parameter = target.classConstructor?.parameters[position];
+          const argument = expression.arguments[position];
+          if (
+            !parameter ||
+            !argument ||
+            !isIrExactRequiredClassCarrierArgumentRust(argument, parameter.type, targetModule!, context)
+          ) {
+            emissionError(
+              context,
+              `constructor argument ${String(position)} for ${target.binding.name} lacks the exact retained class carrier`,
+              'rust-reference-shared-class-construction-unrepresented',
+            );
+          }
+        }
         return constructorPlan;
       }
       const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(target, context) : undefined;
       if (concreteBase && getIrClassCompositionConstructorRust(target, concreteBase)) {
-        return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
+        return { borrowedPositions: new Set(), optionalClassPositions: new Set(), retainedClassPositions: new Set() };
       }
       const instanceFields = target.fields.filter((field) => !field.static);
       const constructed =
@@ -4386,7 +4437,7 @@ function assertIrConstructorInvocationAbiRust(
         instanceFields.length > 0 &&
         instanceFields.every((field) => field.initializer || field.declare)
       ) {
-        return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
+        return { borrowedPositions: new Set(), optionalClassPositions: new Set(), retainedClassPositions: new Set() };
       }
     }
   }
@@ -4413,6 +4464,9 @@ function emitConstructorArgumentsRust(
       return emitSharedClassCarrierExpressionRust(argument, 'optional-undefined-shared-ref-cell-class', context);
     }
     if (!argument) emissionError(context, `missing required constructor argument at position ${String(position)}`);
+    if (plan.retainedClassPositions.has(position)) {
+      return emitSharedClassCarrierExpressionRust(argument, 'shared-ref-cell-class', context);
+    }
     return plan.borrowedPositions.has(position)
       ? emitBorrowedClassOperandRust(argument, context)
       : emitOwnedOperandRust(argument, context);
@@ -6361,6 +6415,8 @@ function inferIrExpressionTypeRust(
     case 'object':
       return expression.type;
     case 'property': {
+      const retainedField = getIrClassRetainedFieldProjectionRust(expression, context);
+      if (retainedField) return retainedField.field.type;
       const binding = expression.member ? getCompilerRustAmbientMemberBinding(expression.member) : undefined;
       return binding?.kind === 'countingMethod' ? { kind: 'primitive', name: 'number' } : undefined;
     }
@@ -7051,6 +7107,16 @@ function emitSharedClassCarrierExpressionRust(
   let carrier: string;
   if (expression.kind === 'new') {
     carrier = `Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+  } else if (expression.kind === 'property') {
+    const projected = emitRetainedClassFieldCarrierRust(expression, context);
+    if (!projected) {
+      return emissionRuleError(
+        context,
+        'class-valued field carrier requires one exact required readonly retained field',
+        'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+    carrier = projected;
   } else if (expression.kind === 'identifier' && expression.reference.kind === 'binding' && sourceRepresentation) {
     const source = getBindingTargetNameRust(expression.reference.binding, context);
     if (isRustOptionalSharedClassRepresentation(sourceRepresentation)) {
@@ -7144,6 +7210,10 @@ function emitSharedClassIdentityCarrierReferenceRust(
     context.sharedClassBindingIds.has(expression.reference.binding.id)
   ) {
     return `&${emitIdentifierReferenceRust(expression.reference, context)}`;
+  }
+  if (expression.kind === 'property') {
+    const projected = emitRetainedClassFieldCarrierRust(expression, context);
+    return projected ? `&${normalizeSourceTextGrouping(projected)}` : undefined;
   }
   if (isIrSharedClassReturnCallRust(expression, context)) return `&${emitExpression(expression, context)}`;
   if (expression.kind !== 'new') return undefined;
@@ -8118,6 +8188,10 @@ function emitSharedClassBorrowReceiverRust(
   mutable: boolean,
   context: EmitContext,
 ): string | undefined {
+  if (expression.kind === 'property' && getIrClassRetainedFieldProjectionRust(expression, context)) {
+    const carrier = emitRetainedClassFieldCarrierRust(expression, context);
+    return carrier ? `${normalizeSourceTextGrouping(carrier)}.${mutable ? 'borrow_mut' : 'borrow'}()` : undefined;
+  }
   const binding = getRustSharedClassBindingRust(expression, context);
   if (binding) {
     const representation = getRustSharedClassBindingRepresentationRust(binding, context);
@@ -8614,6 +8688,7 @@ function getIrClassConstructorParameterPlanRust(
 ): IrClassConstructorParameterPlanRust | undefined {
   const constructor = declaration.classConstructor;
   if (!constructor || constructor.overloads.length > 0) return undefined;
+  const retainedField = getIrClassRetainedFieldPlanRust(declaration, module, context);
   const parameterKinds = constructor.parameters.map((parameter, position) => {
     if (
       !parameter.initializer &&
@@ -8625,7 +8700,6 @@ function getIrClassConstructorParameterPlanRust(
     }
     const location = getIrClassDeclarationLocationForTypeRust(parameter.type, context, module);
     if (!location) return 'other' as const;
-    if (!isIrSimpleConstructorOwnerDeclarationRust(location.declaration, location.module, context)) return undefined;
     if (
       parameter.initializer ||
       parameter.rest ||
@@ -8634,6 +8708,18 @@ function getIrClassConstructorParameterPlanRust(
     ) {
       return undefined;
     }
+    const retainedLocation = retainedField
+      ? getIrClassDeclarationLocationForTypeRust(retainedField.field.type, context, retainedField.module)
+      : undefined;
+    if (
+      retainedLocation &&
+      position === constructor.parameters.length - 1 &&
+      !parameter.optional &&
+      isSameIrClassDeclarationLocationRust(location, retainedLocation)
+    ) {
+      return { kind: 'retainedClass', location } as const;
+    }
+    if (!isIrSimpleConstructorOwnerDeclarationRust(location.declaration, location.module, context)) return undefined;
     if (!parameter.optional) return { kind: 'class', location } as const;
     return position === constructor.parameters.length - 1 ? ({ kind: 'optionalClass', location } as const) : undefined;
   });
@@ -8646,6 +8732,11 @@ function getIrClassConstructorParameterPlanRust(
   if (optionalClassPositions.size > 1) return undefined;
   const borrowed = new Set(
     parameterKinds.flatMap((kind, position) => (typeof kind === 'object' && kind.kind === 'class' ? [position] : [])),
+  );
+  const retainedClassPositions = new Set(
+    parameterKinds.flatMap((kind, position) =>
+      typeof kind === 'object' && kind.kind === 'retainedClass' ? [position] : [],
+    ),
   );
   const usedClassParameters = new Set<number>();
   const fields = declaration.fields.filter((field) => !field.static);
@@ -8664,13 +8755,23 @@ function getIrClassConstructorParameterPlanRust(
       return undefined;
     }
     const targetField = fields.find((field) => field.name === left.name);
-    if (!targetField || !isIrRequiredPrimitiveClassFieldRust(targetField)) return undefined;
+    if (!targetField || (targetField !== retainedField?.field && !isIrRequiredPrimitiveClassFieldRust(targetField))) {
+      return undefined;
+    }
     if (right.kind === 'identifier' && right.reference.kind === 'binding') {
       const parameterBindingId = right.reference.binding.id;
       const position = constructor.parameters.findIndex((parameter) => parameter.binding.id === parameterBindingId);
-      if (position < 0 || parameterKinds[position] === undefined || parameterKinds[position] !== 'primitive') {
+      const kind = parameterKinds[position];
+      if (
+        position < 0 ||
+        kind === undefined ||
+        (targetField === retainedField?.field
+          ? typeof kind !== 'object' || kind.kind !== 'retainedClass'
+          : kind !== 'primitive')
+      ) {
         return undefined;
       }
+      if (targetField === retainedField?.field) usedClassParameters.add(position);
       continue;
     }
     if (right.kind === 'conditional') {
@@ -8745,8 +8846,10 @@ function getIrClassConstructorParameterPlanRust(
     }
     usedClassParameters.add(position);
   }
-  return [...borrowed, ...optionalClassPositions].every((position) => usedClassParameters.has(position))
-    ? { borrowedPositions: borrowed, optionalClassPositions }
+  return [...borrowed, ...optionalClassPositions, ...retainedClassPositions].every((position) =>
+    usedClassParameters.has(position),
+  )
+    ? { borrowedPositions: borrowed, optionalClassPositions, retainedClassPositions }
     : undefined;
 }
 
@@ -8763,6 +8866,97 @@ function isIrRequiredPrimitiveClassFieldRust(field: Readonly<IrClassField>): boo
     !field.static &&
     field.parameterProperty === undefined &&
     isIrRequiredPrimitiveTypeRust(field.type)
+  );
+}
+
+function getIrClassRetainedFieldPlanRust(
+  declaration: Readonly<IrClassDeclaration>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+  visiting: ReadonlySet<string> = new Set(),
+): IrClassRetainedFieldPlanRust | undefined {
+  const ownerKey = `${module.packageName}\0${module.source}\0${declaration.binding.id}`;
+  if (visiting.has(ownerKey)) return undefined;
+  const candidates = declaration.fields.filter((field) => !isIrRequiredPrimitiveClassFieldRust(field));
+  if (candidates.length !== 1) return undefined;
+  const field = candidates[0]!;
+  if (
+    field.abstract ||
+    field.branded ||
+    field.declare ||
+    field.initializer ||
+    field.optional ||
+    !field.readonly ||
+    field.static ||
+    field.parameterProperty !== undefined ||
+    field.type.kind !== 'named' ||
+    field.type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const payload = getIrClassDeclarationLocationForTypeRust(field.type, context, module);
+  if (!payload || isSameIrClassDeclarationLocationRust({ declaration, module }, payload)) return undefined;
+  const payloadKey = `${payload.module.packageName}\0${payload.module.source}\0${payload.declaration.binding.id}`;
+  if (visiting.has(payloadKey)) return undefined;
+  if (
+    !isIrSimpleConstructorOwnerDeclarationRust(payload.declaration, payload.module, context) ||
+    payload.declaration.fields.some((candidate) => !isIrRequiredPrimitiveClassFieldRust(candidate))
+  ) {
+    return undefined;
+  }
+  return { field, module };
+}
+
+function getIrClassRetainedFieldProjectionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): IrClassRetainedFieldPlanRust | undefined {
+  if (expression.optional || expression.structuralAccess) return undefined;
+  let owner: Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }> | undefined;
+  if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
+    owner = context.classMethodOwner ? { declaration: context.classMethodOwner, module: context.module } : undefined;
+  } else {
+    if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding') {
+      const representation = getRustSharedClassBindingRepresentationRust(expression.object.reference.binding, context);
+      if (isRustOptionalSharedClassRepresentation(representation) && expression.object.presence !== 'narrowedPresent') {
+        return undefined;
+      }
+    }
+    owner = getIrClassDeclarationLocationForTypeRust(
+      getIrSharedClassIdentityExpressionTypeRust(expression.object, context),
+      context,
+      context.module,
+    );
+  }
+  if (!owner) return undefined;
+  const plan = getIrClassRetainedFieldPlanRust(owner.declaration, owner.module, context);
+  return plan?.field.name === expression.name ? plan : undefined;
+}
+
+function emitRetainedClassFieldCarrierRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const plan = getIrClassRetainedFieldProjectionRust(expression, context);
+  if (!plan) return undefined;
+  context.needsRcImport.add('Rc');
+  context.needsRefCellImport.add('RefCell');
+  const field = safeRustValueName(plan.field.name);
+  if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
+    return `Rc::clone(&self.${field})`;
+  }
+  const owner = emitSharedClassBorrowReceiverRust(expression.object, false, context);
+  return owner ? `{ Rc::clone(&${owner}.${field}) }` : undefined;
+}
+
+function isSameIrClassDeclarationLocationRust(
+  left: Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }>,
+  right: Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }>,
+): boolean {
+  return (
+    left.module.packageName === right.module.packageName &&
+    left.module.source === right.module.source &&
+    left.declaration.binding.id === right.declaration.binding.id
   );
 }
 
@@ -8805,6 +8999,35 @@ function isIrExactBorrowedClassArgumentRust(
     argumentLocation.module.packageName === parameterLocation.module.packageName &&
     argumentLocation.module.source === parameterLocation.module.source &&
     argumentLocation.declaration.binding.id === parameterLocation.declaration.binding.id
+  );
+}
+
+function isIrExactRequiredClassCarrierArgumentRust(
+  expression: Readonly<IrExpression>,
+  parameterType: Readonly<IrType>,
+  parameterModule: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
+  const represented =
+    expression.kind === 'new' ||
+    isIrSharedClassReturnCallRust(expression, context) ||
+    (expression.kind === 'identifier' &&
+      expression.reference.kind === 'binding' &&
+      (getRustSharedClassBindingRepresentationRust(expression.reference.binding, context) === 'shared-ref-cell-class' ||
+        (expression.presence === 'narrowedPresent' &&
+          isRustOptionalSharedClassRepresentation(
+            getRustSharedClassBindingRepresentationRust(expression.reference.binding, context),
+          )))) ||
+    (expression.kind === 'property' && getIrClassRetainedFieldProjectionRust(expression, context) !== undefined);
+  if (!represented) return false;
+  const argumentLocation = getIrClassDeclarationLocationForTypeRust(
+    getIrSharedClassIdentityExpressionTypeRust(expression, context),
+    context,
+    context.module,
+  );
+  const parameterLocation = getIrClassDeclarationLocationForTypeRust(parameterType, context, parameterModule);
+  return Boolean(
+    argumentLocation && parameterLocation && isSameIrClassDeclarationLocationRust(argumentLocation, parameterLocation),
   );
 }
 
@@ -10595,6 +10818,12 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
   const optionalSharedClassRepresentation = context.optionalSharedClassParameterRepresentations.get(
     parameter.binding.id,
   );
+  if (context.retainedClassParameterIds.has(parameter.binding.id)) {
+    if (parameter.initializer || parameter.optional || parameter.rest) {
+      emissionError(context, `retained class parameter ${parameter.binding.name} must be fixed and required in Rust`);
+    }
+    return `${getBindingTargetNameRust(parameter.binding, context)}: ${emitSharedClassCarrierTypeRust(parameterType, 'shared-ref-cell-class', context)}`;
+  }
   if (optionalSharedClassRepresentation) {
     if (parameter.initializer || parameter.rest) {
       emissionError(

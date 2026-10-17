@@ -621,6 +621,105 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('plans one required readonly leaf-class field as a shared projected identity', () => {
+    const module = lower(
+      'retained-class-field.ts',
+      `class Child { value: number; constructor(value: number) { this.value = value; } }
+       class Holder {
+         readonly child: Child;
+         constructor(child: Child) { this.child = child; }
+         selected(): Child { return this.child; }
+         maybeSelected(): Child | undefined { return this.child; }
+       }
+       export function run(): boolean {
+         const child = new Child(1); const childAlias = child;
+         const holder = new Holder(childAlias); const holderAlias = holder;
+         const projected = holderAlias.child; projected.value = 2;
+         const selected = holder.selected(); const selectedAlias = selected;
+         return holder.child === child && projected === childAlias && selected === selectedAlias &&
+           holder.maybeSelected() !== undefined && holder.child.value === 2;
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual([
+      'child',
+      'childAlias',
+      'holder',
+      'holderAlias',
+      'projected',
+      'selected',
+      'selectedAlias',
+    ]);
+  });
+
+  it('refuses non-leaf and non-exact retained class field shapes', () => {
+    const cases = [
+      [
+        `class Child { value = 0; }
+         class Holder { child: Child; constructor(child: Child) { this.child = child; } }
+         export function run(): number { const value = new Holder(new Child()); const alias = value; return alias.child.value; }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { readonly child?: Child; constructor(child?: Child) { this.child = child; } }
+         export function run(): number { const value = new Holder(new Child()); const alias = value; return alias.child!.value; }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Middle { readonly child: Child; constructor(child: Child) { this.child = child; } }
+         class Holder { readonly middle: Middle; constructor(middle: Middle) { this.middle = middle; } }
+         export function run(): number {
+           const value = new Holder(new Middle(new Child())); const alias = value; return alias.middle.child.value;
+         }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder {
+           readonly child: Child;
+           constructor(child: Child, marker: number) { this.child = child; }
+         }
+         export function run(): number { const value = new Holder(new Child(), 1); const alias = value; return alias.child.value; }`,
+        'rust-reference-shared-class-construction-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder {
+           readonly first: Child; readonly second: Child;
+           constructor(first: Child, second: Child) { this.first = first; this.second = second; }
+         }
+         export function run(): number {
+           const value = new Holder(new Child(), new Child()); const alias = value; return alias.first.value;
+         }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        `class Node { readonly next: Node; constructor(next: Node) { this.next = next; } }
+         export function run(seed: Node): boolean {
+           const value = new Node(seed); const alias = value; return alias.next === seed;
+         }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { readonly child = new Child(); }
+         export function run(): number { const value = new Holder(); const alias = value; return alias.child.value; }`,
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+    ] as const;
+
+    for (const [index, [source, code]] of cases.entries()) {
+      const module = lower(`retained-class-field-refusal-${String(index)}.ts`, source);
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
   it('plans required, undefined, and null shared-class aliases with strict identity semantics', () => {
     const module = lower(
       'optional-class-local.ts',

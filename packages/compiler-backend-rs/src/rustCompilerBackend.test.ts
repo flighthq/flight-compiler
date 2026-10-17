@@ -12895,6 +12895,131 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }
   });
 
+  it('retains one required readonly leaf-class field and stages projected handles', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'retained-class-field.ts',
+        `class Child {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         class Holder {
+           readonly child: Child;
+           constructor(child: Child) { this.child = child; }
+           selected(): Child { return this.child; }
+           maybeSelected(): Child | null { return this.child; }
+         }
+         function makeChild(value: number): Child { return new Child(value); }
+         export function retainedClassField(): boolean {
+           const child = new Child(1); const childAlias = child;
+           const holder = new Holder(childAlias); const holderAlias = holder;
+           const projected = holderAlias.child; projected.value += 1;
+           const selected = holder.selected(); const selectedAlias = selected;
+           const lifted = holderAlias.maybeSelected();
+           const fresh = new Holder(new Child(4));
+           const returned = new Holder(makeChild(5));
+           const copied = new Holder(holder.child);
+           holder.child.value += 1;
+           return holder.child === childAlias && projected === child && selected === selectedAlias &&
+             lifted !== null && lifted === child && holder.child.value === 3 &&
+             fresh.child.value === 4 && returned.child.value === 5 && copied.child === child;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('child: Rc<RefCell<Child>>,');
+    expect(output).toContain('fn new(child: Rc<RefCell<Child>>) -> Self');
+    expect(output).toContain('child: child,');
+    expect(output).toContain('Holder::new(Rc::clone(&child_alias))');
+    expect(output).toContain('Holder::new(Rc::new(RefCell::new(Child::new(4.0))))');
+    expect(output).toContain('Holder::new(make_child(5.0))');
+    expect(output).toMatch(/let projected: Rc<RefCell<Child>> = \{ Rc::clone\(&holder_alias\.borrow\(\)\.child\) \};/u);
+    expect(output).toContain('return Rc::clone(&self.child);');
+    expect(output).toContain('return Some(Rc::clone(&self.child));');
+    expect(output).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
+    expect(output).toMatch(
+      /let class_field_current(?:_\d+)? = \{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value;/u,
+    );
+    expect(output.match(/Rc::ptr_eq\(/gu) ?? []).toHaveLength(5);
+  });
+
+  it('emits imported retained class fields deterministically from reversed module order', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/retained-field-provider.ts',
+      `export class Child { value: number; constructor(value: number) { this.value = value; } }
+       export class Holder {
+         readonly child: Child;
+         constructor(child: Child) { this.child = child; }
+         selected(): Child { return this.child; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/retained-field-consumer.ts',
+      `import { Child, Holder } from './retained-field-provider.js';
+       export function run(): boolean {
+         const child = new Child(2); const alias = child;
+         const holder = new Holder(alias); const projected = holder.child;
+         projected.value += 1;
+         return holder.child === child && holder.selected() === alias && holder.child.value === 3;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Retained-field-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/retained-field-consumer.ts',
+          },
+          specifier: './retained-field-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/retained-field-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    });
+    const providerOutput = reversed.emitModule(provider)[0]!.contents;
+    const consumerOutput = reversed.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toBe(forward.emitModule(provider)[0]!.contents);
+    expect(consumerOutput).toBe(forward.emitModule(consumer)[0]!.contents);
+    expect(providerOutput).toContain('child: Rc<RefCell<Child>>,');
+    expect(providerOutput).toContain('pub fn new(child: Rc<RefCell<Child>>) -> Self');
+    expect(providerOutput).toContain('return Rc::clone(&self.child);');
+    expect(consumerOutput).toMatch(/Holder::new\(Rc::clone\(&alias\)\)/u);
+    expect(consumerOutput).toMatch(
+      /let projected: Rc<RefCell<Child(?:_\d+)?>> = \{ Rc::clone\(&holder\.borrow\(\)\.child\) \};/u,
+    );
+    expect(consumerOutput).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
+  });
+
   it('evaluates primitive constructor arguments exactly once in source order before sharing', () => {
     const output = emitIrModuleRust(
       lower(
@@ -13688,6 +13813,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            value: number;
            constructor(owner?: Counter) { this.value = owner === undefined ? 0 : owner.value; }
          }
+         class RetainedSnapshot {
+           readonly child: Counter;
+           constructor(child: Counter) { this.child = child; }
+           selected(): Counter { return this.child; }
+           maybeSelected(): Counter | null { return this.child; }
+         }
          function adjust(value?: Counter): number {
            if (value === undefined) return 0;
            value.value = 3;
@@ -14130,6 +14261,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            receiverAlias.writeNullable(nullableMethodCarrier);
            const requiredMethod = new Counter(1, "required"); const requiredMethodAlias = requiredMethod;
            receiver.writeRequired(2, requiredMethodAlias);
+           const retainedChild = new Counter(11, "retained"); const retainedChildAlias = retainedChild;
+           const retained = new RetainedSnapshot(retainedChildAlias); const retainedAlias = retained;
+           const retainedProjection = retainedAlias.child; retainedProjection.value += 1;
+           const retainedSelected = retained.selected(); const retainedMaybe = retainedAlias.maybeSelected();
+           const retainedFresh = new RetainedSnapshot(new Counter(13, "fresh"));
            const compound = new Counter(2, "a"); const compoundAlias = compound;
            const optionalCompound: Counter | undefined = compoundAlias;
            let compoundOrder = 0;
@@ -14158,6 +14294,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
              requiredMethod === requiredMethodAlias && requiredMethod.value === 8 && requiredMethod.label === "required#" &&
+             retained.child === retainedChild && retainedProjection === retainedChildAlias &&
+             retainedSelected === retainedChild && retainedMaybe !== null && retainedMaybe === retainedChild &&
+             retained.child.value === 12 && retainedFresh.child.value === 13 &&
              compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
              compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,
