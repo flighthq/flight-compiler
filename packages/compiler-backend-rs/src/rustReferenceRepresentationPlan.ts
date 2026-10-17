@@ -5808,6 +5808,7 @@ const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   'indexOf',
   'lastIndexOf',
   'map',
+  'reduce',
   'slice',
   'some',
 ]);
@@ -5826,6 +5827,7 @@ const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
   'join',
   'lastIndexOf',
   'map',
+  'reduce',
   'slice',
   'some',
 ]);

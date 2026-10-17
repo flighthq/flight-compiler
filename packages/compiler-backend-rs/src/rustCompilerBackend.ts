@@ -478,6 +478,7 @@ function emitIrModuleRustWithContext(
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
+  assertArrayReduceInvocationSemanticsRust(sourceModule);
   assertArrayCallbackInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
   assertArraySortInvocationSemanticsRust(sourceModule);
@@ -1711,6 +1712,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (isArrayTransformCallRust(expression)) {
         return emitArrayTransformCallRust(expression, getArrayTransformMemberRust(expression), context);
       }
+      if (isArrayReduceCallRust(expression)) return emitArrayReduceCallRust(expression, context);
       if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
       if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
@@ -3917,6 +3919,17 @@ function isArrayFindIndexCallRust(
 
 type RustArrayPredicateMember = 'every' | 'some';
 
+function isArrayReduceCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'reduce'
+  );
+}
+
 function isArrayPredicateCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -4275,6 +4288,49 @@ function emitArrayTransformCallRust(
         : `${valuesName}.iter().enumerate().for_each(|(${indexName}, ${elementName})| { let _ = (${callbackName})(${arguments_.join(', ')}); })`;
   const release = sharedBinding ? ` drop(${valuesName});` : '';
   return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${valuesName} = ${receiverValues}; let ${resultName} = ${transformed};${release} ${resultName} }`;
+}
+
+// `reduce` keeps the source reusable by iterating over a reference. Its explicit initial value is
+// evaluated after the callback but before a shared borrow starts, matching source operand order.
+function emitArrayReduceCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const callback = expression.arguments[0];
+  const initial = expression.arguments[1];
+  const signature = callback ? getRustArrayPredicateCallbackSignatureRust(callback, context) : undefined;
+  if (!callback || !initial || !signature || signature.parameters.length > 3) {
+    return emissionError(
+      context,
+      'array.reduce emission requires one statically known fixed callback and an initial value',
+    );
+  }
+  const receiverName = getGeneratedTargetNameRust('array_reduce_receiver', context);
+  const callbackName = getGeneratedTargetNameRust('array_reduce_callback', context);
+  const initialName = getGeneratedTargetNameRust('array_reduce_initial', context);
+  const valuesName = getGeneratedTargetNameRust('array_reduce_values', context);
+  const resultName = getGeneratedTargetNameRust('array_reduce_result', context);
+  const accumulatorName = getGeneratedTargetNameRust('array_reduce_accumulator', context);
+  const indexName = getGeneratedTargetNameRust('array_reduce_index', context);
+  const elementName = getGeneratedTargetNameRust('array_reduce_element', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const emittedReceiver = sharedBinding
+    ? `&${getBindingTargetNameRust(sharedBinding, context)}`
+    : `&${emitExpression(expression.callee.object, context)}`;
+  const receiverValues = sharedBinding ? `${receiverName}.borrow()` : receiverName;
+  const arguments_ = [
+    ...(signature.parameters.length >= 1 ? [accumulatorName] : []),
+    ...(signature.parameters.length >= 2 ? [`${elementName}.clone()`] : []),
+    ...(signature.parameters.length === 3 ? [`${indexName} as f64`] : []),
+  ];
+  const callbackInitializer =
+    callback.kind === 'function'
+      ? `let mut ${callbackName} = ${emitExpression(callback, context)};`
+      : `let ${callbackName} = &${emitExpression(callback, context)};`;
+  const folded = `${valuesName}.iter().enumerate().fold(${initialName}, |${accumulatorName}, (${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')}))`;
+  const release = sharedBinding ? ` drop(${valuesName});` : '';
+  return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${initialName} = ${emitExpression(initial, context)}; let ${valuesName} = ${receiverValues}; let ${resultName} = ${folded};${release} ${resultName} }`;
 }
 
 function emitArrayCopyWithinCallRust(
@@ -10700,6 +10756,7 @@ type RustArrayOperationMember =
   | 'flatMap'
   | 'forEach'
   | 'map'
+  | 'reduce'
   | 'reverse'
   | 'slice'
   | 'some'
@@ -10789,6 +10846,15 @@ interface RustArrayOperationRefusal {
     | 'rust-array-map-invocation-unrepresented'
     | 'rust-array-map-result-carrier-unrepresented'
     | 'rust-array-map-sparse-receiver-unrepresented'
+    | 'rust-array-reduce-accumulator-carrier-unrepresented'
+    | 'rust-array-reduce-alias-borrow-conflict'
+    | 'rust-array-reduce-callback-carrier-unrepresented'
+    | 'rust-array-reduce-callback-return-carrier-unrepresented'
+    | 'rust-array-reduce-element-carrier-unrepresented'
+    | 'rust-array-reduce-invocation-unrepresented'
+    | 'rust-array-reduce-no-initial-value-unrepresented'
+    | 'rust-array-reduce-result-carrier-unrepresented'
+    | 'rust-array-reduce-sparse-receiver-unrepresented'
     | 'rust-array-every-alias-borrow-conflict'
     | 'rust-array-every-callback-carrier-unrepresented'
     | 'rust-array-every-element-carrier-unrepresented'
@@ -10853,6 +10919,57 @@ function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>)
     module,
     'array.findIndex requires a non-optional invocation with exactly one fixed non-spread callback and no thisArg',
     'rust-array-find-index-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
+}
+
+function assertArrayReduceInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let noInitialValue = false;
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayReduceCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        signature &&
+        signature.providedArgumentCount !== 'dynamic' &&
+        signature.providedArgumentCount === 1 &&
+        expression.arguments.length === 1 &&
+        expression.arguments[0]?.kind !== 'spread'
+      ) {
+        noInitialValue = true;
+        return;
+      }
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        !signature ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== 2 ||
+        expression.arguments.length !== 2 ||
+        expression.arguments.some((argument) => argument.kind === 'spread')
+      ) {
+        unsupported = true;
+      }
+    },
+  });
+  if (noInitialValue) {
+    throw createBackendEmissionFailure(
+      'rust',
+      module,
+      'array.reduce without an initial value seeds from the first present element and throws TypeError when the array has no present elements; that boundary is not represented',
+      'rust-array-reduce-no-initial-value-unrepresented',
+      { classification: 'target-runtime' },
+    );
+  }
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'array.reduce requires a non-optional invocation with one fixed non-spread callback and one explicit initial value',
+    'rust-array-reduce-invocation-unrepresented',
     { classification: 'target-runtime' },
   );
 }
@@ -11085,6 +11202,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       member: RustArrayTransformMember;
     }>
   > = [];
+  const reduceCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
   const sortCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
@@ -11141,6 +11262,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           searchPredicateCalls.push({ expression, member: getArraySearchPredicateMemberRust(expression) });
         } else if (isArrayTransformCallRust(expression)) {
           transformCalls.push({ expression, member: getArrayTransformMemberRust(expression) });
+        } else if (isArrayReduceCallRust(expression)) {
+          reduceCalls.push(expression);
         } else if (isArraySortCallRust(expression)) {
           sortCalls.push(expression);
         } else if (searchMember) {
@@ -11735,6 +11858,126 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         member,
         message: `array.${member} callback captures the receiver while its shared borrow is active`,
         rule: `rust-array-${ruleMember}-alias-borrow-conflict`,
+      });
+    }
+  }
+
+  for (const expression of reduceCalls) {
+    const callback = expression.arguments[0];
+    const initialValue = expression.arguments[1];
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind === 'array' && hasIrTypeUndefinedMemberRust(receiver.element)) {
+      refusals.push({
+        member: 'reduce',
+        message:
+          'array.reduce skips holes in the source language, but a dense Rust carrier cannot distinguish an omitted element from a stored undefined value',
+        rule: 'rust-array-reduce-sparse-receiver-unrepresented',
+      });
+      continue;
+    }
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || !receiverDomain) {
+      refusals.push({
+        member: 'reduce',
+        message:
+          'array.reduce elements require exact dense boolean, number, or string value carriers; union and identity-bearing carriers are not represented',
+        rule: 'rust-array-reduce-element-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const initialType = initialValue ? inferIrExpressionTypeRust(initialValue, context) : undefined;
+    const accumulatorDomain = initialType
+      ? getRustDensePrimitiveArrayCarrierDomainRust(initialType, context)
+      : undefined;
+    if (!initialType || !accumulatorDomain) {
+      refusals.push({
+        member: 'reduce',
+        message: 'array.reduce initial value requires an exact boolean, number, or string accumulator carrier',
+        rule: 'rust-array-reduce-accumulator-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const callbackSignature = callback ? getRustArrayPredicateCallbackSignatureRust(callback, context) : undefined;
+    if (
+      !callbackSignature ||
+      callbackSignature.async ||
+      callbackSignature.dynamicThisUse ||
+      callbackSignature.typeParameterCount > 0 ||
+      callbackSignature.parameters.length > 3 ||
+      callbackSignature.parameters.some((parameter, index) => {
+        if (parameter.optional || parameter.rest || parameter.initializer !== undefined) return true;
+        if (index === 0) {
+          return (
+            getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== accumulatorDomain ||
+            emitType(parameter.type, context) !== emitType(initialType, context)
+          );
+        }
+        if (index === 1) {
+          return (
+            getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== receiverDomain ||
+            emitType(parameter.type, context) !== emitType(receiver.element, context)
+          );
+        }
+        return (
+          getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== 'number' ||
+          emitType(parameter.type, context) !== 'f64'
+        );
+      })
+    ) {
+      refusals.push({
+        member: 'reduce',
+        message:
+          'array.reduce callback requires one statically known synchronous function with zero to three fixed exact-carrier parameters',
+        rule: 'rust-array-reduce-callback-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    if (
+      getRustDensePrimitiveArrayCarrierDomainRust(callbackSignature.returns, context) !== accumulatorDomain ||
+      emitType(callbackSignature.returns, context) !== emitType(initialType, context)
+    ) {
+      refusals.push({
+        member: 'reduce',
+        message: 'array.reduce callback result requires the exact initial-value accumulator carrier',
+        rule: 'rust-array-reduce-callback-return-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+    if (
+      getRustDensePrimitiveArrayCarrierDomainRust(result, context) !== accumulatorDomain ||
+      emitType(result, context) !== emitType(initialType, context)
+    ) {
+      refusals.push({
+        member: 'reduce',
+        message: 'array.reduce result requires the exact initial-value accumulator carrier',
+        rule: 'rust-array-reduce-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverObject = expression.callee.object;
+    const receiverBindingId =
+      receiverObject.kind === 'identifier' && receiverObject.reference.kind === 'binding'
+        ? receiverObject.reference.binding.id
+        : undefined;
+    const callbackBody = callback ? getRustArrayPredicateCallbackBodyRust(callback, context) : undefined;
+    if (
+      callback &&
+      receiverBindingId &&
+      (irExpressionUsesBindingRust(callback, receiverBindingId) ||
+        (callbackBody !== undefined && irExpressionUsesBindingRust(callbackBody, receiverBindingId)))
+    ) {
+      refusals.push({
+        member: 'reduce',
+        message: 'array.reduce callback captures the receiver while its shared borrow is active',
+        rule: 'rust-array-reduce-alias-borrow-conflict',
       });
     }
   }

@@ -2,11 +2,11 @@
 #![forbid(unsafe_code)]
 
 pub fn sum(values: Vec<f64>) -> f64 {
-  return values.into_iter().fold(0.0, |acc, v| acc + v);
+  return { let array_reduce_receiver = &values; let mut array_reduce_callback = |acc, v| acc + v; let array_reduce_initial = 0.0; let array_reduce_values = array_reduce_receiver; let array_reduce_result = array_reduce_values.iter().enumerate().fold(array_reduce_initial, |array_reduce_accumulator, (array_reduce_index, array_reduce_element)| (array_reduce_callback)(array_reduce_accumulator, array_reduce_element.clone())); array_reduce_result };
 }
 
 pub fn product(values: Vec<f64>) -> f64 {
-  return values.into_iter().fold(1.0, |acc, v| acc * v);
+  return { let array_reduce_receiver_2 = &values; let mut array_reduce_callback_2 = |acc, v| acc * v; let array_reduce_initial_2 = 1.0; let array_reduce_values_2 = array_reduce_receiver_2; let array_reduce_result_2 = array_reduce_values_2.iter().enumerate().fold(array_reduce_initial_2, |array_reduce_accumulator_2, (array_reduce_index_2, array_reduce_element_2)| (array_reduce_callback_2)(array_reduce_accumulator_2, array_reduce_element_2.clone())); array_reduce_result_2 };
 }
 
 pub fn max_value(values: Vec<f64>) -> f64 {
@@ -20,5 +20,5 @@ pub fn max_value(values: Vec<f64>) -> f64 {
 }
 
 pub fn count_above(values: Vec<f64>, threshold: f64) -> f64 {
-  return values.into_iter().fold(0.0, |count, v| if (v > threshold) { (count + 1.0) } else { count });
+  return { let array_reduce_receiver_3 = &values; let mut array_reduce_callback_3 = |count, v| if (v > threshold) { (count + 1.0) } else { count }; let array_reduce_initial_3 = 0.0; let array_reduce_values_3 = array_reduce_receiver_3; let array_reduce_result_3 = array_reduce_values_3.iter().enumerate().fold(array_reduce_initial_3, |array_reduce_accumulator_3, (array_reduce_index_3, array_reduce_element_3)| (array_reduce_callback_3)(array_reduce_accumulator_3, array_reduce_element_3.clone())); array_reduce_result_3 };
 }

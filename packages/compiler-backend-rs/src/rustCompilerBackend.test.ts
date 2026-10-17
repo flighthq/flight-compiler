@@ -5525,15 +5525,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('}');
   });
 
-  it('emits array reduce as into_iter().fold()', () => {
+  it('emits array reduce through a borrowed enumerated fold', () => {
     const output = emitIrModuleRust(
       lower(
         'reduce.ts',
         'export function sum(items: number[]): number { return items.reduce((acc: number, x: number): number => acc + x, 0.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.fold(');
+    expect(output).toContain('.iter().enumerate().fold(');
+    expect(output).not.toContain('into_iter().fold');
   });
 
   it('emits number toString as to_string()', () => {
@@ -8034,7 +8034,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('to_uppercase');
   });
 
-  it('emits array reduce as into_iter().fold()', () => {
+  it('emits array reduce as a borrowed fold', () => {
     const output = emitIrModuleRust(
       lower(
         'arr-reduce.ts',
@@ -15529,7 +15529,7 @@ describe('emitIrModuleRust index search methods', () => {
 });
 
 describe('emitIrModuleRust ambient method binding kinds', () => {
-  it('emits array.reduce as into_iter().fold() with reordered arguments', () => {
+  it('routes array.reduce through its dedicated borrowed fold', () => {
     const output = emitIrModuleRust(
       lower(
         'reduce.ts',
@@ -15538,8 +15538,8 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('fold');
+    expect(output).toContain('.iter().enumerate().fold(');
+    expect(output).not.toContain('into_iter().fold');
   });
 
   it('emits array.find through the staged find projection', () => {
@@ -21190,7 +21190,7 @@ describe('emitIrModuleRust reexport emission', () => {
 });
 
 describe('emitIrModuleRust reduce with argument reorder', () => {
-  it('emits array.reduce as fold with reordered arguments', () => {
+  it('emits array.reduce with the initial value before the callback fold arguments', () => {
     const output = emitIrModuleRust(
       lower(
         'reduce.ts',
@@ -21199,7 +21199,7 @@ describe('emitIrModuleRust reduce with argument reorder', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('.into_iter().fold(');
+    expect(output).toContain('.iter().enumerate().fold(array_reduce_initial, |array_reduce_accumulator,');
   });
 });
 
@@ -21685,7 +21685,7 @@ describe('emitIrModuleRust labeled break', () => {
 });
 
 describe('emitIrModuleRust array reduce fold', () => {
-  it('emits fold with reordered arguments for array reduce', () => {
+  it('emits a borrowed fold for array reduce', () => {
     const output = emitIrModuleRust(
       lower(
         'reduce.ts',
@@ -21694,7 +21694,7 @@ describe('emitIrModuleRust array reduce fold', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('.fold(');
+    expect(output).toContain('.iter().enumerate().fold(');
   });
 });
 
@@ -24135,6 +24135,188 @@ describe('emitIrModuleRust array map and forEach', () => {
 
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
       'rust-array-for-each-result-carrier-unrepresented',
+    );
+  });
+});
+
+describe('emitIrModuleRust exact dense array reduce', () => {
+  it('adapts zero through three callback parameters across exact primitive carriers', () => {
+    const cases = [
+      {
+        callback: '(array_reduce_callback)()',
+        source:
+          'export function fold(values: boolean[]): boolean { return values.reduce((): boolean => true, false); }',
+      },
+      {
+        callback: '(array_reduce_callback)(array_reduce_accumulator)',
+        source:
+          'export function fold(values: number[]): number { return values.reduce((accumulator: number): number => accumulator + 1, 0); }',
+      },
+      {
+        callback: '(array_reduce_callback)(array_reduce_accumulator, array_reduce_element.clone())',
+        source:
+          'export function fold(values: string[]): number { return values.reduce((accumulator: number, value: string): number => value === "" ? accumulator : accumulator, 0); }',
+      },
+      {
+        callback:
+          '(array_reduce_callback)(array_reduce_accumulator, array_reduce_element.clone(), array_reduce_index as f64)',
+        source:
+          'export function fold(values: readonly number[]): string { return values.reduce((accumulator: string, value: number, index: number): string => index >= 0 && value >= 0 ? accumulator : accumulator, ""); }',
+      },
+    ];
+
+    for (const candidate of cases) {
+      const result = lower('array-reduce-carrier.ts', candidate.source);
+      expect(result.diagnostics).toEqual([]);
+      const output = emitIrModuleRust(result.module).contents;
+      expect(output).toContain('.iter().enumerate().fold(array_reduce_initial,');
+      expect(output).toContain(candidate.callback);
+      expect(output).not.toContain('into_iter().fold');
+    }
+  });
+
+  it('stages receiver, callback, initial value, and shared borrow in source order', () => {
+    const result = lower(
+      'array-reduce-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(log: number[], marker: number): (accumulator: number, value: number) => number {
+         log.push(marker);
+         return (accumulator: number, value: number): number => accumulator + value;
+       }
+       function recordInitial(log: number[], marker: number): number {
+         log.push(marker);
+         return 0;
+       }
+       export function evaluated(log: number[]): number {
+         return recordReceiver(log, 1, [1, 2, 3]).reduce(recordCallback(log, 2), recordInitial(log, 3));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_reduce_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_reduce_callback = &record_callback(', receiver);
+    const initial = output.indexOf('let array_reduce_initial = record_initial(', callback);
+    const values = output.indexOf('let array_reduce_values = array_reduce_receiver;', initial);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(initial).toBeGreaterThan(callback);
+    expect(values).toBeGreaterThan(initial);
+  });
+
+  it('stages a referenced callback once and releases a shared borrow before receiver reuse', () => {
+    const result = lower(
+      'array-reduce-shared.ts',
+      `function add(accumulator: number, value: number): number {
+         return accumulator + value;
+       }
+       export function total(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const result = alias.reduce(add, 0);
+         values.push(4);
+         return result + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_reduce_receiver = &alias;');
+    expect(output).toContain('let array_reduce_callback = &add;');
+    expect(output).toContain('let array_reduce_values = array_reduce_receiver.borrow();');
+    expect(output).toContain('drop(array_reduce_values);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-reduce-invocation-unrepresented',
+      source:
+        'export function fold(values: number[]): number { return values.reduce((accumulator: number, value: number): number => accumulator + value, 0, 1); }',
+    },
+    {
+      rule: 'rust-array-reduce-invocation-unrepresented',
+      source:
+        'export function fold(values: number[]): number { return values.reduce?.((accumulator: number, value: number): number => accumulator + value, 0) ?? 0; }',
+    },
+    {
+      rule: 'rust-array-reduce-invocation-unrepresented',
+      source:
+        'export function fold(values: number[], arguments_: [(accumulator: number, value: number) => number, number]): number { return values.reduce(...arguments_); }',
+    },
+    {
+      rule: 'rust-array-reduce-sparse-receiver-unrepresented',
+      source:
+        'export function fold(values: (number | undefined)[]): number { return values.reduce((accumulator: number, value: number | undefined): number => accumulator + (value ?? 0), 0); }',
+    },
+    {
+      rule: 'rust-array-reduce-element-carrier-unrepresented',
+      source:
+        'export function fold(values: (number | string)[]): number { return values.reduce((accumulator: number): number => accumulator, 0); }',
+    },
+    {
+      rule: 'rust-array-reduce-accumulator-carrier-unrepresented',
+      source:
+        'export function fold(values: number[]): { total: number } { return values.reduce((accumulator: { total: number }, value: number): { total: number } => ({ total: accumulator.total + value }), { total: 0 }); }',
+    },
+    {
+      rule: 'rust-array-reduce-callback-carrier-unrepresented',
+      source:
+        'export function fold(values: number[]): number { return values.reduce((accumulator: string, value: number): number => value, 0); }',
+    },
+    {
+      rule: 'rust-array-reduce-callback-carrier-unrepresented',
+      source:
+        'export function fold(values: number[]): number { return values.reduce((accumulator: number, value: number, index: number, all: number[]): number => accumulator + value + index + all.length, 0); }',
+    },
+    {
+      rule: 'rust-array-reduce-callback-return-carrier-unrepresented',
+      source:
+        'export function fold(values: number[]): number { return values.reduce((accumulator: number, value: number): string => value.toString(), 0); }',
+    },
+    {
+      rule: 'rust-array-reduce-alias-borrow-conflict',
+      source:
+        'export function fold(values: number[]): number { return values.reduce((accumulator: number, value: number): number => accumulator + value + values.length, 0); }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-reduce-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses the no-initial overload at its empty-array TypeError boundary before other reduce calls', () => {
+    const result = lower(
+      'array-reduce-no-initial.ts',
+      `export function first(values: number[]): number {
+         return values.reduce((accumulator: number, value: number): number => accumulator + value);
+       }
+       export function invalid(values: number[]): number {
+         return values.reduce((accumulator: number, value: number): number => accumulator + value, 0, 1);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+
+    expect(failure.rule).toBe('rust-array-reduce-no-initial-value-unrepresented');
+    expect(failure.message).toContain('first present element');
+    expect(failure.message).toContain('TypeError');
+  });
+
+  it('refuses a mutated result that differs from the initial-value accumulator carrier', () => {
+    const result = lower(
+      'array-reduce-result.ts',
+      'export function fold(values: number[]): number { return values.reduce((accumulator: number, value: number): number => accumulator + value, 0); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the reduce call');
+    call.expression.semantics.resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-reduce-result-carrier-unrepresented',
     );
   });
 });

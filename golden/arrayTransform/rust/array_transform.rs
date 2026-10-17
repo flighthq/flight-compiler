@@ -6,11 +6,11 @@ pub fn double_all(values: Vec<f64>) -> Vec<f64> {
 }
 
 pub fn filter_positive(values: Vec<f64>) -> Vec<f64> {
-  return { let array_filter_receiver = &values; let mut array_filter_callback = |v| v > 0.0; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
+  return { let array_filter_receiver = &values; let mut array_filter_callback = |v| v > 0.0; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|&(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
 }
 
 pub fn sum_all(values: Vec<f64>) -> f64 {
-  return values.into_iter().fold(0.0, |acc, v| acc + v);
+  return { let array_reduce_receiver = &values; let mut array_reduce_callback = |acc, v| acc + v; let array_reduce_initial = 0.0; let array_reduce_values = array_reduce_receiver; let array_reduce_result = array_reduce_values.iter().enumerate().fold(array_reduce_initial, |array_reduce_accumulator, (array_reduce_index, array_reduce_element)| (array_reduce_callback)(array_reduce_accumulator, array_reduce_element.clone())); array_reduce_result };
 }
 
 pub fn all_positive(values: Vec<f64>) -> bool {

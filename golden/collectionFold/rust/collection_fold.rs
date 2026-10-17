@@ -2,5 +2,5 @@
 #![forbid(unsafe_code)]
 
 pub fn total(values: Vec<f64>) -> f64 {
-  return values.into_iter().fold(0.0, |accumulated, value| accumulated + value);
+  return { let array_reduce_receiver = &values; let mut array_reduce_callback = |accumulated, value| accumulated + value; let array_reduce_initial = 0.0; let array_reduce_values = array_reduce_receiver; let array_reduce_result = array_reduce_values.iter().enumerate().fold(array_reduce_initial, |array_reduce_accumulator, (array_reduce_index, array_reduce_element)| (array_reduce_callback)(array_reduce_accumulator, array_reduce_element.clone())); array_reduce_result };
 }
