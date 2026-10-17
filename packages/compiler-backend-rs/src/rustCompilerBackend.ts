@@ -197,6 +197,13 @@ interface RustAsyncTryDeferredReturnPlan {
   readonly catchReturnExpression: Readonly<IrExpression>;
 }
 
+interface RustAsyncTryVariableAwaitPlan {
+  readonly awaitTarget: Readonly<IrExpression>;
+  readonly postStatements: readonly Readonly<IrStatement>[];
+  readonly preStatements: readonly Readonly<IrStatement>[];
+  readonly variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>;
+}
+
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
@@ -4875,6 +4882,148 @@ function collectIrStatementAsyncTryCompletionEvidenceRust(
   };
 }
 
+function getIrTryProtectedCompletionEvidenceRust(statement: Readonly<Extract<IrStatement, { kind: 'try' }>>): {
+  readonly abruptStatements: readonly Readonly<IrStatement>[];
+  readonly suspensionCount: number;
+} {
+  const evidence = [
+    collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody),
+    ...(statement.catchClause ? [collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body)] : []),
+    ...(statement.finallyBody ? [collectIrStatementAsyncTryCompletionEvidenceRust(statement.finallyBody)] : []),
+  ];
+  return {
+    abruptStatements: evidence.flatMap((item) => item.abruptStatements),
+    suspensionCount: evidence.reduce((count, item) => count + item.suspensionCount, 0),
+  };
+}
+
+function assertIrAsyncTryProtectedEvidenceRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): void {
+  const evidence = getIrTryProtectedCompletionEvidenceRust(statement);
+  if (evidence.suspensionCount !== 1) {
+    emissionRuleError(
+      context,
+      'async try protection requires exactly one direct suspension and no later or neighboring suspension',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  if (evidence.abruptStatements.some((candidate) => candidate.kind === 'throw')) {
+    emissionRuleError(
+      context,
+      'async try protection with an explicit source throw requires a general completion record',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+}
+
+function getIrDirectStatementsRust(statement: Readonly<IrStatement>): readonly Readonly<IrStatement>[] {
+  return statement.kind === 'block' ? statement.statements : [statement];
+}
+
+function areIrAsyncTryStraightLineStatementsRust(statements: readonly Readonly<IrStatement>[]): boolean {
+  return statements.every(
+    (statement, index) =>
+      statement.kind === 'expression' ||
+      statement.kind === 'variable' ||
+      (statement.kind === 'return' && index === statements.length - 1),
+  );
+}
+
+function getAsyncTryVariableAwaitPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryVariableAwaitPlan | undefined {
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const awaitStatements = tryStatements.flatMap((candidate, index) => {
+    if (candidate.kind !== 'variable') return [];
+    const awaited = candidate.declarations.filter((variable) => variable.initializer?.kind === 'await');
+    return awaited.length > 0 ? [{ awaited, candidate, index }] : [];
+  });
+  if (awaitStatements.length === 0) return undefined;
+  const selected = awaitStatements[0]!;
+  if (
+    awaitStatements.length !== 1 ||
+    selected.awaited.length !== 1 ||
+    selected.candidate.declarations.length !== 1 ||
+    statement.catchClause === undefined ||
+    statement.finallyBody !== undefined
+  ) {
+    emissionRuleError(
+      context,
+      'async try variable-await lowering requires one direct declarator, one catch, and no finally',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const variable = selected.awaited[0]!;
+  if (!('binding' in variable) || variable.initializer?.kind !== 'await') {
+    emissionRuleError(
+      context,
+      'async try variable-await lowering requires one named direct declarator',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const preStatements = tryStatements.slice(0, selected.index);
+  const postStatements = tryStatements.slice(selected.index + 1);
+  const catchStatements = getIrDirectStatementsRust(statement.catchClause.body);
+  if (
+    !areIrAsyncTryStraightLineStatementsRust(preStatements) ||
+    !areIrAsyncTryStraightLineStatementsRust(postStatements) ||
+    !areIrAsyncTryStraightLineStatementsRust(catchStatements)
+  ) {
+    emissionRuleError(
+      context,
+      'async try variable-await lowering requires straight-line arms with at most one final return',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const permittedReturns = new Set(
+    [postStatements.at(-1), catchStatements.at(-1)].filter(
+      (candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return',
+    ),
+  );
+  const evidence = getIrTryProtectedCompletionEvidenceRust(statement);
+  if (evidence.abruptStatements.some((candidate) => !permittedReturns.has(candidate))) {
+    emissionRuleError(
+      context,
+      'async try variable-await lowering cannot preserve this abrupt completion without a general completion record',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  return {
+    awaitTarget: variable.initializer.expression,
+    postStatements,
+    preStatements,
+    variable,
+  };
+}
+
+function emitAsyncTrySettledVariableRust(
+  variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>,
+  context: EmitContext,
+): string {
+  const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
+  if (
+    !type ||
+    context.cellWrappedBindingIds.has(variable.binding.id) ||
+    context.refCellWrappedBindingIds.has(variable.binding.id) ||
+    context.sharedArrayBindingIds.has(variable.binding.id) ||
+    context.sharedClassBindingIds.has(variable.binding.id) ||
+    context.sharedMapBindingIds.has(variable.binding.id) ||
+    context.sharedSetBindingIds.has(variable.binding.id)
+  ) {
+    emissionRuleError(
+      context,
+      'async try awaited declarator requires a direct local Rust value carrier',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const mutable =
+    variable.mutable || (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(type));
+  return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(type, context)} = __value;`;
+}
+
 function getDirectIrStatementRust(statement: Readonly<IrStatement>): Readonly<IrStatement> | undefined {
   if (statement.kind !== 'block') return statement;
   return statement.statements.length === 1 ? statement.statements[0] : undefined;
@@ -4926,6 +5075,7 @@ function getAsyncTryDeferredReturnPlanRust(
 }
 
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
+  assertIrAsyncTryProtectedEvidenceRust(statement, context);
   const deferredReturn = getAsyncTryDeferredReturnPlanRust(statement, context);
   if (deferredReturn) {
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
@@ -4939,6 +5089,26 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
       '};',
       ...emitStatementBody(statement.finallyBody!, context),
       `return ${resultName};`,
+    ];
+  }
+  const variableAwait = getAsyncTryVariableAwaitPlanRust(statement, context);
+  if (variableAwait) {
+    const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
+    return [
+      ...emitStatements(variableAwait.preStatements, context),
+      `match ${emitOwnedOperandRust(variableAwait.awaitTarget, context)}.settle() {`,
+      ...indentSourceLines([
+        'Ok(__value) => {',
+        ...indentSourceLines([
+          emitAsyncTrySettledVariableRust(variableAwait.variable, context),
+          ...emitStatements(variableAwait.postStatements, context),
+        ]),
+        '}',
+        `Err(${catchBinding}) => {`,
+        ...indentSourceLines(emitStatementBody(statement.catchClause!.body, context)),
+        '}',
+      ]),
+      '}',
     ];
   }
   const tryStatements = statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody];
@@ -5350,7 +5520,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (getAsyncTryDeferredReturnPlanRust(statement, protectedContext)) {
         return emitAsyncTryCatchRust(statement, protectedContext);
       }
-      if (context.asyncTryStatements.has(statement)) {
+      if (
+        context.asyncTryStatements.has(statement) ||
+        getIrTryProtectedCompletionEvidenceRust(statement).suspensionCount > 0
+      ) {
         return emitAsyncTryCatchRust(statement, protectedContext);
       }
       if (statement.finallyBody) {

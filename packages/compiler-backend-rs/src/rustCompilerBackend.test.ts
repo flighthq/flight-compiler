@@ -2590,6 +2590,79 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('catch_unwind');
   });
 
+  it('binds one direct awaited declarator and its tail only inside the settlement Ok arm', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-variable-await.ts',
+        'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { const value: number = await task; return value + 1; } catch (error) { task; return fallback; } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match task.clone().settle() {');
+    expect(output).toContain('Ok(__value) => {');
+    expect(output).toContain('let value: f64 = __value;');
+    expect(output).toContain('return value + 1.0;');
+    expect(output).toContain('Err(error) => {');
+    expect(output).toContain('return fallback;');
+    expect(output.indexOf('let value: f64 = __value;')).toBeGreaterThan(output.indexOf('Ok(__value) => {'));
+    expect(output.indexOf('let value: f64 = __value;')).toBeLessThan(output.indexOf('Err(error) => {'));
+  });
+
+  it.skipIf(!rustcAvailable)('runs ready and rejected direct declarator awaits against the runtime fixture', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-variable-await-runtime.ts',
+        'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { try { const value: number = await task; log.push(value); return value + 1; } catch (error) { log.push(fallback); return fallback; } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), 9.0, &mut ready_log)), 5.0);
+         assert_eq!(ready_log, vec![4.0]);
+         let mut rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("no"), 9.0, &mut rejected_log)), 9.0);
+         assert_eq!(rejected_log, vec![9.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'multiple awaits',
+      'export async function attempt(task: Promise<number>, backup: Promise<number>, fallback: number): Promise<number> { try { const first = await task; const second = await backup; return first + second; } catch { return fallback; } }',
+    ],
+    [
+      'a nested await',
+      'export async function attempt(task: Promise<number>, fallback: number, enabled: boolean): Promise<number> { try { if (enabled) { const value = await task; return value; } return fallback; } catch { return fallback; } }',
+    ],
+    [
+      'a later suspension',
+      'export async function attempt(task: Promise<number>, backup: Promise<number>, fallback: number): Promise<number> { try { const value = await task; value; return await backup; } catch { return fallback; } }',
+    ],
+    [
+      'a source throw',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { const value = await task; value; throw new Error("no"); } catch { return fallback; } }',
+    ],
+    [
+      'an abrupt break',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { while (true) { try { const value = await task; value; break; } catch { return fallback; } } return 0; }',
+    ],
+    [
+      'a nested return completion',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { const value = await task; if (value > 0) return value; return fallback; } catch { return fallback; } }',
+    ],
+  ])('stably refuses direct declarator async try/catch with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-variable-await-refusal.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+  });
+
   it('emits async try/finally with settlement and re-panic', () => {
     const result = lower(
       'try-finally-async.ts',
