@@ -295,8 +295,9 @@ describe('@flighthq/tool-compiler', () => {
       expect(rustcInvocations).toBe(1);
       expect(files.get('declarations.rs')).toContain('pub fn hidden_local()');
       expect(files.get('barrel.rs')).toContain('pub use crate::provider::F0 as F0_2;');
-      expect(files.get('middle.rs')).toContain('pub use crate::origin::ROOT as BRIDGE;');
-      expect(files.get('facade.rs')).toContain('pub use crate::middle::BRIDGE as PUBLIC_VALUE;');
+      expect(files.get('middle.rs')).toContain('pub use crate::origin::ROOT as bridge;');
+      expect(files.get('facade.rs')).toContain('pub use crate::middle::bridge as public_value;');
+      expect(files.get('consumer.rs')).toContain('use crate::facade::public_value;');
       expect(availableLocators).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -312,7 +313,7 @@ describe('@flighthq/tool-compiler', () => {
           expect.objectContaining({
             carrier: 'value',
             module: expect.objectContaining({ modulePath: ['facade'] }),
-            spelling: 'PUBLIC_VALUE',
+            spelling: 'public_value',
           }),
         ]),
       );
