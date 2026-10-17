@@ -73,6 +73,7 @@ import type {
   CompilerRustModuleStateBindingPlan,
   CompilerRustModuleStatePlan,
   CompilerRustReferenceRepresentation,
+  CompilerRustReferenceRepresentationRefusal,
   CompilerRustReferenceRepresentationPlan,
   CompilerRustSourceTreeFilePlan,
   CompilerRustSourceTreeFinalizationFailure,
@@ -479,6 +480,7 @@ interface EmitContext {
   runtimeTypeNames: Set<string>;
   borrowedClassParameterIds: ReadonlySet<string>;
   borrowedParameterRepresentations: ReadonlyMap<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>;
+  ownedSharedArrayParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   callableObjectRecords: Map<string, RustCallableObjectRecord>;
   callableOverloadRecords: Map<string, RustCallableOverloadRecord>;
   closureEvidenceByExpression: ReadonlyMap<
@@ -497,6 +499,8 @@ interface EmitContext {
   referentMutatedParameterIds: ReadonlySet<string>;
   retainedClassParameterRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedArrayBindingIds: ReadonlySet<string>;
+  sharedArrayReturnBindingIds: ReadonlySet<string>;
+  sharedArrayTupleBindingIds: ReadonlySet<string>;
   sharedClassBindingIds: ReadonlySet<string>;
   sharedClassBindingRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedClassReturnBindingIds: ReadonlySet<string>;
@@ -530,6 +534,7 @@ interface EmitContext {
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
   returnsAbsent: boolean;
+  returnsSharedArray: boolean;
   returnsSharedClass?: boolean | undefined;
   targetNames: ReadonlyMap<string, string>;
 }
@@ -767,6 +772,23 @@ function emitIrModuleRustWithContext(
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
   salvage?: RustSalvageRequest | undefined,
 ): EmittedFile {
+  const sourceReferenceModulePlan = referenceRepresentationPlan.modules.find((candidate) =>
+    isRustCompilerModuleIdentityEqual(candidate.module, sourceModule),
+  );
+  const selectedSharedArrayTupleBindingIds = new Set(
+    sourceReferenceModulePlan?.sharedArrayTupleBindings.map(({ binding }) => binding.id) ?? [],
+  );
+  const deferredSharedArrayTupleBindingIds = new Set(selectedSharedArrayTupleBindingIds);
+  if (
+    salvage !== undefined &&
+    sourceReferenceModulePlan?.refusals.some(
+      (refusal) => refusal.code === 'rust-reference-shared-array-tuple-abi-unrepresented',
+    )
+  ) {
+    collectRustArrayConcatTuplePackBindingIdsRust(sourceModule, deferredSharedArrayTupleBindingIds);
+  }
+  const sourceReferenceRefusal = salvage === undefined ? sourceReferenceModulePlan?.refusals[0] : undefined;
+  if (sourceReferenceRefusal) throwRustReferenceRepresentationRefusalRust(sourceModule, sourceReferenceRefusal);
   // Invocation shape must be refused before the shared extra-argument pass, whose target ABI cannot
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
   // after erasing extra arguments.
@@ -775,7 +797,7 @@ function emitIrModuleRustWithContext(
   assertArrayIsArrayInvocationSemanticsRust(sourceModule);
   assertArrayOfInvocationSemanticsRust(sourceModule);
   assertArrayFromInvocationSemanticsRust(sourceModule);
-  assertArrayConcatInvocationSemanticsRust(sourceModule);
+  assertArrayConcatInvocationSemanticsRust(sourceModule, deferredSharedArrayTupleBindingIds);
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
@@ -804,16 +826,10 @@ function emitIrModuleRustWithContext(
   const moduleStateModulePlan = moduleStatePlan.modules.find((candidate) =>
     isRustCompilerModuleIdentityEqual(candidate.module, module),
   );
-  const referenceRefusal = referenceModulePlan?.refusals[0];
-  if (referenceRefusal) {
-    if (
-      referenceRefusal.code === 'rust-async-method-body-unrepresented' ||
-      referenceRefusal.code === 'rust-async-method-owner-carrier-unrepresented'
-    ) {
-      assertIrAsyncMethodCarriersRust(module);
-    }
-    throw createBackendEmissionFailure('rust', module, referenceRefusal.message, referenceRefusal.code);
-  }
+  const referenceRefusalsByDeclaration =
+    salvage === undefined
+      ? undefined
+      : collectRustReferenceRefusalDependenciesRust(module, referenceModulePlan?.refusals ?? []);
   assertIrAsyncMethodCarriersRust(module);
   assertStructuralObjectCompatibilityRust(
     module,
@@ -875,6 +891,16 @@ function emitIrModuleRustWithContext(
       ),
     ]) ?? [],
   );
+  const ownedSharedArrayParameterPositions = new Map<string, ReadonlySet<number>>(
+    referenceModulePlan?.callables.flatMap((callable) => {
+      const positions = new Set(
+        callable.parameters.flatMap((parameter) =>
+          parameter.representation === 'shared-ref-cell-vec' ? [parameter.position] : [],
+        ),
+      );
+      return positions.size > 0 ? [[callable.binding.id, positions] as const] : [];
+    }) ?? [],
+  );
   const optionalSharedClassParameterRepresentations = new Map<string, RustOptionalSharedClassRepresentation>();
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'function') continue;
@@ -896,8 +922,24 @@ function emitIrModuleRustWithContext(
     }
   }
   const assignableBindingIds = collectIrModuleAssignableBindingIdsRust(module);
-  const sharedArrayBindingIds = new Set(
-    referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
+  const sharedArrayParameterIds = module.declarations.flatMap((declaration) => {
+    if (declaration.kind !== 'function') return [];
+    const positions = ownedSharedArrayParameterPositions.get(declaration.binding.id);
+    return declaration.parameters.flatMap((parameter, position) =>
+      positions?.has(position) ? [parameter.binding.id] : [],
+    );
+  });
+  const sharedArrayBindingIds = new Set([
+    ...(referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? []),
+    ...sharedArrayParameterIds,
+  ]);
+  const sharedArrayReturnBindingIds = new Set(
+    referenceModulePlan?.callables.flatMap((callable) =>
+      callable.returns === 'shared-ref-cell-vec' ? [callable.binding.id] : [],
+    ) ?? [],
+  );
+  const sharedArrayTupleBindingIds = new Set(
+    referenceModulePlan?.sharedArrayTupleBindings.map(({ binding }) => binding.id) ?? [],
   );
   const sharedClassBindingRepresentations = new Map(
     referenceModulePlan?.sharedClassBindings.map(({ binding, representation }) => [binding.id, representation]) ?? [],
@@ -1037,6 +1079,7 @@ function emitIrModuleRustWithContext(
     classBindingNames,
     borrowedClassParameterIds,
     borrowedParameterRepresentations,
+    ownedSharedArrayParameterPositions,
     callableObjectRecords: new Map(),
     callableOverloadRecords: new Map(),
     closureEvidenceByExpression,
@@ -1074,6 +1117,8 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds,
     retainedClassParameterRepresentations,
     sharedArrayBindingIds,
+    sharedArrayReturnBindingIds,
+    sharedArrayTupleBindingIds,
     sharedClassBindingIds,
     sharedClassBindingRepresentations,
     sharedClassReturnBindingIds,
@@ -1100,6 +1145,7 @@ function emitIrModuleRustWithContext(
     objectRestRecords: new Map(),
     options,
     returnsAbsent: false,
+    returnsSharedArray: false,
     targetNameMaps,
     targetNames,
     generatedNames: new Set(targetNames.values()),
@@ -1165,7 +1211,9 @@ function emitIrModuleRustWithContext(
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'function') continue;
     const borrowed = new Map(borrowedParameterRepresentations.get(declaration.binding.id) ?? []);
+    const ownedSharedArrayPositions = ownedSharedArrayParameterPositions.get(declaration.binding.id);
     for (const [index, parameter] of declaration.parameters.entries()) {
+      if (ownedSharedArrayPositions?.has(index)) continue;
       if (!context.referentMutatedParameterIds.has(parameter.binding.id) || borrowed.has(index)) continue;
       if (parameter.type.kind === 'array') borrowed.set(index, 'mutable-borrowed-vec');
       if (
@@ -1248,7 +1296,7 @@ function emitIrModuleRustWithContext(
   assertArrayIsArraySemanticsRust(module, context);
   assertArrayOfSemanticsRust(module, context);
   assertArrayFromSemanticsRust(module, context);
-  assertArrayOperationSemanticsRust(module, context);
+  assertArrayOperationSemanticsRust(module, context, deferredSharedArrayTupleBindingIds);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const strictImports =
     salvage === undefined
@@ -1275,6 +1323,7 @@ function emitIrModuleRustWithContext(
             salvage,
             stringRefusalsByDeclaration?.get(declaration),
             moduleConstantDependenciesByDeclaration?.get(declaration),
+            referenceRefusalsByDeclaration?.get(declaration),
           ),
     );
   if (salvage !== undefined && salvage.failures.length > 0) {
@@ -1548,6 +1597,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
         insideProtectedTry: false,
         nativeAsyncFunction: true,
         returnsAbsent: hasIrTypeAbsentMember(awaitedType),
+        returnsSharedArray: false,
         returnsSharedClass: false,
         sharedClassReturnRepresentation: undefined,
       };
@@ -1574,6 +1624,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       classMethodOwner: declaration,
       enclosingReturnType: method.returns,
       returnsAbsent: hasIrTypeAbsentMember(method.returns),
+      returnsSharedArray: false,
       returnsSharedClass: sharedClassReturnRepresentation === 'shared-ref-cell-class',
       sharedClassReturnRepresentation,
     };
@@ -1757,6 +1808,8 @@ function emitEnumNamespaceFunctionRust(declaration: Readonly<IrFunctionDeclarati
     activeTypeParameters: declaration.typeParameters,
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    returnsSharedArray: false,
+    returnsSharedClass: false,
     sharedClassReturnRepresentation: undefined,
   };
   if (declaration.async) emissionError(context, 'async enum namespace functions require Rust task lowering');
@@ -2888,6 +2941,7 @@ function emitFunctionExpressionRust(
     insideProtectedTry: false,
     nativeAsyncFunction: false,
     returnsAbsent: hasIrTypeAbsentMember(expression.returns),
+    returnsSharedArray: false,
     returnsSharedClass:
       expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
     sharedClassReturnRepresentation:
@@ -4195,6 +4249,7 @@ function emitImmediateAsyncClosureCallRust(
     insideProtectedTry: false,
     nativeAsyncFunction: true,
     returnsAbsent: hasIrTypeAbsentMember(awaitedType),
+    returnsSharedArray: false,
     returnsSharedClass: false,
     sharedClassReturnRepresentation: undefined,
   };
@@ -4428,12 +4483,224 @@ function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonl
   return mutates;
 }
 
+type RustOwnedSharedArrayPrimitiveName = 'boolean' | 'number' | 'string';
+
+function getRustOwnedSharedArrayTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+):
+  | Readonly<{
+      array: Readonly<Extract<IrType, { kind: 'array' }>>;
+      primitiveName: RustOwnedSharedArrayPrimitiveName;
+    }>
+  | undefined {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'array' || resolved.readonly) return undefined;
+  const element = resolveIrTypeAliasValueRust(resolved.element, context, new Set());
+  return element.kind === 'primitive' &&
+    (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
+    ? { array: resolved, primitiveName: element.name }
+    : undefined;
+}
+
+function emitOwnedSharedArrayCarrierTypeRust(type: Readonly<IrType>, context: EmitContext): string {
+  const represented = getRustOwnedSharedArrayTypeRust(type, context);
+  if (!represented) {
+    return emissionRuleError(
+      context,
+      'owned shared array ABI requires one mutable closed boolean, number, or string array carrier',
+      'rust-reference-shared-array-use-unrepresented',
+    );
+  }
+  context.needsRcImport.add('Rc');
+  context.needsRefCellImport.add('RefCell');
+  return `Rc<RefCell<${emitType(represented.array, context)}>>`;
+}
+
+function assertRustOwnedSharedArrayFunctionPlanRust(
+  declaration: Readonly<IrFunctionDeclaration>,
+  positions: ReadonlySet<number> | undefined,
+  returnsSharedArray: boolean,
+  context: EmitContext,
+): void {
+  if ((positions?.size ?? 0) === 0 && !returnsSharedArray) return;
+  if (
+    declaration.async ||
+    declaration.typeParameters.length > 0 ||
+    declaration.overloads.length > 0 ||
+    declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer)
+  ) {
+    emissionRuleError(
+      context,
+      `owned shared array function ${declaration.binding.name} lost its exact synchronous fixed ABI`,
+      'rust-reference-shared-array-use-unrepresented',
+    );
+  }
+  for (const position of positions ?? []) {
+    const parameter = declaration.parameters[position];
+    if (
+      !Number.isInteger(position) ||
+      position < 0 ||
+      !parameter ||
+      !getRustOwnedSharedArrayTypeRust(parameter.type, context)
+    ) {
+      emissionRuleError(
+        context,
+        `owned shared array function ${declaration.binding.name} has an invalid planned parameter position or type`,
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+  }
+  if (returnsSharedArray && !getRustOwnedSharedArrayTypeRust(declaration.returns, context)) {
+    emissionRuleError(
+      context,
+      `owned shared array function ${declaration.binding.name} has an incompatible planned return type`,
+      'rust-reference-shared-array-use-unrepresented',
+    );
+  }
+}
+
+interface RustOwnedSharedArrayCallPlan {
+  readonly declaration: Readonly<IrFunctionDeclaration>;
+  readonly parameterPositions: ReadonlySet<number>;
+  readonly returnsSharedArray: boolean;
+}
+
+function getIrOwnedSharedArrayCallPlanRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<RustOwnedSharedArrayCallPlan> | undefined {
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.callee.reference.binding.id;
+  const parameterPositions = context.ownedSharedArrayParameterPositions.get(bindingId) ?? new Set<number>();
+  const returnsSharedArray = context.sharedArrayReturnBindingIds.has(bindingId);
+  if (parameterPositions.size === 0 && !returnsSharedArray) return undefined;
+  const declaration = getIrReferencedFunctionRust(expression.callee.reference, context);
+  if (
+    !declaration ||
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.typeArguments.length > 0 ||
+    expression.arguments.some((argument) => argument.kind === 'spread') ||
+    expression.arguments.length !== declaration.parameters.length ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined
+  ) {
+    return emissionRuleError(
+      context,
+      `owned shared array call ${expression.callee.reference.binding.name} lost its exact direct fixed-arity target`,
+      'rust-reference-array-argument-unrepresented',
+    );
+  }
+  const signature = expression.semantics.signature;
+  if (
+    signature &&
+    (signature.restParameter !== undefined ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== expression.arguments.length ||
+      signature.parameterCount !== declaration.parameters.length)
+  ) {
+    return emissionRuleError(
+      context,
+      `owned shared array call ${expression.callee.reference.binding.name} has mismatched checker arity evidence`,
+      'rust-reference-array-argument-unrepresented',
+    );
+  }
+  assertRustOwnedSharedArrayFunctionPlanRust(declaration, parameterPositions, returnsSharedArray, context);
+  return { declaration, parameterPositions, returnsSharedArray };
+}
+
+function isIrOwnedSharedArrayReturnCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  return (
+    expression.kind === 'call' && getIrOwnedSharedArrayCallPlanRust(expression, context)?.returnsSharedArray === true
+  );
+}
+
+function emitOwnedSharedArrayCarrierExpressionRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string {
+  const target = getRustOwnedSharedArrayTypeRust(targetType, context);
+  if (!target) {
+    return emissionRuleError(
+      context,
+      'owned shared array expression has no exact primitive target carrier',
+      'rust-reference-shared-array-use-unrepresented',
+    );
+  }
+  context.needsRcImport.add('Rc');
+  context.needsRefCellImport.add('RefCell');
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+    const source = sourceType ? getRustOwnedSharedArrayTypeRust(sourceType, context) : undefined;
+    if (
+      !context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
+      source?.primitiveName !== target.primitiveName
+    ) {
+      return emissionRuleError(
+        context,
+        `owned shared array binding ${expression.reference.binding.name} lacks the planned target carrier`,
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return `Rc::clone(&${emitIdentifierReferenceRust(expression.reference, context)})`;
+  }
+  if (expression.kind === 'call') {
+    const callPlan = getIrOwnedSharedArrayCallPlanRust(expression, context);
+    const source = callPlan ? getRustOwnedSharedArrayTypeRust(callPlan.declaration.returns, context) : undefined;
+    if (!callPlan?.returnsSharedArray || source?.primitiveName !== target.primitiveName) {
+      return emissionRuleError(
+        context,
+        'owned shared array return expression is not one planned exact provider call',
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return emitExpression(expression, context);
+  }
+  if (expression.kind === 'array') {
+    const source = expression.type ? getRustOwnedSharedArrayTypeRust(expression.type, context) : target;
+    if (
+      source?.primitiveName !== target.primitiveName ||
+      expression.elements.some((element) => element === undefined || element.kind === 'spread')
+    ) {
+      return emissionRuleError(
+        context,
+        'owned shared array fresh source must be one exact dense primitive literal',
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return `Rc::new(RefCell::new(${emitOwnedOperandRust(expression, context)}))`;
+  }
+  return emissionRuleError(
+    context,
+    `owned shared array source kind ${expression.kind} is outside the exact first-order ABI`,
+    'rust-reference-shared-array-use-unrepresented',
+  );
+}
+
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   if (declaration.namespaceMember) {
     emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
   }
   const sharedClassReturnRepresentation = outer.sharedClassReturnRepresentations.get(declaration.binding.id);
   const returnsSharedClass = sharedClassReturnRepresentation === 'shared-ref-cell-class';
+  const ownedSharedArrayParameterPositions = outer.ownedSharedArrayParameterPositions.get(declaration.binding.id);
+  const returnsSharedArray = outer.sharedArrayReturnBindingIds.has(declaration.binding.id);
+  assertRustOwnedSharedArrayFunctionPlanRust(
+    declaration,
+    ownedSharedArrayParameterPositions,
+    returnsSharedArray,
+    outer,
+  );
+  if (returnsSharedArray && sharedClassReturnRepresentation) {
+    emissionRuleError(
+      outer,
+      `function ${declaration.binding.name} has incompatible shared array and shared class return plans`,
+      'rust-reference-shared-array-use-unrepresented',
+    );
+  }
   const nativeReturnType = declaration.async
     ? getIrTaskAwaitedTypeRust(declaration.returns, outer)
     : declaration.returns;
@@ -4445,6 +4712,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     insideProtectedTry: false,
     nativeAsyncFunction: declaration.async,
     returnsAbsent: hasIrTypeAbsentMember(nativeReturnType),
+    returnsSharedArray,
     returnsSharedClass,
     sharedClassReturnRepresentation,
   };
@@ -4452,9 +4720,11 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     context.needsRcImport.add('Rc');
     context.needsRefCellImport.add('RefCell');
   }
-  const returnType = sharedClassReturnRepresentation
-    ? emitSharedClassCarrierTypeRust(nativeReturnType, sharedClassReturnRepresentation, context)
-    : emitType(nativeReturnType, context);
+  const returnType = returnsSharedArray
+    ? emitOwnedSharedArrayCarrierTypeRust(nativeReturnType, context)
+    : sharedClassReturnRepresentation
+      ? emitSharedClassCarrierTypeRust(nativeReturnType, sharedClassReturnRepresentation, context)
+      : emitType(nativeReturnType, context);
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
@@ -5023,6 +5293,7 @@ function emitCallArgumentsRust(
   }
   assertRustCallArgumentsMatchUnionParametersRust(expression, context);
   const borrowed = getIrCallBorrowedRepresentationsRust(expression, context);
+  const ownedSharedArrayCallPlan = getIrOwnedSharedArrayCallPlanRust(expression, context);
   const referencedFunction =
     expression.callee.kind === 'identifier'
       ? getIrReferencedFunctionRust(expression.callee.reference, context)
@@ -5030,6 +5301,17 @@ function emitCallArgumentsRust(
   const referencedMethod = getIrDirectClassMethodRust(expression, context);
   const emitPlannedArgument = (argument: Readonly<IrExpression>, index: number): string => {
     const representation = borrowed.get(index);
+    if (ownedSharedArrayCallPlan?.parameterPositions.has(index)) {
+      const parameter = ownedSharedArrayCallPlan.declaration.parameters[index];
+      if (!parameter || representation !== undefined) {
+        return emissionRuleError(
+          context,
+          `owned shared array call parameter ${String(index)} conflicts with another representation plan`,
+          'rust-reference-array-argument-unrepresented',
+        );
+      }
+      return emitOwnedSharedArrayCarrierExpressionRust(argument, parameter.type, context);
+    }
     if (context.adaptedNativeFutureArgumentPositions.get(expression) === index) {
       if (argument.kind !== 'call' || representation) {
         emissionError(context, 'adapted native-future argument lost its exact owned call position');
@@ -7824,6 +8106,16 @@ function emitContextualReturnValueRust(
   context: EmitContext,
   ownForDeferredCleanup = false,
 ): string {
+  if (context.returnsSharedArray) {
+    if (!context.enclosingReturnType) {
+      return emissionRuleError(
+        context,
+        'owned shared array return has no enclosing exact array type',
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return emitOwnedSharedArrayCarrierExpressionRust(expression, context.enclosingReturnType, context);
+  }
   if (context.sharedClassReturnRepresentation) {
     return emitSharedClassCarrierExpressionRust(expression, context.sharedClassReturnRepresentation, context);
   }
@@ -12100,6 +12392,16 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     parameter.binding.id,
   );
   const retainedClassRepresentation = context.retainedClassParameterRepresentations.get(parameter.binding.id);
+  if (context.sharedArrayBindingIds.has(parameter.binding.id)) {
+    if (parameter.initializer || parameter.optional || parameter.rest) {
+      emissionRuleError(
+        context,
+        `owned shared array parameter ${parameter.binding.name} must be one fixed required binding in Rust`,
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return `${getBindingTargetNameRust(parameter.binding, context)}: ${emitOwnedSharedArrayCarrierTypeRust(parameterType, context)}`;
+  }
   if (retainedClassRepresentation) {
     if (parameter.initializer || parameter.optional || parameter.rest) {
       emissionError(context, `retained class parameter ${parameter.binding.name} must be fixed and required in Rust`);
@@ -12316,6 +12618,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     }
     case 'return': {
       if (!statement.expression) {
+        if (context.returnsSharedArray) {
+          emissionRuleError(
+            context,
+            'owned shared array return requires one exact value',
+            'rust-reference-shared-array-use-unrepresented',
+          );
+        }
         if (context.returnsSharedClass) {
           emissionError(
             context,
@@ -13125,6 +13434,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       'binding patterns require destructuring lowering before Rust emission',
       'rust-binding-pattern-lowering-required',
     );
+  if (context.sharedArrayTupleBindingIds.has(variable.binding.id)) {
+    emissionRuleError(
+      context,
+      `shared array tuple binding ${variable.binding.name} requires tuple-pack value and concat emission`,
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  }
   if (context.adaptedNativeFutureLocalBindingIds.has(variable.binding.id)) {
     const awaitedType = getIrAdaptedNativeFutureLocalAwaitedTypeRust(variable, context);
     if (variable.mutable || variable.initializer?.kind !== 'call' || !awaitedType || context.insideProtectedTry) {
@@ -13159,9 +13475,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       variable.initializer.reference.kind === 'binding' &&
       context.sharedArrayBindingIds.has(variable.initializer.reference.binding.id)
         ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
-        : isIrSharedArrayIdentityMethodCallRust(variable.initializer, context)
+        : isIrOwnedSharedArrayReturnCallRust(variable.initializer, context)
           ? emitExpression(variable.initializer, context)
-          : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
+          : isIrSharedArrayIdentityMethodCallRust(variable.initializer, context)
+            ? emitExpression(variable.initializer, context)
+            : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
   const sharedClassRepresentation = context.sharedClassBindingRepresentations.get(variable.binding.id);
@@ -15466,11 +15784,39 @@ function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>)
   );
 }
 
-function assertArrayConcatInvocationSemanticsRust(module: Readonly<IrModule>): void {
+function getRustArrayConcatTuplePackBindingIdRust(expression: Readonly<IrExpression>): string | undefined {
+  if (expression.kind !== 'call' || !isArrayConcatCallRust(expression) || expression.arguments.length !== 1) {
+    return undefined;
+  }
+  const tupleArgument = expression.arguments[0];
+  return tupleArgument?.kind === 'spread' &&
+    tupleArgument.expression.kind === 'identifier' &&
+    tupleArgument.expression.reference.kind === 'binding'
+    ? tupleArgument.expression.reference.binding.id
+    : undefined;
+}
+
+function collectRustArrayConcatTuplePackBindingIdsRust(module: Readonly<IrModule>, target: Set<string>): void {
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      const bindingId = getRustArrayConcatTuplePackBindingIdRust(expression);
+      if (bindingId) target.add(bindingId);
+    },
+  });
+}
+
+function assertArrayConcatInvocationSemanticsRust(
+  module: Readonly<IrModule>,
+  selectedSharedArrayTupleBindingIds: ReadonlySet<string> = new Set(),
+): void {
   let unsupported = false;
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind !== 'call' || !isArrayConcatCallRust(expression)) return;
+      const tupleBindingId = getRustArrayConcatTuplePackBindingIdRust(expression);
+      if (tupleBindingId && selectedSharedArrayTupleBindingIds.has(tupleBindingId)) {
+        return;
+      }
       if (!isRustArrayConcatInvocationRepresentedRust(expression)) {
         unsupported = true;
         return false;
@@ -15721,7 +16067,11 @@ function assertArraySortInvocationSemanticsRust(module: Readonly<IrModule>): voi
   });
 }
 
-function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+function assertArrayOperationSemanticsRust(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+  deferredSharedArrayTupleBindingIds: ReadonlySet<string>,
+): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
@@ -16993,6 +17343,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   for (const [call, expression] of concatCalls.entries()) {
+    const tupleBindingId = getRustArrayConcatTuplePackBindingIdRust(expression);
+    if (tupleBindingId && deferredSharedArrayTupleBindingIds.has(tupleBindingId)) continue;
     if (!isRustArrayConcatInvocationRepresentedRust(expression)) {
       refusals.push({
         call,
@@ -18234,6 +18586,12 @@ interface RustModuleConstantDependentDeclaration {
   readonly code: CompilerRustModuleConstantRefusal['code'];
 }
 
+interface RustReferenceRefusalDependency {
+  readonly owner: Readonly<IrBindingIdentity>;
+  readonly ownerDeclaration: Readonly<IrDeclaration>;
+  readonly refusal: Readonly<CompilerRustReferenceRepresentationRefusal>;
+}
+
 // Every collection declaration emission can mutate. A failed declaration must leave no record,
 // enum, import need, or generated name behind: the surviving declarations then emit exactly the
 // bytes they would have emitted without the failure, and no helper is published for an omitted item.
@@ -18268,9 +18626,45 @@ function emitSalvagedDeclarationRust(
   salvage: RustSalvageRequest,
   stringRefusals?: readonly Readonly<RustStringMemberSemanticsRefusal>[] | undefined,
   moduleConstantDependency?: Readonly<RustModuleConstantDependentDeclaration> | undefined,
+  referenceRefusalDependency?: Readonly<RustReferenceRefusalDependency> | undefined,
 ): string[] {
   const snapshot = createRustSalvageContextSnapshotRust(context);
   try {
+    if (moduleConstantDependency) {
+      throw createBackendEmissionFailure(
+        'rust',
+        context.module,
+        moduleConstantDependency.code === 'rust-module-array-value-unrepresented'
+          ? `declaration depends on unsupported module array value ${moduleConstantDependency.bindingName}`
+          : `declaration depends on unsupported module constant ${moduleConstantDependency.bindingName}`,
+        moduleConstantDependency.code,
+        createRustEmissionFailureMetadata(
+          {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+          },
+          undefined,
+        ),
+      );
+    }
+    if (referenceRefusalDependency) {
+      const direct = referenceRefusalDependency.ownerDeclaration === declaration;
+      throw createBackendEmissionFailure(
+        'rust',
+        context.module,
+        direct
+          ? referenceRefusalDependency.refusal.message
+          : `declaration depends on unsupported reference representation ${referenceRefusalDependency.owner.name}`,
+        referenceRefusalDependency.refusal.code,
+        createRustEmissionFailureMetadata(
+          {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+          },
+          undefined,
+        ),
+      );
+    }
     // A UTF-16 member refusal is decided per declaration in salvage mode, with the same sorted
     // rule+member selection the strict scan uses. Throwing it here keeps the classification and
     // message identical while attributing the omission to the declaration that owns the use.
@@ -18287,23 +18681,6 @@ function emitSalvagedDeclarationRust(
             currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
           },
           'target-runtime',
-        ),
-      );
-    }
-    if (moduleConstantDependency) {
-      throw createBackendEmissionFailure(
-        'rust',
-        context.module,
-        moduleConstantDependency.code === 'rust-module-array-value-unrepresented'
-          ? `declaration depends on unsupported module array value ${moduleConstantDependency.bindingName}`
-          : `declaration depends on unsupported module constant ${moduleConstantDependency.bindingName}`,
-        moduleConstantDependency.code,
-        createRustEmissionFailureMetadata(
-          {
-            ...context,
-            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
-          },
-          undefined,
         ),
       );
     }
@@ -18325,6 +18702,132 @@ function emitSalvagedDeclarationRust(
     restoreRustSalvageContextRust(context, snapshot);
     return renderRustSalvagedDeclarationRust(failure);
   }
+}
+
+function throwRustReferenceRepresentationRefusalRust(
+  module: Readonly<IrModule>,
+  refusal: Readonly<CompilerRustReferenceRepresentationRefusal>,
+): never {
+  if (
+    refusal.code === 'rust-async-method-body-unrepresented' ||
+    refusal.code === 'rust-async-method-owner-carrier-unrepresented'
+  ) {
+    assertIrAsyncMethodCarriersRust(module);
+  }
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.code);
+}
+
+function collectRustReferenceRefusalDependenciesRust(
+  module: Readonly<IrModule>,
+  refusals: readonly Readonly<CompilerRustReferenceRepresentationRefusal>[],
+): ReadonlyMap<Readonly<IrDeclaration>, Readonly<RustReferenceRefusalDependency>> {
+  if (refusals.length === 0) return new Map();
+  const emittedDeclarations = module.declarations.filter(
+    (declaration) => declaration.kind !== 'function' || !declaration.namespaceMember,
+  );
+  const emissionOwners = new Map<Readonly<IrDeclaration>, Readonly<IrDeclaration>>(
+    emittedDeclarations.map((declaration) => [declaration, declaration]),
+  );
+  const declaredBindings = new Map<Readonly<IrDeclaration>, readonly Readonly<IrBindingIdentity>[]>();
+  for (const declaration of emittedDeclarations) {
+    const bindings = getRustDeclarationBindingsRust(declaration).filter(
+      (binding): binding is IrBindingIdentity => binding.space === 'value',
+    );
+    const namespaceFunctions = declaration.kind === 'enum' ? getIrEnumNamespaceFunctionsRust(declaration, module) : [];
+    for (const namespaceFunction of namespaceFunctions) emissionOwners.set(namespaceFunction, declaration);
+    declaredBindings.set(declaration, [...bindings, ...namespaceFunctions.map((function_) => function_.binding)]);
+  }
+
+  const declarationsByBindingId = new Map<string, Set<Readonly<IrDeclaration>>>();
+  for (const [declaration, bindings] of declaredBindings) {
+    for (const binding of bindings) {
+      const declarations = declarationsByBindingId.get(binding.id) ?? new Set<Readonly<IrDeclaration>>();
+      declarations.add(declaration);
+      declarationsByBindingId.set(binding.id, declarations);
+    }
+  }
+  const unresolved = refusals.find((refusal) => {
+    if (!refusal.owner) return true;
+    return declarationsByBindingId.get(refusal.owner.id)?.size !== 1;
+  });
+  if (unresolved) throwRustReferenceRepresentationRefusalRust(module, unresolved);
+
+  const order = new Map(refusals.map((refusal, index) => [refusal, index]));
+  const compare = (
+    left: Readonly<RustReferenceRefusalDependency>,
+    right: Readonly<RustReferenceRefusalDependency>,
+  ): number =>
+    (order.get(left.refusal) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.refusal) ?? Number.MAX_SAFE_INTEGER) ||
+    compareTextCodeUnits(left.owner.id, right.owner.id);
+  const result = new Map<Readonly<IrDeclaration>, Readonly<RustReferenceRefusalDependency>>();
+  const unavailable = new Map<string, Readonly<RustReferenceRefusalDependency>>();
+  const setUnavailable = (bindingId: string, cause: Readonly<RustReferenceRefusalDependency>): boolean => {
+    const existing = unavailable.get(bindingId);
+    if (existing && compare(existing, cause) <= 0) return false;
+    unavailable.set(bindingId, cause);
+    return true;
+  };
+  const setDeclaration = (
+    declaration: Readonly<IrDeclaration>,
+    cause: Readonly<RustReferenceRefusalDependency>,
+  ): boolean => {
+    const existing = result.get(declaration);
+    if (existing && compare(existing, cause) <= 0) return false;
+    result.set(declaration, cause);
+    let changed = false;
+    for (const binding of declaredBindings.get(declaration) ?? []) {
+      changed = setUnavailable(binding.id, cause) || changed;
+    }
+    return changed;
+  };
+
+  for (const refusal of refusals) {
+    const owner = refusal.owner!;
+    const ownerDeclaration = [...declarationsByBindingId.get(owner.id)!][0]!;
+    const cause = { owner, ownerDeclaration, refusal } satisfies RustReferenceRefusalDependency;
+    setDeclaration(ownerDeclaration, cause);
+    setUnavailable(owner.id, cause);
+  }
+
+  const references = new Map<Readonly<IrDeclaration>, Set<string>>();
+  const observe = (bindingId: string | undefined, path_: CompilerIrTraversalPath): void => {
+    if (!bindingId) return;
+    const sourceDeclaration = getRustTraversalDeclarationRust(module, path_);
+    const declaration = sourceDeclaration ? emissionOwners.get(sourceDeclaration) : undefined;
+    if (!declaration) return;
+    const bindingIds = references.get(declaration) ?? new Set<string>();
+    bindingIds.add(bindingId);
+    references.set(declaration, bindingIds);
+  };
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path_) {
+      observe(
+        expression.kind === 'identifier' && expression.reference.kind === 'binding'
+          ? expression.reference.binding.id
+          : expression.kind === 'property' && expression.namespaceMember?.kind === 'binding'
+            ? expression.namespaceMember.binding.id
+            : undefined,
+        path_,
+      );
+    },
+    type(type, path_) {
+      observe('reference' in type && type.reference.kind === 'binding' ? type.reference.binding.id : undefined, path_);
+    },
+  });
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of emittedDeclarations) {
+      const causes = [...(references.get(declaration) ?? [])].flatMap((bindingId) => {
+        const cause = unavailable.get(bindingId);
+        return cause ? [cause] : [];
+      });
+      const cause = causes.sort(compare)[0];
+      if (cause) changed = setDeclaration(declaration, cause) || changed;
+    }
+  }
+  return result;
 }
 
 function collectRustModuleConstantDependentDeclarationsRust(

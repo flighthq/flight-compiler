@@ -15,6 +15,7 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   EmittedFile,
+  IrFunctionDeclaration,
   IrModule,
   IrStatement,
 } from '../../compiler-types/src/index.js';
@@ -1135,6 +1136,325 @@ export function keep(value: number): number { return value + 1; }`;
 
     expect(failure.rule).toBe('rust-reference-array-call-target-unresolved');
     expect(failure.classification).toBe('compiler-restriction');
+  });
+});
+
+describe('emitIrModuleRust owned shared-array tuple ABI stage three', () => {
+  const resolve = (
+    specifier: string,
+    provider: Readonly<IrModule>,
+    consumer: Readonly<IrModule>,
+  ): CompilerModuleResolutionPlan => ({
+    edges: [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier,
+        target: getRustTestModuleIdentity(provider),
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  });
+
+  it('keeps declaration-owned reference refusals strict outside salvage', () => {
+    const module = lower(
+      'owned-array-refusal-strict.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[] = []): number[] { return values; }
+       export function merge(): number[] {
+         const values = [0];
+         const pack: Pack = [identity(), [2]];
+         return values.concat(...pack);
+       }
+       export function keep(value: number): number { return value + 1; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-shared-array-tuple-abi-unrepresented');
+  });
+
+  it('salvages an owned refusal, its local caller dependency, and keeps an unrelated sibling', () => {
+    const source = `type Pack = readonly [number[], number[]];
+function identity(values: number[] = []): number[] { return values; }
+export function merge(): number[] {
+  const values = [0];
+  const pack: Pack = [identity(), [2]];
+  return values.concat(...pack);
+}
+export function keep(value: number): number { return value + 1; }`;
+    const module = lower('owned-array-refusal-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+          message: 'owned array ABI refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const placeholder = emitPlaceholder(module, { message: 'owned array ABI refused', sourceText: source });
+    if (!placeholder) throw new Error('expected partial owned-array refusal output');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function identity -- source line 2');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function merge -- source line 3');
+    expect(placeholder.contents).toContain('// refusal: rust-reference-shared-array-tuple-abi-unrepresented');
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).not.toContain('fn identity(');
+    expect(placeholder.contents).not.toContain('fn merge(');
+    expect(emitPlaceholder(module, { message: 'owned array ABI refused', sourceText: source })).toEqual(placeholder);
+  });
+
+  it('keeps an unowned reference refusal module-wide during salvage', () => {
+    const source = `export function conflict(): number {
+  const values = [1];
+  const alias = values;
+  alias.push(values.length);
+  return alias.length;
+}
+export function keep(value: number): number { return value + 1; }`;
+    const module = lower('unowned-array-refusal-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-reference-shared-array-borrow-conflict',
+          message: 'shared array borrow conflict',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const placeholder = emitPlaceholder(module, {
+      message: 'shared array borrow conflict',
+      rule: 'rust-reference-shared-array-borrow-conflict',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected module-wide reference refusal output');
+
+    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder.contents).not.toContain('// PARTIAL:');
+    expect(placeholder.contents).not.toContain('pub fn keep');
+  });
+
+  it('emits an exact owned shared-array provider signature and fails closed at the consumer tuple', () => {
+    const provider = lower(
+      'owned-array-provider.ts',
+      'export function identity(values: number[]): number[] { return values; }',
+    ).module;
+    const consumer = lower(
+      'owned-array-consumer.ts',
+      `import { identity } from './owned-array-provider.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [identity(values), [2]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolve('./owned-array-provider.js', provider, consumer),
+      modules: [provider, consumer],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+
+    expect(providerOutput).toContain('use std::cell::RefCell;');
+    expect(providerOutput).toContain('use std::rc::Rc;');
+    expect(providerOutput).toContain('pub fn identity(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
+    expect(providerOutput).toContain('return Rc::clone(&values);');
+    expect(getEmissionRule(() => session.emitModule(consumer))).toBe(
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  });
+
+  it('agrees across a named-import bridge and forwards planned return calls without double wrapping', () => {
+    const provider = lower(
+      'owned-array-bridge-provider.ts',
+      'export function identity(values: number[]): number[] { return values; }',
+    ).module;
+    const bridge = lower(
+      'owned-array-bridge.ts',
+      `import { identity } from './owned-array-bridge-provider.js';
+       function relay(values: number[]): number[] { return identity(values); }
+       export function bridge(values: number[]): number[] {
+         const returned = relay(values);
+         return returned;
+       }`,
+    ).module;
+    const sink = lower(
+      'owned-array-bridge-sink.ts',
+      `import { bridge } from './owned-array-bridge.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [bridge(values), [2]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        ...resolve('./owned-array-bridge-provider.js', provider, bridge).edges,
+        ...resolve('./owned-array-bridge.js', bridge, sink).edges,
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [sink, bridge, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const bridgeOutput = session.emitModule(bridge)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn identity(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
+    expect(bridgeOutput).toContain('fn relay(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
+    expect(bridgeOutput).toContain('pub fn bridge(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
+    expect(bridgeOutput).toContain('return identity(Rc::clone(&values));');
+    expect(bridgeOutput).toContain('let returned: Rc<RefCell<Vec<f64>>> = relay(Rc::clone(&values));');
+    expect(bridgeOutput).toContain('return Rc::clone(&returned);');
+    expect(bridgeOutput).not.toContain('RefCell::new(identity(');
+    expect(bridgeOutput).not.toContain('RefCell::new(relay(');
+  });
+
+  it('wraps one fresh literal once and preserves shared mutation borrowing', () => {
+    const provider = lower(
+      'owned-array-fresh-provider.ts',
+      `function mutate(values: number[]): number[] { values.push(2); return values; }
+       export function make(): number[] { return mutate([1]); }`,
+    ).module;
+    const sink = lower(
+      'owned-array-fresh-sink.ts',
+      `import { make } from './owned-array-fresh-provider.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(): number[] {
+         const values = [0];
+         const pack: Pack = [make(), [3]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolve('./owned-array-fresh-provider.js', provider, sink),
+      modules: [provider, sink],
+      options: {},
+    });
+    const output = session.emitModule(provider)[0]!.contents;
+
+    expect(output).toContain('fn mutate(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
+    expect(output).toContain('values.borrow_mut().push(array_push_argument0);');
+    expect(output).toContain('return Rc::clone(&values);');
+    expect(output).toContain('return mutate(Rc::new(RefCell::new(vec![1.0])));');
+    expect(output.match(/Rc::new\(RefCell::new\(vec!\[1\.0\]\)\)/gu)).toHaveLength(1);
+    expect(output).not.toContain('&mut Vec<f64>');
+  });
+
+  it('retains legacy mutable Vec borrowing outside the owned ABI', () => {
+    const provider = lower(
+      'legacy-array-provider.ts',
+      'export function append(values: number[]): void { values.push(2); }',
+    ).module;
+    const consumer = lower(
+      'legacy-array-consumer.ts',
+      `import { append } from './legacy-array-provider.js';
+       export function run(): number {
+         const values = [1];
+         const alias = values;
+         append(alias);
+         return values.length;
+       }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolve('./legacy-array-provider.js', provider, consumer),
+      modules: [provider, consumer],
+      options: {},
+    });
+
+    expect(session.emitModule(provider)[0]!.contents).toContain('pub fn append(values: &mut Vec<f64>)');
+    expect(session.emitModule(consumer)[0]!.contents).toContain('append(&mut *alias.borrow_mut());');
+  });
+
+  it('fails loudly when a planned provider signature changes after session planning', () => {
+    const provider = lower(
+      'owned-array-stale-provider.ts',
+      'export function identity(values: number[]): number[] { return values; }',
+    ).module;
+    const consumer = lower(
+      'owned-array-stale-consumer.ts',
+      `import { identity } from './owned-array-stale-provider.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [identity(values), [2]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolve('./owned-array-stale-provider.js', provider, consumer),
+      modules: [provider, consumer],
+      options: {},
+    });
+    const identity = provider.declarations.find(
+      (declaration): declaration is IrFunctionDeclaration =>
+        declaration.kind === 'function' && declaration.binding.name === 'identity',
+    );
+    if (!identity) throw new Error('expected identity provider');
+    Object.assign(identity.parameters[0]!, { optional: true });
+
+    expect(getEmissionRule(() => session.emitModule(provider))).toBe('rust-reference-shared-array-use-unrepresented');
+  });
+
+  it('rolls tuple-guard imports back while salvaging the owning declaration', () => {
+    const provider = lower(
+      'owned-array-guard-provider.ts',
+      'export function identity(values: number[]): number[] { return values; }',
+    ).module;
+    const source = `import { identity } from './owned-array-guard-provider.js';
+type Pack = readonly [number[], number[]];
+export function merge(values: number[]): number[] {
+  const pack: Pack = [identity(values), [2]];
+  return values.concat(...pack);
+}
+export function keep(value: number): number { return value + 1; }`;
+    const consumer = lower('owned-array-guard-consumer.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolve('./owned-array-guard-provider.js', provider, consumer),
+      modules: [provider, consumer],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([provider]),
+      moduleFiles: [
+        {
+          file: session.emitModule(provider)[0]!,
+          module: getRustTestModuleIdentity(provider),
+        },
+      ],
+      placeholderModules: [consumer],
+      refusals: [
+        {
+          code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+          message: 'tuple values remain disabled',
+          module: getRustTestModuleIdentity(consumer),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const placeholder = emitPlaceholder(consumer, { message: 'tuple values remain disabled', sourceText: source });
+    if (!placeholder) throw new Error('expected tuple guard partial output');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function merge -- source line 3');
+    expect(placeholder.contents).toContain('// refusal: rust-reference-shared-array-tuple-abi-unrepresented');
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).not.toContain('use std::cell::RefCell;');
+    expect(placeholder.contents).not.toContain('use std::rc::Rc;');
+    expect(placeholder.contents).not.toContain('use crate::owned_array_guard_provider::identity;');
   });
 });
 
