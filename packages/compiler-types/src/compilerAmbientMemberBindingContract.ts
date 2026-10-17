@@ -53,6 +53,10 @@ export type CompilerRustAmbientMemberBinding =
   | Readonly<{ kind: 'runtimeMethod'; targetName: string }>
   | Readonly<{ kind: 'borrowedMethod'; owns?: boolean; targetName: string; trailingArguments?: readonly string[] }>
   | Readonly<{ kind: 'countingMethod'; targetName: string }>
+  // A source length that counts source-language code units rather than the target's native units.
+  // Rust's native string length counts UTF-8 bytes, so this shape names the iterator that yields
+  // UTF-16 code units; the emitter counts it and returns the count in the symbolic numeric domain.
+  | Readonly<{ kind: 'codeUnitLength'; targetName: string }>
   // A source property whose Rust representation returns an owned value through a zero-argument
   // method. Shared runtime objects use this shape rather than exposing their internal storage.
   | Readonly<{ kind: 'propertyMethod'; targetName: string }>

@@ -237,11 +237,10 @@ export interface CompilerRustRuntimeTaskRequirements {
 }
 
 export type CompilerRustRuntimeUnsupportedCapability = Readonly<{
-  capability: 'typed-error-carrier' | 'utf16-code-unit-index' | 'utf16-code-unit-length' | 'utf16-code-unit-range';
+  capability: 'typed-error-carrier' | 'utf16-code-unit-index' | 'utf16-code-unit-range';
   rule:
     | 'rust-runtime-error-carrier-incomplete'
     | 'rust-string-utf16-index-unrepresented'
-    | 'rust-string-utf16-length-unrepresented'
     | 'rust-string-utf16-range-unrepresented';
   subjects: readonly string[];
 }>;

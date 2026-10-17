@@ -108,6 +108,9 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'string.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   'string.indexOf': { kind: 'sentinelSearch', targetName: 'find' },
   'string.lastIndexOf': { kind: 'sentinelSearch', targetName: 'rfind' },
+  // `String::len` counts UTF-8 bytes; the source's length counts UTF-16 code units. Enumerating
+  // `encode_utf16` is the exact code-unit sequence, so the emitter counts that instead.
+  'string.length': { kind: 'codeUnitLength', targetName: 'encode_utf16' },
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
   // `replacen` with a count of one is the member that means what the source meant.
   'string.replace': { kind: 'borrowedMethod', targetName: 'replacen', trailingArguments: ['1'] },

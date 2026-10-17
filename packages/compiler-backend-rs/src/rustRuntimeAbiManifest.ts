@@ -226,11 +226,6 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
         subjects: ['string.charAt', 'string.charCodeAt'],
       },
       {
-        capability: 'utf16-code-unit-length',
-        rule: 'rust-string-utf16-length-unrepresented',
-        subjects: ['string.length'],
-      },
-      {
         capability: 'utf16-code-unit-range',
         rule: 'rust-string-utf16-range-unrepresented',
         subjects: ['string.slice', 'string.substring'],

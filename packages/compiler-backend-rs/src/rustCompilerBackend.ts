@@ -2503,7 +2503,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
-        if (binding && binding.kind !== 'countingMethod' && binding.kind !== 'propertyMethod') {
+        if (
+          binding &&
+          binding.kind !== 'countingMethod' &&
+          binding.kind !== 'codeUnitLength' &&
+          binding.kind !== 'propertyMethod'
+        ) {
           const receiver =
             emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
             emitSharedReferenceReceiverRust(
@@ -2905,6 +2910,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             emitPrimitiveUnionNarrowedReceiverRust(expression.object, context) ??
             emitSharedReferenceReceiverRust(expression.object, false, context);
           return `(${countingReceiver}.${binding.targetName}() as f64)`;
+        }
+        if (binding.kind === 'codeUnitLength') {
+          const codeUnitReceiver =
+            emitPrimitiveUnionNarrowedReceiverRust(expression.object, context) ??
+            emitSharedReferenceReceiverRust(expression.object, false, context);
+          return `(${codeUnitReceiver}.${binding.targetName}().count() as f64)`;
         }
         if (binding.kind === 'propertyMethod') {
           return `${emitExpression(expression.object, context)}.${binding.targetName}()`;
@@ -7398,20 +7409,39 @@ function emitOptionalPropertyExpressionRust(
   if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
   const object = emitExpression(expression.object, context);
   const property = safeRustValueName(expression.name);
+  // A source length is a value projection, not a field: the ambient table decides how the target
+  // spells it, and the optional chain maps that same projection over the receiver's absence.
+  const ambientProjection = createRustOptionalAmbientPropertyProjectionRust(expression);
+  const projectedValue = (receiver: string): string =>
+    ambientProjection ? ambientProjection(receiver) : `${receiver}.${property}.clone()`;
   if (semantics.receiverNullish === 'excluded') {
     // An ordinary element receiver carries the absence the chain short-circuits on, so the read maps
     // over its Option. A direct element place keeps the copy read the source wrote.
     if (isIrExpressionOptionShapedRust(expression.object, context)) {
       const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
-      return `${object}.as_ref().${operation}(|optional_chain_value| optional_chain_value.${property}.clone())`;
+      return `${object}.as_ref().${operation}(|optional_chain_value| ${projectedValue('optional_chain_value')})`;
     }
+    if (ambientProjection) return ambientProjection(object);
     // Indexing yields a place the caller does not own, so the field read out of it is a copy.
     const owned = expression.object.kind === 'element' ? '.clone()' : '';
     return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}${owned}`;
   }
   getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional property receiver', context);
   const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
-  return `${object}.as_ref().${operation}(|optional_chain_value| optional_chain_value.${property}.clone())`;
+  return `${object}.as_ref().${operation}(|optional_chain_value| ${projectedValue('optional_chain_value')})`;
+}
+
+function createRustOptionalAmbientPropertyProjectionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+): ((receiver: string) => string) | undefined {
+  const binding = expression.member ? getCompilerRustAmbientMemberBinding(expression.member) : undefined;
+  if (binding?.kind === 'countingMethod') {
+    return (receiver) => `(${receiver}.${binding.targetName}() as f64)`;
+  }
+  if (binding?.kind === 'codeUnitLength') {
+    return (receiver) => `(${receiver}.${binding.targetName}().count() as f64)`;
+  }
+  return undefined;
 }
 
 function emitRequiredElementExpressionRust(
@@ -7815,7 +7845,9 @@ function inferIrExpressionTypeRust(
       const retainedField = getIrClassRetainedFieldProjectionRust(expression, context);
       if (retainedField) return retainedField.field.type;
       const binding = expression.member ? getCompilerRustAmbientMemberBinding(expression.member) : undefined;
-      return binding?.kind === 'countingMethod' ? { kind: 'primitive', name: 'number' } : undefined;
+      return binding?.kind === 'countingMethod' || binding?.kind === 'codeUnitLength'
+        ? { kind: 'primitive', name: 'number' }
+        : undefined;
     }
     default:
       return undefined;
@@ -21135,12 +21167,9 @@ function isRustArrayAbsenceRepresentedUse(
 }
 
 interface RustStringMemberSemanticsRefusal {
-  readonly member: 'charAt' | 'charCodeAt' | 'length' | 'slice' | 'substring';
+  readonly member: 'charAt' | 'charCodeAt' | 'slice' | 'substring';
   readonly message: string;
-  readonly rule:
-    | 'rust-string-utf16-index-unrepresented'
-    | 'rust-string-utf16-length-unrepresented'
-    | 'rust-string-utf16-range-unrepresented';
+  readonly rule: 'rust-string-utf16-index-unrepresented' | 'rust-string-utf16-range-unrepresented';
 }
 
 function assertStringMemberSemanticsRust(module: Readonly<IrModule>): void {
@@ -21164,17 +21193,6 @@ function assertStringMemberSemanticsRust(module: Readonly<IrModule>): void {
 function getRustStringMemberSemanticsRefusalRust(
   expression: Readonly<IrExpression>,
 ): RustStringMemberSemanticsRefusal | undefined {
-  if (
-    expression.kind === 'property' &&
-    expression.member?.receiver === 'string' &&
-    expression.member.name === 'length'
-  ) {
-    return {
-      member: 'length',
-      message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
-      rule: 'rust-string-utf16-length-unrepresented',
-    };
-  }
   if (
     expression.kind !== 'call' ||
     expression.callee.kind !== 'property' ||

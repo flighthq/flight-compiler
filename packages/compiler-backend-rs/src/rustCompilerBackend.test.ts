@@ -678,12 +678,6 @@ export function keep(value: number): number { return value + 1; }`;
 
   it.each([
     {
-      member: 'length',
-      rule: 'rust-string-utf16-length-unrepresented',
-      source:
-        'export function sensitive(s: string): number { return s.length; }\nexport function keep(value: number): number { return value + 1; }',
-    },
-    {
       member: 'charAt',
       rule: 'rust-string-utf16-index-unrepresented',
       source:
@@ -742,7 +736,7 @@ export function keep(value: number): number { return value + 1; }`;
   });
 
   it('attributes UTF-16 refusals per declaration with the strict sorted family selection', () => {
-    const source = `export function sizes(s: string): number { return s.length + s.charCodeAt(0); }
+    const source = `export function sizes(s: string): number { return s.charCodeAt(0) + s.slice(0, 1).length; }
 export function ranges(s: string): string { return s.slice(0, 1); }
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('string-declarations.ts', source).module;
@@ -769,8 +763,8 @@ export function keep(value: number): number { return value + 1; }`;
     const placeholder = emitPlaceholder(module, { message: 'string refused', sourceText: source });
     if (!placeholder) throw new Error('expected a partial file for the refused module');
 
-    // The first declaration contains both length and charCodeAt; the sorted selection picks the index
-    // rule, exactly as the strict scan would for that declaration's own uses.
+    // The first declaration contains both an index and a range refusal; the sorted selection picks the
+    // index rule, exactly as the strict scan would for that declaration's own uses.
     expect(placeholder.contents).toContain('// NOT GENERATED: function sizes -- source line 1');
     expect(placeholder.contents).toContain('// refusal: rust-string-utf16-index-unrepresented [target-runtime]');
     expect(placeholder.contents).toContain('// NOT GENERATED: function ranges -- source line 2');
@@ -783,7 +777,7 @@ export function keep(value: number): number { return value + 1; }`;
 
   it('attributes a namespace-member UTF-16 use to the enum that emits it', () => {
     const source = `export enum Kind { A = 0 }
-export namespace Kind { export function size(s: string): number { return s.length; } }
+export namespace Kind { export function size(s: string): number { return s.charCodeAt(0); } }
 export function keep(value: number): number { return value + 1; }`;
     const result = lower('string-namespace.ts', source);
     expect(result.diagnostics).toEqual([]);
@@ -799,7 +793,7 @@ export function keep(value: number): number { return value + 1; }`;
       placeholderModules: [result.module],
       refusals: [
         {
-          code: 'rust-string-utf16-length-unrepresented',
+          code: 'rust-string-utf16-index-unrepresented',
           message: 'string refused',
           module: getRustTestModuleIdentity(result.module),
         },
@@ -811,7 +805,7 @@ export function keep(value: number): number { return value + 1; }`;
     if (!placeholder) throw new Error('expected a partial file for the refused module');
 
     expect(placeholder.contents).toContain('// NOT GENERATED: enum Kind -- source line 1');
-    expect(placeholder.contents).toContain('// refusal: rust-string-utf16-length-unrepresented [target-runtime]');
+    expect(placeholder.contents).toContain('// refusal: rust-string-utf16-index-unrepresented [target-runtime]');
     expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
   });
 
@@ -2408,11 +2402,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it.each([
     {
-      member: 'length',
-      rule: 'rust-string-utf16-length-unrepresented',
-      source: 'export function ascii(): number { return "plain".length; }',
-    },
-    {
       member: 'charAt',
       rule: 'rust-string-utf16-index-unrepresented',
       source: 'export function astral(): string { return "😀".charAt(0); }',
@@ -2447,11 +2436,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it('chooses UTF-16 string refusals independently of source traversal order', () => {
     const forward = lower(
       'string-refusal-forward.ts',
-      'export function length(s: string): number { return s.length; } export function first(s: string): string { return s.charAt(0); }',
+      'export function range(s: string): string { return s.slice(0, 1); } export function first(s: string): string { return s.charAt(0); }',
     ).module;
     const reverse = lower(
       'string-refusal-reverse.ts',
-      'export function first(s: string): string { return s.charAt(0); } export function length(s: string): number { return s.length; }',
+      'export function first(s: string): string { return s.charAt(0); } export function range(s: string): string { return s.slice(0, 1); }',
     ).module;
     const refusal = (module: typeof forward) => {
       const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
@@ -2459,6 +2448,68 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     };
 
     expect(refusal(forward)).toEqual(refusal(reverse));
+  });
+
+  it('counts string length in UTF-16 code units across literals, parameters, and narrowed receivers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-length-utf16.ts',
+        `export function asciiLength(): number { return "plain".length; }
+         export function astralLength(): number { return "😀".length; }
+         export function emptyLength(): number { return "".length; }
+         export function parameterLength(text: string): number { return text.length; }
+         export function narrowedLength(text: string | undefined): number {
+           if (text === undefined) return 0;
+           return text.length;
+         }
+         export function narrowedUnionLength(value: string | number): number {
+           if (typeof value === "string") return value.length;
+           return 0;
+         }
+         function sample(): string { return "a"; }
+         export function calledLength(): number { return sample().length; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('"plain".to_owned().encode_utf16().count() as f64');
+    expect(output).toContain('"😀".to_owned().encode_utf16().count() as f64');
+    expect(output).toContain('"".to_owned().encode_utf16().count() as f64');
+    expect(output).toContain('text.encode_utf16().count() as f64');
+    expect(output).toContain('text.clone().unwrap().encode_utf16().count() as f64');
+    expect(output).toContain('value.as_str().encode_utf16().count() as f64');
+    expect(output.match(/sample\(\)\.encode_utf16\(\)\.count\(\) as f64/gu)).toHaveLength(1);
+  });
+
+  it('maps optional length projections over string and array receivers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-length-optional.ts',
+        `export function measure(text: string | undefined): number { return text?.length ?? 0; }
+         export function count(items: number[] | undefined): number { return items?.length ?? 0; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'text.as_ref().map(|optional_chain_value| (optional_chain_value.encode_utf16().count() as f64))',
+    );
+    expect(output).toContain('items.as_ref().map(|optional_chain_value| (optional_chain_value.len() as f64))');
+  });
+
+  it.skipIf(!rustcAvailable)('counts BMP code units, astral surrogate pairs, and combining marks at run time', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-length-runtime.ts',
+        `export function asciiLength(): number { return "plain".length; }
+           export function astralLength(): number { return "😀".length; }
+           export function combiningLength(): number { return "e\\u0301".length; }
+           export function parameterLength(text: string): number { return text.length; }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      'assert_eq!(ascii_length(), 5.0); assert_eq!(astral_length(), 2.0); assert_eq!(combining_length(), 2.0); assert_eq!(parameter_length("a😀".to_owned()), 3.0);',
+    );
   });
 
   it('preserves an equivalent native string mapping as an ASCII control', () => {
