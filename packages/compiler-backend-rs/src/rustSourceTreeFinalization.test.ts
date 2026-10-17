@@ -10,6 +10,7 @@ import type {
   CompilerModuleResolutionPlan,
   CompilerRustSourceTreeFinalizationFailureCode,
   CompilerRustSourceTreeModuleReemissionRequest,
+  CompilerRustSourceTreePlan,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import {
@@ -226,6 +227,94 @@ describe('emitEmittedFileSourceFragmentRust', () => {
       );
     }
   });
+
+  it('plans placeholder-backed modules as declared import targets and leaves strict plans alone', () => {
+    const root = lower('@scope/math', 'consumer.ts', "import { convert } from './provider.js'; export { convert };");
+    const provider = lower(
+      '@scope/math',
+      'provider.ts',
+      'export function convert(value: unknown): unknown { return value; }',
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: identity(root),
+          specifier: './provider.js',
+          target: identity(provider),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const base = {
+      facade: createFacade([root]),
+      moduleFiles: [retained(root, 'consumer.rs')],
+      refusals: [{ code: 'rust-placeholder-test', message: 'provider refused', module: identity(provider) }],
+    } satisfies CompilerBackendPackageGraphFinalization;
+    let plan: Readonly<CompilerRustSourceTreePlan> | undefined;
+    const placeholderRun = finalize(
+      { ...base, placeholderModules: [provider] },
+      [root, provider],
+      resolution,
+      (observed) => {
+        plan = observed;
+      },
+    );
+
+    expect(placeholderRun.calls.map(({ module }) => module)).toEqual([root.name]);
+    expect(plan?.modules).toContainEqual({
+      filePath: 'provider.rs',
+      identity: identity(provider),
+      modulePath: ['provider'],
+    });
+    expect(plan?.files.find((file) => file.filePath === 'provider.rs')?.ownership).toEqual({
+      kind: 'placeholder',
+      module: identity(provider),
+    });
+    expect(plan?.references).toContainEqual({
+      from: identity(root),
+      rustPath: 'crate::provider',
+      specifier: './provider.js',
+      target: identity(provider),
+    });
+    expect(placeholderRun.result.packageFiles.map(({ file }) => file.path)).toEqual(['lib.rs']);
+    expect(placeholderRun.result.packageFiles[0]?.file.contents).toBe('pub mod consumer;\nmod provider;\n');
+    expect(placeholderRun.result.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(['consumer.rs']);
+
+    const publicRun = finalize(
+      { ...base, facade: createFacade([root, provider]), placeholderModules: [provider] },
+      [root, provider],
+      resolution,
+    );
+    expect(publicRun.result.packageFiles[0]?.file.contents).toBe('pub mod consumer;\npub mod provider;\n');
+
+    let strictFailure: unknown;
+    try {
+      finalize(base, [root, provider], resolution);
+    } catch (error) {
+      strictFailure = error;
+    }
+    expect(strictFailure).toMatchObject({
+      code: 'rust-source-tree-import-target-refused',
+      kind: 'rust-source-tree-planning',
+    });
+
+    expectFinalizationFailure(
+      () =>
+        createCompilerRustSourceTreeFinalization({
+          finalization: {
+            ...base,
+            moduleFiles: [retained(root, 'consumer.rs'), retained(provider, 'provider.rs')],
+            placeholderModules: [provider],
+          },
+          moduleResolution: resolution,
+          semanticModules: [root, provider],
+          reemitModule() {
+            throw new Error('finalization must reject a retained placeholder before re-emission');
+          },
+        }),
+      'rust-source-tree-finalization-placeholder-retained',
+    );
+  });
 });
 
 describe('isCompilerRustSourceTreeFinalizationFailure', () => {
@@ -282,6 +371,7 @@ function finalize(
   finalization: Readonly<CompilerBackendPackageGraphFinalization>,
   semanticModules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+  observePlan?: (plan: Readonly<CompilerRustSourceTreePlan>) => void,
 ) {
   const calls: Array<{
     module: string;
@@ -293,6 +383,7 @@ function finalize(
   const result = createCompilerRustSourceTreeFinalization({
     finalization,
     moduleResolution,
+    ...(observePlan === undefined ? {} : { observePlan }),
     reemitModule(request) {
       if (receivedPlan === undefined) receivedPlan = request.plan;
       else expect(request.plan).toBe(receivedPlan);

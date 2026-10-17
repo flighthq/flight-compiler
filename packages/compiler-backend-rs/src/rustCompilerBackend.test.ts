@@ -381,6 +381,64 @@ describe('createRustCompilerBackend', () => {
     });
   });
 
+  it('writes a refusal placeholder at the finalized plan path and rejects an unplanned request', () => {
+    const provider = lower('provider.ts', 'export function convert(value: unknown): unknown { return value; }').module;
+    const consumer = lower('consumer.ts', "import { convert } from './provider.js'; export { convert };").module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          specifier: './provider.js',
+          target: getRustTestModuleIdentity(provider),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!({
+      ...createRustSourceTreeFinalization(session, [consumer], [consumer]),
+      placeholderModules: [provider],
+      refusals: [
+        {
+          code: 'rust-placeholder-test',
+          message: 'provider refused for the witness',
+          module: getRustTestModuleIdentity(provider),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+
+    expect(finalized.packageFiles.map(({ file }) => file.path)).toEqual(['lib.rs']);
+    const refusal = {
+      classification: 'compiler-restriction' as const,
+      column: 1,
+      line: 1,
+      message: 'provider refused for the witness',
+      refusedDependencies: ['./dependency.js'],
+      rule: 'rust-placeholder-test',
+    };
+    const placeholder = emitPlaceholder(provider, refusal);
+    if (!placeholder) throw new Error('expected a placeholder file for the refused provider');
+
+    expect(placeholder.path).toBe('provider.rs');
+    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder.contents).toContain('refusal: rust-placeholder-test [compiler-restriction]');
+    expect(placeholder.contents).toContain('blocked by: ./dependency.js');
+    expect(placeholder.contents).toContain('stopped at:');
+    expect(placeholder.contents).toContain('provider.ts:1:1');
+    expect(placeholder.contents).toContain('//   function convert(value: unknown): unknown -- :1');
+    expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
+    expect(emitPlaceholder(provider, refusal)).toEqual(placeholder);
+    expect(() => emitPlaceholder(consumer, { message: 'not planned' })).toThrow(
+      'without a path in the finalized source-tree plan',
+    );
+  });
+
   it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {
     const root = lower(
       'index.ts',

@@ -58,6 +58,14 @@ export interface CompilerBackendPackageGraphFinalization {
    * absent imported target was refused rather than merely missing from the output.
    */
   readonly refusals?: readonly CompilerBackendPublicBindingRefusal[] | undefined;
+  /**
+   * Modules this run will ask the backend to leave a refusal placeholder for, ordered by module identity.
+   * Present only for a best-effort run whose backend writes placeholders. A backend that plans a source
+   * tree must account for these modules as real files -- their paths, module declarations, and import
+   * targets -- while never re-emitting them as retained output. Absent means no placeholder will be
+   * written, so a strict run's plan stays exactly the retained set.
+   */
+  readonly placeholderModules?: readonly Readonly<IrModule>[] | undefined;
 }
 
 export interface CompilerBackendPackageGraphFinalizationResult {

@@ -24,17 +24,24 @@ export function createCompilerRustSourceTreeFinalization(
 ): CompilerBackendPackageGraphFinalizationResult {
   const retainedFilesByModule = createCompilerRustRetainedFilesByModule(request.finalization.moduleFiles);
   const retainedModules = createCompilerRustRetainedSemanticModules(retainedFilesByModule, request.semanticModules);
+  const placeholderModules = createCompilerRustPlaceholderModules(
+    request.finalization.placeholderModules ?? [],
+    retainedFilesByModule,
+  );
   const unavailableModules = createCompilerRustUnavailableModules(
     request.finalization.refusals ?? [],
     retainedFilesByModule,
     request.semanticModules,
+    new Set(placeholderModules.map(getCompilerRustSourceTreeModuleKey)),
   );
   const plan = createCompilerRustSourceTreePlan({
     facade: request.finalization.facade,
     ...(request.moduleResolution ? { moduleResolution: request.moduleResolution } : {}),
     modules: retainedModules,
+    ...(placeholderModules.length === 0 ? {} : { placeholderModules }),
     ...(unavailableModules.length === 0 ? {} : { unavailableModules }),
   });
+  request.observePlan?.(plan);
   const sourceFiles = createCompilerRustSourceTreeFinalizationSourceFiles(plan, retainedFilesByModule, retainedModules);
   const moduleFileReplacements = sourceFiles
     .map(({ module, retainedFile, sourceFile }): CompilerBackendModuleFileReplacement => {
@@ -226,14 +233,36 @@ function createCompilerRustRetainedSemanticModules(
 
 // What the plan may say about a module it was not given: why it is missing, never how to emit it. A refusal
 // outranks selection because the refusal is the reason the module cannot be part of any output.
+function createCompilerRustPlaceholderModules(
+  modules: readonly Readonly<IrModule>[],
+  retainedFilesByModule: ReadonlyMap<string, readonly Readonly<CompilerBackendModuleFile>[]>,
+): readonly Readonly<IrModule>[] {
+  const byKey = new Map<string, Readonly<IrModule>>();
+  for (const module of modules) {
+    const key = getCompilerRustSourceTreeModuleKey(module);
+    if (retainedFilesByModule.has(key)) {
+      throw createCompilerRustSourceTreeFinalizationFailure(
+        'rust-source-tree-finalization-placeholder-retained',
+        [key],
+        `Rust source-tree finalization was asked to place a refusal placeholder for ${key}, but that module retained output`,
+      );
+    }
+    byKey.set(key, module);
+  }
+  return [...byKey.entries()].sort(([left], [right]) => compareTextCodeUnits(left, right)).map(([, module]) => module);
+}
+
 function createCompilerRustUnavailableModules(
   refusals: readonly Readonly<CompilerBackendPublicBindingRefusal>[],
   retainedFilesByModule: ReadonlyMap<string, readonly Readonly<CompilerBackendModuleFile>[]>,
   semanticModules: readonly Readonly<IrModule>[],
+  placeholderKeys: ReadonlySet<string>,
 ): readonly CompilerRustSourceTreeUnavailableModule[] {
   const unavailable = new Map<string, CompilerRustSourceTreeUnavailableModule>();
   for (const refusal of refusals) {
-    unavailable.set(getCompilerRustSourceTreeModuleKey(refusal.module), {
+    const key = getCompilerRustSourceTreeModuleKey(refusal.module);
+    if (placeholderKeys.has(key)) continue;
+    unavailable.set(key, {
       code: refusal.code,
       disposition: 'refused',
       message: refusal.message,
@@ -242,7 +271,7 @@ function createCompilerRustUnavailableModules(
   }
   for (const module of semanticModules) {
     const key = getCompilerRustSourceTreeModuleKey(module);
-    if (retainedFilesByModule.has(key) || unavailable.has(key)) continue;
+    if (retainedFilesByModule.has(key) || unavailable.has(key) || placeholderKeys.has(key)) continue;
     unavailable.set(key, {
       disposition: 'unselected',
       module: cloneCompilerRustSourceTreeModuleIdentity(module),
@@ -357,4 +386,5 @@ const compilerRustSourceTreeFinalizationFailureCodes: ReadonlySet<CompilerRustSo
     'rust-source-tree-finalization-invalid-fragment-placement',
     'rust-source-tree-finalization-missing-retained-module',
     'rust-source-tree-finalization-module-file-mismatch',
+    'rust-source-tree-finalization-placeholder-retained',
   ]);

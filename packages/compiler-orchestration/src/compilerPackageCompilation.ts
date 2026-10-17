@@ -28,6 +28,7 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
   CompilerModuleResolutionPlan,
+  CompilerRefusalPlaceholderRequest,
   CompilerPackageCompilationBestEffortManifest,
   CompilerPackageCompilationBestEffortModule,
   CompilerPackageCompilationFileReport,
@@ -225,7 +226,21 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
-  const finalization = createCompilerBackendPackageGraphFinalization(records, exports, bestEffort, emitPathPrefixes);
+  // A placeholder capability can live on either emission level: the session sees the whole graph,
+  // which a source-tree layout needs, while the backend method is the single-module fallback.
+  const placeholderCapable =
+    emissionSession?.emitRefusalPlaceholder !== undefined || options.backend.emitRefusalPlaceholder !== undefined;
+  const placeholderModules =
+    bestEffort && placeholderCapable
+      ? collectCompilerPackageGraphPlaceholderModules(records, bestEffort, emitPathPrefixes)
+      : [];
+  const finalization = createCompilerBackendPackageGraphFinalization(
+    records,
+    exports,
+    bestEffort,
+    emitPathPrefixes,
+    placeholderModules,
+  );
   const finalizationResult = createCompilerBackendPackageGraphFinalizationResult(
     emissionSession?.finalizePackageGraph?.(finalization),
   );
@@ -271,7 +286,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   // Built ONLY for a best-effort run, and only when a backend can actually write a placeholder, because nothing
   // else reads it -- a strict run does no work for a feature it cannot use.
   const sourceTextByModule = new Map<string, string>();
-  if (bestEffort && options.backend.emitRefusalPlaceholder) {
+  if (bestEffort && placeholderCapable) {
     // Indexed once by package and portable path, so each module is one lookup rather than a scan of every
     // source. The map is keyed on the path the module reports, which is the file name with the upstream
     // directory removed.
@@ -291,15 +306,16 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const placeholderFiles: EmittedFile[] = [];
   const placeholderFileOwners: { file: EmittedFile; packageName: string }[] = [];
   const placeholderPaths = new Map<string, string>();
-  if (bestEffort && options.backend.emitRefusalPlaceholder) {
+  if (bestEffort && placeholderCapable) {
     const sessionPlaceholder = emissionSession?.emitRefusalPlaceholder;
     const backendPlaceholder = options.backend.emitRefusalPlaceholder;
     const emitPlaceholder = (
-      module: Parameters<typeof backendPlaceholder>[0],
-      failure: Parameters<typeof backendPlaceholder>[1],
-      backendOptions: Parameters<typeof backendPlaceholder>[2],
-    ) =>
-      sessionPlaceholder ? sessionPlaceholder(module, failure) : backendPlaceholder(module, failure, backendOptions);
+      module: Readonly<IrModule>,
+      failure: Readonly<CompilerRefusalPlaceholderRequest>,
+    ): EmittedFile | undefined => {
+      if (sessionPlaceholder) return sessionPlaceholder(module, failure);
+      return backendPlaceholder?.(module, failure, options.backendOptions);
+    };
     for (const key of [...records.keys()].sort(compareTextCodeUnits)) {
       const record = records.get(key)!;
       if (!isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes)) continue;
@@ -307,19 +323,15 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       const refusal = [...record.refusals].sort(compareCompilerPackageGraphRefusals)[0];
       if (!refusal) continue;
       const blocked = refusedDependencies.get(key);
-      const placeholder = emitPlaceholder(
-        record.module,
-        {
-          ...(refusal.classification === undefined ? {} : { classification: refusal.classification }),
-          ...(refusal.column === undefined ? {} : { column: refusal.column }),
-          ...(refusal.line === undefined ? {} : { line: refusal.line }),
-          message: refusal.message,
-          ...(blocked === undefined ? {} : { refusedDependencies: blocked }),
-          ...(refusal.rule === undefined ? {} : { rule: refusal.rule }),
-          ...(sourceTextByModule.get(key) === undefined ? {} : { sourceText: sourceTextByModule.get(key)! }),
-        },
-        options.backendOptions,
-      );
+      const placeholder = emitPlaceholder(record.module, {
+        ...(refusal.classification === undefined ? {} : { classification: refusal.classification }),
+        ...(refusal.column === undefined ? {} : { column: refusal.column }),
+        ...(refusal.line === undefined ? {} : { line: refusal.line }),
+        message: refusal.message,
+        ...(blocked === undefined ? {} : { refusedDependencies: blocked }),
+        ...(refusal.rule === undefined ? {} : { rule: refusal.rule }),
+        ...(sourceTextByModule.get(key) === undefined ? {} : { sourceText: sourceTextByModule.get(key)! }),
+      });
       if (!placeholder) continue;
       placeholderFiles.push(placeholder);
       placeholderFileOwners.push({
@@ -446,11 +458,25 @@ function createCompilerPackageGraphExportPlan(
   );
 }
 
+function collectCompilerPackageGraphPlaceholderModules(
+  records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  bestEffort: boolean,
+  emitPathPrefixes: readonly string[] | undefined,
+): readonly Readonly<IrModule>[] {
+  return [...records.keys()].sort(compareTextCodeUnits).flatMap((key) => {
+    const record = records.get(key)!;
+    if (!isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes)) return [];
+    if (isCompilerPackageGraphModuleEmittable(record, bestEffort)) return [];
+    return [...record.refusals].sort(compareCompilerPackageGraphRefusals)[0] === undefined ? [] : [record.module];
+  });
+}
+
 function createCompilerBackendPackageGraphFinalization(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   facade: Readonly<CompilerBackendPackageGraphFinalization['facade']>,
   bestEffort: boolean,
   emitPathPrefixes: readonly string[] | undefined,
+  placeholderModules: readonly Readonly<IrModule>[],
 ): CompilerBackendPackageGraphFinalization {
   const moduleFiles = [...records.values()]
     .filter(
@@ -470,7 +496,12 @@ function createCompilerBackendPackageGraphFinalization(
     new Set(moduleFiles.map(({ module }) => getCompilerPackageGraphModuleKey(module))),
   );
   return freezeCompilerBackendPackageGraphValue(
-    structuredClone({ facade, moduleFiles, ...(refusals.length === 0 ? {} : { refusals }) }),
+    structuredClone({
+      facade,
+      moduleFiles,
+      ...(placeholderModules.length === 0 ? {} : { placeholderModules }),
+      ...(refusals.length === 0 ? {} : { refusals }),
+    }),
   );
 }
 

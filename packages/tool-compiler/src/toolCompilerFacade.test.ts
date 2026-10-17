@@ -248,10 +248,7 @@ describe('@flighthq/tool-compiler', () => {
             'function hiddenLocal(): number { return 1; }\nexport { hiddenLocal as publishedLocal };',
           ),
           module('provider.ts', 'export class F0 { value: number = 2; }'),
-          module(
-            'barrel.ts',
-            "import { F0 } from './provider.js';\nexport const f0 = 2;\nexport { F0 as PublicF0 };",
-          ),
+          module('barrel.ts', "import { F0 } from './provider.js';\nexport const f0 = 2;\nexport { F0 as PublicF0 };"),
           module('origin.ts', 'export const root = 3;'),
           module('middle.ts', "export { root as bridge } from './origin.js';"),
           module('facade.ts', "export { bridge as publicValue } from './middle.js';"),
@@ -282,10 +279,7 @@ describe('@flighthq/tool-compiler', () => {
         const filePath = `${locator.module.modulePath.join('/')}.rs`;
         const contents = files.get(filePath);
         const spelling = locator.spelling.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-        const declaration = new RegExp(
-          `(?:^|\\n)pub (?:const|enum|fn|static|struct|trait|type) ${spelling}\\b`,
-          'u',
-        );
+        const declaration = new RegExp(`(?:^|\\n)pub (?:const|enum|fn|static|struct|trait|type) ${spelling}\\b`, 'u');
         const reexport = new RegExp(`(?:^|\\n)pub use [^;]+(?:\\bas ${spelling}|::${spelling});`, 'u');
         return contents !== undefined && (declaration.test(contents) || reexport.test(contents))
           ? []
@@ -447,14 +441,23 @@ function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
 }
 
 describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
+  type RustBestEffortOutcome =
+    | Readonly<{
+        error: Readonly<{
+          backend?: string;
+          code?: string;
+          kind?: string;
+          message?: string;
+          subjects?: readonly string[];
+        }>;
+      }>
+    | Readonly<{ result: ReturnType<typeof compileTypeScriptPackageGraph> }>;
   function rustBestEffortRun(
     sources: readonly (typeof provider)[],
     emitPathPrefixes?: readonly string[],
-  ):
-    | Readonly<{ backend?: string; code?: string; kind?: string; message?: string; subjects?: readonly string[] }>
-    | undefined {
+  ): RustBestEffortOutcome {
     try {
-      compileTypeScriptPackageGraph({
+      const result = compileTypeScriptPackageGraph({
         backend: createRustCompilerBackend(),
         backendOptions: {},
         bestEffort: true,
@@ -473,15 +476,17 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
         },
         sources,
       });
-      return undefined;
+      return { result };
     } catch (error) {
-      return error as Readonly<{
-        backend?: string;
-        code?: string;
-        kind?: string;
-        message?: string;
-        subjects?: readonly string[];
-      }>;
+      return {
+        error: error as Readonly<{
+          backend?: string;
+          code?: string;
+          kind?: string;
+          message?: string;
+          subjects?: readonly string[];
+        }>,
+      };
     }
   }
 
@@ -504,23 +509,28 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     upstreamDirectory: '/flight',
   };
 
-  it('attributes an import of a refused module to that refusal', () => {
+  it('leaves a refusal placeholder for an imported refused module instead of aborting', () => {
     const first = rustBestEffortRun([consumer, provider]);
     const second = rustBestEffortRun([provider, consumer]);
 
-    expect(first?.kind).toBe('compiler-backend-finalization');
-    expect(first?.backend).toBe('rust');
-    expect(first?.code).toBe('rust-source-tree-import-target-refused');
-    expect(first?.subjects).toHaveLength(2);
-    expect(first?.message).toContain('@scope/math/packages/math/src/provider.ts#Provider');
-    expect(first?.message).toContain('which was refused: rust-cast-requires-type-directed-lowering:');
-    expect(first?.message).toContain('cast to object requires Rust type-directed lowering');
-    expect(second?.code).toBe(first?.code);
-    expect(second?.message).toBe(first?.message);
+    expect('error' in first ? first.error : undefined).toBeUndefined();
+    const files = 'result' in first ? first.result.compilation.files : [];
+    expect(files.map((file) => file.path)).toEqual(['consumer.rs', 'lib.rs', 'provider.rs']);
+    const placeholder = files.find((file) => file.path === 'provider.rs');
+    expect(placeholder?.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder?.contents).toContain('refusal: rust-cast-requires-type-directed-lowering');
+    expect(placeholder?.contents).toContain('cast to object requires Rust type-directed');
+    expect(placeholder?.contents).toContain('//   function convert(');
+    expect(placeholder?.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
+    const skeleton = files.find((file) => file.path === 'lib.rs');
+    expect(skeleton?.contents).toContain('mod consumer;');
+    expect(skeleton?.contents).toContain('mod provider;');
+    expect('result' in second ? second.result.compilation.files : []).toEqual(files);
   });
 
   it('attributes an import of a module outside the requested emit paths to selection', () => {
-    const failure = rustBestEffortRun([consumer, provider], ['packages/math/src/consumer.ts']);
+    const outcome = rustBestEffortRun([consumer, provider], ['packages/math/src/consumer.ts']);
+    const failure = 'error' in outcome ? outcome.error : undefined;
 
     expect(failure?.kind).toBe('compiler-backend-finalization');
     expect(failure?.backend).toBe('rust');
@@ -560,34 +570,37 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     ];
     const run = (orderedSources: typeof sources) => {
       try {
-        compileTypeScriptPackageGraph({
-          backend: createRustCompilerBackend(),
-          backendOptions: {},
-          bestEffort: true,
-          graph: {
-            entries: [consumerIdentity],
-            moduleDependencies: [
-              { importer: consumerIdentity, specifier: './facade.js', target: facadeIdentity },
-              { importer: facadeIdentity, specifier: './leaf.js', target: leafIdentity },
-            ],
-            packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
-            schema: 'flight-compiler-package-graph/1',
-          },
-          sources: orderedSources,
-        });
+        return {
+          result: compileTypeScriptPackageGraph({
+            backend: createRustCompilerBackend(),
+            backendOptions: {},
+            bestEffort: true,
+            graph: {
+              entries: [consumerIdentity],
+              moduleDependencies: [
+                { importer: consumerIdentity, specifier: './facade.js', target: facadeIdentity },
+                { importer: facadeIdentity, specifier: './leaf.js', target: leafIdentity },
+              ],
+              packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+              schema: 'flight-compiler-package-graph/1',
+            },
+            sources: orderedSources,
+          }),
+        };
       } catch (error) {
-        return error as Readonly<{ code?: string; kind?: string; message?: string }>;
+        return { error: error as Readonly<{ code?: string; kind?: string; message?: string }> };
       }
-      throw new Error('expected finalization to fail');
     };
     const first = run(sources);
     const second = run([...sources].reverse());
 
-    expect(first.kind).toBe('compiler-backend-finalization');
-    expect(first.code).toBe('rust-source-tree-import-target-refused');
-    expect(first.message).toContain('which was refused: rust-export-name-ungrounded:');
-    expect(first.message).toContain('has no grounded declaration through its explicit re-export chain');
-    expect(second.message).toBe(first.message);
+    expect('error' in first ? first.error : undefined).toBeUndefined();
+    const files = 'result' in first ? first.result.compilation.files : [];
+    const placeholder = files.find((file) => file.contents.includes('BEST-EFFORT PLACEHOLDER'));
+    expect(placeholder?.path).toBe('facade.rs');
+    expect(placeholder?.contents).toContain('refusal: rust-export-name-ungrounded');
+    expect(placeholder?.contents).toContain('has no grounded declaration');
+    expect('result' in second ? second.result.compilation.files : []).toEqual(files);
   });
 });
 

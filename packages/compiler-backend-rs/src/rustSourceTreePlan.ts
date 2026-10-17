@@ -38,8 +38,20 @@ export function createCompilerRustSourceTreePlan(
         identity,
         locator: createRustCompilerModuleLocator(identity, { multiPackage }),
         module,
+        placeholder: false,
       };
     })
+    .concat(
+      (input.placeholderModules ?? []).map((module): RustSourceTreeModuleRecord => {
+        const identity = normalizeRustSourceTreeModuleIdentity(module);
+        return {
+          identity,
+          locator: createRustCompilerModuleLocator(identity, { multiPackage }),
+          module,
+          placeholder: true,
+        };
+      }),
+    )
     .sort((left, right) =>
       compareTextCodeUnits(getRustSourceTreeModuleKey(left.identity), getRustSourceTreeModuleKey(right.identity)),
     );
@@ -82,6 +94,8 @@ interface RustSourceTreeModuleRecord {
   readonly identity: CompilerModuleIdentity;
   readonly locator: Readonly<{ filePath: string; modulePath: readonly string[]; source: string }>;
   readonly module: Readonly<IrModule>;
+  /** True when the run will write a refusal placeholder at this path instead of re-emitting retained output. */
+  readonly placeholder: boolean;
 }
 
 interface RustSourceTreeNode {
@@ -205,7 +219,9 @@ function createRustSourceTreeFiles(
       .map((child) => `${child.visibility === 'public' ? 'pub ' : ''}mod ${child.name};`)
       .join('\n');
     const ownership = node.owner
-      ? ({ kind: 'source', module: node.owner.identity } as const)
+      ? node.owner.placeholder
+        ? ({ kind: 'placeholder', module: node.owner.identity } as const)
+        : ({ kind: 'source', module: node.owner.identity } as const)
       : ({
           kind: 'skeleton',
           provenance: modules

@@ -11,6 +11,7 @@ export interface CompilerRustSourceTreeModuleDeclaration {
 
 export type CompilerRustSourceTreeFileOwnership =
   | Readonly<{ kind: 'source'; module: CompilerModuleIdentity }>
+  | Readonly<{ kind: 'placeholder'; module: CompilerModuleIdentity }>
   | Readonly<{ kind: 'skeleton'; provenance: readonly CompilerModuleIdentity[] }>;
 
 export interface CompilerRustSourceTreeFilePlan {
@@ -48,6 +49,12 @@ export interface CompilerRustSourceTreePlanInput {
   readonly facade: CompilerModuleFacadePlan;
   readonly moduleResolution?: CompilerModuleResolutionPlan | undefined;
   readonly modules: readonly Readonly<IrModule>[];
+  /**
+   * Modules that will receive a refusal-placeholder file rather than retained output. They take part in
+   * paths, module declarations, and import resolution exactly like `modules`, so a dependent module's
+   * import resolves to a declared target instead of an absent one, but no file is re-emitted for them.
+   */
+  readonly placeholderModules?: readonly Readonly<IrModule>[] | undefined;
   /**
    * Modules the run looked at but deliberately left out of `modules`, with the reason. Import resolution
    * consults it only to attribute a request that names no retained module; it never selects a target.
