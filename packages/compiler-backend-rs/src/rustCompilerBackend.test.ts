@@ -8818,7 +8818,9 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow(
       expect.objectContaining({
         classification: 'target-runtime',
-        message: expect.stringContaining('typed ambient Error requires a represented Rust error carrier and member API'),
+        message: expect.stringContaining(
+          'typed ambient Error requires a represented Rust error carrier and member API',
+        ),
         rule: 'rust-runtime-error-carrier-incomplete',
       }),
     );
@@ -15287,7 +15289,7 @@ export function set(style: Style, key: 'fontSize' | 'color', value: number | str
     expect(failure.classification).toBe('compiler-restriction');
   });
 
-  it('leaves a neighbouring family without a structural-key rule and without a reclassification', () => {
+  it('leaves a neighbouring family on its own rule without a reclassification', () => {
     const module = lower(
       'intersection-rule-counterexample.ts',
       `interface A { a: number }
@@ -15296,8 +15298,60 @@ export function read(_value: A & B): number { return 1; }`,
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
 
-    expect(failure.rule).toBeUndefined();
+    expect(failure.rule).toBe('rust-intersection-type-unsupported');
+    expect(failure.rule).not.toBe('rust-computed-object-access-unsupported');
+    expect(failure.rule).not.toBe('rust-closed-key-selection-unsupported');
     expect(failure.message).toContain('intersection types require Rust record or trait lowering');
     expect(failure.classification).toBe('compiler-restriction');
+  });
+});
+
+describe('emitIrModuleRust structural type refusals', () => {
+  it('names the intersection rule and keeps the message, origin, and classification', () => {
+    const module = lower(
+      'intersection-rule.ts',
+      `interface A { a: number }
+interface B { a: string }
+export function read(_value: A & B): number { return 1; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-intersection-type-unsupported');
+    expect(failure.message).toContain('intersection types require Rust record or trait lowering');
+    // The refusal is reached while the module's anonymous-record prepass renders the parameter shape,
+    // before a declaration is being emitted, so no declaration origin is in scope here. Naming the rule
+    // adds the identity without inventing a location the emitter does not have.
+    expect(failure.line).toBeUndefined();
+    expect(failure.column).toBeUndefined();
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('names the open-shape utility-type rule for Partial over an open index', () => {
+    const module = lower(
+      'partial-open-shape-rule.ts',
+      `interface Info { readonly value: number }
+export function lookup(values: Partial<Record<string, Info>>, key: string): Info | undefined { return values[key]; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-utility-type-open-shape-unsupported');
+    expect(failure.message).toContain('Partial<T> requires a statically resolvable Rust object shape');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('does not borrow either structural-type rule for a neighbouring family or the reverse', () => {
+    const cast = lower(
+      'cast-rule-counterexample.ts',
+      `interface CommandBase { readonly id: string }
+interface Command extends CommandBase { readonly payload: number }
+export function widen(command: Command): unknown { return command as Readonly<Partial<CommandBase>>; }`,
+    ).module;
+    const castFailure = captureBackendEmissionFailure(() => emitIrModuleRust(cast));
+
+    expect(castFailure.rule).toBe('rust-cast-requires-type-directed-lowering');
+    expect(castFailure.rule).not.toBe('rust-utility-type-open-shape-unsupported');
+    expect(castFailure.rule).not.toBe('rust-intersection-type-unsupported');
   });
 });

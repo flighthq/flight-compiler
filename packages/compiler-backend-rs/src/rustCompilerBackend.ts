@@ -4419,7 +4419,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       const properties = getIrObjectTypePropertiesRust(type, context);
       if (properties) return getIrObjectTypeTargetNameRust(properties, context);
-      emissionError(context, 'intersection types require Rust record or trait lowering');
+      emissionError(
+        context,
+        'intersection types require Rust record or trait lowering',
+        'rust-intersection-type-unsupported',
+      );
     }
     case 'literal':
       return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'f64' : 'String';
@@ -4438,7 +4442,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       if (sourceName === 'Partial' || sourceName === 'Pick' || sourceName === 'Omit') {
         const properties = getIrObjectTypePropertiesRust(type, context);
-        if (!properties) emissionError(context, `${sourceName}<T> requires a statically resolvable Rust object shape`);
+        if (!properties) {
+          emissionError(
+            context,
+            `${sourceName}<T> requires a statically resolvable Rust object shape`,
+            'rust-utility-type-open-shape-unsupported',
+          );
+        }
         return getIrObjectTypeTargetNameRust(properties, context);
       }
       const mapped = getTypeReferenceTargetNameRust(type, context);
