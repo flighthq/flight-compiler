@@ -4,19 +4,24 @@ import { normalizePathPortable } from '../../compiler-canonical-form/src/index.j
 
 export function convertPackageNameToRustCrateName(packageName: string): string {
   const scopeSeparator = packageName.indexOf('/');
-  const bareName = packageName.startsWith('@')
-    ? scopeSeparator > 1
-      ? packageName.slice(scopeSeparator + 1)
-      : ''
-    : packageName;
+  const scoped = packageName.startsWith('@');
+  const scope = scoped && scopeSeparator > 1 ? packageName.slice(1, scopeSeparator) : '';
+  const bareName = scoped ? (scopeSeparator > 1 ? packageName.slice(scopeSeparator + 1) : '') : packageName;
   if (bareName.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
   if (bareName.includes('/')) throw new Error(`Cannot map invalid npm package name: ${packageName}`);
-  const crateName = bareName
+  const normalizedScope = normalizeRustCrateNamePart(scoped ? scope : 'flighthq');
+  const normalizedBareName = normalizeRustCrateNamePart(bareName);
+  if (normalizedScope.length === 0 || normalizedBareName.length === 0) {
+    throw new Error(`Cannot map empty npm package name: ${packageName}`);
+  }
+  return `${normalizedScope}-${normalizedBareName}`;
+}
+
+function normalizeRustCrateNamePart(value: string): string {
+  return value
     .replace(/[^A-Za-z0-9]+/gu, '-')
     .replace(/^-+|-+$/gu, '')
     .toLowerCase();
-  if (crateName.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
-  return `flighthq-${crateName}`;
 }
 
 export function convertSourcePathToRustModuleName(sourcePath: string): string | undefined {

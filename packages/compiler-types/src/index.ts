@@ -61,6 +61,7 @@ export type * from './compilerRefusalClassificationContract.js';
 export type * from './compilerRuntimeContract.js';
 export type * from './compilerRuntimeTaskCapabilityContract.js';
 export type * from './compilerRustOwnershipContract.js';
+export type * from './compilerRustPublicBindingContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceFingerprint.js';
 export type * from './compilerSourceIdentity.js';

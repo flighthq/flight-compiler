@@ -7,6 +7,7 @@ import {
 describe('convertPackageNameToRustCrateName', () => {
   it('maps scoped and punctuated npm package identities deterministically', () => {
     expect(convertPackageNameToRustCrateName('@flighthq/render-gl')).toBe('flighthq-render-gl');
+    expect(convertPackageNameToRustCrateName('@alternate/render-gl')).toBe('alternate-render-gl');
     expect(convertPackageNameToRustCrateName('render.gl_tools')).toBe('flighthq-render-gl-tools');
   });
 
