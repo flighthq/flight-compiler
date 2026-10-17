@@ -8578,9 +8578,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
     expect(output).toContain('enum Shape');
-    expect(output).toContain('if s.kind() == "circle".to_owned() {');
-    expect(output).toContain('return s.as_circle().radius;');
-    expect(output).toContain('return s.as_square().side;');
     expect(output).toContain('Circle(');
     expect(output).toContain('Rect(');
     expect(output).toContain('fn as_circle(');
@@ -17702,6 +17699,9 @@ export function broken(value: unknown): { value: number } { return value as { va
       ).module,
     ).contents;
     expect(output).toContain('enum Shape');
+    expect(output).toContain('if s.kind() == "circle".to_owned() {');
+    expect(output).toContain('return s.as_circle().radius;');
+    expect(output).toContain('return s.as_square().side;');
   });
 
   it('refuses nested element access without an absence carrier', () => {
@@ -36268,7 +36268,7 @@ export function keep(value: Beta): Choice { return value; }`;
     expect(consumerOutput).not.toContain('AnonymousUnion');
   });
 
-  it('refuses incomplete or non-exact arm evidence with one stable extraction rule', () => {
+  it('preserves refusal ownership for incomplete or non-exact arm evidence', () => {
     const source = `interface Alpha { kind: 'alpha'; value: number }
 interface Beta { kind: 'beta'; label: string }
 interface Gamma { kind: 'gamma'; count: number }
@@ -36289,12 +36289,13 @@ export function extracted(choice: Choice): Alpha {
       }
       return statement.expression;
     };
-    const expectRefusal = (mutate: (module: IrModule) => void) => {
+    const expectRefusal = (
+      mutate: (module: IrModule) => void,
+      expectedRule = 'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
+    ) => {
       const module = structuredClone(lower('dual-sentinel-nominal-union-extraction-refusal.ts', source).module);
       mutate(module);
-      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
-        'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
-      );
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(expectedRule);
     };
 
     expectRefusal((module) => {
@@ -36338,7 +36339,7 @@ export function extracted(choice: Choice): Alpha {
     expectRefusal((module) => {
       const expression = narrowedReturn(module) as { reference: IrIdentifierReference };
       expression.reference = { kind: 'ambient', name: 'mystery' };
-    });
+    }, 'rust-runtime-external-symbol-binding-incomplete');
     expectRefusal((module) => {
       const choice = module.declarations.find(
         (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Choice',
@@ -36740,14 +36741,27 @@ export function absent(): Choice { return undefined; }`;
     );
   });
 
-  it.each([
-    [
-      'a dual-sentinel owner',
+  it('emits exact nominal construction for a dual-sentinel owner', () => {
+    const result = lower(
+      'optional-nominal-union-dual-sentinel.ts',
       `interface Alpha { value: number }
        type Beta = { label: string };
        type Choice = Alpha | Beta | null | undefined;
-       export function refused(value: Alpha): Choice { return value; }`,
-    ],
+       export function created(value: Alpha): Choice { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('enum Choice {');
+    expect(output).toContain('Alpha(Alpha),');
+    expect(output).toContain('Beta(Beta),');
+    expect(output).toContain('Null,');
+    expect(output).toContain('Undefined,');
+    expect(output).toContain('return Choice::Alpha(value);');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
     [
       'a structural lookalike',
       `interface Alpha { value: number }
