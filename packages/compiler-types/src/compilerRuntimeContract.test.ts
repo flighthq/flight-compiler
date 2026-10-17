@@ -33,7 +33,7 @@ describe('CompilerRuntimeAbiManifest', () => {
       },
       representation: {
         nullability: { nonNull: 'direct', nullableTargetName: 'Option' },
-        ownership: { nonCopyReuse: 'clone', temporaryAccess: 'borrow' },
+        ownership: { nonCopyReuse: 'clone', runtimeWrapperCarrier: 'owned', temporaryAccess: 'borrow' },
         schema: 'flight-rust-runtime-representation/1',
       },
       schema: 'flight-rust-runtime-abi/1',

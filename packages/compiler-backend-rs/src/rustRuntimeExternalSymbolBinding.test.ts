@@ -132,33 +132,14 @@ describe('createCompilerRustRuntimeExternalSymbolBindingPlan', () => {
     });
   });
 
-  it('retains explicit downstream ownership and nullability decisions without mutating the input', () => {
-    const externalBindings = {
-      bindings: [
-        {
-          members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
-          nullability: 'nullable' as const,
-          ownership: 'shared' as const,
-          sourceName: 'HTMLImageElement',
-          space: 'value' as const,
-          targetName: 'host::Image',
-        },
-      ],
-      schema: 'flight-rust-external-bindings/1' as const,
-    };
-    const plan = createCompilerRustRuntimeExternalSymbolBindingPlan(externalBindings);
+  it('keeps downstream host ownership and nullability outside the compiler-owned symbol plan', () => {
+    const plan = createCompilerRustRuntimeExternalSymbolBindingPlan();
 
-    expect(plan.bindings).toContainEqual({
-      externalSymbol: { sourceName: 'HTMLImageElement', space: 'value' },
-      kind: 'native',
-      members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
-      nullability: 'nullable',
-      ownership: 'shared',
-      targetName: 'host::Image',
-    });
-    expect(externalBindings.bindings[0]!.members).toEqual([
-      { sourceMember: 'create', targetName: 'host::Image::create' },
-    ]);
+    expect(plan.bindings).toHaveLength(50);
+    expect(
+      plan.bindings.some((binding) => Object.hasOwn(binding, 'ownership') || Object.hasOwn(binding, 'nullability')),
+    ).toBe(false);
+    expect(plan.bindings.some(({ externalSymbol }) => externalSymbol.sourceName === 'HTMLImageElement')).toBe(false);
   });
 
   it('returns independent nested manifest records', () => {

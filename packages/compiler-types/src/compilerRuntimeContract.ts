@@ -156,8 +156,6 @@ export interface CompilerHaxeRuntimeExternalSymbolBindingPlan {
 interface CompilerRustRuntimeExternalSymbolBindingCommon {
   readonly externalSymbol: CompilerRuntimeExternalSymbolIdentity;
   readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
-  readonly nullability?: 'non-null' | 'nullable' | undefined;
-  readonly ownership?: 'borrowed' | 'owned' | 'shared' | 'value' | undefined;
   readonly targetName: string;
 }
 
@@ -192,7 +190,11 @@ export interface CompilerHaxeRuntimeAbiManifest {
 
 export interface CompilerRustRuntimeRepresentationPlan {
   readonly nullability: Readonly<{ nonNull: 'direct'; nullableTargetName: 'Option' }>;
-  readonly ownership: Readonly<{ nonCopyReuse: 'clone'; temporaryAccess: 'borrow' }>;
+  readonly ownership: Readonly<{
+    nonCopyReuse: 'clone';
+    runtimeWrapperCarrier: 'owned';
+    temporaryAccess: 'borrow';
+  }>;
   readonly schema: 'flight-rust-runtime-representation/1';
 }
 

@@ -14,8 +14,6 @@ type RustRuntimeExternalSymbolBinding =
   | Readonly<{
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
-      nullability?: RustCompilerExternalBinding['nullability'] | undefined;
-      ownership?: RustCompilerExternalBinding['ownership'] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -24,8 +22,6 @@ type RustRuntimeExternalSymbolBinding =
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
-      nullability?: RustCompilerExternalBinding['nullability'] | undefined;
-      ownership?: RustCompilerExternalBinding['ownership'] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -34,50 +30,44 @@ type RustRuntimeExternalSymbolBinding =
 export function createCompilerRuntimeExternalSymbolBindingPlanRust(
   externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
 ): CompilerRuntimeExternalSymbolBindingPlan {
-  const targetPlan = createCompilerRustRuntimeExternalSymbolBindingPlan(externalBindings);
   return {
-    bindings: targetPlan.bindings.map((binding) =>
-      binding.kind === 'runtime'
-        ? {
-            capability: binding.capability,
-            externalSymbol: { ...binding.externalSymbol },
-            kind: binding.kind,
-          }
-        : {
-            externalSymbol: { ...binding.externalSymbol },
-            kind: binding.kind,
-          },
-    ),
-    contract: targetPlan.contract,
+    bindings: [...getRustRuntimeExternalSymbolBindings(externalBindings)]
+      .sort(compareRustRuntimeExternalSymbolBindings)
+      .map((binding) =>
+        binding.kind === 'runtime'
+          ? {
+              capability: binding.capability,
+              externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+              kind: binding.kind,
+            }
+          : {
+              externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+              kind: binding.kind,
+            },
+      ),
+    contract: 'flight-runtime-contract/2',
   };
 }
 
-export function createCompilerRustRuntimeExternalSymbolBindingPlan(
-  externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
-): CompilerRustRuntimeExternalSymbolBindingPlan {
+export function createCompilerRustRuntimeExternalSymbolBindingPlan(): CompilerRustRuntimeExternalSymbolBindingPlan {
+  const compilerBindings: readonly RustRuntimeExternalSymbolBinding[] = rustRuntimeExternalSymbolBindings;
   return {
-    bindings: [...getRustRuntimeExternalSymbolBindings(externalBindings)]
-      .sort((left, right) =>
-        compareTextCodeUnits(`${left.sourceName}\u0000${left.space}`, `${right.sourceName}\u0000${right.space}`),
-      )
-      .map((binding) => {
-        const common = {
-          externalSymbol: { sourceName: binding.sourceName, space: binding.space },
-          ...(binding.members
-            ? {
-                members: [...binding.members]
-                  .sort((left, right) => compareTextCodeUnits(left.sourceMember, right.sourceMember))
-                  .map((member) => ({ ...member })),
-              }
-            : {}),
-          ...(binding.nullability ? { nullability: binding.nullability } : {}),
-          ...(binding.ownership ? { ownership: binding.ownership } : {}),
-          targetName: binding.targetName,
-        };
-        return binding.kind === 'runtime'
-          ? { ...common, capability: binding.capability, kind: binding.kind }
-          : { ...common, kind: binding.kind };
-      }),
+    bindings: [...compilerBindings].sort(compareRustRuntimeExternalSymbolBindings).map((binding) => {
+      const common = {
+        externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+        ...(binding.members
+          ? {
+              members: [...binding.members]
+                .sort((left, right) => compareTextCodeUnits(left.sourceMember, right.sourceMember))
+                .map((member) => ({ ...member })),
+            }
+          : {}),
+        targetName: binding.targetName,
+      };
+      return binding.kind === 'runtime'
+        ? { ...common, capability: binding.capability, kind: binding.kind }
+        : { ...common, kind: binding.kind };
+    }),
     contract: 'flight-runtime-contract/2',
     schema: 'flight-rust-runtime-external-symbol-bindings/1',
   };
@@ -134,8 +124,6 @@ function getRustRuntimeExternalSymbolBindings(
       (binding): RustRuntimeExternalSymbolBinding => ({
         kind: 'native',
         ...(binding.members ? { members: binding.members } : {}),
-        nullability: binding.nullability,
-        ownership: binding.ownership,
         sourceName: binding.sourceName,
         space: binding.space,
         targetName: binding.targetName,
@@ -200,6 +188,13 @@ const rustExternalBindingOwnerships = new Set<RustCompilerExternalBinding['owner
   'shared',
   'value',
 ]);
+
+function compareRustRuntimeExternalSymbolBindings(
+  left: RustRuntimeExternalSymbolBinding,
+  right: RustRuntimeExternalSymbolBinding,
+): number {
+  return compareTextCodeUnits(`${left.sourceName}\u0000${left.space}`, `${right.sourceName}\u0000${right.space}`);
+}
 
 const rustRuntimeExternalSymbolBindings = [
   {
