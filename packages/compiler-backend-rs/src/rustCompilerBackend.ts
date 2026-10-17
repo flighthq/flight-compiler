@@ -525,7 +525,33 @@ function emitIrModuleRustWithContext(
     }
   }
   const ownershipEvidence = analyzeIrModuleOwnershipEvidenceRust(module);
-  const bindingTypes = collectIrModuleBindingTypesRust(module);
+  const bindingTypes = new Map(collectIrModuleBindingTypesRust(module));
+  const borrowedParameterRepresentations = new Map<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>(
+    referenceModulePlan?.callables.map((callable) => [
+      callable.binding.id,
+      new Map(callable.parameters.map((parameter) => [parameter.position, parameter.representation])),
+    ]) ?? [],
+  );
+  const optionalSharedClassParameterRepresentations = new Map<string, RustOptionalSharedClassRepresentation>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    const representations = borrowedParameterRepresentations.get(declaration.binding.id);
+    for (const [position, parameter] of declaration.parameters.entries()) {
+      const representation = representations?.get(position);
+      if (
+        representation === 'optional-null-shared-ref-cell-class' ||
+        representation === 'optional-undefined-shared-ref-cell-class'
+      ) {
+        optionalSharedClassParameterRepresentations.set(parameter.binding.id, representation);
+        if (parameter.optional && !parameter.initializer && !parameter.rest) {
+          bindingTypes.set(parameter.binding.id, {
+            kind: 'union',
+            types: [parameter.type, { kind: 'undefined' }],
+          });
+        }
+      }
+    }
+  }
   const assignableBindingIds = collectIrModuleAssignableBindingIdsRust(module);
   const sharedArrayBindingIds = new Set(
     referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
@@ -569,12 +595,6 @@ function emitIrModuleRustWithContext(
   );
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
-  const borrowedParameterRepresentations = new Map<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>(
-    referenceModulePlan?.callables.map((callable) => [
-      callable.binding.id,
-      new Map(callable.parameters.map((parameter) => [parameter.position, parameter.representation])),
-    ]) ?? [],
-  );
   const borrowedClassParameterIds = new Set(
     module.declarations.flatMap((declaration) => {
       if (declaration.kind !== 'function') return [];
@@ -587,20 +607,6 @@ function emitIrModuleRustWithContext(
       );
     }),
   );
-  const optionalSharedClassParameterRepresentations = new Map<string, RustOptionalSharedClassRepresentation>();
-  for (const declaration of module.declarations) {
-    if (declaration.kind !== 'function') continue;
-    const representations = borrowedParameterRepresentations.get(declaration.binding.id);
-    for (const [position, parameter] of declaration.parameters.entries()) {
-      const representation = representations?.get(position);
-      if (
-        representation === 'optional-null-shared-ref-cell-class' ||
-        representation === 'optional-undefined-shared-ref-cell-class'
-      ) {
-        optionalSharedClassParameterRepresentations.set(parameter.binding.id, representation);
-      }
-    }
-  }
   const sharedClassReturnRepresentations = new Map<string, RustSharedClassRepresentation>(
     referenceModulePlan?.callables.flatMap((callable) =>
       callable.returns ? [[callable.binding.id, callable.returns] as const] : [],
@@ -3384,6 +3390,7 @@ function emitCallArgumentsRust(
     const providedEvidence = defaultProvided.get(index) ?? optionalProvided.get(index);
     if (providedEvidence?.value === 'undefined' || argument.kind === 'undefinedValue') return 'None';
     const emitted = emitPlannedArgument(argument, index);
+    if (isRustOptionalSharedClassRepresentation(borrowed.get(index))) return emitted;
     const optionalEvidence = optionalProvided.get(index);
     if (optionalEvidence && hasIrTypeNullMemberRust(optionalEvidence.parameterType)) {
       return isNullableType(optionalEvidence.argumentType) ? `Some(${emitted})` : `Some(Some(${emitted}))`;
@@ -7778,15 +7785,18 @@ function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): b
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
-  const parameterType = context.assertedUnknownBindingTypes.get(parameter.binding.id) ?? parameter.type;
+  const parameterType =
+    context.assertedUnknownBindingTypes.get(parameter.binding.id) ??
+    context.bindingTypes.get(parameter.binding.id) ??
+    parameter.type;
   const optionalSharedClassRepresentation = context.optionalSharedClassParameterRepresentations.get(
     parameter.binding.id,
   );
   if (optionalSharedClassRepresentation) {
-    if (parameter.initializer || parameter.optional || parameter.rest) {
+    if (parameter.initializer || parameter.rest) {
       emissionError(
         context,
-        `optional shared class parameter ${parameter.binding.name} must use one fixed explicit union carrier in Rust`,
+        `optional shared class parameter ${parameter.binding.name} must use one fixed exact carrier in Rust`,
       );
     }
     context.needsRcImport.add('Rc');

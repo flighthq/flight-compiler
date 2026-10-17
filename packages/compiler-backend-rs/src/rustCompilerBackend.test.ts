@@ -10137,6 +10137,103 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }
   });
 
+  it('emits synthesized optional simple-class parameters with exact narrowing and forwarding', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'syntactic-optional-class-local.ts',
+        `class Counter {
+           value = 1;
+           increment(): void { this.value += 1; }
+         }
+         function inspect(value?: Counter, amount = 1): number {
+           if (value === undefined) return 0;
+           value.increment();
+           return value.value + amount;
+         }
+         function forward(value?: Counter): number { return inspect(value); }
+         export function syntacticOptionalClassLocal(): number {
+           const value = new Counter();
+           return inspect() + inspect(undefined) + inspect(value, 2) + forward(value);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn inspect(value: Option<Rc<RefCell<Counter>>>, amount: Option<f64>) -> f64');
+    expect(output).toContain('fn forward(value: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('value.as_ref().unwrap().borrow_mut().increment()');
+    expect(output).toContain('value.as_ref().unwrap().borrow().value');
+    expect(output).toContain('inspect(None, None)');
+    expect(output).toContain('inspect(Some(Rc::clone(&value)), Some(2.0))');
+    expect(output).toContain('inspect(value.clone(), None)');
+    expect(output).not.toContain('Some(Some(');
+  });
+
+  it('emits imported synthesized optional simple-class parameters from project lowering', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/syntactic-optional-class-provider.ts',
+      `export class Counter { value = 3; }
+       export function inspect(value?: Counter, scale = 1): number {
+         return value === undefined ? 0 : value.value * scale;
+       }
+       export function forward(value?: Counter): number { return inspect(value); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/syntactic-optional-class-consumer.ts',
+      `import { Counter, forward, inspect } from './syntactic-optional-class-provider.js';
+       export function syntacticOptionalClassImported(): number {
+         const value = new Counter();
+         return inspect() + inspect(undefined) + inspect(value, 2) + forward(value);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Syntactic-optional-class-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/syntactic-optional-class-consumer.ts',
+          },
+          specifier: './syntactic-optional-class-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/syntactic-optional-class-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn inspect(value: Option<Rc<RefCell<Counter>>>, scale: Option<f64>) -> f64');
+    expect(providerOutput).toContain('pub fn forward(value: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(providerOutput).toContain('inspect(value.clone(), None)');
+    expect(output).toContain('inspect(None, None)');
+    expect(output).toContain('inspect(Some(Rc::clone(&value)), Some(2.0))');
+    expect(output).toContain('forward(Some(Rc::clone(&value)))');
+    expect(output).not.toContain('Some(Some(');
+  });
+
   it('emits mixed fixed local class ABI with optional and default primitive adjuncts', () => {
     const output = emitIrModuleRust(
       lower(
@@ -10322,6 +10419,26 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const right: Counter | undefined = left;
            return left == right;
          }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        'syntactic-redundant-union',
+        `class Counter { value = 0; }
+         function inspect(value?: Counter | undefined): void {}
+         export function run(): void { inspect(new Counter()); }`,
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        'syntactic-null-union',
+        `class Counter { value = 0; }
+         function inspect(value?: Counter | null): void {}
+         export function run(): void { inspect(new Counter()); }`,
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        'syntactic-optional-chain',
+        `class Counter { value = 0; }
+         export function inspect(value?: Counter): number { return value?.value ?? 0; }`,
         'rust-reference-shared-class-use-unrepresented',
       ],
     ];

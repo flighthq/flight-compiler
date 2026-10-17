@@ -509,6 +509,61 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('keeps syntactic optional parameters distinct from explicit undefined unions', () => {
+    const result = lower(
+      'optional-class-parameter.ts',
+      `class Counter { value = 1; }
+       function syntactic(value?: Counter): void {}
+       function explicit(value: Counter | undefined): void {}
+       export function invoke(counter: Counter): void {
+         syntactic();
+         syntactic(counter);
+         explicit(undefined);
+       }`,
+    );
+    const syntactic = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'syntactic',
+    );
+    const explicit = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'explicit',
+    );
+    const invoke = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'invoke',
+    );
+    if (syntactic?.kind !== 'function' || explicit?.kind !== 'function' || invoke?.kind !== 'function') {
+      throw new Error('Expected optional-parameter functions');
+    }
+
+    expect(syntactic.parameters[0]).toMatchObject({
+      optional: true,
+      rest: false,
+      type: { kind: 'named', reference: { binding: { name: 'Counter' } } },
+    });
+    expect(explicit.parameters[0]).toMatchObject({
+      optional: false,
+      rest: false,
+      type: { kind: 'union', types: expect.arrayContaining([{ kind: 'undefined' }]) },
+    });
+    expect(
+      invoke.body.flatMap((statement) =>
+        statement.kind === 'expression' && statement.expression.kind === 'call'
+          ? [statement.expression.semantics.optionalParameters]
+          : [],
+      ),
+    ).toEqual([
+      { omitted: [0], optional: [0], parameterCount: 1, provided: [], providedArgumentCount: 0 },
+      expect.objectContaining({
+        omitted: [],
+        optional: [0],
+        parameterCount: 1,
+        provided: [expect.objectContaining({ position: 0, value: 'value' })],
+        providedArgumentCount: 1,
+      }),
+      undefined,
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('models class method implementations and interface method overload sets without duplicate runtime members', () => {
     const result = lower(
       'method-overloads.ts',

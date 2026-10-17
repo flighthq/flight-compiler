@@ -706,6 +706,48 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     }
   });
 
+  it('plans synthesized optional class parameters with omission, forwarding, and primitive adjuncts', () => {
+    const module = lower(
+      'syntactic-optional-class.ts',
+      `class Counter { value = 2; }
+       function inspect(value?: Counter, scale = 1, label?: string): number {
+         return value === undefined ? 0 : value.value * scale + (label === undefined ? 0 : 1);
+       }
+       function forward(value?: Counter): number { return inspect(value); }
+       export function run(): number {
+         const value = new Counter();
+         return inspect() + inspect(undefined) + inspect(value, 2, "ok") + forward() + forward(value);
+       }`,
+    );
+    const input = { modules: [module] } as const;
+    const snapshot = structuredClone(input);
+    const plan = createCompilerRustReferenceRepresentationPlan(input);
+    const modulePlan = getModulePlan(plan, module);
+
+    expect(input).toEqual(snapshot);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'inspect' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'forward' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+        }),
+      ]),
+    );
+    expect(modulePlan.sharedClassBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'value' }),
+          representation: 'shared-ref-cell-class',
+        }),
+      ]),
+    );
+  });
+
   it('keeps flexible and nontrailing class-call shapes inside the stable refusal boundary', () => {
     const cases = [
       `class Counter { value = 1; }
@@ -746,19 +788,19 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     }
   });
 
-  it('refuses omitted and supplied optional or default class parameters alike', () => {
+  it('keeps broader optional and default class parameter forms inside the stable refusal boundary', () => {
     const module = lower(
       'mixed-class-flexible-parameter-refusals.ts',
       `class Counter { value = 1; }
-       function optionalOmitted(value?: Counter): number { return value === undefined ? 0 : value.value; }
-       function optionalSupplied(value?: Counter): number { return value === undefined ? 0 : value.value; }
-       function defaultOmitted(value: Counter = new Counter()): number { return value.value; }
-       function defaultSupplied(value: Counter = new Counter()): number { return value.value; }
-       export function run(): number {
-         optionalOmitted();
-         optionalSupplied(new Counter());
-         defaultOmitted();
-         return defaultSupplied(new Counter());
+       function redundant(value?: Counter | undefined): void {}
+       function nullable(value?: Counter | null): void {}
+       function nontrailing(flag?: boolean, value?: Counter): void {}
+       function defaulted(value: Counter = new Counter()): void {}
+       export function run(): void {
+         redundant(new Counter());
+         nullable(new Counter());
+         nontrailing(undefined, new Counter());
+         defaulted();
        }`,
     );
     const refusals = getModulePlan(
@@ -769,12 +811,36 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(refusals).toHaveLength(4);
     expect(refusals.map(({ message }) => message)).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('optionalOmitted'),
-        expect.stringContaining('optionalSupplied'),
-        expect.stringContaining('defaultOmitted'),
-        expect.stringContaining('defaultSupplied'),
+        expect.stringContaining('redundant'),
+        expect.stringContaining('nullable'),
+        expect.stringContaining('nontrailing'),
+        expect.stringContaining('defaulted'),
       ]),
     );
+  });
+
+  it('refuses synthesized optional class calls without exact invocation evidence', () => {
+    const module = lower(
+      'syntactic-optional-class-evidence.ts',
+      `class Counter { value = 1; }
+       function inspect(value?: Counter): void {}
+       export function run(value: Counter): void { inspect(value); }`,
+    );
+    const run = module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const call = run?.kind === 'function' && run.body[0]?.kind === 'expression' ? run.body[0].expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected optional class call');
+    delete (call.semantics as { optionalParameters?: unknown }).optionalParameters;
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-shared-class-call-unrepresented',
+        message: expect.stringContaining('lacks exact optional-parameter invocation evidence'),
+      }),
+    ]);
   });
 
   it('keeps local and imported optional interfaces outside shared-class planning', () => {

@@ -69,7 +69,7 @@ interface RustReferenceImportRecord {
 }
 
 interface RustReferenceModuleRecord {
-  readonly bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
+  readonly bindingTypes: Map<string, Readonly<IrType>>;
   readonly calls: RustReferenceCallRecord[];
   readonly classBindingIds: Set<string>;
   readonly functions: RustReferenceFunctionRecord[];
@@ -251,8 +251,9 @@ function createRustReferenceModuleRecords(
     records.push(record);
   }
   // An imported type is class evidence only after its target resolves to an actual exported class or
-  // source uses it directly as a constructor. Rebuild this analysis after the complete graph exists so
-  // interfaces and otherwise unresolved imported names cannot enter shared-class planning speculatively.
+  // source uses it directly as a constructor. Resolve the complete graph before deriving effective
+  // binding types so interfaces and otherwise unresolved imported names cannot enter shared-class
+  // planning speculatively.
   for (const record of records) {
     const importedBindingIds = new Set(record.importsByBindingId.keys());
     for (const imported of record.importsByBindingId.values()) {
@@ -282,6 +283,24 @@ function createRustReferenceModuleRecords(
         return undefined;
       },
     });
+  }
+  for (const record of records) {
+    for (const function_ of record.functions) {
+      if (!isRustReferenceMixedFixedClassAbiShapeSupported(function_, record, records, moduleResolution)) continue;
+      for (const [position, carrier] of getRustReferenceOptionalClassParameterPlans(
+        function_,
+        record,
+        records,
+        moduleResolution,
+      )) {
+        const parameter = function_.declaration.parameters[position];
+        if (!parameter?.optional) continue;
+        record.bindingTypes.set(parameter.binding.id, {
+          kind: 'union',
+          types: [carrier.classType, { kind: 'undefined' }],
+        });
+      }
+    }
     record.sharedClasses = createRustSharedClassAnalysis(
       record.module,
       record.ownership,
@@ -669,6 +688,17 @@ function addRustReferenceClassCallPlan(
   for (const [position, carrier] of optionalPositions) {
     addRustReferenceCallablePlan(callables, callableBinding, new Set([position]), carrier.representation);
     const argument = call.arguments[position];
+    const parameter = target.declaration.parameters[position];
+    if (parameter?.optional && !hasRustReferenceOptionalParameterCallEvidence(call, target.declaration, position)) {
+      addRustReferenceRefusal(
+        refusals,
+        'rust-reference-shared-class-call-unrepresented',
+        `${moduleKey(module.module)}:${callableBinding.id}:${String(position)}`,
+        `argument ${String(position)} to ${target.declaration.binding.name} lacks exact optional-parameter invocation evidence`,
+      );
+      continue;
+    }
+    if (!argument && parameter?.optional) continue;
     if (
       argument &&
       isRustReferenceClassCarrierExpressionCompatible(
@@ -735,6 +765,42 @@ function addRustReferenceClassCallPlan(
       `argument ${String(position)} to ${target.declaration.binding.name} uses a class outside the exact represented simple-class plan`,
     );
   }
+}
+
+function hasRustReferenceOptionalParameterCallEvidence(
+  call: IrCallExpression,
+  declaration: Readonly<IrFunctionDeclaration>,
+  position: number,
+): boolean {
+  const evidence = call.semantics.optionalParameters;
+  if (
+    !evidence ||
+    evidence.parameterCount !== declaration.parameters.length ||
+    evidence.providedArgumentCount === 'dynamic' ||
+    evidence.providedArgumentCount !== call.arguments.length
+  ) {
+    return false;
+  }
+  const expectedOptional = declaration.parameters.flatMap((parameter, index) =>
+    parameter.optional && !parameter.initializer ? [index] : [],
+  );
+  const expectedOmitted = expectedOptional.filter((index) => index >= call.arguments.length);
+  const expectedProvided = expectedOptional.filter((index) => index < call.arguments.length);
+  const optional = [...new Set(evidence.optional)].sort((left, right) => left - right);
+  const omitted = [...new Set(evidence.omitted)].sort((left, right) => left - right);
+  const provided = [...new Set(evidence.provided.map((item) => item.position))].sort((left, right) => left - right);
+  return (
+    evidence.optional.length === optional.length &&
+    evidence.omitted.length === omitted.length &&
+    evidence.provided.length === provided.length &&
+    optional.length === expectedOptional.length &&
+    optional.every((item, index) => item === expectedOptional[index]) &&
+    omitted.length === expectedOmitted.length &&
+    omitted.every((item, index) => item === expectedOmitted[index]) &&
+    provided.length === expectedProvided.length &&
+    provided.every((item, index) => item === expectedProvided[index]) &&
+    optional.includes(position)
+  );
 }
 
 function addRustReferenceHashCollectionCallPlan(
@@ -3662,10 +3728,29 @@ function getRustReferenceOptionalClassParameterPlans(
   }
   return new Map(
     declaration.parameters.flatMap((parameter, position) => {
-      const carrier = getRustOptionalSharedClassCarrierType(parameter.type, module, modules, moduleResolution);
+      const carrier = getRustReferenceOptionalClassParameterCarrier(parameter, module, modules, moduleResolution);
       return carrier ? ([[position, carrier]] as const) : [];
     }),
   );
+}
+
+function getRustReferenceOptionalClassParameterCarrier(
+  parameter: Readonly<IrFunctionDeclaration['parameters'][number]>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): (RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>) | undefined {
+  const explicit = getRustOptionalSharedClassCarrierType(parameter.type, module, modules, moduleResolution);
+  if (explicit) return explicit;
+  if (!parameter.optional || parameter.initializer || parameter.rest) return undefined;
+  const required = getRustSharedClassCarrierType(parameter.type, module, modules, moduleResolution);
+  return required?.representation === 'shared-ref-cell-class'
+    ? {
+        classType: required.classType,
+        representation: 'optional-undefined-shared-ref-cell-class',
+        sentinel: 'undefined',
+      }
+    : undefined;
 }
 
 function isRustReferenceClassBorrowPositionSupported(
@@ -3681,6 +3766,7 @@ function isRustReferenceClassBorrowPositionSupported(
   if (
     !parameter ||
     !isRustReferenceMixedFixedClassAbiShapeSupported(function_, module, modules, moduleResolution) ||
+    getRustReferenceMixedFixedClassAbiParameterShape(parameter, module, modules, moduleResolution) !== 'fixed-class' ||
     !isRustSharedClassTypeSupported(parameter.type, module, modules, moduleResolution)
   ) {
     return false;
@@ -3747,7 +3833,12 @@ function isRustReferenceClassBorrowPositionSupported(
   });
 }
 
-type RustReferenceMixedFixedClassAbiParameterShape = 'fixed' | 'fixed-class' | 'primitive-adjunct' | 'unsupported';
+type RustReferenceMixedFixedClassAbiParameterShape =
+  | 'fixed'
+  | 'fixed-class'
+  | 'optional-class'
+  | 'primitive-adjunct'
+  | 'unsupported';
 
 function getRustReferenceMixedFixedClassAbiParameterShape(
   parameter: Readonly<IrFunctionDeclaration['parameters'][number]>,
@@ -3757,11 +3848,12 @@ function getRustReferenceMixedFixedClassAbiParameterShape(
 ): RustReferenceMixedFixedClassAbiParameterShape {
   if (parameter.rest) return 'unsupported';
   if (isRustPotentialClassParameterType(parameter.type, module.module, module.classBindingIds)) {
-    return !parameter.initializer &&
-      !parameter.optional &&
-      getRustSharedClassCarrierType(parameter.type, module, modules, moduleResolution)
-      ? 'fixed-class'
-      : 'unsupported';
+    if (parameter.initializer) return 'unsupported';
+    const carrier = getRustSharedClassCarrierType(parameter.type, module, modules, moduleResolution);
+    if (!carrier || carrier.representation !== 'shared-ref-cell-class') {
+      return parameter.optional ? 'unsupported' : carrier ? 'fixed-class' : 'unsupported';
+    }
+    return parameter.optional ? 'optional-class' : 'fixed-class';
   }
   if (!parameter.initializer && !parameter.optional) return 'fixed';
   if (!isRustSimpleClassPrimitiveType(parameter.type)) return 'unsupported';
@@ -3799,10 +3891,18 @@ function isRustReferenceMixedFixedClassAbiShapeSupported(
 ): boolean {
   const declaration = function_.declaration;
   if (declaration.async || declaration.overloads.length > 0 || declaration.typeParameters.length > 0) return false;
+  let inOptionalClassSuffix = false;
   let inPrimitiveAdjunctSuffix = false;
   for (const parameter of declaration.parameters) {
     const shape = getRustReferenceMixedFixedClassAbiParameterShape(parameter, module, modules, moduleResolution);
-    if (shape === 'unsupported' || (inPrimitiveAdjunctSuffix && shape !== 'primitive-adjunct')) return false;
+    if (
+      shape === 'unsupported' ||
+      (inPrimitiveAdjunctSuffix && shape !== 'primitive-adjunct') ||
+      (inOptionalClassSuffix && shape !== 'optional-class' && shape !== 'primitive-adjunct')
+    ) {
+      return false;
+    }
+    if (shape === 'optional-class') inOptionalClassSuffix = true;
     if (shape === 'primitive-adjunct') inPrimitiveAdjunctSuffix = true;
   }
   return true;
