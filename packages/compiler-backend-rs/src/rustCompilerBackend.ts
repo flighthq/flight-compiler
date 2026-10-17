@@ -242,9 +242,21 @@ type RustAsyncTryDirectAwaitStep =
       variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>;
     }>;
 
+type RustAsyncTryCatchCompletionPlan =
+  | Readonly<{
+      kind: 'await';
+      postStatements: readonly Readonly<IrStatement>[];
+      preStatements: readonly Readonly<IrStatement>[];
+      step: RustAsyncTryDirectAwaitStep;
+    }>
+  | Readonly<{
+      kind: 'straight';
+      rethrowBinding?: Readonly<IrBindingIdentity> | undefined;
+      statements: readonly Readonly<IrStatement>[];
+    }>;
+
 interface RustAsyncTryFinallyCompletionPlan {
-  readonly catchRethrowBinding?: Readonly<IrBindingIdentity> | undefined;
-  readonly catchStatements?: readonly Readonly<IrStatement>[] | undefined;
+  readonly catchPlan?: RustAsyncTryCatchCompletionPlan | undefined;
   readonly finallyStatements: readonly Readonly<IrStatement>[];
   readonly tryStatements: readonly Readonly<IrStatement>[];
 }
@@ -6803,6 +6815,53 @@ function getIrAsyncTryCatchRethrowBindingRust(
   return binding;
 }
 
+function getAsyncTryCatchCompletionPlanRust(
+  catchClause: Readonly<NonNullable<Extract<IrStatement, { kind: 'try' }>['catchClause']>>,
+  evidence: Readonly<RustAsyncTryCompletionEvidence>,
+  context: EmitContext,
+): RustAsyncTryCatchCompletionPlan {
+  const statements = getIrDirectStatementsRust(catchClause.body);
+  if (evidence.suspensionCount === 0) {
+    const rethrowBinding = getIrAsyncTryCatchRethrowBindingRust(
+      statements.at(-1),
+      catchClause.binding,
+      catchClause.body,
+    );
+    return {
+      kind: 'straight',
+      ...(rethrowBinding ? { rethrowBinding } : {}),
+      statements,
+    };
+  }
+
+  const steps = statements.flatMap((candidate, index) => {
+    const step = getIrAsyncTryDirectAwaitStepRust(candidate);
+    return step ? [{ index, step }] : [];
+  });
+  const permittedReturn = statements.at(-1)?.kind === 'return' ? statements.at(-1) : undefined;
+  if (
+    catchClause.binding ||
+    (catchClause.body.kind === 'block' && catchClause.body.label) ||
+    evidence.suspensionCount !== 1 ||
+    steps.length !== 1 ||
+    !areIrAsyncTryStraightLineStatementsRust(statements) ||
+    evidence.abruptStatements.some((candidate) => candidate !== permittedReturn)
+  ) {
+    emissionRuleError(
+      context,
+      'async try/finally awaited catch requires one bindingless flat handler with exactly one direct await and only Normal/Return completion',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const selected = steps[0]!;
+  return {
+    kind: 'await',
+    postStatements: statements.slice(selected.index + 1),
+    preStatements: statements.slice(0, selected.index),
+    step: selected.step,
+  };
+}
+
 function getAsyncTryFinallyCompletionPlanRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   context: EmitContext,
@@ -6820,6 +6879,9 @@ function getAsyncTryFinallyCompletionPlanRust(
   const tryStatements = getIrDirectStatementsRust(statement.tryBody);
   const catchStatements = statement.catchClause ? getIrDirectStatementsRust(statement.catchClause.body) : undefined;
   const finallyStatements = getIrDirectStatementsRust(statement.finallyBody);
+  const catchPlan = statement.catchClause
+    ? getAsyncTryCatchCompletionPlanRust(statement.catchClause, catchEvidence!, context)
+    : undefined;
   const trySteps = tryStatements.flatMap((candidate) => {
     const step = getIrAsyncTryDirectAwaitStepRust(candidate);
     return step ? [step] : [];
@@ -6827,11 +6889,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   const tryTail = tryStatements.at(-1);
   const catchTail = catchStatements?.at(-1);
   const protectedThrowMessage = tryTail ? getIrAsyncTrySourceThrowMessageRust(tryTail, context) : undefined;
-  const catchRethrowBinding = getIrAsyncTryCatchRethrowBindingRust(
-    catchTail,
-    statement.catchClause?.binding,
-    statement.catchClause?.body,
-  );
+  const catchRethrowBinding = catchPlan?.kind === 'straight' ? catchPlan.rethrowBinding : undefined;
   const permittedReturns = new Set(
     [tryTail, catchTail].filter((candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return'),
   );
@@ -6855,20 +6913,19 @@ function getAsyncTryFinallyCompletionPlanRust(
     (catchEvidence?.abruptStatements.every((candidate) => permittedCatchCompletions.has(candidate)) ?? true) &&
     finallyEvidence.abruptStatements.length === 0;
   const exactSuspensions =
-    trySteps.length > 0 &&
+    (trySteps.length > 0 || catchPlan?.kind === 'await') &&
     tryEvidence.suspensionCount === trySteps.length &&
-    (catchEvidence?.suspensionCount ?? 0) === 0 &&
+    (catchEvidence?.suspensionCount ?? 0) === (catchPlan?.kind === 'await' ? 1 : 0) &&
     finallyEvidence.suspensionCount === 0;
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct try awaits, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most one direct bindingless catch await, and a non-abrupt finally',
       'rust-async-try-completion-unrepresented',
     );
   }
   return {
-    ...(catchRethrowBinding ? { catchRethrowBinding } : {}),
-    ...(catchStatements ? { catchStatements } : {}),
+    ...(catchPlan ? { catchPlan } : {}),
     finallyStatements,
     tryStatements,
   };
@@ -7150,6 +7207,32 @@ function assertIrAsyncTryReturnAwaitCarrierRust(step: RustAsyncTryDirectAwaitSte
   }
 }
 
+function assertIrAsyncTrySettledStepCarrierRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): void {
+  if (step.kind === 'return') {
+    assertIrAsyncTryReturnAwaitCarrierRust(step, context);
+    return;
+  }
+  const valueType = getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context);
+  if (!valueType) {
+    emissionRuleError(
+      context,
+      step.kind === 'expression'
+        ? 'protected expression-await requires one direct Flight task settlement'
+        : 'protected awaited value requires one direct Flight task settlement',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  if (step.kind !== 'variable') return;
+  const variableType = step.variable.type ?? context.bindingTypes.get(step.variable.binding.id);
+  if (!variableType || emitType(variableType, context) !== emitType(valueType, context)) {
+    emissionRuleError(
+      context,
+      'protected awaited declarator requires one exact represented Rust value',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+}
+
 function emitAsyncTryFinallyTryCompletionRust(
   plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
   label: string,
@@ -7159,10 +7242,10 @@ function emitAsyncTryFinallyTryCompletionRust(
   for (const statement of plan.tryStatements) {
     const step = getIrAsyncTryDirectAwaitStepRust(statement);
     if (step) {
+      assertIrAsyncTrySettledStepCarrierRust(step, context);
       const target = emitOwnedOperandRust(step.awaitTarget, context);
       const error = getGeneratedTargetNameRust('try_error', context);
       if (step.kind === 'return') {
-        assertIrAsyncTryReturnAwaitCarrierRust(step, context);
         const value = getGeneratedTargetNameRust('try_value', context);
         lines.push(
           `match ${target}.settle() {`,
@@ -7175,37 +7258,12 @@ function emitAsyncTryFinallyTryCompletionRust(
         return lines;
       }
       if (step.kind === 'expression') {
-        if (!getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context)) {
-          emissionRuleError(
-            context,
-            'protected expression-await requires one direct Flight task settlement',
-            'rust-async-try-completion-unrepresented',
-          );
-        }
         lines.push(
           `match ${target}.settle() {`,
           ...indentSourceLines(['Ok(_) => {}', `Err(${error}) => break '${label} Err(${error}),`]),
           '}',
         );
         continue;
-      }
-      const valueType = getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context);
-      if (!valueType) {
-        emissionRuleError(
-          context,
-          'protected awaited value requires one direct Flight task settlement',
-          'rust-async-try-completion-unrepresented',
-        );
-      }
-      if (step.kind === 'variable') {
-        const variableType = step.variable.type ?? context.bindingTypes.get(step.variable.binding.id);
-        if (!variableType || emitType(variableType, context) !== emitType(valueType, context)) {
-          emissionRuleError(
-            context,
-            'protected awaited declarator requires one exact represented Rust value',
-            'rust-async-try-completion-unrepresented',
-          );
-        }
       }
       const value = getGeneratedTargetNameRust('try_value', context);
       lines.push(
@@ -7287,6 +7345,34 @@ function emitAsyncTryFinallyCatchCompletionRust(
   return [...lines, `Ok(Some(${value}))`];
 }
 
+function emitAsyncTryFinallyAwaitCatchCompletionRust(
+  plan: Readonly<Extract<RustAsyncTryCatchCompletionPlan, { kind: 'await' }>>,
+  context: EmitContext,
+): string[] {
+  const step = plan.step;
+  assertIrAsyncTrySettledStepCarrierRust(step, context);
+  const target = emitOwnedOperandRust(step.awaitTarget, context);
+  const error = getGeneratedTargetNameRust('catch_error', context);
+  const value = getGeneratedTargetNameRust('catch_value', context);
+  const fulfilled =
+    step.kind === 'return'
+      ? [`Ok(${value}) => Ok(Some(${value})),`]
+      : [
+          `Ok(${step.kind === 'expression' ? '_' : value}) => {`,
+          ...indentSourceLines([
+            ...emitAsyncTrySettledStepRust(step, context, value),
+            ...emitAsyncTryFinallyCatchCompletionRust(plan.postStatements, undefined, context),
+          ]),
+          '}',
+        ];
+  return [
+    ...emitStatements(plan.preStatements, context),
+    `match ${target}.settle() {`,
+    ...indentSourceLines([...fulfilled, `Err(${error}) => Err(${error}),`]),
+    '}',
+  ];
+}
+
 function emitAsyncTryFinallyCompletionRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
@@ -7301,20 +7387,23 @@ function emitAsyncTryFinallyCompletionRust(
     '};',
   ];
   let completion = pending;
-  if (plan.catchStatements) {
+  if (plan.catchPlan) {
     completion = getGeneratedTargetNameRust('try_completion_value', context);
     const carried = getGeneratedTargetNameRust('try_carried_completion', context);
-    const catchBinding = statement.catchClause?.binding
-      ? getBindingTargetNameRust(statement.catchClause.binding, context)
-      : '_';
+    const catchBinding =
+      plan.catchPlan.kind === 'straight' && statement.catchClause?.binding
+        ? getBindingTargetNameRust(statement.catchClause.binding, context)
+        : '_';
+    const catchCompletion =
+      plan.catchPlan.kind === 'await'
+        ? emitAsyncTryFinallyAwaitCatchCompletionRust(plan.catchPlan, context)
+        : emitAsyncTryFinallyCatchCompletionRust(plan.catchPlan.statements, plan.catchPlan.rethrowBinding, context);
     lines.push(
       `let ${completion}: Result<Option<${returnType}>, String> = match ${pending} {`,
       ...indentSourceLines([
         `Ok(${carried}) => Ok(${carried}),`,
         `Err(${catchBinding}) => {`,
-        ...indentSourceLines(
-          emitAsyncTryFinallyCatchCompletionRust(plan.catchStatements, plan.catchRethrowBinding, context),
-        ),
+        ...indentSourceLines(catchCompletion),
         '}',
       ]),
       '};',
@@ -7324,9 +7413,12 @@ function emitAsyncTryFinallyCompletionRust(
   const value = getGeneratedTargetNameRust('try_return_value', context);
   const tryCanCompleteNormally =
     plan.tryStatements.at(-1)?.kind !== 'return' && plan.tryStatements.at(-1)?.kind !== 'throw';
-  const catchCanCompleteNormally =
-    plan.catchStatements?.at(-1)?.kind !== 'return' && plan.catchStatements?.at(-1)?.kind !== 'throw';
-  if (plan.catchStatements) {
+  const catchCanCompleteNormally = plan.catchPlan
+    ? plan.catchPlan.kind === 'straight'
+      ? plan.catchPlan.statements.at(-1)?.kind !== 'return' && plan.catchPlan.statements.at(-1)?.kind !== 'throw'
+      : plan.catchPlan.step.kind !== 'return' && plan.catchPlan.postStatements.at(-1)?.kind !== 'return'
+    : false;
+  if (plan.catchPlan) {
     const error = getGeneratedTargetNameRust('try_error', context);
     lines.push(
       `match ${completion} {`,
