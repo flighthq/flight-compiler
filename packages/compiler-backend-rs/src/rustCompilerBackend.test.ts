@@ -3060,10 +3060,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.rule).toBe('rust-cast-requires-type-directed-lowering');
   });
 
-  it('emits exact one-shot native-future locals for every direct later await statement shape', () => {
+  it('eagerly adapts exact native-future locals for every direct later await statement shape', () => {
     const output = emitIrModuleRust(
       lower(
-        'one-shot-native-future-local.ts',
+        'adapted-native-future-local.ts',
         `async function inner(): Promise<number> { return 1; }
          export async function expression(): Promise<void> { const pending = inner(); await pending; }
          export async function assignment(): Promise<number> { let value = 0; const pending = inner(); value = await pending; return value; }
@@ -3072,45 +3072,93 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
 
-    expect(output.match(/let pending(?:_\d+)? = inner\(\);/gu)).toHaveLength(4);
+    expect(
+      output.match(/let pending(?:_\d+)?: FlightTask<f64> = FlightTask::from_future\(inner\(\)\);/gu),
+    ).toHaveLength(4);
     expect(output.match(/pending(?:_\d+)?\.await/gu)).toHaveLength(4);
     expect(output).not.toContain('pending.clone().await');
-    expect(output).not.toContain('FlightTask');
     expect(output).not.toContain('.settle()');
   });
 
-  it('emits an imported source async call as an exact one-shot native-future local', () => {
-    const provider = lower('provider.ts', 'export async function load(): Promise<number> { return 1; }').module;
-    const consumer = lower(
-      'consumer.ts',
-      `import { load } from './provider.js';
-       export async function run(): Promise<number> { const pending = load(); return await pending; }`,
-    ).module;
-    const session = createRustCompilerBackend().createEmissionSession!({
-      moduleResolution: {
-        edges: [
-          {
-            importer: getRustTestModuleIdentity(consumer),
-            specifier: './provider.js',
-            target: getRustTestModuleIdentity(provider),
+  it('shares one adapted native-future local settlement across repeated direct awaits', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'adapted-native-future-local-repeated.ts',
+        `async function inner(): Promise<number> { return 1; }
+         export async function repeated(): Promise<number> {
+           const pending = inner();
+           const first = await pending;
+           const second = await pending;
+           return first + second;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/FlightTask::from_future\(inner\(\)\)/gu)).toHaveLength(1);
+    expect(output.match(/pending\.clone\(\)\.await/gu)).toHaveLength(2);
+  });
+
+  it('eagerly adapts an imported source async call stored in an exact local task', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: 'Consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/consumer.ts',
           },
-        ],
-        schema: 'flight-compiler-module-resolution/1',
-      },
+          importedNames: ['load'],
+          specifier: './provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/provider.ts',
+            'export async function load(): Promise<number> { return 1; }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/consumer.ts',
+            `import { load } from './provider.js';
+             export async function run(): Promise<number> { const pending = load(); return await pending; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
       modules: [consumer, provider],
       options: {},
     });
     const output = session.emitModule(consumer)[0]!.contents;
 
-    expect(output).toContain('let pending = load();');
+    expect(output).toContain('let pending: FlightTask<f64> = FlightTask::from_future(load());');
     expect(output).toContain('return pending.await;');
-    expect(output).not.toContain('FlightTask');
   });
 
-  it('keeps one-shot native-future locals distinct from represented FlightTask values and direct awaits', () => {
+  it('keeps adapted native-future locals distinct from represented FlightTask values and direct awaits', () => {
     const output = emitIrModuleRust(
       lower(
-        'one-shot-native-future-local-distinction.ts',
+        'adapted-native-future-local-distinction.ts',
         `async function source(): Promise<number> { return 1; }
          function forward(task: Promise<number>): Promise<number> { return task; }
          export async function run(task: Promise<number>): Promise<number> {
@@ -3125,7 +3173,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
 
-    expect(output).toContain('let native = source();');
+    expect(output).toContain('let native: FlightTask<f64> = FlightTask::from_future(source());');
     expect(output).toContain('let forwarded: FlightTask<f64> = forward(task);');
     expect(output).toContain('let ready: FlightTask<f64> = FlightTask::ready(2.0);');
     expect(output).toContain('let first: f64 = native.await;');
@@ -3140,10 +3188,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     [
       'an alias',
       'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); const alias = pending; return await alias; }',
-    ],
-    [
-      'a second await',
-      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); await pending; return await pending; }',
     ],
     [
       'a passed value',
@@ -3185,9 +3229,29 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'a generic consumer',
       'async function inner(): Promise<number> { return 1; } export async function broken<T>(_value: T): Promise<number> { const pending = inner(); return await pending; }',
     ],
-  ])('refuses one-shot native-future local lowering for %s', (_name, source) => {
+    [
+      'an identity-bearing result',
+      'async function inner(): Promise<number[]> { return [1]; } export async function broken(): Promise<number[]> { const pending = inner(); return await pending; }',
+    ],
+    [
+      'a task type alias',
+      'type NumberTask = Promise<number>; async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending: NumberTask = inner(); return await pending; }',
+    ],
+    [
+      'a widened task result',
+      'async function inner(): Promise<1> { return 1; } export async function broken(): Promise<number> { const pending: Promise<number> = inner(); return await pending; }',
+    ],
+    [
+      'an early control-flow escape',
+      'async function inner(): Promise<number> { return 1; } export async function broken(stop: boolean): Promise<number> { const pending = inner(); if (stop) return 0; return await pending; }',
+    ],
+    [
+      'a nested declaration',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { { const pending = inner(); return await pending; } }',
+    ],
+  ])('refuses adapted native-future local lowering for %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(lower('one-shot-native-future-local-refusal.ts', source).module),
+      emitIrModuleRust(lower('adapted-native-future-local-refusal.ts', source).module),
     );
 
     expect(failure.classification).toBe('target-runtime');
@@ -5484,6 +5548,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              mark("local-awaited", log);
              return value;
            }
+           export async function storedNative(task: Promise<number>): Promise<number> {
+             const pending = nativePrimary(task);
+             const first = await pending;
+             const second = await pending;
+             return first + second;
+           }
            export async function bareNative(primary: Promise<number>, log: string[]): Promise<number> {
              try { mark("bare-native-try", log); return nativeBarePrimary(primary); }
              catch (error) { mark(error, log); return 9; }
@@ -5528,8 +5598,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         ).module,
       ).contents;
 
-      expect(output).toContain('let pending = native_value(4.0);');
+      expect(output).toContain('let pending: FlightTask<f64> = FlightTask::from_future(native_value(4.0));');
       expect(output).toContain('let value: f64 = pending.await;');
+      expect(output.match(/FlightTask::from_future\(native_primary\(task\)\)/gu)).toHaveLength(1);
       expect(output).toContain(
         'fn advance(async_receiver: Rc<RefCell<Self>>, task: FlightTask<f64>) -> FlightTask<f64>',
       );
@@ -5556,6 +5627,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(adapter_polls.get(), 2, "task clones must share one consumed future and settlement");
            assert_eq!(flight_runtime::block_on(async_method_repeated(flight_runtime::FlightTask::ready(3.0))), 15.0);
            assert_eq!(flight_runtime::block_on(async_method_caught(flight_runtime::FlightTask::<f64>::reject("async-method-error"))), 2.0);
+           assert_eq!(flight_runtime::block_on(stored_native(flight_runtime::FlightTask::ready(4.0))), 8.0);
            let mut native_log = Vec::new();
            assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
            assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
