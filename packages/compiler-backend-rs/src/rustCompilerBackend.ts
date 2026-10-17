@@ -2268,7 +2268,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         // already be an Option — an optional chain produces one, an ordinary value does not.
         // A coalesce whose left cannot be absent is its left: the default is unreachable, and the
         // source's own types are what say so.
-        if (expression.left.kind === 'property' && expression.left.optionalChain?.receiverNullish === 'excluded') {
+        if (
+          expression.left.kind === 'property' &&
+          expression.left.optionalChain?.receiverNullish === 'excluded' &&
+          !isIrExpressionOptionShapedRust(expression.left, context)
+        ) {
           return emitExpression(expression.left, context);
         }
         if (!isIrExpressionOptionShapedRust(expression.left, context)) {
@@ -2442,6 +2446,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `${receiver}.copy_from(${source}, ${offset})`;
       }
       if (isArrayShiftCallRust(expression)) return emitArrayShiftCallRust(expression, context);
+      if (expression.callee.kind === 'property' && expression.callee.optional) {
+        const mappedOptionalCall = emitRustOptionalChainMappedCallRust(expression, context);
+        if (mappedOptionalCall) return mappedOptionalCall;
+      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind !== 'countingMethod' && binding.kind !== 'propertyMethod') {
@@ -5782,6 +5790,42 @@ function isIrLocalCallReferentMutatedParameterRust(
   return parameter !== undefined && context.referentMutatedParameterIds.has(parameter.binding.id);
 }
 
+// A chained call whose optional access is the array element itself maps the bound method over the
+// element's Option; the arguments are evaluated only when the element is present, matching the
+// source chain's short circuit.
+function emitRustOptionalChainMappedCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || !callee.optional || !callee.member || !callee.optionalChain) {
+    return undefined;
+  }
+  if (!isIrExpressionOptionShapedRust(callee.object, context)) return undefined;
+  const binding = getCompilerRustAmbientMemberBinding(callee.member);
+  if (!binding) return undefined;
+  const object = emitExpression(callee.object, context);
+  const operation = isNullableType(expression.semantics.resultType) ? 'and_then' : 'map';
+  const mapped = (call: string): string => `${object}.as_ref().${operation}(|optional_chain_value| ${call})`;
+  if (binding.kind === 'countingMethod') return mapped(`(optional_chain_value.${binding.targetName}() as f64)`);
+  if (binding.kind === 'propertyMethod') return mapped(`optional_chain_value.${binding.targetName}()`);
+  if (binding.kind === 'method') {
+    return mapped(
+      `optional_chain_value.${binding.targetName}(${expression.arguments
+        .map((argument) => emitExpression(argument, context))
+        .join(', ')})`,
+    );
+  }
+  if (binding.kind === 'borrowedMethod') {
+    return mapped(
+      `optional_chain_value.${binding.targetName}(${expression.arguments
+        .map((argument) => emitBorrowedTextRust(argument, context))
+        .join(', ')})`,
+    );
+  }
+  emissionError(context, 'an optional-chain call over an array element requires a bound method projection');
+}
+
 function emitOptionalCallExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -7257,6 +7301,12 @@ function emitOptionalPropertyExpressionRust(
   const object = emitExpression(expression.object, context);
   const property = safeRustValueName(expression.name);
   if (semantics.receiverNullish === 'excluded') {
+    // An ordinary element receiver carries the absence the chain short-circuits on, so the read maps
+    // over its Option. A direct element place keeps the copy read the source wrote.
+    if (isIrExpressionOptionShapedRust(expression.object, context)) {
+      const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
+      return `${object}.as_ref().${operation}(|optional_chain_value| optional_chain_value.${property}.clone())`;
+    }
     // Indexing yields a place the caller does not own, so the field read out of it is a copy.
     const owned = expression.object.kind === 'element' ? '.clone()' : '';
     return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}${owned}`;
@@ -15849,6 +15899,7 @@ type RustArrayBoundsValueUse =
       position: 'fallback' | 'left' | 'right' | 'value';
     }>
   | Readonly<{ kind: 'discarded' }>
+  | Readonly<{ kind: 'optionalChainReceiver' }>
   | Readonly<{ kind: 'return'; type: Readonly<IrType> | undefined }>
   | Readonly<{ bindingId: string | undefined; kind: 'variable'; type: Readonly<IrType> | undefined }>;
 
@@ -15899,6 +15950,19 @@ function createRustArrayBoundsPlan(
         uses.set(expression.fallback, { expression, kind: 'expression', position: 'fallback' });
       } else if (expression.kind === 'function' && expression.expression) {
         uses.set(expression.expression, { kind: 'return', type: expression.returns });
+      }
+      // An ordinary element read used as the object of a short-circuiting optional chain is an
+      // absence-observed use: the chain's Option carrier is exactly the element's absence, and the
+      // existing optional property/element lowering maps over it.
+      // An ordinary element read as the object of an optional access is absence-observed even when
+      // the chain's payload receiver excludes nullish: the element's own absence is what short-
+      // circuits, exactly as the C++ indexed-runtime-collection case models it. Only an ordinary
+      // element object qualifies; every other excluded receiver keeps its direct-read behaviour.
+      if (expression.kind === 'property' && expression.optional) {
+        const object = expression.object;
+        if (object.kind === 'element' && !object.optional && hasOnlyOrdinaryArrayReceiverRust(object)) {
+          uses.set(object, { kind: 'optionalChainReceiver' });
+        }
       }
 
       if (expression.kind === 'element' && hasOnlyOrdinaryArrayReceiverRust(expression)) {
@@ -18429,6 +18493,19 @@ function assertArrayOperationSemanticsRust(
       } else if (expression.kind === 'function' && expression.expression) {
         uses.set(expression.expression, { kind: 'return', type: expression.returns });
       }
+      // An ordinary element read used as the object of a short-circuiting optional chain is an
+      // absence-observed use: the chain's Option carrier is exactly the element's absence, and the
+      // existing optional property/element lowering maps over it.
+      // An ordinary element read as the object of an optional access is absence-observed even when
+      // the chain's payload receiver excludes nullish: the element's own absence is what short-
+      // circuits, exactly as the C++ indexed-runtime-collection case models it. Only an ordinary
+      // element object qualifies; every other excluded receiver keeps its direct-read behaviour.
+      if (expression.kind === 'property' && expression.optional) {
+        const object = expression.object;
+        if (object.kind === 'element' && !object.optional && hasOnlyOrdinaryArrayReceiverRust(object)) {
+          uses.set(object, { kind: 'optionalChainReceiver' });
+        }
+      }
 
       if (expression.kind === 'call' && expression.callee.kind === 'property') {
         const growthMember = getArrayGrowthMemberRust(expression);
@@ -20432,7 +20509,7 @@ function isRustArrayGrowthResultRepresentedUseRust(
   context: EmitContext,
 ): boolean {
   if (!use) return false;
-  if (use.kind === 'discarded') return true;
+  if (use.kind === 'discarded' || use.kind === 'optionalChainReceiver') return true;
   if (use.kind === 'return' || use.kind === 'variable') {
     return isRustArrayGrowthLengthCarrierRust(use.type, context);
   }
@@ -20531,7 +20608,7 @@ function isRustArrayAbsenceRepresentedUse(
   arrayElementBindingIds: ReadonlySet<string>,
 ): boolean {
   if (!use) return false;
-  if (use.kind === 'discarded') return true;
+  if (use.kind === 'discarded' || use.kind === 'optionalChainReceiver') return true;
   if (use.kind === 'return') return isRustSingleUndefinedOptionCarrier(use.type);
   if (use.kind === 'variable') {
     return (
@@ -21859,7 +21936,9 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
   // value, not an `Option`. The `?.` is redundant there, and treating it as an `Option` asks a value
   // for a method it does not have.
   if (expression.kind === 'property') {
-    if (expression.optionalChain?.receiverNullish === 'excluded') return false;
+    if (expression.optionalChain?.receiverNullish === 'excluded') {
+      return isIrExpressionOptionShapedRust(expression.object, context);
+    }
     return expression.optional || expression.absent === 'optionalMember';
   }
   if (expression.kind === 'call') {

@@ -21292,7 +21292,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
                }`,
     },
     {
-      rule: 'rust-union-array-element-read-context-unrepresented',
+      rule: 'rust-union-array-element-read-evidence-unrepresented',
       source: `export function read(values: number[] | string[] | undefined, index: number): number | string | undefined {
                  const value = values?.[index];
                  return value;
@@ -30107,6 +30107,110 @@ describe('emitIrModuleRust monotone while-loop array reads', () => {
     runRustSource(
       output,
       'assert_eq!(sumUntil(vec![1.0, 2.0, 3.0], 10.0), 6.0); assert_eq!(sum(vec![1.0, 2.0, 3.0]), 6.0);',
+    );
+  });
+});
+
+describe('emitIrModuleRust optional-chained array element receivers', () => {
+  it('maps a record element field through the element Option and coalesces it', () => {
+    const result = lower(
+      'optional-chain-record.ts',
+      `interface Entry { readonly key: string; }
+       export function firstKey(entries: readonly Entry[]): string {
+         return entries[0]?.key ?? 'none';
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      '.as_ref().map(|optional_chain_value| optional_chain_value.key.clone()).unwrap_or_else(|| "none".to_owned())',
+    );
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('keeps the chain as an Option when the caller does not coalesce it', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-chain-option.ts',
+        `interface Entry { readonly key: string; }
+         export function key(entries: readonly Entry[]): string | undefined {
+           return entries[0]?.key;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn key(entries: Vec<Entry>) -> Option<String>');
+    expect(output).toContain('.as_ref().map(|optional_chain_value| optional_chain_value.key.clone())');
+  });
+
+  it('maps a bound method call over a Copy element Option', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-chain-copy.ts',
+        `export function text(values: number[]): string | undefined {
+           return values[0]?.toString();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn text(values: Vec<f64>) -> Option<String>');
+    expect(output).toContain('.as_ref().map(|optional_chain_value| optional_chain_value.to_string())');
+  });
+
+  it('maps a nested optional member chain without losing the short circuit', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-chain-nested.ts',
+        `interface Entry { readonly key: string; }
+         export function upper(entries: readonly Entry[]): string | undefined {
+           return entries[0]?.key.toUpperCase();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      '.as_ref().map(|optional_chain_value| optional_chain_value.key.clone()).as_ref().map(|optional_chain_value| optional_chain_value.to_uppercase())',
+    );
+  });
+
+  it.each([
+    {
+      name: 'a direct non-optional receiver',
+      rule: 'rust-array-index-result-absence-unrepresented',
+      source: `interface Entry { readonly key: string; }
+               export function key(entries: readonly Entry[]): string { return entries[0].key; }`,
+    },
+    {
+      name: 'a non-null-asserted receiver',
+      rule: 'rust-array-index-result-absence-unrepresented',
+      source: `interface Entry { readonly key: string; }
+               export function key(entries: readonly Entry[]): string { return entries[0]!.key; }`,
+    },
+    {
+      name: 'a union array receiver',
+      rule: 'rust-union-array-element-read-evidence-unrepresented',
+      source: `export function read(values: number[] | string[], index: number): number | string | undefined {
+                 return values?.[index];
+               }`,
+    },
+  ])('keeps $name on its existing refusal', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('optional-chain-refused.ts', source).module))).toBe(rule);
+  });
+
+  it.skipIf(!rustcAvailable)('compiles record and Copy optional element chains', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-chain-native.ts',
+        `interface Entry { readonly key: string; }
+         export function firstKey(entries: readonly Entry[]): string { return entries[0]?.key ?? 'none'; }
+         export function text(values: number[]): string | undefined { return values[0]?.toString(); }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      'assert_eq!(firstKey(vec![]), "none".to_owned()); assert_eq!(firstKey(vec![Entry { key: "a".to_owned() }]), "a".to_owned()); assert_eq!(text(vec![2.0]), Some("2".to_owned()));',
     );
   });
 });
