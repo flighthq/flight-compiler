@@ -2363,6 +2363,154 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.column).toBe(column);
   });
 
+  it('emits exact one-shot native-future locals for every direct later await statement shape', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'one-shot-native-future-local.ts',
+        `async function inner(): Promise<number> { return 1; }
+         export async function expression(): Promise<void> { const pending = inner(); await pending; }
+         export async function assignment(): Promise<number> { let value = 0; const pending = inner(); value = await pending; return value; }
+         export async function declaration(): Promise<number> { const pending = inner(); const value = await pending; return value; }
+         export async function returned(): Promise<number> { const pending = inner(); return await pending; }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/let pending(?:_\d+)? = inner\(\);/gu)).toHaveLength(4);
+    expect(output.match(/pending(?:_\d+)?\.await/gu)).toHaveLength(4);
+    expect(output).not.toContain('pending.clone().await');
+    expect(output).not.toContain('FlightTask');
+    expect(output).not.toContain('.settle()');
+  });
+
+  it('emits an imported source async call as an exact one-shot native-future local', () => {
+    const provider = lower('provider.ts', 'export async function load(): Promise<number> { return 1; }').module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { load } from './provider.js';
+       export async function run(): Promise<number> { const pending = load(); return await pending; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, provider],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('let pending = load();');
+    expect(output).toContain('return pending.await;');
+    expect(output).not.toContain('FlightTask');
+  });
+
+  it('keeps one-shot native-future locals distinct from represented FlightTask values and direct awaits', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'one-shot-native-future-local-distinction.ts',
+        `async function source(): Promise<number> { return 1; }
+         function forward(task: Promise<number>): Promise<number> { return task; }
+         export async function run(task: Promise<number>): Promise<number> {
+           const native = source();
+           const forwarded = forward(task);
+           const ready = Promise.resolve(2);
+           const first = await native;
+           const second = await forwarded;
+           return first + second + await ready;
+         }
+         export async function direct(): Promise<number> { return await source(); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let native = source();');
+    expect(output).toContain('let forwarded: FlightTask<f64> = forward(task);');
+    expect(output).toContain('let ready: FlightTask<f64> = FlightTask::ready(2.0);');
+    expect(output).toContain('let first: f64 = native.await;');
+    expect(output).toContain('return source().await;');
+  });
+
+  it.each([
+    [
+      'a mutable binding',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { let pending = inner(); return await pending; }',
+    ],
+    [
+      'an alias',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); const alias = pending; return await alias; }',
+    ],
+    [
+      'a second await',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); await pending; return await pending; }',
+    ],
+    [
+      'a passed value',
+      'async function inner(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } export async function broken(): Promise<number> { const pending = inner(); return await forward(pending); }',
+    ],
+    [
+      'array storage',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); const values: Promise<number>[] = [pending]; return 0; }',
+    ],
+    [
+      'a bare return',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); return pending; }',
+    ],
+    [
+      'a conditional use',
+      'async function inner(): Promise<number> { return 1; } export async function broken(choose: boolean): Promise<number> { const pending = inner(); return await (choose ? pending : Promise.resolve(0)); }',
+    ],
+    [
+      'a captured escape',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); const read = (): Promise<number> => pending; return await read(); }',
+    ],
+    [
+      'assignment initialization',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { let pending: Promise<number>; pending = inner(); return await pending; }',
+    ],
+    [
+      'a protected await',
+      'async function inner(): Promise<number> { return 1; } export async function broken(): Promise<number> { const pending = inner(); try { return await pending; } catch { return 0; } }',
+    ],
+    [
+      'a borrowed call argument',
+      'async function inner(values: number[]): Promise<number> { values.push(1); return values.length; } export async function broken(values: number[]): Promise<number> { const pending = inner(values); return await pending; }',
+    ],
+    [
+      'a generic callee',
+      'async function inner<T>(value: T): Promise<T> { return value; } export async function broken(): Promise<number> { const pending = inner<number>(1); return await pending; }',
+    ],
+    [
+      'a generic consumer',
+      'async function inner(): Promise<number> { return 1; } export async function broken<T>(_value: T): Promise<number> { const pending = inner(); return await pending; }',
+    ],
+  ])('refuses one-shot native-future local lowering for %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('one-shot-native-future-local-refusal.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
+  });
+
+  it('keeps one-shot native-future local syntax inside an async method on the method carrier refusal', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'one-shot-native-future-local-method-refusal.ts',
+          'async function inner(): Promise<number> { return 1; } export class Worker { async run(): Promise<number> { const pending = inner(); return await pending; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+  });
+
   it('settles terminal protected bare FlightTask adoption through a synchronous catch', () => {
     const output = emitIrModuleRust(
       lower(

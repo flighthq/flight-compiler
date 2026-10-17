@@ -371,6 +371,7 @@ interface EmitContext {
   module: Readonly<IrModule>;
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   nativeAsyncFunction: boolean;
+  nativeFutureLocalBindingIds: ReadonlySet<string>;
   sourceModules: readonly Readonly<IrModule>[];
   sourceTreeReferences: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
   needsCellImport: Set<'Cell'>;
@@ -670,6 +671,7 @@ function emitIrModuleRustWithContext(
     ),
   );
   const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
+  const nativeFutureLocalBindingIds = new Set<string>();
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
@@ -741,6 +743,7 @@ function emitIrModuleRustWithContext(
     module,
     moduleResolution,
     nativeAsyncFunction: false,
+    nativeFutureLocalBindingIds,
     sourceModules: replaceIrModuleBackendContext(sourceModules, module),
     sourceTreeReferences: sourceTree?.references ?? [],
     needsCellImport: new Set(),
@@ -841,6 +844,9 @@ function emitIrModuleRustWithContext(
         });
       }
     }
+  }
+  for (const bindingId of collectIrModuleOneShotNativeFutureLocalBindingIdsRust(module, context)) {
+    nativeFutureLocalBindingIds.add(bindingId);
   }
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayOperationSemanticsRust(module, context);
@@ -2612,6 +2618,96 @@ function isIrNativeAsyncFunctionCallRust(
     expression.callee.kind === 'identifier' &&
     getIrReferencedFunctionRust(expression.callee.reference, context)?.async === true
   );
+}
+
+function isIrExactBindingReferenceRust(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  return (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    expression.reference.binding.id === bindingId
+  );
+}
+
+function countIrStatementBindingReferencesRust(statement: Readonly<IrStatement>, bindingId: string): number {
+  let count = 0;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (isIrExactBindingReferenceRust(expression, bindingId)) count += 1;
+      return undefined;
+    },
+  });
+  return count;
+}
+
+function isIrOneShotNativeFutureCallRust(
+  call: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  consumer: Readonly<IrFunctionDeclaration>,
+  context: EmitContext,
+): boolean {
+  if (
+    call.optional ||
+    call.typeArguments.length > 0 ||
+    call.arguments.some((argument) => argument.kind === 'spread') ||
+    call.callee.kind !== 'identifier' ||
+    call.callee.reference.kind !== 'binding' ||
+    consumer.typeParameters.length > 0
+  ) {
+    return false;
+  }
+  const callee = getIrReferencedFunctionRust(call.callee.reference, context);
+  if (
+    !callee?.async ||
+    callee.typeParameters.length > 0 ||
+    callee.overloads.length > 0 ||
+    callee.parameters.length !== call.arguments.length ||
+    callee.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+    getIrCallBorrowedRepresentationsRust(call, context).size > 0 ||
+    !isIrTaskTypeRust(callee.returns) ||
+    !isIrImmediateAsyncClosureSendTypeRust(callee.returns) ||
+    !callee.parameters.every((parameter) => isIrImmediateAsyncClosureSendTypeRust(parameter.type))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function collectIrModuleOneShotNativeFutureLocalBindingIdsRust(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  // A native async call produces an opaque Rust future, not FlightTask. Keep that carrier only when
+  // its complete lifetime is visible here: one immutable direct local and one later direct await in
+  // the same free async body. Counting the whole statement subtree makes every alias, argument,
+  // capture, nested-control use, and repeated await fail closed at the call's existing adapter rule.
+  const bindings = new Set<string>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function' || !declaration.async || declaration.typeParameters.length > 0) continue;
+    for (const [declarationIndex, statement] of declaration.body.entries()) {
+      if (statement.kind !== 'variable' || statement.declarations.length !== 1) continue;
+      const variable = statement.declarations[0]!;
+      if (
+        !('binding' in variable) ||
+        variable.mutable ||
+        variable.initializer?.kind !== 'call' ||
+        !isIrOneShotNativeFutureCallRust(variable.initializer, declaration, context)
+      ) {
+        continue;
+      }
+      const bindingId = variable.binding.id;
+      const referenceCount = declaration.body.reduce(
+        (count, candidate) => count + countIrStatementBindingReferencesRust(candidate, bindingId),
+        0,
+      );
+      if (referenceCount !== 1) continue;
+      const directAwaitCount = declaration.body.reduce((count, candidate, candidateIndex) => {
+        if (candidateIndex <= declarationIndex) return count;
+        const step = getIrAsyncTryDirectAwaitStepRust(candidate);
+        return count + (step && isIrExactBindingReferenceRust(step.awaitTarget, bindingId) ? 1 : 0);
+      }, 0);
+      if (directAwaitCount === 1) bindings.add(bindingId);
+    }
+  }
+  return bindings;
 }
 
 function isIrImmediateAsyncClosureSendTypeRust(type: Readonly<IrType>): boolean {
@@ -5094,6 +5190,13 @@ function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>
 // need, and a binding consumed once is left to move.
 function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   const source = emitExpression(expression, context);
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.nativeFutureLocalBindingIds.has(expression.reference.binding.id)
+  ) {
+    return source;
+  }
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
@@ -9657,6 +9760,21 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       'binding patterns require destructuring lowering before Rust emission',
       'rust-binding-pattern-lowering-required',
     );
+  if (context.nativeFutureLocalBindingIds.has(variable.binding.id)) {
+    if (variable.mutable || variable.initializer?.kind !== 'call' || context.insideProtectedTry) {
+      emissionError(
+        context,
+        `native future local ${variable.binding.name} lost its exact one-shot await evidence`,
+        'rust-native-future-task-adapter-unavailable',
+        'target-runtime',
+      );
+    }
+    const initializer = emitOwnedOperandRust(variable.initializer, {
+      ...context,
+      allowedNativeFutureCall: variable.initializer,
+    });
+    return `let ${getBindingTargetNameRust(variable.binding, context)} = ${normalizeSourceTextGrouping(initializer)};`;
+  }
   const representationType =
     variable.type?.kind === 'unknown' && variable.initializer
       ? (inferIrExpressionTypeRust(variable.initializer, context) ?? variable.type)
