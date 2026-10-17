@@ -26,7 +26,11 @@ import type {
   IrModule,
   IrTypeBindingIdentity,
 } from '../../compiler-types/src/index.js';
-import { convertPackageNameToRustCrateName, isRustCompilerKeyword } from './rustCompilerIdentity.js';
+import {
+  convertPackageNameToRustCrateName,
+  createRustCompilerModuleLocator,
+  isRustCompilerKeyword,
+} from './rustCompilerIdentity.js';
 
 export function createCompilerRustPublicBindingPlan(
   input: Readonly<CompilerRustPublicBindingPlanInput>,
@@ -41,7 +45,7 @@ export function createCompilerRustPublicBindingPlan(
   const locators = new Map(
     identities.map((identity) => [
       getRustPublicModuleIdentityKey(identity),
-      createRustPublicModuleLocator(identity, cratesByPackage.get(identity.packageName)!),
+      createRustPublicModuleLocator(identity, cratesByPackage.get(identity.packageName)!, crates.length > 1),
     ]),
   );
   assertRustPublicModuleLocatorsUnique(identities, locators);
@@ -134,39 +138,12 @@ function createRustPublicCrateIdentities(
 function createRustPublicModuleLocator(
   identity: Readonly<CompilerModuleIdentity>,
   crate: Readonly<CompilerRustPublicCrateIdentity>,
+  multiPackage: boolean,
 ): CompilerRustPublicModuleLocator {
-  const source = normalizePathPortable(identity.source);
-  const segments = source.split('/').filter((segment) => segment.length > 0 && segment !== '.');
-  const packageLeaf = identity.packageName.startsWith('@')
-    ? identity.packageName.slice(identity.packageName.indexOf('/') + 1)
-    : identity.packageName;
-  const packageRoot = segments.findIndex(
-    (segment, index) => segment === 'packages' && segments[index + 1] === packageLeaf && segments[index + 2] === 'src',
-  );
-  const sourceRoot = packageRoot >= 0 ? packageRoot + 2 : segments.indexOf('src');
-  const relative = sourceRoot >= 0 && sourceRoot < segments.length - 1 ? segments.slice(sourceRoot + 1) : segments;
-  const filename = relative.at(-1);
-  if (!filename || !/\.tsx?$/u.test(filename) || /\.d\.tsx?$/u.test(filename)) {
-    throw new TypeError(`Rust public module locator requires a runtime TypeScript source: ${identity.source}`);
-  }
-  const stem = filename.replace(/\.tsx?$/u, '');
-  const directories = relative.slice(0, -1).map(convertRustPublicModuleSegment);
-  const modulePath =
-    stem.toLowerCase() === 'index' ? directories : [...directories, convertRustPublicModuleSegment(stem)];
+  const { modulePath, source } = createRustCompilerModuleLocator(identity, {
+    multiPackage,
+  });
   return { crate, modulePath, source };
-}
-
-function convertRustPublicModuleSegment(segment: string): string {
-  const normalized = segment
-    .normalize('NFC')
-    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
-    .replace(/[^A-Za-z0-9]+/gu, '_')
-    .replace(/^_+|_+$/gu, '')
-    .toLowerCase();
-  if (normalized.length === 0)
-    throw new TypeError(`Rust public module path segment is empty after normalization: ${segment}`);
-  const identifier = /^\d/u.test(normalized) ? `_${normalized}` : normalized;
-  return isRustCompilerKeyword(identifier) ? `${identifier}_` : identifier;
 }
 
 function assertRustPublicModuleLocatorsUnique(

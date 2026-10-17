@@ -127,6 +127,38 @@ describe('createCompilerRustPublicBindingPlan', () => {
       { facade: createFacade(dashed, []), modules: [dashed, underscored] },
       'rust-public-module-collision',
     );
+
+    const moduleFile = lower('@scope/model', 'packages/model/src/values.ts', 'export const file = 1;');
+    const moduleDirectory = lower('@scope/model', 'packages/model/src/values/index.ts', 'export const directory = 2;');
+    expectPlanningFailure(
+      {
+        facade: createFacade(moduleFile, []),
+        modules: [moduleFile, moduleDirectory],
+      },
+      'rust-public-module-collision',
+    );
+  });
+
+  it('plans root indexes, nested indexes, and nested modules deterministically', () => {
+    const root = lower('@scope/model', 'packages/model/src/index.ts', 'export const root = 1;');
+    const nestedIndex = lower('@scope/model', 'packages/model/src/geometry/index.ts', 'export const nested = 2;');
+    const nestedModule = lower('@scope/model', 'packages/model/src/geometry/lineSegment.ts', 'export const line = 3;');
+    const modules = [nestedModule, root, nestedIndex];
+    const first = createCompilerRustPublicBindingPlan({
+      facade: createFacade(root, []),
+      modules,
+    });
+    const second = createCompilerRustPublicBindingPlan({
+      facade: createFacade(root, []),
+      modules: [...modules].reverse(),
+    });
+
+    expect(second).toEqual(first);
+    expect(first.modules.map((module) => [module.identity.source, module.locator.modulePath])).toEqual([
+      ['packages/model/src/geometry/index.ts', ['geometry']],
+      ['packages/model/src/geometry/lineSegment.ts', ['geometry', 'line_segment']],
+      ['packages/model/src/index.ts', []],
+    ]);
   });
 
   it('fails loudly when two facade slots normalize to one public Rust spelling', () => {

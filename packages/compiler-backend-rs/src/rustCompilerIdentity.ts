@@ -46,8 +46,56 @@ export function convertSourcePathToRustModuleName(sourcePath: string): string | 
   return isRustCompilerKeyword(moduleName) ? `${moduleName}_` : moduleName;
 }
 
+export function createRustCompilerModuleLocator(
+  identity: Readonly<{ packageName: string; source: string }>,
+  options: Readonly<{ multiPackage: boolean }>,
+): RustCompilerModuleLocator {
+  const source = normalizePathPortable(identity.source);
+  const segments = source.split('/').filter((segment) => segment.length > 0 && segment !== '.');
+  const packageLeaf = identity.packageName.startsWith('@')
+    ? identity.packageName.slice(identity.packageName.indexOf('/') + 1)
+    : identity.packageName;
+  const packageRoot = segments.findIndex(
+    (segment, index) => segment === 'packages' && segments[index + 1] === packageLeaf && segments[index + 2] === 'src',
+  );
+  const sourceRoot = packageRoot >= 0 ? packageRoot + 2 : segments.indexOf('src');
+  const relative = sourceRoot >= 0 && sourceRoot < segments.length - 1 ? segments.slice(sourceRoot + 1) : segments;
+  const filename = relative.at(-1);
+  if (!filename || !/\.tsx?$/u.test(filename) || /\.d\.tsx?$/u.test(filename)) {
+    throw new TypeError(`Rust module locator requires a runtime TypeScript source: ${identity.source}`);
+  }
+  const stem = filename.replace(/\.tsx?$/u, '');
+  const directories = relative.slice(0, -1).map(convertRustCompilerModuleSegment);
+  const index = stem.toLowerCase() === 'index';
+  const modulePath = index ? directories : [...directories, convertRustCompilerModuleSegment(stem)];
+  const crateSourcePrefix = options.multiPackage
+    ? `${convertPackageNameToRustCrateName(identity.packageName)}/src/`
+    : '';
+  const moduleFilePath = modulePath.join('/');
+  const filePath =
+    modulePath.length === 0
+      ? `${crateSourcePrefix}lib.rs`
+      : index
+        ? `${crateSourcePrefix}${moduleFilePath}/mod.rs`
+        : `${crateSourcePrefix}${moduleFilePath}.rs`;
+  return { filePath, modulePath, source };
+}
+
 export function isRustCompilerKeyword(value: string): boolean {
   return rustCompilerKeywords.has(value);
+}
+
+interface RustCompilerModuleLocator {
+  readonly filePath: string;
+  readonly modulePath: readonly string[];
+  readonly source: string;
+}
+
+function convertRustCompilerModuleSegment(segment: string): string {
+  const normalized = snakeCase(segment.normalize('NFC'));
+  if (normalized.length === 0) throw new TypeError(`Rust module path segment is empty after normalization: ${segment}`);
+  const identifier = /^\d/u.test(normalized) ? `_${normalized}` : normalized;
+  return isRustCompilerKeyword(identifier) ? `${identifier}_` : identifier;
 }
 
 function snakeCase(value: string): string {
