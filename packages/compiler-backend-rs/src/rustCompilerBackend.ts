@@ -409,6 +409,7 @@ interface EmitContext {
   borrowedClassParameterIds: ReadonlySet<string>;
   borrowedParameterRepresentations: ReadonlyMap<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>;
   callableObjectRecords: Map<string, RustCallableObjectRecord>;
+  callableOverloadRecords: Map<string, RustCallableOverloadRecord>;
   closureEvidenceByExpression: ReadonlyMap<
     Readonly<Extract<IrExpression, { kind: 'function' }>>,
     Readonly<CompilerClosureEvidence>
@@ -874,6 +875,7 @@ function emitIrModuleRustWithContext(
     borrowedClassParameterIds,
     borrowedParameterRepresentations,
     callableObjectRecords: new Map(),
+    callableOverloadRecords: new Map(),
     closureEvidenceByExpression,
     deferredBindingIds: new Set(
       ownershipEvidence.bindings.flatMap((evidence) =>
@@ -1097,6 +1099,9 @@ function emitIrModuleRustWithContext(
   });
   context.callableObjectRecords.forEach((record) => {
     lines.push('', ...emitCallableObjectRecordRust(record, context));
+  });
+  context.callableOverloadRecords.forEach((record) => {
+    lines.push('', ...emitCallableOverloadRecordRust(record));
   });
   declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
@@ -1599,6 +1604,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         )
         .join(', ')}]`;
     case 'assignment': {
+      if (isRustCallableOverloadPropertyRust(expression.left, context)) {
+        emissionRuleError(
+          context,
+          'assigning an overloaded callable property requires source-level carrier construction lowering; receive the carrier or construct it through a declared factory instead',
+          'rust-overloaded-callable-construction-unrepresented',
+        );
+      }
       const asyncMethodSelfAssignment = emitAsyncMethodSelfFieldAssignmentRust(expression, context);
       if (asyncMethodSelfAssignment) return asyncMethodSelfAssignment;
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
@@ -1949,6 +1961,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call':
+      if (isRustCallableOverloadCallRust(expression, context)) {
+        return emitRustCallableOverloadCallRust(expression, context);
+      }
       if (isIrNativeAsyncFunctionCallRust(expression, context) && context.allowedNativeFutureCall !== expression) {
         if (expression.callee.kind === 'function' && expression.callee.async && context.insideProtectedTry) {
           emissionRuleError(
@@ -6367,6 +6382,13 @@ function emitObjectExpressionRust(
   const fields = members.map((member) => {
     names.add(member.name);
     const property = properties?.find((candidate) => candidate.name === member.name);
+    if (property && hasRustCallableOverloadTypeRust(property.type)) {
+      emissionRuleError(
+        context,
+        'constructing an overloaded callable property requires source-level carrier construction lowering; receive the carrier or construct it through a declared factory instead',
+        'rust-overloaded-callable-construction-unrepresented',
+      );
+    }
     const value = emitExpression(member.value, context);
     return `${safeRustValueName(member.name)}: ${property?.optional ? `Some(${value})` : value},`;
   });
@@ -6543,6 +6565,221 @@ function getOrCreateCallableObjectRecordRust(
   };
   context.callableObjectRecords.set(key, record);
   return record;
+}
+
+interface RustCallableOverloadRecord {
+  readonly fields: readonly Readonly<{ parameters: readonly string[]; returns: string }>[];
+  readonly name: string;
+}
+
+function isRustCallableFunctionTypeRust(
+  type: Readonly<IrType>,
+): type is Readonly<Extract<IrType, { kind: 'function' }>> {
+  return type.kind === 'function';
+}
+
+function hasRustCallableOverloadTypeRust(type: Readonly<IrType>): boolean {
+  return type.kind === 'intersection' && type.types.filter(isRustCallableFunctionTypeRust).length > 1;
+}
+
+// A closed, arity-distinct overload set is representable: one callable field per declaration-order
+// signature means the checker's resolved arity selects exactly one field. Everything the checker
+// cannot distinguish this way stays on the existing representation refusals.
+function validateRustCallableOverloadTypeRust(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): readonly Readonly<Extract<IrType, { kind: 'function' }>>[] {
+  const callables = type.types.filter(isRustCallableFunctionTypeRust);
+  if (callables.length !== type.types.length) {
+    emissionRuleError(
+      context,
+      'overloaded callable values require every intersection member to be a call signature',
+      'rust-overloaded-callable-representation-unrepresented',
+    );
+  }
+  if (context.activeTypeParameters.length > 0 || callables.some((callable) => callable.typeParameters.length > 0)) {
+    emissionRuleError(
+      context,
+      'overloaded callable values require closed non-generic signature sets before Rust emission',
+      'rust-overloaded-callable-representation-unrepresented',
+    );
+  }
+  if (callables.some((callable) => callable.parameters.some((parameter) => parameter.optional || parameter.rest))) {
+    emissionRuleError(
+      context,
+      'overloaded callable values require fixed required parameters; optional or rest overloads need source-level adaptation',
+      'rust-overloaded-callable-representation-unrepresented',
+    );
+  }
+  const parameterCounts = callables.map((callable) => callable.parameters.length);
+  if (new Set(parameterCounts).size !== parameterCounts.length) {
+    emissionRuleError(
+      context,
+      'overloaded callable values require distinct parameter counts; same-arity dispatch needs checker-selected signature evidence',
+      'rust-overloaded-callable-representation-unrepresented',
+    );
+  }
+  return callables;
+}
+
+function getOrCreateCallableOverloadRecordRust(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): RustCallableOverloadRecord {
+  const callables = validateRustCallableOverloadTypeRust(type, context);
+  const key = normalizeCompilerStructuralValueCanonical(type);
+  const existing = context.callableOverloadRecords.get(key);
+  if (existing) return existing;
+  context.needsRcImport.add('Rc');
+  const record: RustCallableOverloadRecord = {
+    fields: callables.map((callable) => ({
+      parameters: callable.parameters.map((parameter) => emitType(parameter.type, context)),
+      returns: emitType(callable.returns, context),
+    })),
+    name: getGeneratedTargetNameRust('AnonymousCallableOverloads', context),
+  };
+  context.callableOverloadRecords.set(key, record);
+  return record;
+}
+
+function emitCallableOverloadRecordRust(record: Readonly<RustCallableOverloadRecord>): string[] {
+  return [
+    '#[derive(Clone)]',
+    `pub struct ${record.name} {`,
+    ...record.fields.map(
+      (field, index) =>
+        `  pub overload_${String(index)}: Rc<dyn Fn(${field.parameters.join(', ')}) -> ${field.returns}>,`,
+    ),
+    '}',
+  ];
+}
+
+function getRustCallableOverloadPropertyTypeRust(
+  property: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'intersection' }>> | undefined {
+  const objectType = inferIrExpressionTypeRust(property.object, context);
+  if (!objectType) return undefined;
+  const propertyType = getRustCallableOverloadMemberTypeRust(objectType, property.name, context, new Set());
+  return propertyType && hasRustCallableOverloadTypeRust(propertyType)
+    ? (propertyType as Readonly<Extract<IrType, { kind: 'intersection' }>>)
+    : undefined;
+}
+
+// The general property resolver requires a type-space binding, while an imported interface can carry
+// a value-space import binding. Follow the import to the declaring interface for the carrier shape;
+// the declaration itself is the authority either way.
+function getRustCallableOverloadMemberTypeRust(
+  objectType: Readonly<IrType>,
+  memberName: string,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  const resolved = resolveIrTypeAliasValueRust(objectType, context, new Set()) ?? objectType;
+  const viaProperties = getIrObjectTypePropertiesRust(resolved, context)?.find(
+    (candidate) => candidate.name === memberName,
+  )?.type;
+  if (viaProperties) return viaProperties;
+  if (resolved.kind !== 'named' || resolved.reference.kind !== 'binding') return undefined;
+  const location = getIrNamedTypeDeclarationLocationRust(
+    resolved.reference.binding as Readonly<IrTypeBindingIdentity>,
+    context,
+    context.module,
+  );
+  if (!location) return undefined;
+  const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return undefined;
+  const nextResolving = new Set(resolving).add(key);
+  if (location.declaration.kind === 'typeAlias') {
+    return getRustCallableOverloadMemberTypeRust(location.declaration.type, memberName, context, nextResolving);
+  }
+  return location.declaration.properties.find((candidate) => candidate.name === memberName)?.type;
+}
+
+function isRustCallableOverloadPropertyRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  return (
+    expression.kind === 'property' &&
+    expression.member === undefined &&
+    getRustCallableOverloadPropertyTypeRust(expression, context) !== undefined
+  );
+}
+
+function isRustCallableOverloadCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  if (expression.callee.kind === 'identifier') {
+    const calleeType = inferIrExpressionTypeRust(expression.callee, context);
+    if (calleeType && hasRustCallableOverloadTypeRust(calleeType)) {
+      emissionRuleError(
+        context,
+        'calling an overloaded callable through a local binding requires checker-selected dispatch; call the property directly',
+        'rust-overloaded-callable-dispatch-unproven',
+      );
+    }
+    return false;
+  }
+  if (expression.callee.kind !== 'property' || expression.callee.member !== undefined) return false;
+  return getRustCallableOverloadPropertyTypeRust(expression.callee, context) !== undefined;
+}
+
+function emitRustCallableOverloadCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const propertyType = getRustCallableOverloadPropertyTypeRust(expression.callee, context);
+  if (!propertyType) {
+    return emissionRuleError(
+      context,
+      'overloaded callable dispatch requires the property carrier type in this compilation',
+      'rust-overloaded-callable-dispatch-unproven',
+    );
+  }
+  const callables = validateRustCallableOverloadTypeRust(propertyType, context);
+  const signature = expression.semantics.signature;
+  if (
+    expression.optional ||
+    expression.callee.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.callee.optionalChain !== undefined ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    (signature !== undefined &&
+      (signature.providedArgumentCount === 'dynamic' || signature.providedArgumentCount !== signature.parameterCount))
+  ) {
+    emissionRuleError(
+      context,
+      `overloaded callable property ${expression.callee.name} requires one checker-resolved fixed-arity call`,
+      'rust-overloaded-callable-dispatch-unproven',
+    );
+  }
+  // An imported interface call can be lowered without checker signature evidence. The slice's
+  // fixed required parameters and distinct arities make the syntactic argument count the same
+  // selection the checker would record, so it is exact here; a spread still refuses.
+  const parameterCount =
+    signature === undefined
+      ? expression.arguments.some((argument) => argument.kind === 'spread')
+        ? emissionRuleError(
+            context,
+            `overloaded callable property ${expression.callee.name} requires a fixed argument count`,
+            'rust-overloaded-callable-dispatch-unproven',
+          )
+        : expression.arguments.length
+      : signature.parameterCount;
+  const index = callables.findIndex((callable) => callable.parameters.length === parameterCount);
+  if (index < 0) {
+    return emissionRuleError(
+      context,
+      `overloaded callable property ${expression.callee.name} has no declared overload taking ${String(parameterCount)} fixed argument(s)`,
+      'rust-overloaded-callable-dispatch-unproven',
+    );
+  }
+  const receiver = emitExpression(expression.callee.object, context);
+  const field = safeRustValueName(expression.callee.name);
+  const arguments_ = emitCallArgumentsRust(expression, context);
+  return `${receiver}.${field}.overload_${String(index)}(${arguments_.join(', ')})`;
 }
 
 function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>, context: EmitContext): string[] {
@@ -11184,11 +11421,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     }
     case 'intersection': {
       if (type.types.filter((member) => member.kind === 'function').length > 1) {
-        emissionRuleError(
-          context,
-          'overloaded callable values require one elected Rust dispatch carrier before emission',
-          'rust-overloaded-callable-representation-unrepresented',
-        );
+        return getOrCreateCallableOverloadRecordRust(type, context).name;
       }
       const scalarDomain = getIrTypePrimitiveDomainRust(type, context);
       if (scalarDomain) return emitType({ kind: 'primitive', name: scalarDomain }, context);
@@ -16533,6 +16766,7 @@ interface RustSalvageContextSnapshot {
   readonly arrayReverseObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   readonly arraySortObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   readonly callableObjectRecords: ReadonlyMap<string, RustCallableObjectRecord>;
+  readonly callableOverloadRecords: ReadonlyMap<string, RustCallableOverloadRecord>;
   readonly generatedNames: ReadonlySet<string>;
   readonly needsCellImport: ReadonlySet<'Cell'>;
   readonly needsRcImport: ReadonlySet<'Rc'>;
@@ -16656,6 +16890,7 @@ function createRustSalvageContextSnapshotRust(context: EmitContext): RustSalvage
     arrayReverseObservedCalls: new Set(context.arrayReverseObservedCalls),
     arraySortObservedCalls: new Set(context.arraySortObservedCalls),
     callableObjectRecords: new Map(context.callableObjectRecords),
+    callableOverloadRecords: new Map(context.callableOverloadRecords),
     generatedNames: new Set(context.generatedNames),
     needsCellImport: new Set(context.needsCellImport),
     needsRcImport: new Set(context.needsRcImport),
@@ -16675,6 +16910,7 @@ function restoreRustSalvageContextRust(context: EmitContext, snapshot: Readonly<
   replaceRustSalvageSetRust(context.arrayReverseObservedCalls, snapshot.arrayReverseObservedCalls);
   replaceRustSalvageSetRust(context.arraySortObservedCalls, snapshot.arraySortObservedCalls);
   replaceRustSalvageMapRust(context.callableObjectRecords, snapshot.callableObjectRecords);
+  replaceRustSalvageMapRust(context.callableOverloadRecords, snapshot.callableOverloadRecords);
   replaceRustSalvageSetRust(context.generatedNames, snapshot.generatedNames);
   replaceRustSalvageSetRust(context.needsCellImport, snapshot.needsCellImport);
   replaceRustSalvageSetRust(context.needsRcImport, snapshot.needsRcImport);
@@ -18328,6 +18564,7 @@ function emitTaggedUnionRust(
       anonymousObjectRecords: new Map(),
       anonymousUnionEnums: new Map(),
       callableObjectRecords: new Map(),
+      callableOverloadRecords: new Map(),
       generatedNames: new Set(context.generatedNames),
       objectRestRecords: new Map(),
       runtimeTypeNames: new Set(),

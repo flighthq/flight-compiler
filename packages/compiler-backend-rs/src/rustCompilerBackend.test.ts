@@ -25939,6 +25939,172 @@ describe('emitIrModuleRust module-variable refusal diagnostics', () => {
   });
 });
 
+describe('emitIrModuleRust overloaded callable carrier', () => {
+  const chooserSource = `export interface Chooser {
+    choose(value: string): string;
+    choose(value: number, radix: number): number;
+  }`;
+
+  it('emits a clone record with one callable field per declaration-order overload', () => {
+    const result = lower(
+      'overload-carrier.ts',
+      `${chooserSource}
+       export function read(chooser: Chooser, text: string): string {
+         return chooser.choose(text);
+       }
+       export function readRadix(chooser: Chooser, value: number, radix: number): number {
+         return chooser.choose(value, radix);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toMatch(/\[derive\(Clone\)\]\npub struct AnonymousCallableOverloads(?:_\d+)? \{/u);
+    expect(output).toContain('pub overload_0: Rc<dyn Fn(String) -> String>,');
+    expect(output).toContain('pub overload_1: Rc<dyn Fn(f64, f64) -> f64>,');
+    expect(output).toContain('.choose.overload_0(');
+    expect(output).toContain('.choose.overload_1(');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('dispatches through an imported interface carrier across modules', () => {
+    const api = lower('overload-api.ts', chooserSource).module;
+    const consumer = lower(
+      'overload-consumer.ts',
+      `import { Chooser } from './overload-api.js';
+       export function read(chooser: Chooser, text: string): string {
+         return chooser.choose(text);
+       }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './overload-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+
+    const apiOutput = session.emitModule(api)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+    expect(apiOutput).toContain('pub overload_1: Rc<dyn Fn(f64, f64) -> f64>,');
+    expect(consumerOutput).toContain('.choose.overload_0(');
+    expect(consumerOutput).not.toContain('AnonymousCallableOverloads');
+  });
+
+  it.each([
+    {
+      rule: 'rust-overloaded-callable-representation-unrepresented',
+      source: `export interface Chooser { choose(value: string): string; choose(value: number): number; }`,
+    },
+    {
+      rule: 'rust-overloaded-callable-representation-unrepresented',
+      source: `export interface Chooser { choose(value: string, radix?: number): string; choose(value: number): number; }`,
+    },
+    {
+      rule: 'rust-overloaded-callable-representation-unrepresented',
+      source: `export interface Chooser { choose(...values: string[]): string; choose(value: number): number; }`,
+    },
+    {
+      rule: 'rust-overloaded-callable-representation-unrepresented',
+      source: `export interface Chooser { choose<Value>(value: Value): void; choose(value: number): void; }`,
+    },
+  ])('refuses unsupported carrier shapes with $rule', ({ rule, source }) => {
+    const result = lower('overload-refused.ts', source);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(rule);
+  });
+
+  it('refuses unproven dispatch through spread, optional calls, and local bindings', () => {
+    const spread = lower(
+      'overload-spread.ts',
+      `${chooserSource}
+       export function read(chooser: Chooser, values: [string]): string {
+         return chooser.choose(...values);
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(spread))).toBe('rust-overloaded-callable-dispatch-unproven');
+
+    const optional = lower(
+      'overload-optional.ts',
+      `${chooserSource}
+       export function read(chooser: Chooser, text: string): string {
+         return chooser.choose?.(text) ?? text;
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(optional))).toBe('rust-overloaded-callable-dispatch-unproven');
+
+    const local = lower(
+      'overload-local.ts',
+      `${chooserSource}
+       export function read(chooser: Chooser, text: string): string {
+         const chosen = chooser.choose;
+         return chosen(text);
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(local))).toBe('rust-overloaded-callable-dispatch-unproven');
+  });
+
+  it('refuses constructing or assigning an overloaded callable carrier', () => {
+    const constructed = lower(
+      'overload-construct.ts',
+      `${chooserSource}
+       export function make(): Chooser {
+         return { choose(value: string): string { return value; } };
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(constructed))).toBe(
+      'rust-overloaded-callable-construction-unrepresented',
+    );
+
+    const assigned = lower(
+      'overload-assign.ts',
+      `${chooserSource}
+       export function replace(chooser: Chooser, text: string): void {
+         chooser.choose = (value: string): string => value;
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(assigned))).toBe(
+      'rust-overloaded-callable-construction-unrepresented',
+    );
+  });
+
+  it('rolls the carrier record back when a salvaged declaration fails', () => {
+    const source = `export function broken(carrier: ((value: string) => string) & ((value: number, radix: number) => number)): { value: number } {
+        return carrier as unknown as { value: number };
+      }
+      export function keep(value: number): number { return value + 1; }`;
+    const module = lower('overload-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'carrier refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'carrier refused', sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 1');
+    expect(placeholder.contents).not.toContain('AnonymousCallableOverloads');
+    expect(placeholder.contents).not.toContain('pub overload_');
+  });
+});
+
 describe('emitIrModuleRust explicit reexport grounding', () => {
   function createResolutionSession(
     modules: readonly Readonly<IrModule>[],
