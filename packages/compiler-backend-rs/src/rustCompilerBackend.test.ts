@@ -7775,6 +7775,168 @@ describe('emitIrModuleRust', () => {
     expect(failure.classification).toBe('compiler-restriction');
   });
 
+  it('preserves shared mutable Map identity with a local Rc RefCell HashMap carrier', () => {
+    const result = lower(
+      'shared-map.ts',
+      `export function aliasMap(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         alias.set("key", 2);
+         return values.size;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use std::cell::RefCell;');
+    expect(output).toContain('use std::rc::Rc;');
+    expect(output).toContain(
+      'let values: Rc<RefCell<std::collections::HashMap<String, f64>>> = Rc::new(RefCell::new(std::collections::HashMap::new()));',
+    );
+    expect(output).toContain('let alias: Rc<RefCell<std::collections::HashMap<String, f64>>> = Rc::clone(&values);');
+    expect(output).toContain('alias.borrow_mut().insert("key".to_owned(), 2.0);');
+    expect(output).toContain('values.borrow().len() as f64');
+    expect(output).not.toContain('values.clone()');
+  });
+
+  it.skipIf(!rustcAvailable)('runs aliasMap with both Map aliases observing size one', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-map.ts',
+        `export function aliasMap(): number {
+           const values = new Map<string, number>();
+           const alias = values;
+           alias.set("key", 2);
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(() => runRustSource(output, 'assert_eq!(alias_map(), 1.0);')).not.toThrow();
+  });
+
+  it('scopes shared Map get, has, delete, and clear borrows to each operation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-map-operations.ts',
+        `export function sharedMapHas(): boolean {
+           const values = new Map<string, number>();
+           const alias = values;
+           alias.set("key", 2);
+           return values.has("key");
+         }
+         export function sharedMapGet(): number | undefined {
+           const values = new Map<string, number>();
+           const alias = values;
+           alias.set("key", 2);
+           return values.get("key");
+         }
+         export function sharedMapRemove(): number {
+           const values = new Map<string, number>();
+           const alias = values;
+           alias.set("key", 2);
+           values.delete("key");
+           alias.clear();
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('values.borrow().contains_key("key")');
+    expect(output).toContain('values.borrow().get("key").cloned()');
+    expect(output).toContain('values.borrow_mut().remove("key");');
+    expect(output).toContain('alias.borrow_mut().clear();');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('lends a shared Map through one temporary mutable call borrow and reuses it afterwards', () => {
+    const provider = lower(
+      'map-provider.ts',
+      'export function fill(values: Map<string, number>): void { values.set("key", 2); }',
+    ).module;
+    const consumer = lower(
+      'alias-map-call.ts',
+      `import { fill } from './map-provider.js';
+       export function aliasMapCall(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         fill(alias);
+         return values.size;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './map-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn fill(values: &mut std::collections::HashMap<String, f64>)');
+    expect(output).toContain('fill(&mut *alias.borrow_mut());');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) {
+      expect(() => compileRustModulePair('map_provider', providerOutput, 'alias_map_call', output)).not.toThrow();
+    }
+  });
+
+  it('captures a shared Map only in a proven synchronous non-escaping closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-map-closure.ts',
+        `export function aliasMapClosure(): number {
+           const values = new Map<string, number>();
+           const alias = values;
+           const fill = (): void => { alias.set("key", 2); };
+           fill();
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let alias = Rc::clone(&alias);');
+    expect(output).toContain('alias.borrow_mut().insert("key".to_owned(), 2.0)');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('refuses shared Map borrow conflicts and observed set results before emission', () => {
+    const conflict = lower(
+      'alias-map-conflict.ts',
+      `export function aliasMapConflict(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         alias.set("size", values.size);
+         return alias.size;
+       }`,
+    ).module;
+    const observed = lower(
+      'alias-map-result.ts',
+      `export function aliasMapResult(): Map<string, number> {
+         const values = new Map<string, number>();
+         const alias = values;
+         return alias.set("key", 2);
+       }`,
+    ).module;
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(conflict)).rule).toBe(
+      'rust-reference-shared-map-borrow-conflict',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(observed)).rule).toBe(
+      'rust-reference-shared-map-mutator-result-unrepresented',
+    );
+  });
+
   it('refuses an unconstructed contextual callable-union return', () => {
     const result = lower(
       'callable-union-return.ts',

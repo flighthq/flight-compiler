@@ -86,7 +86,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-array-call-target-unresolved' })]);
   });
 
-  it('refuses imported mutation outside the focused Vec representation', () => {
+  it('plans one mutable HashMap borrow across a module boundary', () => {
     const provider = lower(
       'provider.ts',
       'export function clear(values: Map<string, number>): void { values.clear(); }',
@@ -101,9 +101,21 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       modules: [provider, consumer],
     });
 
-    expect(getModulePlan(plan, consumer).refusals).toEqual([
-      expect.objectContaining({ code: 'rust-reference-mutating-parameter-unrepresented' }),
+    expect(getModulePlan(plan, provider).callables).toEqual([
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'clear' }),
+        parameters: [{ position: 0, representation: 'mutable-borrowed-hash-map' }],
+      }),
     ]);
+    expect(getModulePlan(plan, consumer).refusals).toEqual([]);
+    expect(getModulePlan(plan, consumer).callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'clear' }),
+          parameters: [{ position: 0, representation: 'mutable-borrowed-hash-map' }],
+        }),
+      ]),
+    );
   });
 
   it('elects one shared RefCell Vec carrier for a mutated local alias group', () => {
@@ -199,6 +211,250 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(
       getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-alias-ambiguous' })]);
+  });
+
+  it('elects one shared RefCell HashMap carrier for a mutated local alias group', () => {
+    const module = lower(
+      'alias-map.ts',
+      `export function aliasMap(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         alias.set("key", 2);
+         return values.size;
+       }`,
+    );
+    const first = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] });
+    const modulePlan = getModulePlan(first, module);
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(
+      modulePlan.sharedMapBindings.map(({ binding, representation }) => [binding.name, representation]).sort(),
+    ).toEqual([
+      ['alias', 'shared-ref-cell-hash-map'],
+      ['values', 'shared-ref-cell-hash-map'],
+    ]);
+  });
+
+  it('refuses observed Map mutator results and overlapping shared Map borrows', () => {
+    const observed = lower(
+      'map-result.ts',
+      `export function mapResult(): Map<string, number> {
+         const values = new Map<string, number>();
+         const alias = values;
+         return alias.set("key", 2);
+       }`,
+    );
+    const conflict = lower(
+      'map-conflict.ts',
+      `export function mapConflict(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         alias.set("size", values.size);
+         return alias.size;
+       }`,
+    );
+    const callConflict = lower(
+      'map-call-conflict.ts',
+      `function fill(values: Map<string, number>, size: number): void { values.set("size", size); }
+       export function mapCallConflict(): number {
+         const values = new Map<string, number>();
+         const alias = values;
+         fill(alias, values.size);
+         return alias.size;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [observed] }), observed).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-map-mutator-result-unrepresented' }),
+      ]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [conflict] }), conflict).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-map-borrow-conflict' })]);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [callConflict] }), callConflict).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-map-borrow-conflict' })]);
+  });
+
+  it('refuses unsupported shared Map key and identity-valued value domains', () => {
+    const namedAlias = lower(
+      'map-named-alias.ts',
+      `type Values = Map<string, number>;
+       export function mapNamedAlias(): number {
+         const values: Values = new Map<string, number>();
+         const alias = values;
+         alias.set("key", 2);
+         return values.size;
+       }`,
+    );
+    const sameValueZeroKey = lower(
+      'map-number-key.ts',
+      `export function mapNumberKey(): number {
+         const values = new Map<number, number>();
+         const alias = values;
+         alias.set(0, 2);
+         return values.size;
+       }`,
+    );
+    const objectKey = lower(
+      'map-object-key.ts',
+      `export function mapObjectKey(): number {
+         const values = new Map<{ id: number }, number>();
+         const alias = values;
+         alias.set({ id: 1 }, 2);
+         return values.size;
+       }`,
+    );
+    const identityValue = lower(
+      'map-identity-value.ts',
+      `export function mapIdentityValue(): number {
+         const values = new Map<string, number[]>();
+         const alias = values;
+         alias.set("key", [2]);
+         return values.size;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [namedAlias] }), namedAlias).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-map-use-unrepresented' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [sameValueZeroKey] }), sameValueZeroKey)
+        .refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-map-key-unrepresented' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [objectKey] }), objectKey).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-map-key-unrepresented' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [identityValue] }), identityValue)
+        .refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-map-value-unrepresented' })]),
+    );
+  });
+
+  it('refuses shared Map iteration, dynamic calls, suspension, escape, reassignment, and ambiguous aliases', () => {
+    const cases: Array<readonly [IrModule, string]> = [
+      [
+        lower(
+          'map-iteration.ts',
+          `export function mapIteration(): number {
+             const values = new Map<string, number>();
+             const alias = values;
+             alias.set("key", 2);
+             for (const entry of values) { entry; }
+             return alias.size;
+           }`,
+        ),
+        'rust-reference-shared-map-use-unrepresented',
+      ],
+      [
+        lower(
+          'map-non-root.ts',
+          `function create(): Map<string, number> { return new Map<string, number>(); }
+           export function mapNonRoot(): number {
+             const values = create();
+             const alias = values;
+             alias.set("key", 2);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-use-unrepresented',
+      ],
+      [
+        lower(
+          'map-dynamic.ts',
+          `export function mapDynamic(mutate: (value: Map<string, number>) => void): number {
+             const values = new Map<string, number>();
+             const alias = values;
+             mutate(alias);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-call-unrepresented',
+      ],
+      [
+        lower(
+          'map-optional-call.ts',
+          `export function mapOptionalCall(mutate: ((value: Map<string, number>) => void) | undefined): number {
+             const values = new Map<string, number>();
+             const alias = values;
+             mutate?.(alias);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-call-unrepresented',
+      ],
+      [
+        lower(
+          'map-suspension.ts',
+          `export async function mapSuspension(task: Promise<void>): Promise<number> {
+             const values = new Map<string, number>();
+             const alias = values;
+             await task;
+             alias.set("key", 2);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-suspension-unrepresented',
+      ],
+      [
+        lower(
+          'map-escape.ts',
+          `export function mapEscape(consume: (callback: () => void) => void): number {
+             const values = new Map<string, number>();
+             const alias = values;
+             consume(() => alias.set("key", 2));
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-closure-escape-unrepresented',
+      ],
+      [
+        lower(
+          'map-reassignment.ts',
+          `export function mapReassignment(): number {
+             let values = new Map<string, number>();
+             const alias = values;
+             values = new Map<string, number>();
+             alias.set("key", 2);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-map-binding-reassignment-unrepresented',
+      ],
+      [
+        lower(
+          'map-ambiguous.ts',
+          `export function mapAmbiguous(flag: boolean): number {
+             const left = new Map<string, number>();
+             const right = new Map<string, number>();
+             const alias = flag ? left : right;
+             alias.set("key", 2);
+             return alias.size;
+           }`,
+        ),
+        'rust-reference-shared-map-alias-ambiguous',
+      ],
+    ];
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
   });
 
   it('requires the versioned module-resolution contract', () => {

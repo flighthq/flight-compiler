@@ -3,7 +3,11 @@ import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
-export type CompilerRustReferenceRepresentation = 'mutable-borrowed-vec' | 'shared-ref-cell-vec';
+export type CompilerRustReferenceRepresentation =
+  | 'mutable-borrowed-hash-map'
+  | 'mutable-borrowed-vec'
+  | 'shared-ref-cell-hash-map'
+  | 'shared-ref-cell-vec';
 
 export interface CompilerRustReferenceParameterPlan {
   readonly position: number;
@@ -26,7 +30,17 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-shared-array-borrow-conflict'
   | 'rust-reference-shared-array-closure-escape-unrepresented'
   | 'rust-reference-shared-array-suspension-unrepresented'
-  | 'rust-reference-shared-array-use-unrepresented';
+  | 'rust-reference-shared-array-use-unrepresented'
+  | 'rust-reference-shared-map-alias-ambiguous'
+  | 'rust-reference-shared-map-binding-reassignment-unrepresented'
+  | 'rust-reference-shared-map-borrow-conflict'
+  | 'rust-reference-shared-map-call-unrepresented'
+  | 'rust-reference-shared-map-closure-escape-unrepresented'
+  | 'rust-reference-shared-map-key-unrepresented'
+  | 'rust-reference-shared-map-mutator-result-unrepresented'
+  | 'rust-reference-shared-map-suspension-unrepresented'
+  | 'rust-reference-shared-map-use-unrepresented'
+  | 'rust-reference-shared-map-value-unrepresented';
 
 export interface CompilerRustReferenceRepresentationRefusal {
   readonly code: CompilerRustReferenceRepresentationRefusalCode;
@@ -37,13 +51,18 @@ export interface CompilerRustReferenceRepresentationRefusal {
 export interface CompilerRustReferenceModulePlan {
   readonly callables: readonly CompilerRustReferenceCallablePlan[];
   readonly module: CompilerModuleIdentity;
-  /** Bindings whose array referent is mutated locally or by a planned callee. */
+  /** Bindings whose collection referent is mutated locally or by a planned callee. */
   readonly referentMutatedBindings: readonly IrBindingIdentity[];
   readonly refusals: readonly CompilerRustReferenceRepresentationRefusal[];
   /** Local array aliases represented by one single-threaded shared RefCell carrier. */
   readonly sharedArrayBindings: readonly Readonly<{
     binding: IrBindingIdentity;
     representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-vec'>;
+  }>[];
+  /** Local Map aliases represented by one single-threaded shared RefCell carrier. */
+  readonly sharedMapBindings: readonly Readonly<{
+    binding: IrBindingIdentity;
+    representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-hash-map'>;
   }>[];
 }
 
