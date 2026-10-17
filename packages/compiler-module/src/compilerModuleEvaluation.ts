@@ -45,6 +45,30 @@ interface CompilerModuleEvaluationTraversalState {
   readonly stack: CompilerModuleEvaluationRecord[];
 }
 
+export function collectCompilerModuleLinkRequests(
+  module: Readonly<IrModule>,
+): readonly Readonly<{ imported?: string | undefined; specifier: string }>[] {
+  const requests: Array<Readonly<{ imported?: string | undefined; specifier: string }>> = [];
+  const seen = new Set<string>();
+  const add = (specifier: string, imported?: string): void => {
+    const key = `${specifier}\0${imported ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    requests.push({ ...(imported === undefined ? {} : { imported }), specifier });
+  };
+  for (const imported of module.imports) {
+    if (imported.bindings.length === 0 || imported.bindings.some((binding) => binding.imported === '*')) {
+      add(imported.specifier);
+      continue;
+    }
+    for (const binding of imported.bindings) add(imported.specifier, binding.imported);
+  }
+  for (const exported of module.exports) {
+    if ('specifier' in exported) add(exported.specifier);
+  }
+  return requests;
+}
+
 export function createCompilerModuleEvaluationPlan(
   input: Readonly<CompilerModuleEvaluationInput>,
 ): CompilerModuleEvaluationPlan {
@@ -366,7 +390,7 @@ function connectCompilerModuleEvaluationDependencies(
     }
   }
   for (const record of records.values()) {
-    const expected = getCompilerModuleEvaluationLinkedRequests(record.module);
+    const expected = collectCompilerModuleLinkRequests(record.module);
     for (const request of expected) {
       const routes = record.dependencyBySpecifier.get(request.specifier) ?? [];
       if (!routes.some((route) => doesCompilerModuleEvaluationRouteCoverRequest(route.dependency, request.imported))) {
@@ -767,30 +791,6 @@ function getCompilerModuleEvaluationRuntimeSpecifiers(module: Readonly<IrModule>
     if ('specifier' in exported && !exported.typeOnly) specifiers.add(exported.specifier);
   }
   return specifiers;
-}
-
-function getCompilerModuleEvaluationLinkedRequests(
-  module: Readonly<IrModule>,
-): readonly Readonly<{ imported?: string | undefined; specifier: string }>[] {
-  const requests: Array<Readonly<{ imported?: string | undefined; specifier: string }>> = [];
-  const seen = new Set<string>();
-  const add = (specifier: string, imported?: string): void => {
-    const key = `${specifier}\0${imported ?? ''}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    requests.push({ ...(imported === undefined ? {} : { imported }), specifier });
-  };
-  for (const imported of module.imports) {
-    if (imported.bindings.length === 0 || imported.bindings.some((binding) => binding.imported === '*')) {
-      add(imported.specifier);
-      continue;
-    }
-    for (const binding of imported.bindings) add(imported.specifier, binding.imported);
-  }
-  for (const exported of module.exports) {
-    if ('specifier' in exported) add(exported.specifier);
-  }
-  return requests;
 }
 
 function getCompilerModuleEvaluationTopLevelAwaitPath(module: Readonly<IrModule>): CompilerIrTraversalPath | undefined {

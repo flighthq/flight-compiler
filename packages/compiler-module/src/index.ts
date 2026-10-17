@@ -1,4 +1,5 @@
 export {
+  collectCompilerModuleLinkRequests,
   createCompilerModuleEvaluationPlan,
   filterCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,

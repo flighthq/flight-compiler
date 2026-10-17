@@ -5,7 +5,15 @@ import {
   isCompilerInvariantFailure,
   isCompilerTargetCompilationSmokeFailure,
 } from '../../compiler-emission/src/index.js';
-import type { CompilerBackend, CompilerDiagnostic, IrModule } from '../../compiler-types/src/index.js';
+import { isCompilerModuleEvaluationFailure } from '../../compiler-module/src/index.js';
+import type {
+  CompilerBackend,
+  CompilerDiagnostic,
+  CompilerModuleEvaluationDependency,
+  CompilerModuleEvaluationPlan,
+  CompilerModuleResolutionPlan,
+  IrModule,
+} from '../../compiler-types/src/index.js';
 import {
   compileIrModules,
   compileTypeScriptModules,
@@ -535,4 +543,229 @@ function createModule(name: string): IrModule {
     packageName: '@flighthq/math',
     source: `packages/math/src/${name.toLowerCase()}.ts`,
   };
+}
+
+describe('compileTypeScriptModules module evaluation dependencies', () => {
+  it('synthesizes a relative import route for lowered sibling sources', () => {
+    const { evaluation, result } = compileSessionSources([
+      {
+        name: 'input',
+        source: `import { helper } from './helper.js';
+                 export function use(value: number): number { return helper(value); }`,
+      },
+      { name: 'helper', source: 'export function helper(value: number): number { return value; }' },
+    ]);
+
+    expect(result.compilation.files.map(({ path: filePath }) => filePath)).toEqual(['Helper.txt', 'Input.txt']);
+    expect(getEvaluationDependencies(evaluation, 'Input')).toEqual([
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+    ]);
+  });
+
+  it('covers reexports, script-extension mapping, and index resolution', () => {
+    const { evaluation } = compileSessionSources([
+      {
+        name: 'input',
+        source: `import { helper } from './helper.mjs';
+                 export * from './helper.js';
+                 export { value } from './nested';`,
+      },
+      { name: 'helper', source: 'export function helper(value: number): number { return value; }' },
+      { name: 'nested/index', source: 'export const value: number = 1;' },
+    ]);
+
+    expect(getEvaluationDependencies(evaluation, 'Input')).toEqual([
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './helper.mjs',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './nested',
+        target: { name: 'Index', packageName: '@flighthq/math', source: 'packages/math/src/nested/index.ts' },
+      },
+    ]);
+  });
+
+  it('keeps explicit routes first and extends only their uncovered disjoint names', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+          importedNames: ['a'],
+          specifier: './helper.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const { evaluation } = compileSessionSources(
+      [
+        {
+          name: 'input',
+          source: `import { a, b } from './helper.js';
+                   export function use(): number { return a + b; }`,
+        },
+        { name: 'helper', source: 'export const a: number = 1; export const b: number = 2;' },
+      ],
+      moduleResolution,
+    );
+
+    expect(getEvaluationDependencies(evaluation, 'Input')).toEqual([
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        importedNames: ['a'],
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        importedNames: ['b'],
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+    ]);
+  });
+
+  it('synthesizes nothing when an explicit whole route already covers the specifier', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+          specifier: './helper.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const { evaluation } = compileSessionSources(
+      [
+        {
+          name: 'input',
+          source: `import { a, b } from './helper.js';
+                   export function use(): number { return a + b; }`,
+        },
+        { name: 'helper', source: 'export const a: number = 1; export const b: number = 2;' },
+      ],
+      moduleResolution,
+    );
+
+    expect(getEvaluationDependencies(evaluation, 'Input')).toEqual([
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+    ]);
+  });
+
+  it('covers repeated and disjoint requests with one whole route', () => {
+    const { evaluation } = compileSessionSources([
+      {
+        name: 'input',
+        source: `import { a } from './helper.js';
+                 import { b } from './helper.js';
+                 import { a as again } from './helper.js';
+                 export function use(): number { return a + b + again; }`,
+      },
+      { name: 'helper', source: 'export const a: number = 1; export const b: number = 2;' },
+    ]);
+
+    expect(getEvaluationDependencies(evaluation, 'Input')).toEqual([
+      {
+        importer: { name: 'Input', packageName: '@flighthq/math', source: 'packages/math/src/input.ts' },
+        specifier: './helper.js',
+        target: { name: 'Helper', packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      name: 'an unresolved relative request',
+      sources: [{ name: 'input', source: "import { missing } from './missing.js'; export const value = missing;" }],
+    },
+    {
+      name: 'an ambiguous relative request',
+      sources: [
+        { name: 'input', source: "export { value } from './helper';" },
+        { name: 'helper', source: 'export const value: number = 1;' },
+        { name: 'helper/index', source: 'export const value: number = 2;' },
+      ],
+    },
+    {
+      name: 'a bare specifier without an explicit edge',
+      sources: [{ name: 'input', source: "import { value } from '@flighthq/other'; export const read = value;" }],
+    },
+  ])('keeps $name a structured evaluation failure', ({ sources }) => {
+    let failure: unknown;
+    try {
+      compileSessionSources(sources);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(isCompilerModuleEvaluationFailure(failure)).toBe(true);
+    expect(failure).toMatchObject({ code: 'missing-dependency' });
+  });
+
+  it('is deterministic across identical compilations', () => {
+    const sources = [
+      { name: 'input', source: "import { helper } from './helper.js'; export const value = helper(1);" },
+      { name: 'helper', source: 'export function helper(value: number): number { return value; }' },
+    ];
+    const first = compileSessionSources(sources);
+    const second = compileSessionSources(sources);
+
+    expect(second.evaluation).toEqual(first.evaluation);
+    expect(second.result).toEqual(first.result);
+  });
+});
+
+function compileSessionSources(
+  sources: readonly Readonly<{ name: string; source: string }>[],
+  moduleResolution?: CompilerModuleResolutionPlan,
+): Readonly<{ evaluation: CompilerModuleEvaluationPlan; result: ReturnType<typeof compileTypeScriptModules> }> {
+  let evaluation: CompilerModuleEvaluationPlan | undefined;
+  const backend: CompilerBackend = {
+    createEmissionSession: (context) => {
+      evaluation = context.moduleEvaluation;
+      return {
+        emitModule: (subject) => [{ contents: subject.name, path: `${subject.name}.txt` }],
+      };
+    },
+    emitModule: () => [],
+    name: 'session-fixture',
+  };
+  const result = compileTypeScriptModules({
+    backend,
+    backendOptions: {},
+    ...(moduleResolution ? { moduleResolution } : {}),
+    sources: sources.map(({ name, source }) => ({
+      packageName: '@flighthq/math',
+      sourceFile: parseTypeScriptSource(`/flight/packages/math/src/${name}.ts`, source),
+      upstreamDirectory: '/flight',
+    })),
+  });
+  if (!evaluation) throw new Error('expected an emission session');
+  return { evaluation, result };
+}
+
+function getEvaluationDependencies(
+  evaluation: Readonly<CompilerModuleEvaluationPlan>,
+  moduleName: string,
+): readonly Readonly<Omit<CompilerModuleEvaluationDependency, 'evaluation'>>[] {
+  return (evaluation.modules.find(({ module }) => module.name === moduleName)?.dependencies ?? []).map(
+    ({ evaluation: _evaluation, ...dependency }) => dependency,
+  );
 }

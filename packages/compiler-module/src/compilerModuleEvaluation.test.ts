@@ -10,6 +10,7 @@ import type {
   IrModule,
 } from '../../compiler-types/src/index.js';
 import {
+  collectCompilerModuleLinkRequests,
   createCompilerModuleEvaluationPlan,
   filterCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,
@@ -649,3 +650,26 @@ function lowerModule(file: string, source: string): IrModule {
     { packageName: '@flighthq/module', upstreamDirectory: '/flight' },
   ).module;
 }
+
+describe('collectCompilerModuleLinkRequests', () => {
+  it('enumerates named, namespace, and reexport requests once in source order', () => {
+    const module = lowerModule(
+      'requests.ts',
+      `import { a, b } from './named.js';
+       import * as namespace from './namespace.js';
+       import { a as again } from './named.js';
+       export { c } from './reexport.js';
+       export * from './star.js';
+       export type { T } from './type-only.js';`,
+    );
+
+    expect(collectCompilerModuleLinkRequests(module)).toEqual([
+      { imported: 'a', specifier: './named.js' },
+      { imported: 'b', specifier: './named.js' },
+      { specifier: './namespace.js' },
+      { specifier: './reexport.js' },
+      { specifier: './star.js' },
+      { specifier: './type-only.js' },
+    ]);
+  });
+});
