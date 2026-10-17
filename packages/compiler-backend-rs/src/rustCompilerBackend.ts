@@ -34,6 +34,7 @@ import {
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
+  getIrSwitchCaseCompletion,
   isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -224,6 +225,18 @@ interface RustDiscriminatedNominalUnionIfElsePlan {
   readonly consequent: RustDiscriminatedNominalUnionBranch;
   readonly otherwise: RustDiscriminatedNominalUnionBranch;
   readonly test: string;
+}
+
+interface RustDiscriminatedNominalUnionSwitchCasePlan {
+  readonly branch: RustDiscriminatedNominalUnionBranch;
+  readonly switchCase: Readonly<IrSwitchCase>;
+  readonly variantName: string;
+}
+
+interface RustDiscriminatedNominalUnionSwitchPlan {
+  readonly binding: Readonly<IrBindingIdentity>;
+  readonly cases: readonly [RustDiscriminatedNominalUnionSwitchCasePlan, RustDiscriminatedNominalUnionSwitchCasePlan];
+  readonly owner: Readonly<IrTypeReference>;
 }
 
 interface RustOptionalGeneratedEnumAllocation {
@@ -529,6 +542,7 @@ interface EmitContext {
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
   discriminatedNominalUnionAliasBindingIds: ReadonlySet<string>;
   discriminatedNominalUnionBranch?: RustDiscriminatedNominalUnionBranch | undefined;
+  discriminatedNominalUnionEligibleSwitchOrigins: ReadonlySet<string>;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
   primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
@@ -842,6 +856,8 @@ function emitIrModuleRustWithContext(
   assertArrayCallbackInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
   assertArraySortInvocationSemanticsRust(sourceModule);
+  const discriminatedNominalUnionEligibleSwitchOrigins =
+    collectRustDiscriminatedNominalUnionEligibleSwitchOriginsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
@@ -1147,6 +1163,7 @@ function emitIrModuleRustWithContext(
     ),
     discriminatedNominalUnionAliasBindingIds,
     discriminatedNominalUnionBranch: undefined,
+    discriminatedNominalUnionEligibleSwitchOrigins,
     primitiveUnionEnums,
     primitiveUnionBindingIds,
     runtimeTypeNames: new Set<string>(),
@@ -9711,6 +9728,43 @@ function collectRustDiscriminatedNominalUnionAliasBindingIds(module: Readonly<Ir
   return result;
 }
 
+function collectRustDiscriminatedNominalUnionEligibleSwitchOriginsRust(
+  module: Readonly<IrModule>,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    statement(statement) {
+      if (statement.kind !== 'switch') return;
+      const origin = getRustDiscriminatedNominalUnionSwitchOriginRust(statement);
+      if (
+        origin &&
+        statement.cases.every((switchCase) => {
+          const completion = getIrSwitchCaseCompletion(switchCase, statement.label?.id);
+          return completion.kind === 'abrupt' || completion.kind === 'localBreak';
+        })
+      ) {
+        result.add(origin);
+      }
+    },
+  });
+  return result;
+}
+
+function getRustDiscriminatedNominalUnionSwitchOriginRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>,
+): string | undefined {
+  const origin = statement.origin;
+  return origin
+    ? JSON.stringify([
+        origin.packageName,
+        normalizePathPortable(origin.source),
+        origin.line,
+        origin.column,
+        origin.fingerprint,
+      ])
+    : undefined;
+}
+
 function collectIrModuleAssignableBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
   const result = new Set<string>();
   analyzeIrModuleTraversal(module, {
@@ -9972,6 +10026,172 @@ function getRustDiscriminatedNominalUnionIfElsePlanRust(
   };
 }
 
+function getRustDiscriminatedNominalUnionSwitchPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>,
+  context: EmitContext,
+): RustDiscriminatedNominalUnionSwitchPlan | undefined {
+  const property = statement.expression.kind === 'property' ? statement.expression : undefined;
+  const subject = property?.object.kind === 'identifier' ? property.object : undefined;
+  const rejectedSubject =
+    statement.expression.kind === 'element' && statement.expression.object.kind === 'identifier'
+      ? statement.expression.object
+      : undefined;
+  const syntacticReference = subject?.reference ?? rejectedSubject?.reference;
+  const syntacticBinding = syntacticReference?.kind === 'binding' ? syntacticReference.binding : undefined;
+  const evidenceBinding = statement.cases.find((switchCase) => switchCase.unionMemberTest)?.unionMemberTest?.binding;
+  const testedBinding = evidenceBinding ?? syntacticBinding;
+  if (!testedBinding) return undefined;
+  const declaredType = context.bindingTypes.get(testedBinding.id);
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    representation.sentinels.kind !== 'none' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
+  const origin = getRustDiscriminatedNominalUnionSwitchOriginRust(statement);
+  if (
+    context.discriminatedNominalUnionBranch !== undefined ||
+    !origin ||
+    !context.discriminatedNominalUnionEligibleSwitchOrigins.has(origin) ||
+    statement.subjectDomain !== 'string' ||
+    statement.cases.length !== 2 ||
+    statement.cases.some((switchCase) => !switchCase.expression) ||
+    !property ||
+    property.optional ||
+    property.optionalChain !== undefined ||
+    property.namespaceMember !== undefined ||
+    property.structuralAccess !== undefined ||
+    !subject ||
+    subject.reference.kind !== 'binding' ||
+    subject.reference.binding.id !== testedBinding.id ||
+    context.nativeAsyncFunction ||
+    context.discriminatedNominalUnionAliasBindingIds.has(testedBinding.id) ||
+    context.moduleStateBindings.has(testedBinding.id) ||
+    isRustBindingReferencePlannedRust(testedBinding.id, context) ||
+    context.reboundBindingIds.has(testedBinding.id) ||
+    context.referentMutatedBindingIds.has(testedBinding.id) ||
+    statement.cases.some(hasRustDiscriminatedNominalUnionSwitchCaseBoundaryRust)
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+  const plan = createRustDiscriminatedNominalEnumPlanRust(declaredType, property.name, context);
+  if (!plan) refuseRustDiscriminatedNominalArmExtractionRust(context);
+  const casePlans = statement.cases.map((switchCase) => {
+    const expression = switchCase.expression!;
+    const literal =
+      expression.kind === 'literal' && typeof expression.value === 'string' ? expression.value : undefined;
+    const evidence = switchCase.unionMemberTest;
+    const evidenceIdentity = evidence ? getIrExactNominalRecordIdentityRust(evidence.member, context) : undefined;
+    const matches =
+      literal !== undefined && evidenceIdentity
+        ? plan.valueVariants.filter(
+            (variant) => variant.tagValue === literal && variant.identity.key === evidenceIdentity.key,
+          )
+        : [];
+    if (
+      !evidence ||
+      evidence.whenResult !== true ||
+      evidence.binding.id !== testedBinding.id ||
+      !evidenceIdentity ||
+      matches.length !== 1 ||
+      !hasRustDiscriminatedNominalUnionSwitchCaseNarrowingRust(
+        switchCase,
+        testedBinding.id,
+        evidenceIdentity.key,
+        context,
+      )
+    ) {
+      refuseRustDiscriminatedNominalArmExtractionRust(context);
+    }
+    const variant = matches[0]!;
+    return {
+      branch: {
+        bindingId: evidence.binding.id,
+        direct: true,
+        expectedIdentityKey: evidenceIdentity.key,
+        ownerIdentityKey: plan.ownerIdentity.key,
+        tagName: plan.tagName,
+      },
+      switchCase,
+      variantName: variant.name,
+    } satisfies RustDiscriminatedNominalUnionSwitchCasePlan;
+  });
+  if (
+    casePlans.length !== 2 ||
+    new Set(casePlans.map((casePlan) => casePlan.branch.expectedIdentityKey)).size !== 2 ||
+    plan.valueVariants.some(
+      (variant) => !casePlans.some((casePlan) => casePlan.branch.expectedIdentityKey === variant.identity.key),
+    )
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+  return {
+    binding: testedBinding,
+    cases: [casePlans[0]!, casePlans[1]!],
+    owner: plan.owner,
+  };
+}
+
+function hasRustDiscriminatedNominalUnionSwitchCaseBoundaryRust(switchCase: Readonly<IrSwitchCase>): boolean {
+  let found = false;
+  for (const statement of switchCase.statements) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        found ||=
+          expression.kind === 'await' ||
+          expression.kind === 'conditional' ||
+          expression.kind === 'function' ||
+          (expression.kind === 'binary' &&
+            (expression.operator === '&&' || expression.operator === '||' || expression.operator === '??'));
+      },
+      statement(nested) {
+        found ||=
+          (nested.kind === 'block' && nested.label !== undefined) ||
+          nested.kind === 'do' ||
+          nested.kind === 'for' ||
+          nested.kind === 'forIn' ||
+          nested.kind === 'forOf' ||
+          nested.kind === 'if' ||
+          nested.kind === 'switch' ||
+          nested.kind === 'throw' ||
+          nested.kind === 'try' ||
+          nested.kind === 'while';
+      },
+    });
+  }
+  return found;
+}
+
+function hasRustDiscriminatedNominalUnionSwitchCaseNarrowingRust(
+  switchCase: Readonly<IrSwitchCase>,
+  bindingId: string,
+  expectedIdentityKey: string,
+  context: EmitContext,
+): boolean {
+  let valid = true;
+  for (const statement of switchCase.statements) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (
+          expression.kind !== 'identifier' ||
+          expression.reference.kind !== 'binding' ||
+          expression.reference.binding.id !== bindingId
+        ) {
+          return;
+        }
+        const identity = expression.narrowedType
+          ? getIrExactNominalRecordIdentityRust(expression.narrowedType, context)
+          : undefined;
+        valid &&= identity?.key === expectedIdentityKey;
+      },
+    });
+  }
+  return valid;
+}
+
 function refuseRustDiscriminatedNominalUnionMemberTestIfCandidateRust(
   evidence: Readonly<IrUnionMemberTestEvidence>,
   context: EmitContext,
@@ -10212,7 +10432,7 @@ function refuseRustDualSentinelNominalArmExtractionRust(context: EmitContext): n
 function refuseRustDiscriminatedNominalArmExtractionRust(context: EmitContext): never {
   emissionRuleError(
     context,
-    'discriminated nominal arm extraction requires one stable direct binding, an explicit two-branch strict literal-tag test over exactly two non-generic named record arms, exact branch-local checker evidence, and value-safe clone ownership',
+    'discriminated nominal arm extraction requires one stable direct binding, explicit exhaustive two-branch literal-tag control flow over exactly two non-generic named record arms, exact branch-local checker evidence, and value-safe clone ownership',
     'rust-discriminated-nominal-arm-extraction-unrepresented',
   );
 }
@@ -13651,6 +13871,35 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`return ${normalizeSourceTextGrouping(emitContextualReturnValueRust(statement.expression, context))};`];
     }
     case 'switch': {
+      const discriminated = getRustDiscriminatedNominalUnionSwitchPlanRust(statement, context);
+      if (discriminated) {
+        const owner = emitType(discriminated.owner, context);
+        const first = discriminated.cases[0];
+        const second = discriminated.cases[1];
+        const test = `matches!(&${getBindingTargetNameRust(discriminated.binding, context)}, ${owner}::${first.variantName}(_))`;
+        return [
+          `${emitControlFlowLabelRust(statement.label)}{`,
+          ...indentSourceLines([
+            `if ${test} {`,
+            ...indentSourceLines(
+              emitIrSwitchCaseStatementsRust(first.switchCase, statement.label, {
+                ...context,
+                discriminatedNominalUnionBranch: first.branch,
+              }),
+            ),
+            '}',
+            'else {',
+            ...indentSourceLines(
+              emitIrSwitchCaseStatementsRust(second.switchCase, statement.label, {
+                ...context,
+                discriminatedNominalUnionBranch: second.branch,
+              }),
+            ),
+            '}',
+          ]),
+          '}',
+        ];
+      }
       const name = getGeneratedTargetNameRust('switch_value', context);
       const cases = statement.cases.filter((switchCase) => switchCase.expression);
       const otherwise = statement.cases.find((switchCase) => !switchCase.expression);

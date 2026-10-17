@@ -33788,6 +33788,93 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output.match(/matches!\(&choice/gu)).toHaveLength(1);
   });
 
+  it('extracts exact discriminated record arms through exhaustive switch consuming positions', () => {
+    const result = lower(
+      'discriminated-nominal-union-switch.ts',
+      `interface Alpha { readonly kind: 'alpha'; readonly value: number }
+       interface Beta { readonly kind: 'beta'; readonly count: number }
+       type Choice = Alpha | Beta;
+       interface Box { alpha: Alpha; choice: Choice }
+       function consumeAlpha(_value: Alpha): number { return 1; }
+       function consumeBeta(_value: Beta): number { return 2; }
+       function consumeChoice(_value: Choice): number { return 3; }
+       export function split(choice: Choice, box: Box): number {
+         let result = 0;
+         switch (choice.kind) {
+           case 'alpha': {
+             let local: Alpha = choice;
+             local = choice;
+             box.alpha = choice;
+             consumeAlpha(choice);
+             const raw: Choice = choice;
+             box.choice = choice;
+             consumeChoice(choice);
+             consumeChoice(raw);
+             result = local.value;
+             break;
+           }
+           case 'beta':
+             result = consumeBeta(choice);
+             break;
+         }
+         return result;
+       }
+       export function keep(choice: Choice): Choice {
+         switch (choice.kind) {
+           case 'alpha': return choice;
+           case 'beta': return choice;
+         }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const alpha = 'match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }';
+    const beta = 'match &choice { Choice::Beta(value) => value.clone(), _ => unreachable!() }';
+    expect(output).toContain('if matches!(&choice, Choice::Alpha(_)) {');
+    expect(output).toContain(`let mut local: Alpha = ${alpha};`);
+    expect(output).toContain(`local = ${alpha}`);
+    expect(output).toContain(`box_.alpha = ${alpha}`);
+    expect(output).toContain(`consume_alpha(${alpha})`);
+    expect(output).toContain(`result = consume_beta(${beta})`);
+    expect(output).toContain('let raw: Choice = choice.clone();');
+    expect(output).toContain('box_.choice = choice.clone()');
+    expect(output).toContain('consume_choice(choice.clone())');
+    expect(output).toContain('consume_choice(raw)');
+    expect(output.match(/if matches!\(&choice, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(2);
+    expect(output).not.toContain('switch_value');
+    expect(output).not.toContain('choice.kind() ==');
+    expect(output.match(/return choice\.clone\(\);/gu)).toHaveLength(2);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('preserves discriminated switch case source order and allocated collision variants', () => {
+    const result = lower(
+      'discriminated-nominal-union-switch-order.ts',
+      `interface A_B { readonly tag: 'first'; readonly left: number }
+       interface AB { readonly tag: 'second'; readonly right: number }
+       type Choice = A_B | AB;
+       function first(_value: A_B): number { return 1; }
+       function second(_value: AB): number { return 2; }
+       export function select(choice: Choice): number {
+         switch (choice.tag) {
+           case 'second': return second(choice);
+           case 'first': return first(choice);
+         }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('AB(AB)');
+    expect(output).toContain('AB2(AB_2)');
+    expect(output).toContain('if matches!(&choice, Choice::AB2(_)) {');
+    expect(output).toContain('Choice::AB2(value) => value.clone()');
+    expect(output).toContain('Choice::AB(value) => value.clone()');
+    expect(output.indexOf('return second(')).toBeLessThan(output.indexOf('return first('));
+    expect(output.match(/matches!\(&choice/gu)).toHaveLength(1);
+  });
+
   it('keeps canonical discriminated owner and arm identity through a type reexport', () => {
     const recordsSource = ts.createSourceFile(
       '/flight/packages/math/src/discriminated-records.ts',
@@ -33807,11 +33894,13 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     );
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/discriminated-consumer.ts',
-      `import type { Choice } from './discriminated-facade.js';
+      `import type { Alpha, Beta, Choice } from './discriminated-facade.js';
        import { alpha, beta } from './discriminated-records.js';
        export function split(choice: Choice): number {
-         if (choice.kind === 'alpha') { return alpha(choice); }
-         else { return beta(choice); }
+         switch (choice.kind) {
+           case 'alpha': return alpha(choice);
+           case 'beta': return beta(choice);
+         }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -33862,6 +33951,37 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     const records = recordsResult!.module;
     const facade = facadeResult!.module;
     const consumer = consumerResult!.module;
+    const split = consumer.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'split',
+    );
+    const statement = split?.kind === 'function' ? split.body[0] : undefined;
+    const memberTypes = ['Alpha', 'Beta'].map((name): IrType | undefined => {
+      const imported = consumer.imports
+        .flatMap((candidate) => candidate.bindings)
+        .find((candidate) => candidate.typeOnly && candidate.imported === name);
+      return imported
+        ? { kind: 'named', reference: { binding: imported.binding, kind: 'binding', path: [] }, typeArguments: [] }
+        : undefined;
+    });
+    if (memberTypes.some((member) => !member) || split?.kind !== 'function') {
+      throw new Error('expected imported nominal union declarations');
+    }
+    if (statement?.kind !== 'switch' || statement.cases.length !== 2) {
+      throw new Error('expected imported discriminated switch');
+    }
+    // The backend boundary requires checker-authored proof. Supply the cross-module proof explicitly
+    // here so this test isolates canonical import/reexport identity from semantic evidence collection.
+    for (const [index, switchCase] of statement.cases.entries()) {
+      const member = memberTypes[index]!;
+      Object.assign(switchCase, {
+        unionMemberTest: { binding: split.parameters[0]!.binding, member: structuredClone(member), whenResult: true },
+      });
+      const returned = switchCase.statements[0];
+      const call = returned?.kind === 'return' ? returned.expression : undefined;
+      const use = call?.kind === 'call' ? call.arguments[0] : undefined;
+      if (use?.kind !== 'identifier') throw new Error('expected imported discriminated case use');
+      Object.assign(use, { narrowedType: structuredClone(member) });
+    }
     const output = createRustCompilerBackend().createEmissionSession!({
       moduleEvaluation: emptyModuleEvaluation,
       moduleResolution,
@@ -33872,7 +33992,173 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain('if matches!(&choice, Choice::Alpha(_)) {');
     expect(output).toContain('match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }');
     expect(output).toContain('match &choice { Choice::Beta(value) => value.clone(), _ => unreachable!() }');
+    expect(output.match(/if matches!\(&choice, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(1);
     expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
+    [
+      'a default clause',
+      `switch (choice.kind) {
+         case 'alpha': return alpha(choice);
+         case 'beta': return beta(choice);
+         default: return 0;
+       }`,
+    ],
+    ['one explicit case', `switch (choice.kind) { case 'alpha': return alpha(choice); } return 0;`],
+    [
+      'three explicit cases',
+      `switch (choice.kind) {
+         case 'alpha': return alpha(choice);
+         case 'beta': return beta(choice);
+         case 'alpha': return alpha(choice);
+       }`,
+    ],
+    [
+      'source fallthrough',
+      `switch (choice.kind) {
+         case 'alpha': alpha(choice);
+         case 'beta': return 0;
+       }`,
+    ],
+    [
+      'nested control flow',
+      `switch (choice.kind) {
+         case 'alpha': if (flag) return alpha(choice); return 0;
+         case 'beta': return beta(choice);
+       }`,
+    ],
+    [
+      'a closure extraction',
+      `switch (choice.kind) {
+         case 'alpha': { const read = () => alpha(choice); return read(); }
+         case 'beta': return beta(choice);
+       }`,
+    ],
+    [
+      'a computed discriminant',
+      `switch (choice['kind']) {
+         case 'alpha': return alpha(choice);
+         case 'beta': return beta(choice);
+       }`,
+    ],
+  ])('refuses an exhaustive discriminated switch with %s', (_name, body) => {
+    const result = lower(
+      'discriminated-nominal-union-switch-refusal.ts',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice, flag: boolean): number { ${body} }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
+  });
+
+  it('refuses discriminated switch extraction across native async and await boundaries', () => {
+    const result = lower(
+      'discriminated-nominal-union-switch-async-refusal.ts',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export async function split(choice: Choice, task: Promise<void>): Promise<number> {
+         switch (choice.kind) {
+           case 'alpha': await task; return alpha(choice);
+           case 'beta': return beta(choice);
+         }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'an alias binding',
+      `const alias: Choice = choice;
+       switch (alias.kind) { case 'alpha': return alpha(alias); case 'beta': return beta(alias); }`,
+    ],
+    [
+      'a rebound binding',
+      `choice = replacement;
+       switch (choice.kind) { case 'alpha': return alpha(choice); case 'beta': return beta(choice); }`,
+    ],
+    [
+      'a property-held union',
+      `switch (box.choice.kind) {
+         case 'alpha': return alpha(box.choice);
+         case 'beta': return beta(box.choice);
+       }`,
+    ],
+  ])('refuses an exhaustive discriminated switch over %s', (_name, body) => {
+    const result = lower(
+      'discriminated-nominal-union-switch-binding-refusal.ts',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       interface Box { choice: Choice }
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice, replacement: Choice, box: Box): number { ${body} }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'mutable tags',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; count: number }`,
+    ],
+    [
+      'optional tags',
+      `interface Alpha { readonly kind?: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }`,
+    ],
+    [
+      'ambiguous tags',
+      `interface Alpha { readonly kind: 'same'; value: number }
+       interface Beta { readonly kind: 'same'; count: number }`,
+    ],
+    [
+      'clone-unsafe payloads',
+      `interface Alpha { readonly kind: 'alpha'; values: number[] }
+       interface Beta { readonly kind: 'beta'; count: number }`,
+    ],
+  ])('refuses an exhaustive discriminated switch with %s', (_name, declarations) => {
+    const alphaTag = _name === 'ambiguous tags' ? 'same' : 'alpha';
+    const betaTag = _name === 'ambiguous tags' ? 'same' : 'beta';
+    const result = lower(
+      'discriminated-nominal-union-switch-type-refusal.ts',
+      `${declarations}
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         switch (choice.kind) {
+           case '${alphaTag}': return alpha(choice);
+           case '${betaTag}': return beta(choice);
+         }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
   });
 
   it.each([
@@ -34159,6 +34445,80 @@ export function split(choice: Choice): number {
     });
   });
 
+  it('requires exact case coverage and per-use narrowing evidence for discriminated switches', () => {
+    const source = `interface Alpha { readonly kind: 'alpha'; value: number }
+interface Beta { readonly kind: 'beta'; count: number }
+type Choice = Alpha | Beta;
+function alpha(_value: Alpha): number { return 1; }
+function beta(_value: Beta): number { return 2; }
+export function split(choice: Choice): number {
+  switch (choice.kind) {
+    case 'alpha': return alpha(choice);
+    case 'beta': return beta(choice);
+  }
+}`;
+    const getSwitchAndUse = (module: IrModule, caseIndex: number) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'split',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const switchCase = statement?.kind === 'switch' ? statement.cases[caseIndex] : undefined;
+      const returned = switchCase?.statements[0];
+      const call = returned?.kind === 'return' ? returned.expression : undefined;
+      const use = call?.kind === 'call' ? call.arguments[0] : undefined;
+      if (statement?.kind !== 'switch' || !switchCase || use?.kind !== 'identifier') {
+        throw new Error('expected exact discriminated switch use');
+      }
+      return { statement, switchCase, use };
+    };
+    const expectRefusal = (mutate: (module: IrModule) => void) => {
+      const module = structuredClone(lower('discriminated-nominal-union-switch-evidence.ts', source).module);
+      mutate(module);
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+        'rust-discriminated-nominal-arm-extraction-unrepresented',
+      );
+    };
+
+    expectRefusal((module) => {
+      const { switchCase } = getSwitchAndUse(module, 0);
+      delete (switchCase as { unionMemberTest?: unknown }).unionMemberTest;
+    });
+    expectRefusal((module) => {
+      const { switchCase } = getSwitchAndUse(module, 0);
+      const evidence = switchCase.unionMemberTest;
+      if (!evidence) throw new Error('expected member-test evidence');
+      (evidence as { whenResult: boolean }).whenResult = false;
+    });
+    expectRefusal((module) => {
+      const first = getSwitchAndUse(module, 0).switchCase.unionMemberTest;
+      const second = getSwitchAndUse(module, 1).switchCase.unionMemberTest;
+      if (!first || !second) throw new Error('expected both member-test proofs');
+      (second as { member: IrType }).member = structuredClone(first.member);
+    });
+    expectRefusal((module) => {
+      const { switchCase } = getSwitchAndUse(module, 1);
+      if (switchCase.expression?.kind !== 'literal') throw new Error('expected literal case');
+      (switchCase.expression as { value: boolean | number | string | null }).value = 'alpha';
+    });
+    expectRefusal((module) => {
+      const { use } = getSwitchAndUse(module, 0);
+      delete (use as { narrowedType?: IrType }).narrowedType;
+    });
+    expectRefusal((module) => {
+      const { use } = getSwitchAndUse(module, 0);
+      const choice = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Choice',
+      );
+      const beta = choice?.kind === 'typeAlias' && choice.type.kind === 'union' ? choice.type.types[1] : undefined;
+      if (!beta) throw new Error('expected Beta member');
+      (use as { narrowedType?: IrType }).narrowedType = structuredClone(beta);
+    });
+    expectRefusal((module) => {
+      const { statement } = getSwitchAndUse(module, 0);
+      delete (statement as { origin?: unknown }).origin;
+    });
+  });
+
   it('keeps discriminated refusal output deterministic and rolls salvage state back per declaration', () => {
     const source = `interface Alpha { readonly kind: 'alpha'; readonly values: number[] }
 interface Beta { readonly kind: 'beta'; readonly count: number }
@@ -34166,8 +34526,10 @@ type Choice = Alpha | Beta;
 function alpha(_value: Alpha): number { return 1; }
 function beta(_value: Beta): number { return 2; }
 export function broken(choice: Choice): number {
-  if (choice.kind === 'alpha') return alpha(choice);
-  else return beta(choice);
+  switch (choice.kind) {
+    case 'alpha': return alpha(choice);
+    case 'beta': return beta(choice);
+  }
 }
 export function keep(value: Beta): Choice { return value; }`;
     const module = lower('discriminated-nominal-union-salvage.ts', source).module;
@@ -34226,8 +34588,10 @@ export function keep(value: Beta): Choice { return value; }`;
        function alpha(_value: Alpha): number { return 1; }
        function beta(_value: Beta): number { return 2; }
        export function split(choice: Choice): number {
-         if (choice.kind === 'alpha') return alpha(choice);
-         else return beta(choice);
+         switch (choice.kind) {
+           case 'alpha': return alpha(choice);
+           case 'beta': return beta(choice);
+         }
        }`,
     ).module;
     expect(getEmissionRule(() => emitIrModuleRust(member))).toBe('rust-union-member-type-mismatch');
