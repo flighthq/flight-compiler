@@ -3732,28 +3732,32 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'mixed task and scalar conditional',
       '\nexport async function choose(task: Promise<number>, taskFirst: boolean): Promise<number> { return taskFirst ? task : 1; }',
       'mixes task and value arms',
+      'rust-async-task-carrier-unrepresented',
     ],
     [
       'nested mixed task and scalar conditional',
       '\nexport async function choose(first: Promise<number>, second: Promise<number>, pick: number): Promise<number> { return pick === 0 ? first : pick === 1 ? second : 1; }',
       'mixes task and value arms',
+      'rust-async-task-carrier-unrepresented',
     ],
     [
       'erased mixed task and scalar conditional',
       '\nexport async function choose(task: Promise<number>, taskFirst: boolean): Promise<number> { return taskFirst ? task as any : 1; }',
-      'mixes task and value arms',
+      'cast to unknown',
+      'rust-cast-requires-type-directed-lowering',
     ],
     [
       'contextual task-typed object',
       '\nexport async function create(): Promise<{ value: number }> { return { value: 1 }; }',
       'contextual Promise type',
+      'rust-async-task-carrier-unrepresented',
     ],
-  ])('refuses an async return with %s before invalid Rust emission', (_name, source, message) => {
+  ])('refuses an async return with %s before invalid Rust emission', (_name, source, message, rule: string) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('async-return-carrier.ts', source).module),
     );
 
-    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+    expect(failure.rule).toBe(rule);
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.message).toContain(message);
     expect(failure.line).toBe(2);
@@ -7392,10 +7396,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { return await task; } catch { return fallback; } finally { return 2; } }',
     ],
     [
-      'an additional suspension',
-      'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
-    ],
-    [
       'a nested finally',
       'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { try { return await task; } finally { log.push(1); } } finally { log.push(2); } }',
     ],
@@ -7406,6 +7406,27 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+  });
+
+  it('emits a protected try with one try await and one catch await', () => {
+    // One direct protected await plus one direct catch await is the settled two-await completion
+    // shape, so this source is intentionally supported rather than refused.
+    const output = emitIrModuleRust(
+      lower(
+        'two-await-catch.ts',
+        'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('async fn attempt');
+    expect(
+      emitIrModuleRust(
+        lower(
+          'two-await-catch.ts',
+          'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
+        ).module,
+      ).contents,
+    ).toBe(output);
   });
 
   it.each([
@@ -7432,7 +7453,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
     expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain('non-abrupt finally');
+    expect(failure.message).toContain('protected Error(String) throw');
     expect(failure.line).toBe(1);
     expect(failure.column).toBe(1);
   });
@@ -9540,7 +9561,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         presence: 'required',
       };
     }
-    expect(() => emitIrModuleRust(module)).toThrow('undefined expressions require Rust Option-aware lowering');
+    expect(() => emitIrModuleRust(module)).toThrow('outside the allocation-free Rust const whitelist');
   });
 
   it('refuses nullish comparison that admits both null and undefined', () => {
