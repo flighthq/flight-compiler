@@ -369,6 +369,32 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(consumerPlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'value']);
   });
 
+  it('plans exact shared class returns used by direct readonly and mutating method calls', () => {
+    const module = lower(
+      'direct-return-methods.ts',
+      `class Counter {
+         value = 0;
+         current(): number { return this.value; }
+         increment(): number { this.value += 1; return this.value; }
+       }
+       function makeCounter(): Counter { return new Counter(); }
+       export function read(): number { return makeCounter().current(); }
+       export function mutate(): number { return makeCounter().increment(); }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'makeCounter' }),
+          parameters: [],
+          returns: 'shared-ref-cell-class',
+        }),
+      ]),
+    );
+  });
+
   it('plans exact shared class identity comparisons', () => {
     const module = lower(
       'class-identity.ts',

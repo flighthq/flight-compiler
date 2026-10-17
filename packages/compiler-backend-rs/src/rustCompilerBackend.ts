@@ -4829,14 +4829,19 @@ function emitSharedClassMethodCallRust(
   }
   const callee = expression.callee;
   const binding = getRustSharedClassBindingRust(callee.object, context);
-  if (!binding) return undefined;
-  const declaration = getIrSharedClassDeclarationRust(binding, context);
+  const returned = isIrSharedClassReturnCallRust(callee.object, context);
+  if (!binding && !returned) return undefined;
+  const declaration = binding
+    ? getIrSharedClassDeclarationRust(binding, context)
+    : getIrSharedClassDeclarationForTypeRust(inferIrExpressionTypeRust(callee.object, context), context);
   const methods = declaration?.methods.filter((method) => !method.static && method.name === callee.name);
   const method = methods?.length === 1 ? methods[0] : undefined;
   if (!declaration || !method) return undefined;
   const target = getIrClassMethodTargetNameRust(method);
   const mutable = getIrClassMutatingMethodNamesRust(declaration).has(target);
-  const receiver = getBindingTargetNameRust(binding, context);
+  const receiver = binding
+    ? getBindingTargetNameRust(binding, context)
+    : normalizeSourceTextGrouping(emitExpression(callee.object, context));
   return `${receiver}.${mutable ? 'borrow_mut' : 'borrow'}().${target}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 }
 

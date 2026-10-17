@@ -8764,6 +8764,49 @@ describe('emitIrModuleRust', () => {
     }
   });
 
+  it('borrows an exact shared-class return once for readonly and mutating methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'returned-class-methods.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           current(): number { return this.value; }
+           increment(amount: number): number { this.value += amount; return this.value; }
+           describe(): string { return \`counter \${this.value}\`; }
+         }
+         function makeCounter(value: number): Counter { return new Counter(value); }
+         export function returnedReadonlyMethod(): number {
+           let calls = 0;
+           const next = (): number => { calls += 1; return calls; };
+           return makeCounter(next()).current() * 10 + calls;
+         }
+         export function returnedMutatingMethod(): number {
+           let calls = 0;
+           const next = (): number => { calls += 1; return calls; };
+           return makeCounter(next()).increment(2) * 10 + calls;
+         }
+         export function returnedOwnedMethodResult(): string {
+           return makeCounter(2).describe();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/make_counter\(next\(\)\)\.borrow\(\)\.current\(\)/gu)).toHaveLength(1);
+    expect(output.match(/make_counter\(next\(\)\)\.borrow_mut\(\)\.increment\(2\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/make_counter\(2\.0\)\.borrow\(\)\.describe\(\)/gu)).toHaveLength(1);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `assert_eq!(returned_readonly_method(), 11.0);
+           assert_eq!(returned_mutating_method(), 31.0);
+           assert_eq!(returned_owned_method_result(), "counter 2".to_owned());`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it('constructs a shared class from two primitive arguments before alias mutation', () => {
     const output = emitIrModuleRust(
       lower(

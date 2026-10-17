@@ -36,7 +36,7 @@ pub fn origin() -> Rc<RefCell<Point>> {
 }
 
 pub fn origin_length() -> f64 {
-  return origin().length();
+  return origin().borrow().length();
 }
 
 pub fn described_at(x: f64, y: f64) -> String {
