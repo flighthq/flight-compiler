@@ -2503,6 +2503,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
+        if (binding?.kind === 'codeUnitQuery') {
+          return emitRustCodeUnitQueryCallRust(expression, binding.targetName, context);
+        }
         if (
           binding &&
           binding.kind !== 'countingMethod' &&
@@ -5913,6 +5916,9 @@ function emitRustOptionalChainMappedCallRust(
   if (!isIrExpressionOptionShapedRust(callee.object, context)) return undefined;
   const binding = getCompilerRustAmbientMemberBinding(callee.member);
   if (!binding) return undefined;
+  if (binding.kind === 'codeUnitQuery') {
+    emissionError(context, 'optional-chained string.charCodeAt requires an Option-aware code-unit projection');
+  }
   const object = emitExpression(callee.object, context);
   const operation = isNullableType(expression.semantics.resultType) ? 'and_then' : 'map';
   const mapped = (call: string): string => `${object}.as_ref().${operation}(|optional_chain_value| ${call})`;
@@ -5941,12 +5947,52 @@ function emitOptionalCallExpressionRust(
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
+  const calleeMember = expression.callee.kind === 'property' ? expression.callee.member : undefined;
+  if (calleeMember && getCompilerRustAmbientMemberBinding(calleeMember)?.kind === 'codeUnitQuery') {
+    emissionError(context, 'optional-chained string.charCodeAt requires an Option-aware code-unit projection');
+  }
   const arguments_ = emitCallArgumentsRust(expression, context).join(', ');
   const callee = emitExpression(expression.callee, context);
   if (semantics.receiverNullish === 'excluded') return `${callee}(${arguments_})`;
   getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional call receiver', context);
   const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
   return `${callee}.as_ref().${operation}(|optional_chain_value| optional_chain_value(${arguments_}))`;
+}
+
+// `String.prototype.charCodeAt` asks for a UTF-16 code unit, not a Unicode scalar: a surrogate half
+// has no Rust `char`, so the code-unit iterator is the exact source sequence. The source's numeric
+// index conversion runs first (NaN answers the first unit, fractions truncate, and infinities,
+// negatives, and out-of-range indices answer NaN), and the receiver and index are each evaluated
+// once, receiver first.
+function emitRustCodeUnitQueryCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  targetName: string,
+  context: EmitContext,
+): string {
+  if (expression.callee.kind !== 'property') {
+    emissionError(context, 'a code-unit query requires a member callee');
+  }
+  if (expression.callee.optional) {
+    emissionError(context, 'optional-chained string.charCodeAt requires an Option-aware code-unit projection');
+  }
+  if (expression.arguments.length > 1) {
+    emissionError(context, 'string.charCodeAt accepts one index argument in source-typed code');
+  }
+  const argument = expression.arguments[0];
+  const argumentType = argument ? inferIrExpressionTypeRust(argument, context) : undefined;
+  const resolvedArgument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
+  if (argument && !(resolvedArgument?.kind === 'primitive' && resolvedArgument.name === 'number')) {
+    emissionError(context, 'string.charCodeAt requires an exactly typed number index');
+  }
+  const receiver =
+    emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
+    emitSharedReferenceReceiverRust(expression.callee.object, false, context);
+  const index = argument ? emitExpression(argument, context) : 'f64::NAN';
+  const receiverName = getGeneratedTargetNameRust('code_unit_receiver', context);
+  const indexName = getGeneratedTargetNameRust('code_unit_index', context);
+  const positionName = getGeneratedTargetNameRust('code_unit_position', context);
+  const unitName = getGeneratedTargetNameRust('code_unit', context);
+  return `{ let ${receiverName} = ${receiver}; let ${indexName} = ${index}; let ${positionName} = if ${indexName}.is_nan() { 0.0 } else { ${indexName}.trunc() }; if ${positionName} < 0.0 { f64::NAN } else { ${receiverName}.${targetName}().nth(${positionName} as usize).map(|${unitName}| ${unitName} as f64).unwrap_or(f64::NAN) } }`;
 }
 
 function hasOnlyOrdinaryArrayReceiverRust(expression: Readonly<Extract<IrExpression, { kind: 'element' }>>): boolean {
@@ -21220,7 +21266,7 @@ function isRustArrayAbsenceRepresentedUse(
 }
 
 interface RustStringMemberSemanticsRefusal {
-  readonly member: 'charAt' | 'charCodeAt' | 'slice' | 'substring';
+  readonly member: 'charAt' | 'slice' | 'substring';
   readonly message: string;
   readonly rule: 'rust-string-utf16-index-unrepresented' | 'rust-string-utf16-range-unrepresented';
 }
@@ -21254,7 +21300,7 @@ function getRustStringMemberSemanticsRefusalRust(
     return undefined;
   }
   const member = expression.callee.member.name;
-  if (member === 'charAt' || member === 'charCodeAt') {
+  if (member === 'charAt') {
     return {
       member,
       message: `string.${member} requires JavaScript UTF-16 code-unit indexing, including surrogate halves; Rust chars index Unicode scalars`,

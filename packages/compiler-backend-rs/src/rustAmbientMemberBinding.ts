@@ -104,6 +104,9 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'set.delete': { kind: 'borrowedMethod', targetName: 'remove' },
   'set.has': { kind: 'borrowedMethod', targetName: 'contains' },
   'set.size': { kind: 'countingMethod', targetName: 'len' },
+  // A code unit is not a Unicode scalar: a surrogate half has no `char`, so `encode_utf16` is the
+  // exact source sequence and the emitter reads the unit the source index selects.
+  'string.charCodeAt': { kind: 'codeUnitQuery', targetName: 'encode_utf16' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
   'string.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   'string.indexOf': { kind: 'sentinelSearch', targetName: 'find' },

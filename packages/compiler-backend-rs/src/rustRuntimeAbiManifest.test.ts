@@ -262,7 +262,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
       {
         capability: 'utf16-code-unit-index',
         rule: 'rust-string-utf16-index-unrepresented',
-        subjects: ['string.charAt', 'string.charCodeAt'],
+        subjects: ['string.charAt'],
       },
       {
         capability: 'utf16-code-unit-range',
@@ -284,7 +284,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     // array.copyWithin/fill/sort are intentional native Vec method bindings from the array-identity
     // lanes (14b55f07, a34e88c5, 432301b4); they add no runtime requirement, only the derived member
     // snapshot this count tracks.
-    expect(second.ambientMembers.bindings).toHaveLength(85);
+    expect(second.ambientMembers.bindings).toHaveLength(86);
     expect(second.ambientMembers.bindings).toEqual(
       expect.arrayContaining([
         { binding: { kind: 'method', targetName: 'copy_within' }, receiver: 'array', sourceMember: 'copyWithin' },
@@ -296,6 +296,11 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
       binding: { kind: 'codeUnitLength', targetName: 'encode_utf16' },
       receiver: 'string',
       sourceMember: 'length',
+    });
+    expect(second.ambientMembers.bindings).toContainEqual({
+      binding: { kind: 'codeUnitQuery', targetName: 'encode_utf16' },
+      receiver: 'string',
+      sourceMember: 'charCodeAt',
     });
     expect(
       second.ambientMembers.bindings.some(

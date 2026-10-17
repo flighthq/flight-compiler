@@ -684,12 +684,6 @@ export function keep(value: number): number { return value + 1; }`;
         'export function sensitive(s: string): string { return s.charAt(0); }\nexport function keep(value: number): number { return value + 1; }',
     },
     {
-      member: 'charCodeAt',
-      rule: 'rust-string-utf16-index-unrepresented',
-      source:
-        'export function sensitive(s: string): number { return s.charCodeAt(0); }\nexport function keep(value: number): number { return value + 1; }',
-    },
-    {
       member: 'slice',
       rule: 'rust-string-utf16-range-unrepresented',
       source:
@@ -736,7 +730,7 @@ export function keep(value: number): number { return value + 1; }`;
   });
 
   it('attributes UTF-16 refusals per declaration with the strict sorted family selection', () => {
-    const source = `export function sizes(s: string): number { return s.charCodeAt(0) + s.slice(0, 1).length; }
+    const source = `export function sizes(s: string): number { return s.charAt(0).length + s.slice(0, 1).length; }
 export function ranges(s: string): string { return s.slice(0, 1); }
 export function keep(value: number): number { return value + 1; }`;
     const module = lower('string-declarations.ts', source).module;
@@ -777,7 +771,7 @@ export function keep(value: number): number { return value + 1; }`;
 
   it('attributes a namespace-member UTF-16 use to the enum that emits it', () => {
     const source = `export enum Kind { A = 0 }
-export namespace Kind { export function size(s: string): number { return s.charCodeAt(0); } }
+export namespace Kind { export function size(s: string): number { return s.charAt(0).length; } }
 export function keep(value: number): number { return value + 1; }`;
     const result = lower('string-namespace.ts', source);
     expect(result.diagnostics).toEqual([]);
@@ -2407,11 +2401,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       source: 'export function astral(): string { return "😀".charAt(0); }',
     },
     {
-      member: 'charCodeAt',
-      rule: 'rust-string-utf16-index-unrepresented',
-      source: 'export function surrogate(): number { return "\\ud800".charCodeAt(0); }',
-    },
-    {
       member: 'slice',
       rule: 'rust-string-utf16-range-unrepresented',
       source: 'export function negative(): string { return "abcd".slice(-2, -1); }',
@@ -2509,6 +2498,83 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     runRustSource(
       output,
       'assert_eq!(ascii_length(), 5.0); assert_eq!(astral_length(), 2.0); assert_eq!(combining_length(), 2.0); assert_eq!(parameter_length("a😀".to_owned()), 3.0);',
+    );
+  });
+
+  it('emits exact UTF-16 charCodeAt with JS index conversion and surrogate halves', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-char-code-at.ts',
+        `export function first(text: string): number { return text.charCodeAt(0); }
+         export function at(text: string, index: number): number { return text.charCodeAt(index); }
+         export function astralHigh(text: string): number { return text.charCodeAt(1); }
+         export function astralLow(text: string): number { return text.charCodeAt(2); }
+         export function total(text: string): number {
+           let sum = 0;
+           for (let i = 0; i < text.length; i = i + 1) { sum = sum + text.charCodeAt(i); }
+           return sum;
+         }
+         export function narrowed(text: string | undefined): number {
+           if (text === undefined) return 0;
+           return text.charCodeAt(0);
+         }
+         export function narrowedUnion(value: string | number): number {
+           if (typeof value === "string") return value.charCodeAt(0);
+           return 0;
+         }
+         function sample(): string { return "a"; }
+         function sampleIndex(): number { return 1; }
+         export function staged(): number { return sample().charCodeAt(sampleIndex()); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toMatch(/\{ let code_unit_receiver(?:_\d+)? = text;/u);
+    expect(output).toMatch(
+      /code_unit_index(?:_\d+)?\.is_nan\(\) \{ 0\.0 \} else \{ code_unit_index(?:_\d+)?\.trunc\(\) \}/u,
+    );
+    expect(output).toMatch(/if code_unit_position(?:_\d+)? < 0\.0 \{ f64::NAN \}/u);
+    expect(output).toMatch(
+      /\.encode_utf16\(\)\.nth\(code_unit_position(?:_\d+)? as usize\)\.map\(\|code_unit(?:_\d+)?\| code_unit(?:_\d+)? as f64\)\.unwrap_or\(f64::NAN\)/u,
+    );
+    expect(output).toContain('text.clone().unwrap()');
+    expect(output).toContain('value.as_str()');
+    const staged = output.slice(output.indexOf('pub fn staged'));
+    const receiver = staged.indexOf('let code_unit_receiver');
+    const index = staged.indexOf('let code_unit_index');
+    expect(receiver).toBeGreaterThan(-1);
+    expect(index).toBeGreaterThan(receiver);
+    expect(staged.match(/sample\(\)/gu)).toHaveLength(1);
+    expect(staged.match(/sample_index\(\)/gu)).toHaveLength(1);
+  });
+
+  it('refuses optional-chained charCodeAt rather than emitting an unbounded receiver read', () => {
+    for (const source of [
+      'export function first(text: string | undefined): number { return text?.charCodeAt(0) ?? 0; }',
+      'export function first(text: string): number { return text.charCodeAt?.(0) ?? 0; }',
+    ]) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower('string-char-code-at-optional.ts', source).module),
+      );
+      expect(failure.message).toContain(
+        'optional-chained string.charCodeAt requires an Option-aware code-unit projection',
+      );
+    }
+  });
+
+  it.skipIf(!rustcAvailable)('reads UTF-16 code units, surrogate halves, and JS index conversions at run time', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-char-code-at-runtime.ts',
+        `export function first(text: string): number { return text.charCodeAt(0); }
+         export function astralHigh(text: string): number { return text.charCodeAt(1); }
+         export function astralLow(text: string): number { return text.charCodeAt(2); }
+         export function at(text: string, index: number): number { return text.charCodeAt(index); }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      'assert_eq!(first("A".to_owned()), 65.0); assert_eq!(astral_high("😀".to_owned()), 55357.0); assert_eq!(astral_low("😀".to_owned()), 56832.0); assert!(at("".to_owned(), 0.0).is_nan()); assert!(at("abc".to_owned(), -1.0).is_nan()); assert!(at("abc".to_owned(), 3.0).is_nan()); assert!(at("abc".to_owned(), f64::INFINITY).is_nan()); assert_eq!(at("abc".to_owned(), 1.9), 98.0); assert_eq!(at("abc".to_owned(), -0.5), 97.0); assert_eq!(at("abc".to_owned(), f64::NAN), 97.0);',
     );
   });
 

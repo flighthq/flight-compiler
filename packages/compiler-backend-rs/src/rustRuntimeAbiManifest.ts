@@ -223,7 +223,7 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
       {
         capability: 'utf16-code-unit-index',
         rule: 'rust-string-utf16-index-unrepresented',
-        subjects: ['string.charAt', 'string.charCodeAt'],
+        subjects: ['string.charAt'],
       },
       {
         capability: 'utf16-code-unit-range',

@@ -17,7 +17,7 @@ describe('createCompilerRustAmbientMemberBindingPlan', () => {
     expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(85);
+    expect(second.bindings).toHaveLength(86);
   });
 });
 
@@ -201,7 +201,7 @@ describe('getCompilerRustAmbientMemberBinding', () => {
   });
 
   it('does not advertise the remaining UTF-16-sensitive string members as native Rust operations', () => {
-    for (const name of ['charAt', 'charCodeAt', 'slice', 'substring']) {
+    for (const name of ['charAt', 'slice', 'substring']) {
       expect(getCompilerRustAmbientMemberBinding({ name, receiver: 'string' })).toBeUndefined();
     }
   });
@@ -214,6 +214,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'startsWith', receiver: 'string' })).toEqual({
       kind: 'borrowedMethod',
       targetName: 'starts_with',
+    });
+  });
+
+  it('reads string charCodeAt through UTF-16 code units rather than Unicode scalars', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'charCodeAt', receiver: 'string' })).toEqual({
+      kind: 'codeUnitQuery',
+      targetName: 'encode_utf16',
     });
   });
 

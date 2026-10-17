@@ -57,6 +57,11 @@ export type CompilerRustAmbientMemberBinding =
   // Rust's native string length counts UTF-8 bytes, so this shape names the iterator that yields
   // UTF-16 code units; the emitter counts it and returns the count in the symbolic numeric domain.
   | Readonly<{ kind: 'codeUnitLength'; targetName: string }>
+  // A source code-unit query that answers one UTF-16 code unit as a number, or NaN when the index is
+  // outside the string. Rust's native indexing yields Unicode scalars, so this shape names the
+  // iterator that yields code units; the emitter applies the source's numeric index conversion and
+  // reads the selected unit.
+  | Readonly<{ kind: 'codeUnitQuery'; targetName: string }>
   // A source property whose Rust representation returns an owned value through a zero-argument
   // method. Shared runtime objects use this shape rather than exposing their internal storage.
   | Readonly<{ kind: 'propertyMethod'; targetName: string }>
