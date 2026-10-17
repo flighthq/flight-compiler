@@ -14979,3 +14979,37 @@ describe('emitIrModuleRust single-alternative assertion recovery', () => {
     expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 });
+
+describe('emitIrModuleRust refusal diagnostics', () => {
+  it('names the cast fallback rule and the enclosing declaration origin', () => {
+    const module = lower(
+      'cast-origin.ts',
+      `interface CommandBase { readonly id: string }
+interface Command extends CommandBase { readonly payload: number }
+export function widen(command: Command): unknown { return command as Readonly<Partial<CommandBase>>; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-cast-requires-type-directed-lowering');
+    // The origin is the declaration being emitted, not the message: the message text is unchanged.
+    expect(failure.line).toBe(3);
+    expect(failure.column).toBe(1);
+    // Naming the rule must not reclassify the refusal.
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('attaches the origin to a refusal that carries no rule, without a cast rule or a reclassification', () => {
+    const module = lower(
+      'computed-origin.ts',
+      `export function pick(values: { readonly name: string }, key: string): string {
+  return values[key];
+}`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBeUndefined();
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+});

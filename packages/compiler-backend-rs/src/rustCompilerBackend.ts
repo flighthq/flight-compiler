@@ -163,6 +163,9 @@ interface RustNamedTypeDeclarationLocation {
 
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
+  // The declaration currently being emitted. A refusal names where in the source to look, and the
+  // declaration is the granularity the IR retains an origin at.
+  currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
   activeTypeParameters: readonly IrTypeParameter[];
   assertedUnknownBindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
@@ -817,19 +820,23 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
 }
 
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {
+  const declarationContext: EmitContext = {
+    ...context,
+    currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+  };
   switch (declaration.kind) {
     case 'class':
-      return emitClass(declaration, context);
+      return emitClass(declaration, declarationContext);
     case 'enum':
-      return emitEnum(declaration, context);
+      return emitEnum(declaration, declarationContext);
     case 'function':
-      return emitFunction(declaration, context);
+      return emitFunction(declaration, declarationContext);
     case 'interface':
-      return emitInterface(declaration, context);
+      return emitInterface(declaration, declarationContext);
     case 'typeAlias':
-      return emitTypeAlias(declaration, context);
+      return emitTypeAlias(declaration, declarationContext);
     case 'variable':
-      return emitVariableDeclaration(declaration, context);
+      return emitVariableDeclaration(declaration, declarationContext);
   }
 }
 
@@ -1480,7 +1487,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
       }
       if (!isIrCastTargetNumericRust(expression.type)) {
-        emissionError(context, `cast to ${expression.type.kind} requires Rust type-directed lowering`);
+        emissionError(
+          context,
+          `cast to ${expression.type.kind} requires Rust type-directed lowering`,
+          'rust-cast-requires-type-directed-lowering',
+        );
       }
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     }
@@ -5759,14 +5770,34 @@ function emissionError(
     context.module,
     message,
     rule,
-    classification === undefined ? undefined : { classification },
+    createRustEmissionFailureMetadata(context, classification),
   );
 }
 
 // A refusal a caller can branch on carries a rule id: the report prints it and a corpus ledger keys on
 // it, which a message alone cannot support.
 function emissionRuleError(context: EmitContext, message: string, rule: string): never {
-  throw createBackendEmissionFailure('rust', context.module, message, rule);
+  throw createBackendEmissionFailure(
+    'rust',
+    context.module,
+    message,
+    rule,
+    createRustEmissionFailureMetadata(context, undefined),
+  );
+}
+
+// The origin and classification a failure carries. Both ride on the failure record rather than in its
+// message, so naming them changes no emitted text and no pinned fixture.
+function createRustEmissionFailureMetadata(
+  context: EmitContext,
+  classification: 'source-portability' | 'target-runtime' | undefined,
+): Readonly<{ classification?: 'source-portability' | 'target-runtime'; column?: number; line?: number }> | undefined {
+  const origin = context.currentOrigin;
+  if (origin === undefined && classification === undefined) return undefined;
+  return {
+    ...(classification === undefined ? {} : { classification }),
+    ...(origin === undefined ? {} : { column: origin.column, line: origin.line }),
+  };
 }
 
 function collectStringConcatenationOperands(expression: Readonly<IrExpression>): readonly IrExpression[] {
