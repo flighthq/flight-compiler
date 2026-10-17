@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15851,5 +15851,31 @@ export function widen(command: Command): unknown { return command as Readonly<Pa
     expect(castFailure.rule).toBe('rust-cast-requires-type-directed-lowering');
     expect(castFailure.rule).not.toBe('rust-typeof-runtime-representation-unsupported');
     expect(castFailure.classification).toBe('compiler-restriction');
+  });
+});
+
+describe('emitIrModuleRust binding-pattern lowering refusals', () => {
+  it('carries the shared lowering rule at every binding-pattern site', () => {
+    // These four refusals are defensive: the elected binding-pattern pass guarantees no residual
+    // pattern reaches emission, so site coverage is a property of the source and is pinned as one.
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    const message = source.split("'binding patterns require destructuring lowering before Rust emission'").length - 1;
+    const rule = source.split("'rust-binding-pattern-lowering-required'").length - 1;
+
+    expect(message).toBe(4);
+    expect(rule).toBe(4);
+  });
+
+  it('leaves the adjacent object-key iteration refusal on its own diagnostic', () => {
+    const module = lower(
+      'object-key-adjacent.ts',
+      'export function f(obj: Record<string, number>): number { let s = 0; for (const key in obj) { s += 1; } return s; }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBeUndefined();
+    expect(failure.message).toContain('object key iteration requires closed key evidence');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).not.toContain('binding patterns require destructuring lowering');
   });
 });

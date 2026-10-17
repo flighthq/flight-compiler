@@ -4635,7 +4635,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       emissionError(context, 'C-style for loops require control-flow lowering before Rust emission');
     case 'forIn':
       if ('pattern' in statement.variable)
-        emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+        emissionError(
+          context,
+          'binding patterns require destructuring lowering before Rust emission',
+          'rust-binding-pattern-lowering-required',
+        );
       if (!statement.keyPlan) {
         emissionError(context, 'object key iteration requires closed key evidence');
       }
@@ -4650,7 +4654,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'forOf': {
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
       if ('pattern' in statement.variable)
-        emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+        emissionError(
+          context,
+          'binding patterns require destructuring lowering before Rust emission',
+          'rust-binding-pattern-lowering-required',
+        );
       const iterableRust = emitExpression(statement.iterable, context);
       const borrowPrefix = statement.iterable.kind === 'element' ? '&' : '';
       return [
@@ -5481,7 +5489,11 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
-    emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+    emissionError(
+      context,
+      'binding patterns require destructuring lowering before Rust emission',
+      'rust-binding-pattern-lowering-required',
+    );
   const representationType =
     variable.type?.kind === 'unknown' && variable.initializer
       ? (inferIrExpressionTypeRust(variable.initializer, context) ?? variable.type)
@@ -5633,7 +5645,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
   if ('pattern' in declaration)
-    emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+    emissionError(
+      context,
+      'binding patterns require destructuring lowering before Rust emission',
+      'rust-binding-pattern-lowering-required',
+    );
   if (!declaration.initializer || !declaration.type) {
     emissionError(context, `module variable ${declaration.binding.name} requires an initializer and type`);
   }
