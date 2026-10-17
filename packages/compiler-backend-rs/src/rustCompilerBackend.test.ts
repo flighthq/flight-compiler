@@ -28856,16 +28856,6 @@ describe('emitIrModuleRust identity assertions', () => {
       source: 'export function wrong(value: any): unknown { return value as unknown; }',
     },
     {
-      name: 'a readonly conversion',
-      source:
-        'interface Point { value: number } export function wrong(values: Point[]): readonly Point[] { return values as readonly Point[]; }',
-    },
-    {
-      name: 'a mutable conversion from readonly',
-      source:
-        'interface Point { value: number } export function wrong(values: readonly Point[]): Point[] { return values as Point[]; }',
-    },
-    {
       name: 'a generic record',
       source:
         'interface Box<T> { value: T } export function wrong(box: Box<number>): Box<number> { return box as Box<number>; }',
@@ -28974,6 +28964,97 @@ describe('emitIrModuleRust identity assertions', () => {
   });
 });
 
+describe('emitIrModuleRust exact record array identity assertions', () => {
+  it('round-trips exact plain Vec and single-undefined Option carriers without cloning', () => {
+    const result = lower(
+      'record-readonly-array-identity.ts',
+      `interface Point { value: number }
+       type MutablePoints = Point[] | undefined;
+       type ReadonlyPoints = readonly Point[] | undefined;
+       function identity(values: MutablePoints): MutablePoints { return values; }
+       export function freeze(values: MutablePoints): ReadonlyPoints { return values as ReadonlyPoints; }
+       export function thaw(values: ReadonlyPoints): MutablePoints { return values as MutablePoints; }
+       export function freezePlain(values: Point[]): readonly Point[] { return values as readonly Point[]; }
+       export function produced(values: MutablePoints): ReadonlyPoints { return identity(values) as ReadonlyPoints; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn freeze(values: MutablePoints) -> ReadonlyPoints {');
+    expect(output).toContain('pub fn thaw(values: ReadonlyPoints) -> MutablePoints {');
+    expect(output).toContain('pub fn freeze_plain(values: Vec<Point>) -> Vec<Point> {');
+    expect(output.match(/return values;/gu)).toHaveLength(4);
+    expect(output).toContain('return identity(values);');
+    expect(output).not.toContain('values.clone()');
+    expect(output).not.toContain('identity(values).clone()');
+    expect(output).not.toContain('match values');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it.each([
+    {
+      name: 'a distinct structural record element',
+      rule: 'rust-union-cast-unsupported',
+      source:
+        'interface Point { value: number } interface Other { value: number } export function wrong(values: Point[] | undefined): readonly Other[] | undefined { return values as readonly Other[] | undefined; }',
+    },
+    {
+      name: 'a projected element value',
+      rule: 'rust-union-cast-unsupported',
+      source:
+        'interface Point { value: number } export function wrong(values: Point[] | undefined): readonly number[] | undefined { return values as readonly number[] | undefined; }',
+    },
+    {
+      name: 'a class element carrier',
+      rule: 'rust-reference-shared-class-type-unrepresented',
+      source:
+        'class Point { value = 0 } export function wrong(values: Point[] | undefined): readonly Point[] | undefined { return values as readonly Point[] | undefined; }',
+    },
+    {
+      name: 'a nested record array',
+      rule: 'rust-union-cast-unsupported',
+      source:
+        'interface Point { value: number } export function wrong(values: Point[][] | undefined): readonly Point[][] | undefined { return values as readonly Point[][] | undefined; }',
+    },
+    {
+      name: 'a parameterized array alias',
+      rule: 'rust-cast-requires-type-directed-lowering',
+      source:
+        'interface Point { value: number } type Mutable<T> = T[] | undefined; type Frozen<T> = readonly T[] | undefined; export function wrong(values: Mutable<Point>): Frozen<Point> { return values as Frozen<Point>; }',
+    },
+    {
+      name: 'an absence change',
+      rule: 'rust-cast-requires-type-directed-lowering',
+      source:
+        'interface Point { value: number } export function wrong(values: Point[] | undefined): readonly Point[] { return values as readonly Point[]; }',
+    },
+    {
+      name: 'a property operand',
+      rule: 'rust-union-cast-unsupported',
+      source:
+        'interface Point { value: number } interface Holder { values: Point[] | undefined } export function wrong(holder: Holder): readonly Point[] | undefined { return holder.values as readonly Point[] | undefined; }',
+    },
+  ])('keeps $name outside the exact record array lane', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('record-readonly-array-refused.ts', source).module))).toBe(
+      rule,
+    );
+  });
+
+  it('does not widen an exact record array assertion into a shared carrier', () => {
+    const module = lower(
+      'record-readonly-array-shared.ts',
+      `interface Point { value: number }
+       export function wrong(values: Point[]): readonly Point[] {
+         const alias = values;
+         void alias.length;
+         return values as readonly Point[];
+       }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-shared-identity-deep-clone-unrepresented');
+  });
+});
+
 describe('emitIrModuleRust primitive mutable-to-readonly array assertions', () => {
   it('moves exact plain Vec and single-undefined Option carriers without cloning', () => {
     const result = lower(
@@ -29063,12 +29144,6 @@ describe('emitIrModuleRust primitive mutable-to-readonly array assertions', () =
     {
       name: 'the reverse readonly-to-mutable direction',
       source: 'export function wrong(values: readonly number[]): number[] { return values as number[]; }',
-      rule: 'rust-cast-requires-type-directed-lowering',
-    },
-    {
-      name: 'an identity-bearing element array',
-      source:
-        'interface Point { value: number } export function wrong(values: Point[]): readonly Point[] { return values as readonly Point[]; }',
       rule: 'rust-cast-requires-type-directed-lowering',
     },
     {

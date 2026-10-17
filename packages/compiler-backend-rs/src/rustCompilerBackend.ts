@@ -2618,7 +2618,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (unionCast) return unionCast;
       const generalUnionCast = emitGeneralUnionCastRust(expression, context);
       if (generalUnionCast) return generalUnionCast;
-      const readonlyArrayIdentity = emitRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+      const readonlyArrayIdentity = emitRustReadonlyArrayIdentityAssertionRust(expression, context);
       if (readonlyArrayIdentity) return readonlyArrayIdentity;
       const assertedSourceType = inferIrExpressionTypeRust(expression.expression, context);
       if (
@@ -24348,20 +24348,29 @@ function resolveIrCastUnionTypeRust(type: Readonly<IrType>, context: EmitContext
   return resolveIrCastUnionTypeRust(location.declaration.type, context, depth + 1);
 }
 
+type RustReadonlyArrayElementIdentity =
+  | Readonly<{ kind: 'primitive'; name: RustOwnedSharedArrayPrimitiveName }>
+  | Readonly<{ key: string; kind: 'record' }>;
+
+interface RustReadonlyArrayIdentityAssertion {
+  readonly element: RustReadonlyArrayElementIdentity;
+  readonly optional: boolean;
+}
+
+interface RustReadonlyArrayIdentityShape extends RustReadonlyArrayIdentityAssertion {
+  readonly arrayReadonly: boolean;
+}
+
 interface RustReadonlyPrimitiveArrayIdentityAssertion {
   readonly optional: boolean;
   readonly primitiveName: RustOwnedSharedArrayPrimitiveName;
 }
 
-interface RustReadonlyPrimitiveArrayIdentityShape extends RustReadonlyPrimitiveArrayIdentityAssertion {
-  readonly arrayReadonly: boolean;
-}
-
-function emitRustReadonlyPrimitiveArrayIdentityAssertionRust(
+function emitRustReadonlyArrayIdentityAssertionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   context: EmitContext,
 ): string | undefined {
-  const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+  const assertion = getRustReadonlyArrayIdentityAssertionRust(expression, context);
   if (!assertion) return undefined;
   const operand = expression.expression;
   if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
@@ -24402,33 +24411,50 @@ function emitRustReadonlyPrimitiveArrayIdentityAssertionRust(
   return undefined;
 }
 
+function getRustReadonlyArrayIdentityAssertionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): Readonly<RustReadonlyArrayIdentityAssertion> | undefined {
+  if (!isRustReadonlyArrayIdentityOperandRust(expression.expression, context)) return undefined;
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  if (!sourceType) return undefined;
+  const source = getRustReadonlyArrayIdentityShapeRust(sourceType, context);
+  const target = getRustReadonlyArrayIdentityShapeRust(expression.type, context);
+  if (
+    !source ||
+    !target ||
+    source.optional !== target.optional ||
+    !isRustReadonlyArrayElementIdentityEqualRust(source.element, target.element)
+  ) {
+    return undefined;
+  }
+  // Keep the established primitive lane one-way. A canonical non-generic record has the same owned
+  // Vec element carrier in both readonly directions, so that exact identity can round-trip without a
+  // projection, downcast, clone, or absence change.
+  const mutableToReadonly = !source.arrayReadonly && target.arrayReadonly;
+  const exactRecordRoundTrip =
+    source.element.kind === 'record' &&
+    target.element.kind === 'record' &&
+    source.arrayReadonly !== target.arrayReadonly;
+  if (!mutableToReadonly && !exactRecordRoundTrip) return undefined;
+  return { element: source.element, optional: source.optional };
+}
+
 function getRustReadonlyPrimitiveArrayIdentityAssertionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   context: EmitContext,
 ): Readonly<RustReadonlyPrimitiveArrayIdentityAssertion> | undefined {
-  if (!isRustReadonlyPrimitiveArrayIdentityOperandRust(expression.expression, context)) return undefined;
-  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
-  if (!sourceType) return undefined;
-  const source = getRustReadonlyPrimitiveArrayIdentityShapeRust(sourceType, context);
-  const target = getRustReadonlyPrimitiveArrayIdentityShapeRust(expression.type, context);
-  if (
-    !source ||
-    !target ||
-    source.arrayReadonly ||
-    !target.arrayReadonly ||
-    source.optional !== target.optional ||
-    source.primitiveName !== target.primitiveName
-  ) {
-    return undefined;
-  }
-  return { optional: source.optional, primitiveName: source.primitiveName };
+  const assertion = getRustReadonlyArrayIdentityAssertionRust(expression, context);
+  return assertion?.element.kind === 'primitive'
+    ? { optional: assertion.optional, primitiveName: assertion.element.name }
+    : undefined;
 }
 
-function getRustReadonlyPrimitiveArrayIdentityShapeRust(
+function getRustReadonlyArrayIdentityShapeRust(
   type: Readonly<IrType>,
   context: EmitContext,
-): Readonly<RustReadonlyPrimitiveArrayIdentityShape> | undefined {
-  const resolved = resolveRustReadonlyPrimitiveArrayIdentityTypeRust(type, context, new Set(), 0);
+): Readonly<RustReadonlyArrayIdentityShape> | undefined {
+  const resolved = resolveRustReadonlyArrayIdentityTypeRust(type, context, new Set(), 0);
   if (!resolved) return undefined;
   let array: Readonly<Extract<IrType, { kind: 'array' }>> | undefined;
   let optional = false;
@@ -24436,7 +24462,7 @@ function getRustReadonlyPrimitiveArrayIdentityShapeRust(
     array = resolved;
   } else if (resolved.kind === 'union' && resolved.types.length === 2) {
     const members = resolved.types.map((member) =>
-      resolveRustReadonlyPrimitiveArrayIdentityTypeRust(member, context, new Set(), 0),
+      resolveRustReadonlyArrayIdentityTypeRust(member, context, new Set(), 0),
     );
     if (members.some((member) => member === undefined)) return undefined;
     const defined = members.filter((member): member is Readonly<IrType> => member !== undefined);
@@ -24449,20 +24475,36 @@ function getRustReadonlyPrimitiveArrayIdentityShapeRust(
     optional = true;
   }
   if (!array) return undefined;
-  const element = resolveRustReadonlyPrimitiveArrayIdentityTypeRust(array.element, context, new Set(), 0);
-  if (
-    element?.kind !== 'primitive' ||
-    (element.name !== 'boolean' && element.name !== 'number' && element.name !== 'string')
-  ) {
-    return undefined;
-  }
-  return { arrayReadonly: array.readonly, optional, primitiveName: element.name };
+  const element = getRustReadonlyArrayElementIdentityRust(array.element, context);
+  return element ? { arrayReadonly: array.readonly, element, optional } : undefined;
 }
 
-function isRustReadonlyPrimitiveArrayIdentityOperandRust(
-  expression: Readonly<IrExpression>,
+function getRustReadonlyArrayElementIdentityRust(
+  type: Readonly<IrType>,
   context: EmitContext,
+): RustReadonlyArrayElementIdentity | undefined {
+  const directRecord = getRustWholeArmNamedRecordIdentityRust(type, context);
+  if (directRecord) return { key: directRecord, kind: 'record' };
+  const resolved = resolveRustReadonlyArrayIdentityTypeRust(type, context, new Set(), 0);
+  if (
+    resolved?.kind === 'primitive' &&
+    (resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string')
+  ) {
+    return { kind: 'primitive', name: resolved.name };
+  }
+  const resolvedRecord = resolved ? getRustWholeArmNamedRecordIdentityRust(resolved, context) : undefined;
+  return resolvedRecord ? { key: resolvedRecord, kind: 'record' } : undefined;
+}
+
+function isRustReadonlyArrayElementIdentityEqualRust(
+  source: Readonly<RustReadonlyArrayElementIdentity>,
+  target: Readonly<RustReadonlyArrayElementIdentity>,
 ): boolean {
+  if (source.kind === 'primitive') return target.kind === 'primitive' && source.name === target.name;
+  return target.kind === 'record' && source.key === target.key;
+}
+
+function isRustReadonlyArrayIdentityOperandRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   if (expression.kind === 'identifier') return expression.reference.kind === 'binding';
   if (
     expression.kind !== 'call' ||
@@ -24499,7 +24541,7 @@ function isRustReadonlyPrimitiveArrayIdentityOperandRust(
   );
 }
 
-function resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
+function resolveRustReadonlyArrayIdentityTypeRust(
   type: Readonly<IrType>,
   context: EmitContext,
   resolving: ReadonlySet<string>,
@@ -24526,7 +24568,7 @@ function resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
   if (location?.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return undefined;
   const key = `${location.module.packageName}\0${normalizePathPortable(location.module.source)}\0${location.declaration.binding.id}`;
   if (resolving.has(key)) return undefined;
-  return resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
+  return resolveRustReadonlyArrayIdentityTypeRust(
     location.declaration.type,
     context,
     new Set(resolving).add(key),
