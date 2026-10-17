@@ -197,6 +197,12 @@ interface RustAsyncTryDeferredReturnPlan {
   readonly catchReturnExpression: Readonly<IrExpression>;
 }
 
+interface RustAsyncTryExpressionAwaitPlan {
+  readonly awaitTarget: Readonly<IrExpression>;
+  readonly postStatements: readonly Readonly<IrStatement>[];
+  readonly preStatements: readonly Readonly<IrStatement>[];
+}
+
 interface RustAsyncTryVariableAwaitPlan {
   readonly awaitTarget: Readonly<IrExpression>;
   readonly postStatements: readonly Readonly<IrStatement>[];
@@ -4942,6 +4948,59 @@ function areIrAsyncTryStraightLineStatementsRust(statements: readonly Readonly<I
   );
 }
 
+function getAsyncTryExpressionAwaitPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryExpressionAwaitPlan | undefined {
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const awaitStatements = tryStatements.flatMap((candidate, index) =>
+    candidate.kind === 'expression' && candidate.expression.kind === 'await'
+      ? [{ awaitExpression: candidate.expression, index }]
+      : [],
+  );
+  if (awaitStatements.length === 0) return undefined;
+  if (awaitStatements.length !== 1 || statement.catchClause === undefined || statement.finallyBody !== undefined) {
+    emissionRuleError(
+      context,
+      'async try expression-await lowering requires one direct expression statement, one catch, and no finally',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const selected = awaitStatements[0]!;
+  const preStatements = tryStatements.slice(0, selected.index);
+  const postStatements = tryStatements.slice(selected.index + 1);
+  const catchStatements = getIrDirectStatementsRust(statement.catchClause.body);
+  if (
+    !areIrAsyncTryStraightLineStatementsRust(preStatements) ||
+    !areIrAsyncTryStraightLineStatementsRust(postStatements) ||
+    !areIrAsyncTryStraightLineStatementsRust(catchStatements)
+  ) {
+    emissionRuleError(
+      context,
+      'async try expression-await lowering requires straight-line arms with at most one final return',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const permittedReturns = new Set(
+    [postStatements.at(-1), catchStatements.at(-1)].filter(
+      (candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return',
+    ),
+  );
+  const evidence = getIrTryProtectedCompletionEvidenceRust(statement);
+  if (evidence.abruptStatements.some((candidate) => !permittedReturns.has(candidate))) {
+    emissionRuleError(
+      context,
+      'async try expression-await lowering cannot preserve this abrupt completion without a general completion record',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  return {
+    awaitTarget: selected.awaitExpression.expression,
+    postStatements,
+    preStatements,
+  };
+}
+
 function getAsyncTryVariableAwaitPlanRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   context: EmitContext,
@@ -5114,6 +5173,23 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
           emitAsyncTrySettledVariableRust(variableAwait.variable, context),
           ...emitStatements(variableAwait.postStatements, context),
         ]),
+        '}',
+        `Err(${catchBinding}) => {`,
+        ...indentSourceLines(emitStatementBody(statement.catchClause!.body, context)),
+        '}',
+      ]),
+      '}',
+    ];
+  }
+  const expressionAwait = getAsyncTryExpressionAwaitPlanRust(statement, context);
+  if (expressionAwait) {
+    const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
+    return [
+      ...emitStatements(expressionAwait.preStatements, context),
+      `match ${emitOwnedOperandRust(expressionAwait.awaitTarget, context)}.settle() {`,
+      ...indentSourceLines([
+        'Ok(_) => {',
+        ...indentSourceLines(emitStatements(expressionAwait.postStatements, context)),
         '}',
         `Err(${catchBinding}) => {`,
         ...indentSourceLines(emitStatementBody(statement.catchClause!.body, context)),
