@@ -378,6 +378,7 @@ function emitIrModuleRustWithContext(
   if (referenceRefusal) {
     throw createBackendEmissionFailure('rust', module, referenceRefusal.message, referenceRefusal.code);
   }
+  assertIrAsyncMethodCarriersRust(module);
   assertStructuralObjectCompatibilityRust(
     module,
     replaceIrModuleBackendContext(sourceModules, module),
@@ -2267,6 +2268,22 @@ function isIrTaskTypeRust(type: Readonly<IrType> | undefined): boolean {
   );
 }
 
+function assertIrAsyncMethodCarriersRust(module: Readonly<IrModule>): void {
+  const declaration = module.declarations.find(
+    (candidate): candidate is Readonly<IrClassDeclaration> =>
+      candidate.kind === 'class' && candidate.methods.some((method) => method.async),
+  );
+  if (!declaration) return;
+  const method = declaration.methods.find((candidate) => candidate.async)!;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    `async method ${declaration.binding.name}.${method.name} has no represented Rust native-future/task carrier boundary`,
+    'rust-async-task-carrier-unrepresented',
+    { column: declaration.origin.column, line: declaration.origin.line },
+  );
+}
+
 function getIrReferencedFunctionRust(
   reference: Readonly<IrIdentifierReference>,
   context: EmitContext,
@@ -2319,6 +2336,47 @@ function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, conte
       );
     default:
       return false;
+  }
+}
+
+function getIrConditionalTaskDenotationRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): 'mixed' | 'task' | 'value' {
+  if (expression.kind === 'cast') return getIrConditionalTaskDenotationRust(expression.expression, context);
+  if (expression.kind !== 'conditional') {
+    return canIrExpressionDenoteTaskRust(expression, context) ? 'task' : 'value';
+  }
+  const whenTrue = getIrConditionalTaskDenotationRust(expression.whenTrue, context);
+  const whenFalse = getIrConditionalTaskDenotationRust(expression.whenFalse, context);
+  return whenTrue === whenFalse ? whenTrue : 'mixed';
+}
+
+function hasIrContextualTaskObjectReturnRust(expression: Readonly<IrExpression>): boolean {
+  if (expression.kind === 'object') return isIrTaskTypeRust(expression.type);
+  if (expression.kind === 'cast') return hasIrContextualTaskObjectReturnRust(expression.expression);
+  return (
+    expression.kind === 'conditional' &&
+    (hasIrContextualTaskObjectReturnRust(expression.whenTrue) ||
+      hasIrContextualTaskObjectReturnRust(expression.whenFalse))
+  );
+}
+
+function assertIrAsyncReturnedExpressionCarrierRust(expression: Readonly<IrExpression>, context: EmitContext): void {
+  if (!context.nativeAsyncFunction) return;
+  if (expression.kind === 'conditional' && getIrConditionalTaskDenotationRust(expression, context) === 'mixed') {
+    emissionRuleError(
+      context,
+      'an async return conditional mixes task and value arms without branchwise Rust task adoption',
+      'rust-async-task-carrier-unrepresented',
+    );
+  }
+  if (hasIrContextualTaskObjectReturnRust(expression)) {
+    emissionRuleError(
+      context,
+      'an async return object carries the contextual Promise type instead of the native async function awaited type',
+      'rust-async-task-carrier-unrepresented',
+    );
   }
 }
 
@@ -5029,6 +5087,77 @@ function collectIrStatementAsyncTryCompletionEvidenceRust(
   };
 }
 
+function isIrCatchBindingReferenceRust(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    expression.reference.binding.id === bindingId
+    ? true
+    : expression.kind === 'cast'
+      ? isIrCatchBindingReferenceRust(expression.expression, bindingId)
+      : false;
+}
+
+function assertIrAsyncTaskCatchBindingUsesRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): void {
+  const catchClause = statement.catchClause;
+  const binding = catchClause?.binding;
+  if (!binding) return;
+  let unsupportedUse: 'identity' | 'member' | undefined;
+  analyzeIrStatementSubtreeTraversal(catchClause.body, {
+    expression(expression) {
+      if (
+        expression.kind === 'property' &&
+        isIrCatchBindingReferenceRust(expression.object, binding.id) &&
+        expression.member?.receiver !== 'string'
+      ) {
+        unsupportedUse = 'member';
+        return false;
+      }
+      if (expression.kind === 'element' && isIrCatchBindingReferenceRust(expression.object, binding.id)) {
+        unsupportedUse = 'member';
+        return false;
+      }
+      if (expression.kind === 'call' && isIrCatchBindingReferenceRust(expression.callee, binding.id)) {
+        unsupportedUse = 'identity';
+        return false;
+      }
+      if (
+        expression.kind === 'unary' &&
+        expression.operator === 'typeof' &&
+        isIrCatchBindingReferenceRust(expression.operand, binding.id)
+      ) {
+        unsupportedUse = 'identity';
+        return false;
+      }
+      if (expression.kind !== 'binary') return undefined;
+      const left = isIrCatchBindingReferenceRust(expression.left, binding.id);
+      const right = isIrCatchBindingReferenceRust(expression.right, binding.id);
+      if (!left && !right) return undefined;
+      if (
+        expression.operator === '==' ||
+        expression.operator === '===' ||
+        expression.operator === '!=' ||
+        expression.operator === '!==' ||
+        expression.operator === 'instanceof' ||
+        expression.operator === 'in'
+      ) {
+        unsupportedUse = 'identity';
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupportedUse) return;
+  emissionError(
+    context,
+    `async task catch binding ${binding.name} uses ${unsupportedUse} semantics beyond the runtime String rejection carrier`,
+    'rust-runtime-error-carrier-incomplete',
+    'target-runtime',
+  );
+}
+
 function getIrTryProtectedCompletionEvidenceRust(statement: Readonly<Extract<IrStatement, { kind: 'try' }>>): {
   readonly abruptStatements: readonly Readonly<IrStatement>[];
   readonly suspensionCount: number;
@@ -5276,6 +5405,7 @@ function getAsyncTryDeferredReturnPlanRust(
 
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
   assertIrAsyncTryProtectedEvidenceRust(statement, context);
+  assertIrAsyncTaskCatchBindingUsesRust(statement, context);
   const deferredReturn = getAsyncTryDeferredReturnPlanRust(statement, context);
   if (deferredReturn) {
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
@@ -5654,6 +5784,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
       if (statement.expression && context.enclosingReturnType) {
+        assertIrAsyncReturnedExpressionCarrierRust(statement.expression, context);
         const adoptedTask = emitAsyncTaskAdoptionRust(statement.expression, context);
         if (adoptedTask) return [`return ${normalizeSourceTextGrouping(adoptedTask)};`];
         const unionArrayElementRead = emitReturnedUnionArrayElementReadRust(

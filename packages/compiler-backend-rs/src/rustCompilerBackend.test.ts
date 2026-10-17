@@ -2129,19 +2129,16 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('as FlightTask');
   });
 
-  it('preserves explicit await and non-task async returns without task adoption', () => {
+  it('preserves explicit await and represented non-task async returns without task adoption', () => {
     const output = emitIrModuleRust(
       lower(
         'async-task-adoption-controls.ts',
-        `type Box = { value: number };
-         async function inner(): Promise<number> { return 2; }
+        `async function inner(): Promise<number> { return 2; }
          export async function explicit(task: Promise<number>): Promise<number> { return await task; }
          export async function explicitCall(): Promise<number> { return await inner(); }
          export async function scalar(value: number): Promise<number> { return value; }
-         export async function object(): Promise<Box> { return { value: 1 }; }
          export async function array(): Promise<number[]> { return [1, 2]; }
-         export async function optional(value: number | undefined): Promise<number | undefined> { return value; }
-         export async function mixed(task: Promise<number>, chooseTask: boolean): Promise<number> { return chooseTask ? task : 1; }`,
+         export async function optional(value: number | undefined): Promise<number | undefined> { return value; }`,
       ).module,
     ).contents;
 
@@ -2149,12 +2146,77 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return inner().await;');
     expect(output).toContain('return 2.0;');
     expect(output).toContain('return value;');
-    // The contextual object construction still carries the function's task type in IR. Its shape,
-    // rather than that contextual type alone, keeps task adoption off the literal.
-    expect(output).toContain('return FlightTask<Box> { value: 1.0, };');
     expect(output).toContain('return vec![1.0, 2.0];');
-    expect(output).toContain('return if choose_task { task } else { 1.0 };');
     expect(output.match(/\.await/gu)).toHaveLength(2);
+  });
+
+  it.each([
+    [
+      'an instance method',
+      '\nexport class Fetcher { async fetch(): Promise<number> { return 1; } }',
+      'async method Fetcher.fetch',
+    ],
+    [
+      'a static method',
+      '\nexport class Fetcher { static async fetch(): Promise<number> { return 1; } }',
+      'async method Fetcher.fetch',
+    ],
+  ])('refuses %s before a synchronous Rust method can claim a task carrier', (_name, source, message) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('async-method-carrier.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain(message);
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+  });
+
+  it('keeps synchronous methods and native free-function async emission outside the method refusal', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-method-carrier-control.ts',
+        `export class Fetcher { fetch(): number { return 1; } }
+         export async function fetch(): Promise<number> { return 2; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn fetch(&self) -> f64 {');
+    expect(output).toContain('pub async fn fetch() -> f64 {');
+  });
+
+  it.each([
+    [
+      'mixed task and scalar conditional',
+      '\nexport async function choose(task: Promise<number>, taskFirst: boolean): Promise<number> { return taskFirst ? task : 1; }',
+      'mixes task and value arms',
+    ],
+    [
+      'nested mixed task and scalar conditional',
+      '\nexport async function choose(first: Promise<number>, second: Promise<number>, pick: number): Promise<number> { return pick === 0 ? first : pick === 1 ? second : 1; }',
+      'mixes task and value arms',
+    ],
+    [
+      'erased mixed task and scalar conditional',
+      '\nexport async function choose(task: Promise<number>, taskFirst: boolean): Promise<number> { return taskFirst ? task as any : 1; }',
+      'mixes task and value arms',
+    ],
+    [
+      'contextual task-typed object',
+      '\nexport async function create(): Promise<{ value: number }> { return { value: 1 }; }',
+      'contextual Promise type',
+    ],
+  ])('refuses an async return with %s before invalid Rust emission', (_name, source, message) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('async-return-carrier.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain(message);
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
   });
 
   it.skipIf(!rustcAvailable)('runs bare task adoption and repeated task ownership against the runtime fixture', () => {
@@ -2753,6 +2815,58 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('catch_unwind');
   });
 
+  it.each([
+    [
+      'member projection',
+      '\nexport async function recover(task: Promise<number>): Promise<number> { try { return await task; } catch (error) { return error.message.length; } }',
+      'member semantics',
+    ],
+    [
+      'object identity comparison',
+      '\nexport async function recover(task: Promise<number>, marker: unknown): Promise<number> { try { return await task; } catch (error) { return error === marker ? 1 : 0; } }',
+      'identity semantics',
+    ],
+    [
+      'implicit String identity comparison',
+      '\nexport async function recover(task: Promise<number>): Promise<number> { try { return await task; } catch (error) { return error === "no" ? 1 : 0; } }',
+      'identity semantics',
+    ],
+    [
+      'runtime type identity',
+      '\nexport async function recover(task: Promise<number>): Promise<number> { try { return await task; } catch (error) { return error instanceof TypeError ? 1 : 0; } }',
+      'identity semantics',
+    ],
+  ])('refuses async task catch-binding %s beyond the String rejection carrier', (_name, source, message) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('async-catch-binding-carrier.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-runtime-error-carrier-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(message);
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+  });
+
+  it.skipIf(!rustcAvailable)('keeps String-compatible catch-binding use on the represented rejection carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-catch-string-carrier.ts',
+        'function isNo(error: string): boolean { return error === "no"; } export async function recover(task: Promise<number>): Promise<number> { try { return await task; } catch (error) { return isNo(error) ? 1 : 0; } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Err(error)');
+    expect(output).toContain('is_no(error)');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `assert_eq!(flight_runtime::block_on(recover(flight_runtime::FlightTask::<f64>::reject("no"))), 1.0);
+         assert_eq!(flight_runtime::block_on(recover(flight_runtime::FlightTask::<f64>::reject("other"))), 0.0);`,
+      ),
+    ).not.toThrow();
+  });
+
   it('binds one direct awaited declarator and its tail only inside the settlement Ok arm', () => {
     const output = emitIrModuleRust(
       lower(
@@ -3009,6 +3123,43 @@ describe('emitIrModuleRust', () => {
 
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+  });
+
+  it.each([
+    [
+      'an Ok-arm return',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await task; return result; } catch { result = fallback; } finally { log.push(1); } return result; }',
+    ],
+    [
+      'a catch-arm return',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await task; } catch { return fallback; } finally { log.push(1); } return result; }',
+    ],
+    [
+      'an Ok-arm break',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; while (true) { try { result = await task; break; } catch { result = fallback; } finally { log.push(1); } } return result; }',
+    ],
+    [
+      'a catch-arm break',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; while (true) { try { result = await task; } catch { result = fallback; break; } finally { log.push(1); } } return result; }',
+    ],
+    [
+      'an Ok-arm continue',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; let done = false; while (!done) { try { result = await task; done = true; continue; } catch { result = fallback; done = true; } finally { log.push(1); } } return result; }',
+    ],
+    [
+      'a catch-arm continue',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; let done = false; while (!done) { try { result = await task; done = true; } catch { result = fallback; done = true; continue; } finally { log.push(1); } } return result; }',
+    ],
+  ])('refuses assignment-await try/catch/finally with %s before cleanup can be skipped', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('assignment-await-finally-completion.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('non-abrupt finally');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
   });
 
   it('emits dense local array literals as Vec values accepted by rustc', () => {
