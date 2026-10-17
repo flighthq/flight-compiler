@@ -20172,6 +20172,83 @@ describe('emitIrModuleRust import emission', () => {
     expect(output).not.toContain('util.');
   });
 
+  it('publishes type-only and namespace imports that local exports expose', () => {
+    const types = lowerPackage('@flighthq/core', 'types.ts', 'export interface Shape { value: number }').module;
+    const typeFacade = lowerPackage(
+      '@flighthq/core',
+      'type-facade.ts',
+      "import type { Shape as localShape } from './types.js';\nexport type { localShape as PublicShape };",
+    ).module;
+    const util = lowerPackage(
+      '@flighthq/core',
+      'util.ts',
+      'export function helper(): number { return 1; }',
+    ).module;
+    const namespaceFacade = lowerPackage(
+      '@flighthq/core',
+      'namespace-facade.ts',
+      "import * as localTools from './util.js';\nexport { localTools as PublicTools };",
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(typeFacade),
+            specifier: './types.js',
+            target: getRustTestModuleIdentity(types),
+          },
+          {
+            importer: getRustTestModuleIdentity(namespaceFacade),
+            specifier: './util.js',
+            target: getRustTestModuleIdentity(util),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [typeFacade, types, namespaceFacade, util],
+      options: {},
+    });
+
+    const typeOutput = session.emitModule(typeFacade)[0]!.contents;
+    const namespaceOutput = session.emitModule(namespaceFacade)[0]!.contents;
+    expect(typeOutput).toContain('pub use crate::types::Shape as LocalShape;');
+    expect(typeOutput).not.toContain('\nuse crate::types::Shape as LocalShape;');
+    expect(namespaceOutput).toContain('pub use crate::util as local_tools;');
+    expect(namespaceOutput).not.toContain('\nuse crate::util as local_tools;');
+  });
+
+  it('refuses a local import export whose type and value leaves have different Rust spellings', () => {
+    const provider = lowerPackage(
+      '@flighthq/core',
+      'provider.ts',
+      'export interface Dual { value: number }\nexport const Dual = 1;',
+    ).module;
+    const facade = lowerPackage(
+      '@flighthq/core',
+      'facade.ts',
+      "import { Dual } from './provider.js';\nexport { Dual };",
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(facade),
+            specifier: './provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [facade, provider],
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(facade));
+    expect(failure.rule).toBe('rust-local-import-reexport-split-space-unsupported');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('distinct Rust spellings Dual and DUAL');
+  });
+
   it.skipIf(!rustcAvailable)('emits a namespace import the Rust compiler accepts', () => {
     const provider = lowerPackage(
       '@flighthq/core',
@@ -22492,6 +22569,6 @@ export { exportedFn, exportedConst, ExportedClass, ExportedEnum, Shape, Impl, Na
     });
 
     expect(session.emitModule(provider)[0]!.contents).toContain('pub fn f()');
-    expect(session.emitModule(consumer)[0]!.contents).toContain('use crate::provider::f as g;');
+    expect(session.emitModule(consumer)[0]!.contents).toContain('pub use crate::provider::f as g;');
   });
 });

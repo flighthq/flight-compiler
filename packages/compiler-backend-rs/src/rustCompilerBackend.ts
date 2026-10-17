@@ -3027,8 +3027,10 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       );
     }
     const module = rustImportModule(imported.specifier, context);
-    const names: string[] = [];
+    const privateNames = new Set<string>();
+    const publicNames = new Set<string>();
     for (const binding of imported.bindings) {
+      const public_ = context.moduleExportBindingIds.has(binding.binding.id);
       if (binding.imported === 'default') {
         emissionRuleError(
           context,
@@ -3047,7 +3049,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
             'rust-namespace-import-requires-module-resolution',
           );
         }
-        lines.add(`use ${module} as ${getBindingTargetNameRust(binding.binding, context)};`);
+        lines.add(`${public_ ? 'pub ' : ''}use ${module} as ${getBindingTargetNameRust(binding.binding, context)};`);
         continue;
       }
       // The name to import is the one the declaring module allocated for its declaration: a constant is
@@ -3056,6 +3058,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       const targetModule = resolveImportModuleRust(imported.specifier, binding.imported, context);
       let declaredName: string | undefined;
       if (targetModule) {
+        if (public_) assertRustLocalImportExportSpacesRust(targetModule, binding.imported, binding.binding.id, context);
         const resolution = resolveRustDeclaredExportRust(
           targetModule,
           binding.imported,
@@ -3067,11 +3070,48 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       }
       const importedName = declaredName ?? getRustNameShapeFallback(binding.imported, binding.binding.space === 'type');
       const localName = getBindingTargetNameRust(binding.binding, context);
-      names.push(importedName === localName ? importedName : `${importedName} as ${localName}`);
+      const name = importedName === localName ? importedName : `${importedName} as ${localName}`;
+      (public_ ? publicNames : privateNames).add(name);
     }
-    if (names.length > 0) lines.add(`use ${module}::${emitUseTreeRust(names.sort())};`);
+    if (privateNames.size > 0) lines.add(`use ${module}::${emitUseTreeRust([...privateNames].sort())};`);
+    if (publicNames.size > 0) lines.add(`pub use ${module}::${emitUseTreeRust([...publicNames].sort())};`);
   }
   return [...lines].sort();
+}
+
+// A value-space import can publish both of TypeScript's independent facade lanes. One Rust `use`
+// carries both only when the declaring module spells them the same way (a class or enum is the usual
+// case). Distinct declaration spellings would silently leave one public lane absent, so keep that edge
+// explicit until import lowering can prove that two same-alias Rust imports occupy disjoint namespaces.
+function assertRustLocalImportExportSpacesRust(
+  targetModule: Readonly<IrModule>,
+  importedName: string,
+  bindingId: string,
+  context: EmitContext,
+): void {
+  const localExports = context.module.exports.filter(
+    (exported): exported is Extract<IrExport, { kind: 'local' }> =>
+      exported.kind === 'local' && exported.binding.id === bindingId,
+  );
+  const lanes = new Set(
+    localExports.flatMap((exported) => (exported.typeOnly ? (['type'] as const) : (['type', 'value'] as const))),
+  );
+  const resolutions = [...lanes].map((space) => ({
+    resolution: resolveRustExportedTargetNameRust(targetModule, importedName, space, context, new Set()),
+    space,
+  }));
+  for (const { resolution } of resolutions) {
+    assertRustExportedTargetNameResolutionRust(resolution, targetModule, importedName, context);
+  }
+  const typeName = resolutions.find(({ space }) => space === 'type')?.resolution;
+  const valueName = resolutions.find(({ space }) => space === 'value')?.resolution;
+  if (typeName?.kind === 'resolved' && valueName?.kind === 'resolved' && typeName.name !== valueName.name) {
+    emissionRuleError(
+      context,
+      `local export of imported binding ${importedName} resolves type and value lanes to distinct Rust spellings ${typeName.name} and ${valueName.name}`,
+      'rust-local-import-reexport-split-space-unsupported',
+    );
+  }
 }
 
 // A facade module names what it re-exports and where it came from, which is exactly what Rust's
@@ -9152,6 +9192,15 @@ function resolveRustDeclaredExportRust(
 // can branch on, and both would otherwise become a guessed spelling that only rustc rejects.
 function assertRustDeclaredExportResolutionRust(
   resolution: RustDeclaredExportResolution,
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+): void {
+  assertRustExportedTargetNameResolutionRust(resolution, module, exportedName, context);
+}
+
+function assertRustExportedTargetNameResolutionRust(
+  resolution: RustDeclaredExportResolution | RustExportedTargetNameResolution,
   module: Readonly<IrModule>,
   exportedName: string,
   context: EmitContext,

@@ -459,13 +459,23 @@ describe('@flighthq/tool-compiler Rust allocator agreement', () => {
     result: Readonly<{ report: Readonly<{ publicBindings?: unknown }> }>,
     exportName: string,
   ): string | undefined {
+    return locatorSpellings(result, exportName)[0];
+  }
+
+  function locatorSpellings(
+    result: Readonly<{ report: Readonly<{ publicBindings?: unknown }> }>,
+    exportName: string,
+  ): readonly string[] {
     const bindings = (result.report.publicBindings as Readonly<{ bindings: readonly PlanBinding[] }> | undefined)
       ?.bindings;
-    return bindings?.find(
-      (binding) =>
-        binding.binding.availability === 'available' &&
-        binding.identity.exportRoute.includes(`${JSON.stringify(exportName)}`),
-    )?.binding.locator?.spelling;
+    return (bindings ?? [])
+      .filter(
+        (binding) =>
+          binding.binding.availability === 'available' &&
+          binding.identity.exportRoute.includes(`${JSON.stringify(exportName)}`),
+      )
+      .flatMap((binding) => (binding.binding.locator ? [binding.binding.locator.spelling] : []))
+      .sort();
   }
 
   const provider = (source: string) => ({
@@ -522,6 +532,46 @@ describe('@flighthq/tool-compiler Rust allocator agreement', () => {
     expect(consumerFile?.contents).toContain('pub const F0: F0_2');
     expect(locatorSpelling(result, 'widget')).toBe('widget');
     expect(locatorSpelling(result, 'f0')).toBe('F0');
+  });
+
+  it('publishes an imported local allocation that a downstream consumer can name', () => {
+    const barrelIdentity = { name: 'Barrel', packageName: '@probe/pkg', source: 'packages/pkg/src/barrel.ts' };
+    const sources = [
+      {
+        packageName: '@probe/pkg',
+        packageRoot: '/flight/packages/pkg',
+        upstreamDirectory: '/flight',
+        sourceFile: parseTypeScriptSource(
+          '/flight/packages/pkg/src/barrel.ts',
+          "import { F0 } from './provider.js';\nexport const f0: F0 = new F0();\nexport { F0 as PublicF0 };",
+        ),
+      },
+      consumer(
+        "import { PublicF0 as Seen } from './barrel.js';\nexport function read(value: Seen): number { return value.v; }",
+      ),
+      provider('export class F0 { v: number = 0; }'),
+    ];
+    const result = compileTypeScriptPackageGraph({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      graph: {
+        entries: [barrelIdentity, consumerIdentity],
+        moduleDependencies: [
+          { importer: barrelIdentity, specifier: './provider.js', target: providerIdentity },
+          { importer: consumerIdentity, specifier: './barrel.js', target: barrelIdentity },
+        ],
+        packages: [{ dependencies: [], name: '@probe/pkg', root: '/flight/packages/pkg' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources,
+    });
+    const barrelFile = result.compilation.files.find(({ path }) => path === 'barrel.rs');
+    const consumerFile = result.compilation.files.find(({ path }) => path === 'consumer.rs');
+
+    expect(barrelFile?.contents).toContain('pub use crate::provider::F0 as F0_2;');
+    expect(barrelFile?.contents).not.toContain('\nuse crate::provider::F0 as F0_2;');
+    expect(consumerFile?.contents).toContain('use crate::barrel::F0_2 as Seen;');
+    expect(locatorSpellings(result, 'PublicF0')).toEqual(['F0_2', 'F0_2']);
   });
 
   it('answers the same plan and files when the sources are ordered differently', () => {

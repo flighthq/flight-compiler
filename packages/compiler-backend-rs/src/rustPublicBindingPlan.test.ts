@@ -169,6 +169,53 @@ describe('createCompilerRustPublicBindingPlan', () => {
     ]);
   });
 
+  it('spells an imported local export with the facade module allocation', () => {
+    const entry = lower(
+      '@scope/api',
+      'packages/api/src/contract.ts',
+      "import { F0 } from '@scope/model';\nexport const f0: F0 = new F0();\nexport { F0 as PublicF0 };",
+    );
+    const provider = lower(
+      '@scope/model',
+      'packages/model/src/index.ts',
+      'export class F0 { value: number = 0; }',
+    );
+    const imported = entry.imports[0]?.bindings[0]?.binding;
+    const declaration = provider.declarations.find(
+      (candidate) => 'binding' in candidate && candidate.binding.name === 'F0',
+    );
+    if (!imported || !declaration || !('binding' in declaration)) throw new Error('Missing F0 bindings');
+    const importedSlot = (lane: 'type' | 'value'): CompilerModuleFacadeSlot => ({
+      exportName: 'PublicF0',
+      identity: `fixture:${lane}:PublicF0`,
+      lane,
+      module: identity(entry),
+      route: { binding: declaration.binding, kind: 'binding', module: identity(provider) },
+      source: { bindingId: imported.id, kind: 'local-binding' },
+      via: [
+        {
+          kind: 'import',
+          module: identity(entry),
+          specifier: '@scope/model',
+          target: identity(provider),
+        },
+      ],
+    });
+    const plan = createCompilerRustPublicBindingPlan({
+      facade: createFacade(entry, [importedSlot('type'), importedSlot('value')]),
+      modules: [entry, provider],
+    });
+    const locators = plan.bindings.map((binding) => {
+      if (binding.binding.availability !== 'available') throw new Error('Expected available PublicF0 binding');
+      return binding.binding.locator;
+    });
+
+    expect(locators).toEqual([
+      expect.objectContaining({ carrier: 'class', spelling: 'F0_2' }),
+      expect.objectContaining({ carrier: 'class', spelling: 'F0_2' }),
+    ]);
+  });
+
   it('fails loudly when two facade slots normalize to one public Rust spelling', () => {
     const first = lower('@scope/model', 'packages/model/src/first.ts', 'export function first(): number { return 1; }');
     const second = lower(

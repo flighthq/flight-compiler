@@ -253,7 +253,7 @@ function createRustPublicBindings(
           locator: {
             carrier: 'module',
             module: locators.get(getRustPublicModuleIdentityKey(publicModule!))!,
-            spelling: getRustPublicExportName(slot.lane, slot.exportName),
+            spelling: getRustPublicFacadeSpelling(slot, publicModule!, targetNames),
             target: locators.get(getRustPublicModuleIdentityKey(targetModule!))!,
           },
         };
@@ -268,15 +268,7 @@ function createRustPublicBindings(
         };
       } else {
         const module = locators.get(getRustPublicModuleIdentityKey(publicModule))!;
-        const direct =
-          slot.source.kind === 'local-binding' &&
-          getRustPublicModuleIdentityKey(publicModule) === getRustPublicModuleIdentityKey(declarationModule);
-        const allocated = targetNames
-          .get(getRustPublicModuleIdentityKey(declarationModule))
-          ?.get(slot.route.binding.id);
-        const spelling = direct
-          ? (allocated ?? getRustPreferredBindingName(slot.route.binding, new Set()))
-          : getRustPublicExportName(slot.lane, slot.exportName);
+        const spelling = getRustPublicFacadeSpelling(slot, publicModule, targetNames);
         binding = {
           availability: 'available',
           locator: { carrier: getRustPublicBindingCarrier(declaration), module, spelling },
@@ -286,6 +278,24 @@ function createRustPublicBindings(
     }),
   );
   return bindings.sort((left, right) => compareTextCodeUnits(left.key, right.key));
+}
+
+// A source-local export publishes the module's allocated binding even when that binding is an import
+// whose facade route continues to a declaration in another module. Named re-export routes remain source
+// facade names; consumers and the public plan both address a local export by its one Rust allocation.
+function getRustPublicFacadeSpelling(
+  slot: Readonly<CompilerModuleFacadeSlot>,
+  publicModule: Readonly<IrModule>,
+  targetNames: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): string {
+  if (slot.source.kind !== 'local-binding') return getRustPublicExportName(slot.lane, slot.exportName);
+  const spelling = targetNames
+    .get(getRustPublicModuleIdentityKey(publicModule))
+    ?.get(slot.source.bindingId);
+  if (spelling === undefined) {
+    throw new TypeError(`Rust public local binding allocation is absent for ${slot.source.bindingId}`);
+  }
+  return spelling;
 }
 
 function createRustPublicBindingSourceExportIdentity(
