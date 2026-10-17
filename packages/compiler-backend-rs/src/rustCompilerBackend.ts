@@ -1624,12 +1624,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // back is noise the source never asked for.
       return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     }
-    case 'function':
+    case 'function': {
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
+      const closureContext: EmitContext = {
+        ...context,
+        activeTypeParameters: expression.typeParameters,
+        enclosingReturnType: expression.returns,
+        returnsAbsent: hasIrTypeAbsentMember(expression.returns),
+        returnsSharedClass:
+          expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
+      };
       return expression.expression
-        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, context))}`
-        : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
+        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, closureContext))}`
+        : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, closureContext)).join('\n')}\n}`;
+    }
     case 'identifier': {
       if (
         expression.reference.kind === 'binding' &&

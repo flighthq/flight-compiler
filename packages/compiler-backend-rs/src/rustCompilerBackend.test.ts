@@ -8497,6 +8497,40 @@ describe('emitIrModuleRust', () => {
     }
   });
 
+  it('keeps nested non-class closure return carriers local to a shared-class-returning function', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nested-return-carriers.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         function makeCounter(): Counter {
+           const numeric = (): number => { return 7; };
+           const textual = (): string => { return "ready"; };
+           const logical = (): boolean => { return true; };
+           textual();
+           logical();
+           return new Counter(numeric());
+         }
+         export function nestedReturnCarriers(): number {
+           return makeCounter().value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn make_counter() -> Rc<RefCell<Counter>>');
+    expect(output).toContain('return 7.0;');
+    expect(output).toContain('return "ready".to_owned();');
+    expect(output).toContain('return true;');
+    expect(output).not.toContain('return Rc::new(RefCell::new(7.0));');
+    expect(output).not.toContain('return Rc::new(RefCell::new("ready".to_owned()));');
+    expect(output).not.toContain('return Rc::new(RefCell::new(true));');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(nested_return_carriers(), 7.0);')).not.toThrow();
+    }
+  });
+
   it('returns an imported shared class identity for caller mutation', () => {
     const provider = lower(
       'return-counter-provider.ts',
