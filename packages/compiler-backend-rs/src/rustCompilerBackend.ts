@@ -195,11 +195,6 @@ interface RustAsyncTryCompletionEvidence {
   readonly suspensionCount: number;
 }
 
-interface RustAsyncTryDeferredReturnPlan {
-  readonly awaitTarget: Readonly<IrExpression>;
-  readonly catchReturnExpression: Readonly<IrExpression>;
-}
-
 interface RustAsyncTryExpressionAwaitPlan {
   readonly awaitTarget: Readonly<IrExpression>;
   readonly postStatements: readonly Readonly<IrStatement>[];
@@ -220,11 +215,18 @@ type RustAsyncTryDirectAwaitStep =
       kind: 'assignment';
     }>
   | Readonly<{ awaitTarget: Readonly<IrExpression>; kind: 'expression' }>
+  | Readonly<{ awaitTarget: Readonly<IrExpression>; kind: 'return' }>
   | Readonly<{
       awaitTarget: Readonly<IrExpression>;
       kind: 'variable';
       variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>;
     }>;
+
+interface RustAsyncTryFinallyCompletionPlan {
+  readonly catchStatements?: readonly Readonly<IrStatement>[] | undefined;
+  readonly finallyStatements: readonly Readonly<IrStatement>[];
+  readonly tryStatements: readonly Readonly<IrStatement>[];
+}
 
 interface RustAsyncTryTwoAwaitPlan {
   readonly betweenStatements: readonly Readonly<IrStatement>[];
@@ -4712,7 +4714,11 @@ function assertRustUnionArrayElementValueRust(type: Readonly<IrType>, context: E
   );
 }
 
-function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+function emitReturnedExpressionRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  ownForDeferredCleanup = false,
+): string {
   const returnedUnion = getIrExpressionTaggedUnionRust(expression, context);
   const declaredReturn = context.enclosingReturnType;
   if (returnedUnion !== undefined && declaredReturn?.kind === 'named' && declaredReturn.reference.kind === 'binding') {
@@ -4725,8 +4731,11 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
       );
     }
   }
-  const source = emitExpression(expression, context);
+  const source = ownForDeferredCleanup
+    ? emitOwnedOperandRust(expression, context)
+    : emitExpression(expression, context);
   if (
+    !ownForDeferredCleanup &&
     expression.kind === 'element' &&
     !expression.optional &&
     expression.semantics.receivers.includes('array') &&
@@ -4738,6 +4747,79 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
     return emitCellCloneBlockRust(`Rc::new(move ${source})`, expression, context);
   }
   return source;
+}
+
+// A deferred return still evaluates and owns exactly the value an immediate return would have
+// carried. Keeping the contextual conversions here lets cleanup delay control flow without creating
+// a second representation path for unions, shared classes, or async task adoption.
+function emitContextualReturnValueRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  ownForDeferredCleanup = false,
+): string {
+  if (context.returnsSharedClass) return emitSharedClassReturnedExpressionRust(expression, context);
+  if (
+    !context.returnsAbsent &&
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    expression.presence !== 'narrowedPresent' &&
+    context.nullableBindingIds.has(expression.reference.binding.id)
+  ) {
+    emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
+  }
+  if (context.enclosingReturnType) {
+    assertIrAsyncReturnedExpressionCarrierRust(expression, context);
+    const adoptedTask = emitAsyncTaskAdoptionRust(expression, context);
+    if (adoptedTask) return adoptedTask;
+    const unionArrayElementRead = emitReturnedUnionArrayElementReadRust(
+      expression,
+      context.enclosingReturnType,
+      context,
+    );
+    if (unionArrayElementRead) return unionArrayElementRead;
+    const dualSentinelUnion = resolveDualSentinelUnionEnumRust(context.enclosingReturnType, context);
+    if (dualSentinelUnion) {
+      const wrapped = emitDualSentinelUnionConstructionRust(expression, dualSentinelUnion, context);
+      if (wrapped) return wrapped;
+    }
+    const numericEnum = getIrTypeNumericEnumNamespaceNameRust(context.enclosingReturnType, context);
+    if (numericEnum) {
+      const expressionEnum = getIrExpressionNumericEnumNamespaceNameRust(expression, context);
+      const emitted = emitReturnedExpressionRust(expression, context, ownForDeferredCleanup);
+      return expressionEnum === numericEnum ? emitted : `${numericEnum}((${emitted}) as i32)`;
+    }
+    const targetEnum = resolvePrimitiveUnionEnumRust(context.enclosingReturnType, context);
+    if (targetEnum) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        context.primitiveUnionBindingIds.get(expression.reference.binding.id) === targetEnum.name
+      ) {
+        return ownForDeferredCleanup
+          ? emitOwnedOperandRust(expression, context)
+          : emitIdentifierReferenceRust(expression.reference, context);
+      }
+      const wrapped = emitPrimitiveUnionConstructionRust(expression, targetEnum, context);
+      if (wrapped) return wrapped;
+    }
+    const callableUnion = emitContextualCallableUnionConstructionRust(expression, context.enclosingReturnType, context);
+    if (callableUnion) return callableUnion;
+    if (
+      hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
+      !hasSameRustRepresentationAsType(expression, context.enclosingReturnType, context)
+    ) {
+      emissionError(
+        context,
+        'returning a contextual general union alternative requires represented Rust enum construction',
+        'rust-contextual-general-union-construction-unrepresented',
+      );
+    }
+  }
+  return emitReturnedExpressionRust(expression, context, ownForDeferredCleanup);
+}
+
+function emitContextualOwnedReturnValueRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  return emitContextualReturnValueRust(expression, context, true);
 }
 
 function emitSharedClassReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -6195,6 +6277,9 @@ function getIrDirectStatementsRust(statement: Readonly<IrStatement>): readonly R
 }
 
 function getIrAsyncTryDirectAwaitStepRust(statement: Readonly<IrStatement>): RustAsyncTryDirectAwaitStep | undefined {
+  if (statement.kind === 'return' && statement.expression?.kind === 'await') {
+    return { awaitTarget: statement.expression.expression, kind: 'return' };
+  }
   if (statement.kind === 'expression') {
     if (statement.expression.kind === 'await') {
       return { awaitTarget: statement.expression.expression, kind: 'expression' };
@@ -6252,6 +6337,62 @@ function areIrAsyncTryStraightLineStatementsRust(statements: readonly Readonly<I
       statement.kind === 'variable' ||
       (statement.kind === 'return' && index === statements.length - 1),
   );
+}
+
+function getAsyncTryFinallyCompletionPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryFinallyCompletionPlan | undefined {
+  if (!statement.finallyBody) return undefined;
+  const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
+  const catchEvidence = statement.catchClause
+    ? collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body)
+    : undefined;
+  const finallyEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.finallyBody);
+  const suspensionCount =
+    tryEvidence.suspensionCount + (catchEvidence?.suspensionCount ?? 0) + finallyEvidence.suspensionCount;
+  if (suspensionCount === 0) return undefined;
+
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const catchStatements = statement.catchClause ? getIrDirectStatementsRust(statement.catchClause.body) : undefined;
+  const finallyStatements = getIrDirectStatementsRust(statement.finallyBody);
+  const trySteps = tryStatements.flatMap((candidate) => {
+    const step = getIrAsyncTryDirectAwaitStepRust(candidate);
+    return step ? [step] : [];
+  });
+  const permittedReturns = new Set(
+    [tryStatements.at(-1), catchStatements?.at(-1)].filter(
+      (candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return',
+    ),
+  );
+  const flatBodies =
+    !(statement.tryBody.kind === 'block' && statement.tryBody.label) &&
+    !(statement.catchClause?.body.kind === 'block' && statement.catchClause.body.label) &&
+    !(statement.finallyBody.kind === 'block' && statement.finallyBody.label) &&
+    areIrAsyncTryStraightLineStatementsRust(tryStatements) &&
+    (catchStatements === undefined || areIrAsyncTryStraightLineStatementsRust(catchStatements)) &&
+    finallyStatements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable');
+  const exactCompletions =
+    tryEvidence.abruptStatements.every((candidate) => permittedReturns.has(candidate)) &&
+    (catchEvidence?.abruptStatements.every((candidate) => permittedReturns.has(candidate)) ?? true) &&
+    finallyEvidence.abruptStatements.length === 0;
+  const exactSuspensions =
+    trySteps.length > 0 &&
+    tryEvidence.suspensionCount === trySteps.length &&
+    (catchEvidence?.suspensionCount ?? 0) === 0 &&
+    finallyEvidence.suspensionCount === 0;
+  if (!flatBodies || !exactCompletions || !exactSuspensions) {
+    emissionRuleError(
+      context,
+      'async try/finally local completion requires flat Normal/Return arms, direct try awaits, and a non-abrupt finally',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  return {
+    ...(catchStatements ? { catchStatements } : {}),
+    finallyStatements,
+    tryStatements,
+  };
 }
 
 function getAsyncTryExpressionAwaitPlanRust(
@@ -6378,6 +6519,7 @@ function getAsyncTryVariableAwaitPlanRust(
 function emitAsyncTrySettledVariableRust(
   variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>,
   context: EmitContext,
+  value = '__value',
 ): string {
   const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
   if (
@@ -6397,7 +6539,7 @@ function emitAsyncTrySettledVariableRust(
   }
   const mutable =
     variable.mutable || (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(type));
-  return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(type, context)} = __value;`;
+  return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(type, context)} = ${value};`;
 }
 
 function getIrAsyncTrySettledValueTypeRust(
@@ -6425,6 +6567,7 @@ function getIrSingleAbsentValueTypeRust(type: Readonly<IrType>): Readonly<IrType
 function emitAsyncTrySettledAssignmentRust(
   assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
   context: EmitContext,
+  settledValue = '__value',
 ): string {
   const left = assignment.left;
   if (
@@ -6471,7 +6614,7 @@ function emitAsyncTrySettledAssignmentRust(
 
   const targetRepresentation = emitType(targetType, context);
   const valueRepresentation = emitType(valueType, context);
-  let value = '__value';
+  let value = settledValue;
   if (targetRepresentation !== valueRepresentation) {
     const presentType = getIrSingleAbsentValueTypeRust(targetType);
     if (!presentType || emitType(presentType, context) !== valueRepresentation) {
@@ -6481,7 +6624,7 @@ function emitAsyncTrySettledAssignmentRust(
         'rust-async-protected-assignment-place-unrepresented',
       );
     }
-    value = 'Some(__value)';
+    value = `Some(${settledValue})`;
   }
 
   const name = emitIdentifierReferenceRust(left.reference, context);
@@ -6490,10 +6633,211 @@ function emitAsyncTrySettledAssignmentRust(
   return `${name} = ${value};`;
 }
 
-function emitAsyncTrySettledStepRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): string[] {
-  if (step.kind === 'expression') return [];
-  if (step.kind === 'variable') return [emitAsyncTrySettledVariableRust(step.variable, context)];
-  return [emitAsyncTrySettledAssignmentRust(step.assignment, context)];
+function emitAsyncTrySettledStepRust(
+  step: RustAsyncTryDirectAwaitStep,
+  context: EmitContext,
+  value = '__value',
+): string[] {
+  if (step.kind === 'expression' || step.kind === 'return') return [];
+  if (step.kind === 'variable') return [emitAsyncTrySettledVariableRust(step.variable, context, value)];
+  return [emitAsyncTrySettledAssignmentRust(step.assignment, context, value)];
+}
+
+function emitAsyncTryCompletionReturnTypeRust(context: EmitContext): string {
+  if (!context.enclosingReturnType) {
+    emissionRuleError(
+      context,
+      'async try/finally local completion requires one enclosing Rust return type',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const type = emitType(context.enclosingReturnType, context);
+  return context.returnsSharedClass ? `Rc<RefCell<${type}>>` : type;
+}
+
+function assertIrAsyncTryReturnAwaitCarrierRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): void {
+  if (step.kind !== 'return') return;
+  const valueType = getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context);
+  if (
+    !valueType ||
+    context.returnsSharedClass ||
+    emitType(valueType, context) !== emitAsyncTryCompletionReturnTypeRust(context)
+  ) {
+    emissionRuleError(
+      context,
+      'protected return-await requires an exact owned Rust function return carrier',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+}
+
+function emitAsyncTryFinallyTryCompletionRust(
+  plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
+  label: string,
+  context: EmitContext,
+): string[] {
+  const lines: string[] = [];
+  for (const statement of plan.tryStatements) {
+    const step = getIrAsyncTryDirectAwaitStepRust(statement);
+    if (step) {
+      const target = emitOwnedOperandRust(step.awaitTarget, context);
+      const error = getGeneratedTargetNameRust('try_error', context);
+      if (step.kind === 'return') {
+        assertIrAsyncTryReturnAwaitCarrierRust(step, context);
+        const value = getGeneratedTargetNameRust('try_value', context);
+        lines.push(
+          `match ${target}.settle() {`,
+          ...indentSourceLines([
+            `Ok(${value}) => break '${label} Ok(Some(${value})),`,
+            `Err(${error}) => break '${label} Err(${error}),`,
+          ]),
+          '}',
+        );
+        return lines;
+      }
+      if (step.kind === 'expression') {
+        if (!getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context)) {
+          emissionRuleError(
+            context,
+            'protected expression-await requires one direct Flight task settlement',
+            'rust-async-try-completion-unrepresented',
+          );
+        }
+        lines.push(
+          `match ${target}.settle() {`,
+          ...indentSourceLines(['Ok(_) => {}', `Err(${error}) => break '${label} Err(${error}),`]),
+          '}',
+        );
+        continue;
+      }
+      const valueType = getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context);
+      if (!valueType) {
+        emissionRuleError(
+          context,
+          'protected awaited value requires one direct Flight task settlement',
+          'rust-async-try-completion-unrepresented',
+        );
+      }
+      if (step.kind === 'variable') {
+        const variableType = step.variable.type ?? context.bindingTypes.get(step.variable.binding.id);
+        if (!variableType || emitType(variableType, context) !== emitType(valueType, context)) {
+          emissionRuleError(
+            context,
+            'protected awaited declarator requires one exact represented Rust value',
+            'rust-async-try-completion-unrepresented',
+          );
+        }
+      }
+      const value = getGeneratedTargetNameRust('try_value', context);
+      lines.push(
+        `let ${value} = match ${target}.settle() {`,
+        ...indentSourceLines([`Ok(${value}) => ${value},`, `Err(${error}) => break '${label} Err(${error}),`]),
+        '};',
+        ...emitAsyncTrySettledStepRust(step, context, value),
+      );
+      continue;
+    }
+    if (statement.kind === 'return') {
+      if (!statement.expression) {
+        if (context.returnsSharedClass) {
+          emissionRuleError(
+            context,
+            'shared class return requires one exact value',
+            'rust-reference-shared-class-return-unrepresented',
+          );
+        }
+        lines.push(`break '${label} Ok(Some(()));`);
+      } else {
+        const value = normalizeSourceTextGrouping(emitContextualOwnedReturnValueRust(statement.expression, context));
+        lines.push(`break '${label} Ok(Some(${value}));`);
+      }
+      return lines;
+    }
+    lines.push(...emitStatement(statement, context));
+  }
+  lines.push(`break '${label} Ok(None);`);
+  return lines;
+}
+
+function emitAsyncTryFinallyCatchCompletionRust(
+  statements: readonly Readonly<IrStatement>[],
+  context: EmitContext,
+): string[] {
+  const tail = statements.at(-1);
+  const body = tail?.kind === 'return' ? statements.slice(0, -1) : statements;
+  const lines = emitStatements(body, context);
+  if (tail?.kind !== 'return') return [...lines, 'None'];
+  if (!tail.expression) {
+    if (context.returnsSharedClass) {
+      emissionRuleError(
+        context,
+        'shared class return requires one exact value',
+        'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+    return [...lines, 'Some(())'];
+  }
+  const value = normalizeSourceTextGrouping(emitContextualOwnedReturnValueRust(tail.expression, context));
+  return [...lines, `Some(${value})`];
+}
+
+function emitAsyncTryFinallyCompletionRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
+  context: EmitContext,
+): string[] {
+  const returnType = emitAsyncTryCompletionReturnTypeRust(context);
+  const pending = getGeneratedTargetNameRust('try_completion_result', context);
+  const label = getGeneratedTargetNameRust('try_completion', context);
+  const lines = [
+    `let ${pending}: Result<Option<${returnType}>, String> = '${label}: {`,
+    ...indentSourceLines(emitAsyncTryFinallyTryCompletionRust(plan, label, context)),
+    '};',
+  ];
+  let completion = pending;
+  if (plan.catchStatements) {
+    completion = getGeneratedTargetNameRust('try_completion_value', context);
+    const carried = getGeneratedTargetNameRust('try_carried_completion', context);
+    const catchBinding = statement.catchClause?.binding
+      ? getBindingTargetNameRust(statement.catchClause.binding, context)
+      : '_';
+    lines.push(
+      `let ${completion}: Option<${returnType}> = match ${pending} {`,
+      ...indentSourceLines([
+        `Ok(${carried}) => ${carried},`,
+        `Err(${catchBinding}) => {`,
+        ...indentSourceLines(emitAsyncTryFinallyCatchCompletionRust(plan.catchStatements, context)),
+        '}',
+      ]),
+      '};',
+    );
+  }
+  lines.push(...emitStatements(plan.finallyStatements, context));
+  const value = getGeneratedTargetNameRust('try_return_value', context);
+  const tryCanCompleteNormally = plan.tryStatements.at(-1)?.kind !== 'return';
+  const catchCanCompleteNormally = plan.catchStatements?.at(-1)?.kind !== 'return';
+  if (plan.catchStatements) {
+    lines.push(
+      `match ${completion} {`,
+      ...indentSourceLines([
+        `Some(${value}) => return ${value},`,
+        `None => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
+      ]),
+      '}',
+    );
+  } else {
+    const error = getGeneratedTargetNameRust('try_error', context);
+    lines.push(
+      `match ${pending} {`,
+      ...indentSourceLines([
+        `Ok(Some(${value})) => return ${value},`,
+        `Ok(None) => ${tryCanCompleteNormally ? '{}' : 'unreachable!()'},`,
+        `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
+      ]),
+      '}',
+    );
+  }
+  return lines;
 }
 
 function emitAsyncTryTwoAwaitRust(
@@ -6538,76 +6882,16 @@ function emitAsyncTryTwoAwaitRust(
   ];
 }
 
-function getDirectIrStatementRust(statement: Readonly<IrStatement>): Readonly<IrStatement> | undefined {
-  if (statement.kind !== 'block') return statement;
-  return statement.statements.length === 1 ? statement.statements[0] : undefined;
-}
-
-function getAsyncTryDeferredReturnPlanRust(
-  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
-  context: EmitContext,
-): RustAsyncTryDeferredReturnPlan | undefined {
-  if (!statement.catchClause || !statement.finallyBody) return undefined;
-  const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
-  const catchEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body);
-  const finallyEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.finallyBody);
-  const suspensionCount = tryEvidence.suspensionCount + catchEvidence.suspensionCount + finallyEvidence.suspensionCount;
-  if (suspensionCount === 0) return undefined;
-  const directTry = getDirectIrStatementRust(statement.tryBody);
-  const directCatch = getDirectIrStatementRust(statement.catchClause.body);
-  const hasNeighboringCompletion =
-    tryEvidence.abruptStatements.length > 0 ||
-    catchEvidence.abruptStatements.length > 0 ||
-    finallyEvidence.abruptStatements.length > 0 ||
-    suspensionCount > 1;
-  if (
-    directTry?.kind !== 'return' ||
-    directTry.expression?.kind !== 'await' ||
-    directTry.expression.expression.kind !== 'identifier' ||
-    directCatch?.kind !== 'return' ||
-    directCatch.expression === undefined ||
-    (directCatch.expression.kind !== 'identifier' && directCatch.expression.kind !== 'literal') ||
-    tryEvidence.abruptStatements.length !== 1 ||
-    tryEvidence.abruptStatements[0] !== directTry ||
-    tryEvidence.suspensionCount !== 1 ||
-    catchEvidence.abruptStatements.length !== 1 ||
-    catchEvidence.abruptStatements[0] !== directCatch ||
-    catchEvidence.suspensionCount !== 0 ||
-    finallyEvidence.abruptStatements.length !== 0 ||
-    finallyEvidence.suspensionCount !== 0
-  ) {
-    if (hasNeighboringCompletion) {
-      emissionRuleError(
-        context,
-        'async try/catch/finally completion requires one direct return-await, one direct catch return, and a non-abrupt finally',
-        'rust-async-try-completion-unrepresented',
-      );
-    }
-    return undefined;
-  }
-  return { awaitTarget: directTry.expression.expression, catchReturnExpression: directCatch.expression };
-}
-
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
+  const finallyCompletion = getAsyncTryFinallyCompletionPlanRust(statement, context);
+  if (finallyCompletion) {
+    assertIrAsyncTaskCatchBindingUsesRust(statement, context);
+    return emitAsyncTryFinallyCompletionRust(statement, finallyCompletion, context);
+  }
   const twoAwait = getAsyncTryTwoAwaitPlanRust(statement);
   assertIrAsyncTryProtectedEvidenceRust(statement, context, twoAwait !== undefined);
   assertIrAsyncTaskCatchBindingUsesRust(statement, context);
   if (twoAwait) return emitAsyncTryTwoAwaitRust(statement, twoAwait, context);
-  const deferredReturn = getAsyncTryDeferredReturnPlanRust(statement, context);
-  if (deferredReturn) {
-    const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
-    const resultName = getGeneratedTargetNameRust('try_result', context);
-    const catchValue = normalizeSourceTextGrouping(
-      emitReturnedExpressionRust(deferredReturn.catchReturnExpression, context),
-    );
-    return [
-      `let ${resultName} = match ${emitOwnedOperandRust(deferredReturn.awaitTarget, context)}.settle() {`,
-      ...indentSourceLines([`Ok(__value) => __value,`, `Err(${catchBinding}) => ${catchValue},`]),
-      '};',
-      ...emitStatementBody(statement.finallyBody!, context),
-      `return ${resultName};`,
-    ];
-  }
   const variableAwait = getAsyncTryVariableAwaitPlanRust(statement, context);
   if (variableAwait) {
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
@@ -6943,81 +7227,19 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         lines.push('else {', ...indentSourceLines(emitStatementBody(statement.otherwise, context)), '}');
       return lines;
     }
-    case 'return':
-      if (context.returnsSharedClass) {
-        if (!statement.expression) {
+    case 'return': {
+      if (!statement.expression) {
+        if (context.returnsSharedClass) {
           emissionError(
             context,
             'shared class return requires one exact value',
             'rust-reference-shared-class-return-unrepresented',
           );
         }
-        return [`return ${emitSharedClassReturnedExpressionRust(statement.expression, context)};`];
+        return ['return;'];
       }
-      // Comparing against `None` is not narrowing. Returning a binding that can be absent from a
-      // function that cannot return one is Rust that does not compile, so it refuses here.
-      if (
-        !context.returnsAbsent &&
-        statement.expression?.kind === 'identifier' &&
-        statement.expression.reference.kind === 'binding' &&
-        statement.expression.presence !== 'narrowedPresent' &&
-        context.nullableBindingIds.has(statement.expression.reference.binding.id)
-      ) {
-        emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
-      }
-      if (statement.expression && context.enclosingReturnType) {
-        assertIrAsyncReturnedExpressionCarrierRust(statement.expression, context);
-        const adoptedTask = emitAsyncTaskAdoptionRust(statement.expression, context);
-        if (adoptedTask) return [`return ${normalizeSourceTextGrouping(adoptedTask)};`];
-        const unionArrayElementRead = emitReturnedUnionArrayElementReadRust(
-          statement.expression,
-          context.enclosingReturnType,
-          context,
-        );
-        if (unionArrayElementRead) return [`return ${unionArrayElementRead};`];
-        const dualSentinelUnion = resolveDualSentinelUnionEnumRust(context.enclosingReturnType, context);
-        if (dualSentinelUnion) {
-          const wrapped = emitDualSentinelUnionConstructionRust(statement.expression, dualSentinelUnion, context);
-          if (wrapped) return [`return ${wrapped};`];
-        }
-        const numericEnum = getIrTypeNumericEnumNamespaceNameRust(context.enclosingReturnType, context);
-        if (numericEnum) {
-          const expressionEnum = getIrExpressionNumericEnumNamespaceNameRust(statement.expression, context);
-          const emitted = emitReturnedExpressionRust(statement.expression, context);
-          return [`return ${expressionEnum === numericEnum ? emitted : `${numericEnum}((${emitted}) as i32)`};`];
-        }
-        const targetEnum = resolvePrimitiveUnionEnumRust(context.enclosingReturnType, context);
-        if (targetEnum) {
-          if (
-            statement.expression.kind === 'identifier' &&
-            statement.expression.reference.kind === 'binding' &&
-            context.primitiveUnionBindingIds.get(statement.expression.reference.binding.id) === targetEnum.name
-          ) {
-            return [`return ${emitIdentifierReferenceRust(statement.expression.reference, context)};`];
-          }
-          const wrapped = emitPrimitiveUnionConstructionRust(statement.expression, targetEnum, context);
-          if (wrapped) return [`return ${wrapped};`];
-        }
-        const callableUnion = emitContextualCallableUnionConstructionRust(
-          statement.expression,
-          context.enclosingReturnType,
-          context,
-        );
-        if (callableUnion) return [`return ${callableUnion};`];
-        if (
-          hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
-          !hasSameRustRepresentationAsType(statement.expression, context.enclosingReturnType, context)
-        ) {
-          emissionError(
-            context,
-            'returning a contextual general union alternative requires represented Rust enum construction',
-            'rust-contextual-general-union-construction-unrepresented',
-          );
-        }
-      }
-      return [
-        `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitReturnedExpressionRust(statement.expression, context))}` : ''};`,
-      ];
+      return [`return ${normalizeSourceTextGrouping(emitContextualReturnValueRust(statement.expression, context))};`];
+    }
     case 'switch': {
       const name = getGeneratedTargetNameRust('switch_value', context);
       const cases = statement.cases.filter((switchCase) => switchCase.expression);
@@ -7053,9 +7275,6 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     }
     case 'try': {
       const protectedContext: EmitContext = { ...context, insideProtectedTry: true };
-      if (getAsyncTryDeferredReturnPlanRust(statement, protectedContext)) {
-        return emitAsyncTryCatchRust(statement, protectedContext);
-      }
       if (
         context.asyncTryStatements.has(statement) ||
         getIrTryProtectedCompletionEvidenceRust(statement).suspensionCount > 0

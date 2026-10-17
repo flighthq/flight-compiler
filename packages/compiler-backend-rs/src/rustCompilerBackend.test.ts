@@ -3456,10 +3456,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { result = await first; result += await second; throw new Error("no"); } catch (error) { error; } return result; }',
     ],
     [
-      'finally interaction',
-      'export async function attempt(first: Promise<number>, second: Promise<number>, log: number[]): Promise<number> { let result = 0; try { result = await first; result += await second; } catch (error) { error; } finally { log.push(1); } return result; }',
-    ],
-    [
       'catch return completion',
       'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { result = await first; result += await second; } catch (error) { return error.length; } return result; }',
     ],
@@ -3494,10 +3490,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(task: Promise<number>, success: number, fallback: number): Promise<number> { while (true) { try { await task; break; } catch { return fallback; } } return success; }',
     ],
     [
-      'a finally interaction',
-      'export async function attempt(task: Promise<number>, success: number, fallback: number, log: number[]): Promise<number> { try { await task; return success; } catch { return fallback; } finally { log.push(1); } }',
-    ],
-    [
       'a nested return completion',
       'export async function attempt(task: Promise<number>, success: number, fallback: number): Promise<number> { try { await task; if (success > 0) return success; return fallback; } catch { return fallback; } }',
     ],
@@ -3516,11 +3508,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(task: Promise<number>): Promise<number> { let result: number = 0; let done: boolean = false; try { result = await task; } finally { done = true; } return done ? result : result; }',
     );
     const output = emitIrModuleRust(result.module).contents;
-    expect(output).toContain('let __try_result = ');
-    expect(output).toContain('.settle();');
-    expect(output).toContain('done = true;');
-    expect(output).toContain('Ok(__value)');
-    expect(output).toContain('Err(__error) => panic!');
+    const settlement = output.indexOf('match task.settle() {');
+    const fulfilledWrite = output.indexOf('result = try_value;');
+    const finallyEffect = output.indexOf('done = true;');
+    const rePanic = output.indexOf('panic!("unhandled task rejection: {}"');
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(settlement).toBeGreaterThan(-1);
+    expect(fulfilledWrite).toBeGreaterThan(settlement);
+    expect(finallyEffect).toBeGreaterThan(fulfilledWrite);
+    expect(rePanic).toBeGreaterThan(finallyEffect);
   });
 
   it('emits async try/return/finally with deferred return', () => {
@@ -3529,10 +3525,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } finally { log.push(1); } }',
     );
     const output = emitIrModuleRust(result.module).contents;
-    expect(output).toContain('let __try_result = ');
-    expect(output).toContain('.settle();');
-    expect(output).toContain('Ok(__value) => return __value,');
-    expect(output).toContain('Err(__error) => panic!');
+    const settlement = output.indexOf('match task.settle() {');
+    const carried = output.indexOf('Ok(Some(try_value))', settlement);
+    const finallyEffect = output.indexOf('log.push(array_push_argument0)');
+    const deferredReturn = output.indexOf('return try_return_value');
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(carried).toBeGreaterThan(settlement);
+    expect(finallyEffect).toBeGreaterThan(carried);
+    expect(deferredReturn).toBeGreaterThan(finallyEffect);
+    expect(output.indexOf('panic!("unhandled task rejection: {}"')).toBeGreaterThan(finallyEffect);
   });
 
   it('defers fulfilled and caught return values until after one non-abrupt finally', () => {
@@ -3543,16 +3544,17 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
 
-    expect(output).toContain('let try_result = match task.settle() {');
-    expect(output).toContain('Ok(__value) => __value,');
-    expect(output).toContain('Err(error) => fallback,');
-    expect(output).not.toContain('return __value;');
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(output).toContain('Err(error) => {');
+    expect(output).toContain('Some(fallback)');
     expect(output).not.toContain('return fallback;');
-    const settlement = output.indexOf('let try_result = match task.settle() {');
+    const settlement = output.indexOf('match task.settle() {');
+    const caughtReturn = output.indexOf('Some(fallback)');
     const finallyEffect = output.indexOf('log.push(array_push_argument0)');
-    const deferredReturn = output.indexOf('return try_result;');
+    const deferredReturn = output.indexOf('return try_return_value');
     expect(settlement).toBeGreaterThan(-1);
-    expect(finallyEffect).toBeGreaterThan(settlement);
+    expect(caughtReturn).toBeGreaterThan(settlement);
+    expect(finallyEffect).toBeGreaterThan(caughtReturn);
     expect(deferredReturn).toBeGreaterThan(finallyEffect);
   });
 
@@ -3573,6 +3575,158 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          let mut rejected_log = Vec::new();
          assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("no"), 9.0, &mut rejected_log)), 9.0);
          assert_eq!(rejected_log, vec![1.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('runs protected and caught effects before one finally cleanup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-assignment-return-finally-runtime.ts',
+        'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await task; log.push(result); return result; } catch { result = fallback; log.push(result); } finally { log.push(result + 10); } return result; }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), 9.0, &mut ready_log)), 4.0);
+         assert_eq!(ready_log, vec![4.0, 14.0]);
+         let mut rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("no"), 9.0, &mut rejected_log)), 9.0);
+         assert_eq!(rejected_log, vec![9.0, 19.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('wraps protected awaited assignments for optional Rust carriers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-optional-assignment-finally-runtime.ts',
+        'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { let result: number | undefined = undefined; try { result = await task; } finally { log.push(result ?? 0); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toMatch(/result = Some\(try_value(?:_\d+)?\)/);
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), &mut log));
+         assert_eq!(log, vec![4.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('settles multiple direct protected awaits in source order and stops at rejection', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-multiple-await-finally-runtime.ts',
+        'function observed(task: Promise<number>, marker: number, log: number[]): Promise<number> { log.push(marker); return task; } export async function attempt(first: Promise<number>, second: Promise<number>, third: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await observed(first, 1, log); const secondValue = await observed(second, 2, log); result += secondValue; await observed(third, 3, log); return result; } catch { log.push(fallback); return fallback; } finally { log.push(9); } }',
+      ).module,
+    ).contents;
+
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(3);
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(5.0), flight_runtime::FlightTask::ready(6.0), 20.0, &mut ready_log)), 9.0);
+         assert_eq!(ready_log, vec![1.0, 2.0, 3.0, 9.0]);
+         let mut first_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("first"), flight_runtime::FlightTask::ready(5.0), flight_runtime::FlightTask::ready(6.0), 20.0, &mut first_log)), 20.0);
+         assert_eq!(first_log, vec![1.0, 20.0, 9.0]);
+         let mut second_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::<f64>::reject("second"), flight_runtime::FlightTask::ready(6.0), 20.0, &mut second_log)), 20.0);
+         assert_eq!(second_log, vec![1.0, 2.0, 20.0, 9.0]);
+         let mut third_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(5.0), flight_runtime::FlightTask::<f64>::reject("third"), 20.0, &mut third_log)), 20.0);
+         assert_eq!(third_log, vec![1.0, 2.0, 3.0, 20.0, 9.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('distinguishes Normal from void and optional Return carriers', () => {
+    const voidOutput = emitIrModuleRust(
+      lower(
+        'try-void-return-finally-runtime.ts',
+        'export async function attempt(task: Promise<void>, log: number[]): Promise<void> { try { return await task; } catch { return; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+    const optionalOutput = emitIrModuleRust(
+      lower(
+        'try-optional-return-finally-runtime.ts',
+        'export async function attempt(task: Promise<number | undefined>, fallback: number | undefined, log: number[]): Promise<number | undefined> { try { return await task; } catch { return fallback; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(voidOutput).toContain('Result<Option<()>, String>');
+    expect(voidOutput).toContain('Some(())');
+    expect(optionalOutput).toContain('Result<Option<Option<f64>>, String>');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        voidOutput,
+        `let mut ready_log = Vec::new();
+         flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(()), &mut ready_log));
+         assert_eq!(ready_log, vec![1.0]);
+         let mut rejected_log = Vec::new();
+         flight_runtime::block_on(attempt(flight_runtime::FlightTask::<()>::reject("no"), &mut rejected_log));
+         assert_eq!(rejected_log, vec![1.0]);`,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        optionalOutput,
+        `let mut absent_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(None), Some(9.0), &mut absent_log)), None);
+         assert_eq!(absent_log, vec![1.0]);
+         let mut rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<Option<f64>>::reject("no"), Some(9.0), &mut rejected_log)), Some(9.0));
+         assert_eq!(rejected_log, vec![1.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('owns non-Copy return values across finally without moving observed bindings', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-string-return-finally-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, value: string, log: string[]): Promise<string> { try { await task; return value; } finally { record(value, log); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Some(value.clone())');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(1.0), "kept".to_owned(), &mut log)), "kept".to_owned());
+         assert_eq!(log, vec!["kept".to_owned()]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('runs finally before re-panicking an uncaught task rejection', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-repanic-finally-runtime.ts',
+        'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; log.push(0); } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(2.0), &mut ready_log));
+         assert_eq!(ready_log, vec![0.0, 1.0]);
+         let mut rejected_log = Vec::new();
+         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("same"), &mut rejected_log))));
+         assert_eq!(rejected_log, vec![1.0]);
+         let payload = panic.expect_err("rejection must panic after cleanup");
+         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
+         assert_eq!(message, Some("unhandled task rejection: same"));`,
       ),
     ).not.toThrow();
   });
@@ -3606,6 +3760,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'an additional suspension',
       'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
     ],
+    [
+      'a finalizer suspension',
+      'export async function attempt(task: Promise<number>, cleanup: Promise<number>): Promise<number> { try { return await task; } finally { await cleanup; } }',
+    ],
+    [
+      'a nested finally',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { try { return await task; } finally { log.push(1); } } finally { log.push(2); } }',
+    ],
   ])('stably refuses async try/catch/finally with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('unsupported-try-completion.ts', source).module),
@@ -3616,14 +3778,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   });
 
   it.each([
-    [
-      'an Ok-arm return',
-      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await task; return result; } catch { result = fallback; } finally { log.push(1); } return result; }',
-    ],
-    [
-      'a catch-arm return',
-      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; try { result = await task; } catch { return fallback; } finally { log.push(1); } return result; }',
-    ],
     [
       'an Ok-arm break',
       'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let result = 0; while (true) { try { result = await task; break; } catch { result = fallback; } finally { log.push(1); } } return result; }',
