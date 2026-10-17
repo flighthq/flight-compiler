@@ -2446,10 +2446,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ).contents;
 
     expect(output.match(/async move \{/g)).toHaveLength(2);
-    expect(output.match(/let async_argument\d* = value;/g)).toHaveLength(2);
-    expect(output.match(/let input: f64 = async_argument\d*;/g)).toHaveLength(2);
-    expect(output).toContain('return (input + 1.0);');
-    expect(output).toContain('return (input + 2.0);');
+    expect(output).toContain('let async_argument = value;');
+    expect(output).toContain('let input: f64 = async_argument;');
+    expect(output).toContain('let async_argument_2 = value;');
+    expect(output).toContain('let input: f64 = async_argument_2;');
+    expect(output).toContain('return input + 1.0;');
+    expect(output).toContain('return input + 2.0;');
     expect(output.match(/\.await;/g)).toHaveLength(2);
     expect(output).not.toContain('FlightTask::ready(input');
   });
