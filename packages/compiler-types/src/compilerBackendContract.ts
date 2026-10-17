@@ -21,6 +21,12 @@ export interface EmittedFile extends EmittedFileIdentity {
   readonly dependencies?: readonly string[] | undefined;
 }
 
+/** One successfully retained module output supplied to package-graph finalization. */
+export interface CompilerBackendModuleFile {
+  readonly file: EmittedFile;
+  readonly module: CompilerModuleIdentity;
+}
+
 /** A graph-finalized file owned by a package rather than by one arbitrarily chosen module. */
 export interface CompilerBackendPackageFile {
   readonly file: EmittedFile;
@@ -30,6 +36,13 @@ export interface CompilerBackendPackageFile {
   }>;
   /** Every semantic module the backend consulted to derive this package file. */
   readonly provenance: readonly CompilerModuleIdentity[];
+}
+
+/** Final package-graph facts available only after module refusal filtering and facade construction. */
+export interface CompilerBackendPackageGraphFinalization {
+  readonly facade: CompilerModuleFacadePlan;
+  /** Ordered by module identity, then emitted path. Refused, placeholder, and unselected outputs are absent. */
+  readonly moduleFiles: readonly CompilerBackendModuleFile[];
 }
 
 export interface BackendEmitContext<Options> {
@@ -136,11 +149,13 @@ export interface CompilerBackendEmissionSession {
     | ((module: Readonly<IrModule>, failure: Readonly<CompilerRefusalPlaceholderRequest>) => EmittedFile | undefined)
     | undefined;
   /**
-   * Finalizes package-owned output once, after every selected module has had its ordinary emission attempt.
-   * The session retains the complete semantic context from `BackendEmitContext.modules`; callers must not invoke
-   * this once per module or narrow that context with an output-path filter.
+   * Finalizes package-owned output once, after refusal filtering and final facade construction. The session
+   * retains the complete semantic context from `BackendEmitContext.modules`; `finalization.moduleFiles` instead
+   * describes only the selected module outputs that survived, so package files never have to infer that state.
    */
-  readonly finalizePackageGraph?: (() => readonly CompilerBackendPackageFile[]) | undefined;
+  readonly finalizePackageGraph?:
+    | ((finalization: Readonly<CompilerBackendPackageGraphFinalization>) => readonly CompilerBackendPackageFile[])
+    | undefined;
 }
 
 export interface BackendCompilation {

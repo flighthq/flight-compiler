@@ -2,7 +2,13 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { CompilerCppCAbiEmissionFailure, CompilerCppCAbiPlan, IrModule } from '../../compiler-types/src/index.js';
+import type {
+  CompilerBackendPackageGraphFinalization,
+  CompilerCppCAbiEmissionFailure,
+  CompilerCppCAbiPlan,
+  EmittedFile,
+  IrModule,
+} from '../../compiler-types/src/index.js';
 import {
   emitCompilerCppCAbiPackage,
   emitCompilerCppCAbiPlan,
@@ -466,7 +472,7 @@ describe('createCppCompilerBackend C ABI package output', () => {
     expect(disabled.emitModule(module)).toEqual(
       backend.emitModule(module, { modules: [module], options: geometryTarget }),
     );
-    expect(enabled.finalizePackageGraph?.()).toEqual([
+    expect(enabled.finalizePackageGraph?.(createPackageGraphFinalization(module, enabled.emitModule(module)))).toEqual([
       expect.objectContaining({
         file: expect.objectContaining({ path: 'generated/geometry_c.cpp' }),
         owner: { kind: 'package', packageName: '@flight/geometry' },
@@ -511,6 +517,27 @@ describe('isCompilerCppCAbiEmissionFailure', () => {
     ).toBe(false);
   });
 });
+
+function createPackageGraphFinalization(
+  module: Readonly<IrModule>,
+  files: readonly Readonly<EmittedFile>[],
+): CompilerBackendPackageGraphFinalization {
+  const identity = { name: module.name, packageName: module.packageName, source: module.source };
+  return {
+    facade: {
+      modules: [{ module: identity, slots: [] }],
+      schema: 'flight-compiler-module-facade/1',
+      semantics: {
+        bindingAccess: 'live',
+        explicitPrecedence: 'named-over-star',
+        starAmbiguity: 'refuse-distinct-resolutions',
+        starDefault: 'excluded',
+        typeValueLanes: 'independent',
+      },
+    },
+    moduleFiles: files.map((file) => ({ file, module: identity })),
+  };
+}
 
 function createPlan(source: string): CompilerCppCAbiPlan {
   const plan = createIrModulesCAbiPlanCpp([lower('geometry.ts', source)], geometryTarget);

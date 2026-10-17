@@ -18,6 +18,7 @@ import { createCompilerTypeScriptAnalysisIdentity, lowerTypeScriptSources } from
 import type {
   CompileTypeScriptPackageGraphOptions,
   CompilerBackendPackageFile,
+  CompilerBackendPackageGraphFinalization,
   CompilerDiagnostic,
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
@@ -208,14 +209,6 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       state: 'completed',
     });
   }
-  const packageFiles = (emissionSession?.finalizePackageGraph?.() ?? []).map(
-    (artifact): PackageEmissionRecord => ({
-      file: normalizeEmittedFile(artifact.file),
-      owner: { kind: 'package', packageName: artifact.owner.packageName },
-      provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
-    }),
-  );
-  validateCompilerPackageGraphPackageFiles(packageFiles, packages, modules);
   refuseCompilerPackageGraphOutputCollisions(records);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const initialization = createCompilerPackageGraphInitialization(
@@ -227,6 +220,18 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
+  const packageFiles = (
+    emissionSession?.finalizePackageGraph?.(
+      createCompilerBackendPackageGraphFinalization(records, exports, bestEffort, emitPathPrefixes),
+    ) ?? []
+  ).map(
+    (artifact): PackageEmissionRecord => ({
+      file: normalizeEmittedFile(artifact.file),
+      owner: { kind: 'package', packageName: artifact.owner.packageName },
+      provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
+    }),
+  );
+  validateCompilerPackageGraphPackageFiles(packageFiles, packages, modules);
   const publicBindings = options.backend.createPublicBindingPlan?.({
     facade: exports,
     ...(moduleResolution === undefined ? {} : { moduleResolution }),
@@ -434,6 +439,36 @@ function createCompilerPackageGraphExportPlan(
     { evaluation: initialization, modules: facadeModules },
     initialization.entries,
   );
+}
+
+function createCompilerBackendPackageGraphFinalization(
+  records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  facade: Readonly<CompilerBackendPackageGraphFinalization['facade']>,
+  bestEffort: boolean,
+  emitPathPrefixes: readonly string[] | undefined,
+): CompilerBackendPackageGraphFinalization {
+  const moduleFiles = [...records.values()]
+    .filter(
+      (record) =>
+        isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes) &&
+        isCompilerPackageGraphModuleEmittable(record, bestEffort),
+    )
+    .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
+    .flatMap((record) =>
+      [...record.files].sort(compareCompilerPackageGraphFiles).map((file) => ({
+        file: normalizeEmittedFile(file),
+        module: cloneCompilerPackageGraphIdentity(record.module),
+      })),
+    );
+  return freezeCompilerBackendPackageGraphFinalization(structuredClone({ facade, moduleFiles }));
+}
+
+function freezeCompilerBackendPackageGraphFinalization<Value>(value: Value): Value {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) freezeCompilerBackendPackageGraphFinalization(member);
+  }
+  return value;
 }
 
 export function isCompilerPackageGraphFailure(value: unknown): value is CompilerPackageGraphFailure {

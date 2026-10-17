@@ -47,6 +47,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerBackend,
+  CompilerBackendPackageGraphFinalization,
   CompilerCppAmbientMemberBinding,
   CompilerCppConditionalFacetReferencePlan,
   CompilerCppPublicBinding,
@@ -531,7 +532,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
         },
         ...(cAbi
           ? {
-              finalizePackageGraph() {
+              finalizePackageGraph(_finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
                 const plan = createIrModulesCAbiPlanCpp(modules, {
                   ...(moduleResolution ? { moduleResolution } : {}),
                   packageName: cAbi.packageName,

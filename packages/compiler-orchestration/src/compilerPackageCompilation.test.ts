@@ -2,6 +2,7 @@ import { createBackendEmissionFailure } from '../../compiler-emission/src/index.
 import { createCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import type {
   CompilerBackend,
+  CompilerBackendPackageGraphFinalization,
   CompilerModuleIdentity,
   CompilerPackageCompilationProgress,
   CompilerPackageGraph,
@@ -466,6 +467,112 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(filtered.result.report.modules.find((module) => module.module.name === 'Owner')).toMatchObject({
       outputFiles: [],
       status: 'skipped',
+    });
+  });
+
+  it('finalizes from the immutable final facade and deterministically ordered retained module files', () => {
+    const owner = source('@local/source', 'source', 'owner.ts', 'export interface Owner { value: number }');
+    const entry = source(
+      '@local/source',
+      'source',
+      'entry.ts',
+      "import type { Owner } from './owner.js'; export function inspect(value: Owner): Owner { return value; }",
+    );
+    const refused = source('@local/source', 'source', 'refused.ts', 'export const refused = 1;');
+    const ownerIdentity = identity(owner, 'Owner');
+    const entryIdentity = identity(entry, 'Entry');
+    const refusedIdentity = identity(refused, 'Refused');
+    const compile = (sources: readonly TypeScriptPackageGraphSource[]) => {
+      let received: Readonly<CompilerBackendPackageGraphFinalization> | undefined;
+      const backend: CompilerBackend = {
+        createEmissionSession: () => ({
+          emitModule(module) {
+            if (module.name === 'Refused') {
+              throw createBackendEmissionFailure('fixture', module, 'refused by fixture');
+            }
+            return [
+              { contents: `z ${module.name}`, path: `z/${module.name}.txt` },
+              { contents: `a ${module.name}`, path: `a/${module.name}.txt` },
+            ];
+          },
+          finalizePackageGraph(finalization) {
+            received = finalization;
+            expect(Object.isFrozen(finalization)).toBe(true);
+            expect(Object.isFrozen(finalization.facade)).toBe(true);
+            expect(Object.isFrozen(finalization.facade.modules)).toBe(true);
+            expect(Object.isFrozen(finalization.moduleFiles)).toBe(true);
+            expect(Object.isFrozen(finalization.moduleFiles[0]?.file)).toBe(true);
+            expect(() => (finalization.moduleFiles as unknown as unknown[]).splice(0)).toThrow(TypeError);
+            const provenance = [
+              ...new Map(
+                finalization.moduleFiles.map(({ module }) => [
+                  `${module.packageName}\0${module.source}\0${module.name}`,
+                  module,
+                ]),
+              ).values(),
+            ];
+            return [
+              {
+                file: {
+                  contents: finalization.moduleFiles.map(({ file }) => file.path).join('\n'),
+                  path: 'package/summary.txt',
+                },
+                owner: { kind: 'package', packageName: '@local/source' },
+                provenance,
+              },
+            ];
+          },
+        }),
+        emitModule: () => {
+          throw new Error('compatibility entry point must not be used');
+        },
+        name: 'fixture',
+      };
+      const result = compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        graph: graph(
+          [entryIdentity, refusedIdentity],
+          [{ importer: entryIdentity, specifier: './owner.js', target: ownerIdentity }],
+          [{ dependencies: [], name: '@local/source', root: owner.packageRoot }],
+        ),
+        sources,
+      });
+      if (!received) throw new Error('Package-graph finalization did not run');
+      return { finalization: received, result };
+    };
+
+    const first = compile([refused, entry, owner]);
+    const second = compile([owner, refused, entry]);
+
+    expect(second.finalization).toEqual(first.finalization);
+    expect(first.finalization.facade.modules.map(({ module }) => module)).toEqual([entryIdentity]);
+    expect(first.finalization.facade.modules[0]?.slots).toEqual([
+      expect.objectContaining({ exportName: 'inspect', lane: 'value' }),
+    ]);
+    expect(first.finalization.moduleFiles.map(({ file, module }) => [module.name, file.path])).toEqual([
+      ['Entry', 'a/Entry.txt'],
+      ['Entry', 'z/Entry.txt'],
+      ['Owner', 'a/Owner.txt'],
+      ['Owner', 'z/Owner.txt'],
+    ]);
+    expect(first.finalization.moduleFiles.some(({ module }) => module.name === 'Refused')).toBe(false);
+    expect(first.result.report.modules.find(({ module }) => module.name === 'Refused')).toMatchObject({
+      outputFiles: [],
+      status: 'refused',
+    });
+    expect(first.result.compilation.files.map(({ path }) => path)).toEqual([
+      'a/Entry.txt',
+      'a/Owner.txt',
+      'package/summary.txt',
+      'z/Entry.txt',
+      'z/Owner.txt',
+    ]);
+    expect(first.result.report.files).toContainEqual({
+      dependencies: [],
+      owner: { kind: 'package', packageName: '@local/source' },
+      path: 'package/summary.txt',
+      provenance: [entryIdentity, ownerIdentity],
     });
   });
 

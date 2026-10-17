@@ -3,6 +3,8 @@ import type {
   BackendCompilation,
   BackendEmitContext,
   CompilerBackend,
+  CompilerBackendEmissionSession,
+  CompilerBackendPackageGraphFinalization,
   CppCompilerBackendOptions,
   EmittedFile,
   EmittedFileIdentity,
@@ -167,6 +169,43 @@ describe('compiler backend contracts', () => {
     });
     expectTypeOf<BackendEmissionFailure>().toMatchTypeOf<CompilerSourceIdentity>();
     expectTypeOf<EmittedFile>().toMatchTypeOf<EmittedFileIdentity>();
+  });
+
+  it('represents final package-graph facts and package-owned output as plain composable data', () => {
+    const module = createModule();
+    const identity = { name: module.name, packageName: module.packageName, source: module.source };
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: {
+        modules: [{ module: identity, slots: [] }],
+        schema: 'flight-compiler-module-facade/1',
+        semantics: {
+          bindingAccess: 'live',
+          explicitPrecedence: 'named-over-star',
+          starAmbiguity: 'refuse-distinct-resolutions',
+          starDefault: 'excluded',
+          typeValueLanes: 'independent',
+        },
+      },
+      moduleFiles: [{ file: { contents: 'module', path: 'module.rs' }, module: identity }],
+    };
+    const session: CompilerBackendEmissionSession = {
+      emitModule: () => [],
+      finalizePackageGraph: ({ facade, moduleFiles }) => [
+        {
+          file: { contents: facade.schema, path: 'package.txt' },
+          owner: { kind: 'package', packageName: moduleFiles[0]!.module.packageName },
+          provenance: moduleFiles.map(({ module: owner }) => owner),
+        },
+      ],
+    };
+
+    expect(session.finalizePackageGraph?.(finalization)).toEqual([
+      {
+        file: { contents: 'flight-compiler-module-facade/1', path: 'package.txt' },
+        owner: { kind: 'package', packageName: '@flighthq/math' },
+        provenance: [identity],
+      },
+    ]);
   });
 });
 
