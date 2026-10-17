@@ -286,6 +286,94 @@ describe('createRustCompilerBackend', () => {
     expect(facadeContents).toContain('pub use crate::source::WIDGET as shown;');
     expect(facadeContents).toContain('pub use crate::source::WidgetShape;');
   });
+
+  it('agrees on one mutable Vec borrow across an imported call and post-call reuse', () => {
+    const provider = lower('provider.ts', 'export function append(values: number[]): void { values.push(2); }').module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { append } from './provider.js';
+       export function count(): number {
+         const values = [1];
+         append(values);
+         return values.length;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerContents = session.emitModule(provider)[0]!.contents;
+    const consumerContents = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerContents).toContain('pub fn append(values: &mut Vec<f64>)');
+    expect(consumerContents).toContain('let mut values: Vec<f64> = vec![1.0];');
+    expect(consumerContents).toContain('append(&mut values);');
+    expect(consumerContents).toContain('values.len()');
+    expect(consumerContents).not.toContain('append(values.clone())');
+  });
+
+  it.skipIf(!rustcAvailable)('emits the cross-module mutable Vec ABI accepted by rustc', () => {
+    const provider = lower('provider.ts', 'export function append(values: number[]): void { values.push(2); }').module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { append } from './provider.js';
+       export function count(): number {
+         const values = [1];
+         append(values);
+         return values.length;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    });
+
+    expect(() =>
+      compileRustModulePair(
+        'provider',
+        session.emitModule(provider)[0]!.contents,
+        'consumer',
+        session.emitModule(consumer)[0]!.contents,
+      ),
+    ).not.toThrow();
+  });
+
+  it('refuses an unresolved imported array call before choosing clone semantics', () => {
+    const consumer = lower(
+      'consumer.ts',
+      `import { append } from '@fixture/missing';
+       export function run(values: number[]): void { append(values); }`,
+    ).module;
+    const backend = createRustCompilerBackend();
+    const failure = captureBackendEmissionFailure(() =>
+      backend.emitModule(consumer, { modules: [consumer], options: {} }),
+    );
+
+    expect(failure.rule).toBe('rust-reference-array-call-target-unresolved');
+    expect(failure.classification).toBe('compiler-restriction');
+  });
 });
 
 describe('emitIrModuleRust', () => {

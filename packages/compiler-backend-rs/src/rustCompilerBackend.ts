@@ -50,6 +50,7 @@ import type {
   CompilerIrTraversalPath,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
+  CompilerRustReferenceRepresentationPlan,
   EmittedFile,
   RustCompilerBackendOptions,
 } from '../../compiler-types/src/index.js';
@@ -101,6 +102,7 @@ import {
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
 import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
+import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
@@ -200,8 +202,23 @@ type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refus
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
   return {
+    createEmissionSession({ moduleResolution, modules, options }) {
+      const referenceRepresentationPlan = createCompilerRustReferenceRepresentationPlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
+      return Object.freeze({
+        emitModule(module: Readonly<IrModule>) {
+          return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
+        },
+      });
+    },
     emitModule(module, { moduleResolution, modules, options }) {
-      return [emitIrModuleRustWithContext(module, modules, moduleResolution, options)];
+      const referenceRepresentationPlan = createCompilerRustReferenceRepresentationPlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
+      return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
     },
     name: 'rust',
     runtimeAbi: createCompilerRustRuntimeAbiManifest,
@@ -212,7 +229,13 @@ export function emitIrModuleRust(
   sourceModule: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
-  return emitIrModuleRustWithContext(sourceModule, [sourceModule], undefined, options);
+  return emitIrModuleRustWithContext(
+    sourceModule,
+    [sourceModule],
+    undefined,
+    options,
+    createCompilerRustReferenceRepresentationPlan({ modules: [sourceModule] }),
+  );
 }
 
 function createCompilerLoweringPassInterfaceInheritanceRust(
@@ -232,6 +255,7 @@ function emitIrModuleRustWithContext(
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<RustCompilerBackendOptions>,
+  referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
@@ -243,6 +267,13 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);
+  const referenceModulePlan = referenceRepresentationPlan.modules.find((candidate) =>
+    isRustCompilerModuleIdentityEqual(candidate.module, module),
+  );
+  const referenceRefusal = referenceModulePlan?.refusals[0];
+  if (referenceRefusal) {
+    throw createBackendEmissionFailure('rust', module, referenceRefusal.message, referenceRefusal.code);
+  }
   assertStructuralObjectCompatibilityRust(
     module,
     replaceIrModuleBackendContext(sourceModules, module),
@@ -297,11 +328,28 @@ function emitIrModuleRustWithContext(
   );
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
-  const borrowedParameterPositions = new Map<string, ReadonlySet<number>>();
+  const borrowedParameterPositions = new Map<string, ReadonlySet<number>>(
+    referenceModulePlan?.callables.map((callable) => [
+      callable.binding.id,
+      new Set(callable.parameters.map((parameter) => parameter.position)),
+    ]) ?? [],
+  );
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
   const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
   const movedBindingIds = collectIrModuleMovedBindingIdsRust(module);
+  const plannedReferentMutatedBindingIds = new Set(
+    referenceModulePlan?.referentMutatedBindings.map((binding) => binding.id) ?? [],
+  );
+  const plannedReferentMutatedParameterIds = ownershipEvidence.bindings.flatMap((evidence) =>
+    evidence.declaration === 'parameter' && plannedReferentMutatedBindingIds.has(evidence.binding.id)
+      ? [evidence.binding.id]
+      : [],
+  );
+  const referentMutatedParameterIds = new Set([
+    ...collectIrModuleReferentMutatedParameterIdsRust(module),
+    ...plannedReferentMutatedParameterIds,
+  ]);
   const numericEnumNamespaceNames = new Map(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'enum' && getIrEnumNamespaceFunctionsRust(declaration, module).length > 0
@@ -347,20 +395,19 @@ function emitIrModuleRustWithContext(
     primitiveUnionBindingIds,
     runtimeTypeNames: new Set<string>(),
     reboundBindingIds: new Set(
-      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
-        evidence.mutation !== 'none' ? [evidence.binding.id] : [],
-      ),
+      ownershipEvidence.bindings.flatMap((evidence) => (evidence.mutation !== 'none' ? [evidence.binding.id] : [])),
     ),
     generatedNames: new Set(targetNames.values()),
     movedBindingIds,
-    referentMutatedBindingIds: new Set(
-      ownershipEvidence.bindings.flatMap((evidence) =>
+    referentMutatedBindingIds: new Set([
+      ...ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent'
           ? [evidence.binding.id]
           : [],
       ),
-    ),
-    referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
+      ...plannedReferentMutatedBindingIds,
+    ]),
+    referentMutatedParameterIds,
     taggedUnionBindingNames,
     bindingTypes,
     module,
@@ -409,11 +456,12 @@ function emitIrModuleRustWithContext(
   // the callee's own declaration knows which positions those are.
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'function') continue;
-    const borrowed = new Set(
-      declaration.parameters.flatMap((parameter, index) =>
+    const borrowed = new Set([
+      ...(borrowedParameterPositions.get(declaration.binding.id) ?? []),
+      ...declaration.parameters.flatMap((parameter, index) =>
         context.referentMutatedParameterIds.has(parameter.binding.id) ? [index] : [],
       ),
-    );
+    ]);
     if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
   }
   collectPrimitiveUnionBindingsRust(module, context);
