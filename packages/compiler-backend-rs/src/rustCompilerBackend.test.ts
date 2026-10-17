@@ -12438,6 +12438,41 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
   });
 
+  it('emits required plain class method parameters as exact temporary borrows', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'required-class-method.ts',
+        `class Counter {
+           value: number;
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+           inspect(scale: number, other: Counter): number { return other.value * scale; }
+           write(scale: number, other: Counter): void {
+             other.value = this.value * scale;
+             other.value += 2;
+             other.label += "!";
+           }
+         }
+         export function run(): number {
+           const receiver = new Counter(3, "receiver"); const receiverAlias = receiver;
+           const other = new Counter(1, "other"); const otherAlias = other;
+           receiverAlias.write(2, otherAlias);
+           return receiver.inspect(3, other) + otherAlias.value + (other.label === "other!" ? 1 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn inspect(&self, scale: f64, other: &Counter) -> f64');
+    expect(output).toContain('fn write(&self, scale: f64, other: &mut Counter)');
+    expect(output).toContain('other.value * scale');
+    expect(output).toContain('.borrow().write(2.0, &mut *other_alias.borrow_mut())');
+    expect(output).toContain('.borrow().inspect(3.0, &*other.borrow())');
+    expect(output).toMatch(
+      /let class_field_right(?:_\d+)? = self\.value \* scale; other\.value = class_field_right(?:_\d+)?;/u,
+    );
+    expect(output).toContain('other_alias.borrow().value');
+  });
+
   it('stages direct optional class method field mutation without changing receiver mutability', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12511,7 +12546,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
   });
 
-  it('emits an imported optional class method carrier without a public callable plan', () => {
+  it('emits imported optional and required class method carriers without a public callable plan', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-provider.ts',
       `export class Counter {
@@ -12521,6 +12556,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          write(other?: Counter): void { if (other !== undefined) other.value += this.value; }
          inspectNull(other: Counter | null): number { return other !== null ? other.value : this.value; }
          writeNull(other: Counter | null): void { if (other !== null) other.value += this.value; }
+         inspectRequired(scale: number, other: Counter): number { return other.value * scale; }
+         writeRequired(scale: number, other: Counter): void { other.value += this.value * scale; }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -12533,13 +12570,18 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          receiver.write(other);
        }
        function relayNull(receiver: Counter, other: Counter | null): void { receiver.writeNull(other); }
+       function relayRequired(receiver: Counter, scale: number, other: Counter): void {
+         receiver.writeRequired(scale, other);
+       }
        export function run(): number {
          const receiver: Counter = new Counter(1); const receiverAlias: Counter = receiver;
          const other: Counter = new Counter(4); const otherAlias: Counter = other;
          const nullable: Counter | null = otherAlias;
          relay(receiverAlias, otherAlias);
          relayNull(receiverAlias, nullable);
-         return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null);
+         relayRequired(receiverAlias, 2, otherAlias);
+         return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null) +
+           receiverAlias.inspectRequired(3, otherAlias);
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -12584,17 +12626,23 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(providerOutput).toContain('fn write(&self, mut other: Option<Rc<RefCell<Counter>>>)');
     expect(providerOutput).toContain('fn inspect_null(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
     expect(providerOutput).toContain('fn write_null(&self, mut other: Option<Rc<RefCell<Counter>>>)');
+    expect(providerOutput).toContain('fn inspect_required(&self, scale: f64, other: &Counter) -> f64');
+    expect(providerOutput).toContain('fn write_required(&self, scale: f64, other: &mut Counter)');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
     expect(consumerOutput).toContain('fn relay(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
     expect(consumerOutput).toContain('receiver.write(other.clone())');
     expect(consumerOutput).toContain('fn relay_null(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
     expect(consumerOutput).toContain('receiver.write_null(other.clone())');
+    expect(consumerOutput).toContain('fn relay_required(receiver: &Counter, scale: f64, other: &mut Counter)');
+    expect(consumerOutput).toContain('receiver.write_required(scale, other)');
     expect(consumerOutput).toContain('relay(&*receiver_alias.borrow(), Some(Rc::clone(&other_alias)))');
     expect(consumerOutput).toContain('relay_null(&*receiver_alias.borrow(), nullable.clone())');
+    expect(consumerOutput).toContain('relay_required(&*receiver_alias.borrow(), 2.0, &mut *other_alias.borrow_mut())');
     expect(consumerOutput).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
     expect(consumerOutput).toContain('.borrow().inspect(None)');
     expect(consumerOutput).toContain('.borrow().inspect_null(None)');
+    expect(consumerOutput).toContain('.borrow().inspect_required(3.0, &*other_alias.borrow())');
   });
 
   it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
@@ -12698,6 +12746,89 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
   });
 
+  it('refuses inexact and aliased required class method boundaries', () => {
+    const missingArgument = lower(
+      'required-class-method-missing.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number { const value = new Counter(); return value.inspect(2, value); }`,
+    ).module;
+    const run = missingArgument.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const returned = run?.kind === 'function' ? run.body[1] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected required class method call');
+    (call.arguments as unknown as unknown[]).length = 1;
+    if (!call.semantics.signature || call.semantics.signature.providedArgumentCount === 'dynamic') {
+      throw new Error('Expected fixed required class method signature evidence');
+    }
+    (call.semantics.signature as { providedArgumentCount: number }).providedArgumentCount = 1;
+    const wrongSentinel = lower(
+      'required-class-method-wrong-sentinel.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number { const value = new Counter(); return value.inspect(2, undefined as never); }`,
+    ).module;
+    const wrongIdentity = lower(
+      'required-class-method-wrong-identity.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       class Other { value = 2; }
+       export function run(): number { const value = new Counter(); return value.inspect(2, new Other() as never); }`,
+    ).module;
+    const overlap = lower(
+      'required-class-method-overlap.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number {
+         const value = new Counter(); const alias = value;
+         return value.inspect(2, alias);
+       }`,
+    ).module;
+    const mutablePrefixAlias = lower(
+      'required-class-method-prefix-alias.ts',
+      `class Counter {
+         value = 1;
+         write(scale: number, other: Counter): void { other.value = this.value * scale; }
+       }
+       export function run(): number {
+         const receiver = new Counter(); const other = new Counter(); const alias = other;
+         receiver.write(other.value, alias);
+         return other.value;
+       }`,
+    ).module;
+
+    for (const module of [missingArgument, wrongSentinel, wrongIdentity]) {
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(
+        'rust-reference-shared-class-call-unrepresented',
+      );
+    }
+    for (const module of [overlap, mutablePrefixAlias]) {
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(
+        'rust-reference-shared-class-borrow-conflict',
+      );
+    }
+  });
+
+  it('refuses required class method parameters outside final direct primitive projection', () => {
+    const cases = [
+      `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
+      `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
+      `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
+      `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
+      `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
+      `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
+      `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
+    ];
+
+    for (const [index, declaration] of cases.entries()) {
+      const module = lower(
+        `required-class-method-refusal-${String(index)}.ts`,
+        `${declaration} export function run(): number { const value = new Counter(); return value.value; }`,
+      ).module;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(
+        'rust-reference-shared-class-member-unrepresented',
+      );
+    }
+  });
+
   it.skipIf(!rustcAvailable)('runs the combined optional simple-class parameter checkpoint', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12718,6 +12849,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              other.value = this.value;
              other.value += 2;
              other.label += "?";
+           }
+           writeRequired(scale: number, other: Counter): void {
+             other.value = this.value * scale;
+             other.value += 2;
+             other.label += "#";
            }
          }
          class Snapshot {
@@ -12748,6 +12884,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const nullableMethodCarrier: Counter | null = nullableMethodAlias;
            receiver.writeNullable(null);
            receiverAlias.writeNullable(nullableMethodCarrier);
+           const requiredMethod = new Counter(1, "required"); const requiredMethodAlias = requiredMethod;
+           receiver.writeRequired(2, requiredMethodAlias);
            const compound = new Counter(2, "a"); const compoundAlias = compound;
            const optionalCompound: Counter | undefined = compoundAlias;
            let compoundOrder = 0;
@@ -12767,6 +12905,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
+             requiredMethod === requiredMethodAlias && requiredMethod.value === 8 && requiredMethod.label === "required#" &&
              compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
              compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,

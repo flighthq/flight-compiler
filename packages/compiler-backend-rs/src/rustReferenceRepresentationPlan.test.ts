@@ -1668,6 +1668,121 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('plans required plain class method borrows and mutation propagation locally and across modules', () => {
+    const local = lower(
+      'required-class-method.ts',
+      `class Counter {
+         value = 1;
+         label = "ready";
+         inspect(scale: number, other: Counter): number { return other.value * scale; }
+         write(scale: number, other: Counter): void {
+           other.value = this.value * scale;
+           other.value += 1;
+           other.label += "!";
+         }
+       }
+       function forward(receiver: Counter, scale: number, other: Counter): void { receiver.write(scale, other); }
+       function relay(receiver: Counter, scale: number, other: Counter): void { forward(receiver, scale, other); }
+       export function run(): number {
+         const receiver = new Counter(); const receiverAlias = receiver;
+         const other = new Counter(); const otherAlias = other;
+         relay(receiverAlias, 2, otherAlias);
+         return receiver.inspect(3, other) + otherAlias.value;
+       }`,
+    );
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/required-class-method-provider.ts',
+      `export class Counter {
+         value = 1;
+         inspect(scale: number, other: Counter): number { return other.value * scale; }
+         write(scale: number, other: Counter): void { other.value = this.value * scale; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/required-class-method-consumer.ts',
+      `import { Counter } from './required-class-method-provider.js';
+       function relay(receiver: Counter, scale: number, other: Counter): void { receiver.write(scale, other); }
+       export function run(): number {
+         const receiver = new Counter(); const receiverAlias = receiver;
+         const other = new Counter(); const otherAlias = other;
+         relay(receiverAlias, 2, otherAlias);
+         return receiver.inspect(3, other);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Required-class-method-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/required-class-method-consumer.ts',
+          },
+          specifier: './required-class-method-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/required-class-method-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const localPlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [local] }), local);
+    const importedPlan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+
+    expect(localPlan.refusals).toEqual([]);
+    expect(localPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'forward' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 2, representation: 'mutable-borrowed-class' },
+          ],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'relay' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 2, representation: 'mutable-borrowed-class' },
+          ],
+        }),
+      ]),
+    );
+    expect(localPlan.referentMutatedBindings.map(({ name }) => name)).toEqual(expect.arrayContaining(['other']));
+    expect(getModulePlan(importedPlan, provider).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, provider).callables).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'relay' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 2, representation: 'mutable-borrowed-class' },
+          ],
+        }),
+      ]),
+    );
+  });
+
   it('propagates optional class method argument mutation through local function wrappers', () => {
     const module = lower(
       'optional-class-method-mutation-propagation.ts',
@@ -1799,6 +1914,91 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
     );
+  });
+
+  it('requires exact required class method arity, identity, and disjoint mutable borrows', () => {
+    const missingArgument = lower(
+      'required-class-method-missing.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number { const value = new Counter(); return value.inspect(2, value); }`,
+    );
+    const run = missingArgument.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const returned = run?.kind === 'function' ? run.body[1] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected required class method call');
+    (call.arguments as IrExpression[]).length = 1;
+    const wrongSentinel = lower(
+      'required-class-method-wrong-sentinel.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number { const value = new Counter(); return value.inspect(2, undefined as never); }`,
+    );
+    const wrongIdentity = lower(
+      'required-class-method-wrong-identity.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       class Other { value = 2; }
+       export function run(): number { const value = new Counter(); return value.inspect(2, new Other() as never); }`,
+    );
+    const overlap = lower(
+      'required-class-method-overlap.ts',
+      `class Counter { value = 1; inspect(scale: number, other: Counter): number { return other.value * scale; } }
+       export function run(): number {
+         const value = new Counter(); const alias = value;
+         return value.inspect(2, alias);
+       }`,
+    );
+    const mutablePrefixAlias = lower(
+      'required-class-method-prefix-alias.ts',
+      `class Counter {
+         value = 1;
+         write(scale: number, other: Counter): void { other.value = this.value * scale; }
+       }
+       export function run(): number {
+         const receiver = new Counter(); const other = new Counter(); const alias = other;
+         receiver.write(other.value, alias);
+         return other.value;
+       }`,
+    );
+
+    for (const module of [missingArgument, wrongSentinel, wrongIdentity]) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-call-unrepresented' })]),
+      );
+    }
+    for (const module of [overlap, mutablePrefixAlias]) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
+      );
+    }
+  });
+
+  it('refuses required class method parameters outside final direct primitive projection', () => {
+    const cases = [
+      `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
+      `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
+      `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
+      `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
+      `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
+      `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
+      `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
+    ];
+
+    for (const [index, declaration] of cases.entries()) {
+      const module = lower(
+        `required-class-method-refusal-${String(index)}.ts`,
+        `${declaration} export function run(): number { const value = new Counter(); return value.value; }`,
+      );
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
+      );
+    }
   });
 
   it('preserves optional class method mutation conflict, result, operator, and domain refusals', () => {

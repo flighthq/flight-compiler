@@ -225,10 +225,17 @@ interface IrClassConstructorParameterPlanRust {
 
 interface IrClassMethodParameterPlanRust {
   readonly identity: string;
-  readonly mutatedOptionalClassPositions: ReadonlySet<number>;
+  readonly mutatedClassPositions: ReadonlySet<number>;
   readonly optionalClassParameters: ReadonlyMap<
     number,
     Readonly<{ classType: Readonly<IrType>; representation: RustOptionalSharedClassRepresentation }>
+  >;
+  readonly requiredClassParameters: ReadonlyMap<
+    number,
+    Readonly<{
+      classType: Readonly<IrType>;
+      representation: 'borrowed-class' | 'mutable-borrowed-class';
+    }>
   >;
 }
 
@@ -960,6 +967,14 @@ function emitIrModuleRustWithContext(
     }
     for (const method of declaration.methods) {
       const methodPlan = getIrClassMethodParameterPlanRust(method, declaration, module, context);
+      for (const [position, parameterPlan] of methodPlan?.requiredClassParameters ?? []) {
+        const parameter = method.parameters[position];
+        if (!parameter) continue;
+        borrowedClassParameterIds.add(parameter.binding.id);
+        if (parameterPlan.representation === 'mutable-borrowed-class') {
+          referentMutatedParameterIds.add(parameter.binding.id);
+        }
+      }
       for (const [position, carrier] of methodPlan?.optionalClassParameters ?? []) {
         const parameter = method.parameters[position];
         if (!parameter) continue;
@@ -1478,6 +1493,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (sharedArrayAssignment) return sharedArrayAssignment;
       const sharedClassAssignment = emitSharedClassFieldAssignmentRust(expression, context);
       if (sharedClassAssignment) return sharedClassAssignment;
+      const borrowedClassAssignment = emitBorrowedClassFieldAssignmentRust(expression, context);
+      if (borrowedClassAssignment) return borrowedClassAssignment;
       const closedKeyAssignment = emitClosedKeyElementWriteRust(expression, context);
       if (closedKeyAssignment) return closedKeyAssignment;
       if (
@@ -2570,6 +2587,39 @@ function emitSharedClassFieldAssignmentRust(
       ? `let mut ${updatedName} = ${currentName}; ${updatedName}.push_str(&${rightName});`
       : `let ${updatedName} = ${currentName} ${expression.operator.slice(0, -1)} ${rightName};`;
   return `{ let ${currentName} = ${current}; let ${rightName} = ${right}; ${update} ${writeReceiver}.${fieldName} = ${updatedName}; }`;
+}
+
+function emitBorrowedClassFieldAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const left = expression.left;
+  if (
+    left.kind !== 'property' ||
+    left.object.kind !== 'identifier' ||
+    left.object.reference.kind !== 'binding' ||
+    !context.borrowedClassParameterIds.has(left.object.reference.binding.id) ||
+    !context.referentMutatedParameterIds.has(left.object.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const receiver = emitIdentifierReferenceRust(left.object.reference, context);
+  const fieldName = safeRustValueName(left.name);
+  const rightName = getGeneratedTargetNameRust('class_field_right', context);
+  const right = emitOwnedOperandRust(expression.right, context);
+  if (expression.operator === '=') {
+    return `{ let ${rightName} = ${normalizeSourceTextGrouping(right)}; ${receiver}.${fieldName} = ${rightName}; }`;
+  }
+  const fieldType = getIrSharedClassCompoundFieldAssignmentTypeRust(expression, context);
+  if (!fieldType) return undefined;
+  const currentName = getGeneratedTargetNameRust('class_field_current', context);
+  const updatedName = getGeneratedTargetNameRust('class_field_updated', context);
+  const current = `${receiver}.${fieldName}${fieldType === 'string' ? '.clone()' : ''}`;
+  const update =
+    fieldType === 'string'
+      ? `let mut ${updatedName} = ${currentName}; ${updatedName}.push_str(&${rightName});`
+      : `let ${updatedName} = ${currentName} ${expression.operator.slice(0, -1)} ${rightName};`;
+  return `{ let ${currentName} = ${current}; let ${rightName} = ${right}; ${update} ${receiver}.${fieldName} = ${updatedName}; }`;
 }
 
 function getIrSharedClassCompoundFieldAssignmentTypeRust(
@@ -3696,7 +3746,7 @@ function assertIrConstructorInvocationAbiRust(
           if (
             !parameter ||
             !argument ||
-            !isIrExactBorrowedClassConstructorArgumentRust(argument, parameter.type, targetModule!, context)
+            !isIrExactBorrowedClassArgumentRust(argument, parameter.type, targetModule!, context)
           ) {
             emissionError(
               context,
@@ -7380,6 +7430,7 @@ function getIrClassMethodParameterPlanRust(
     number,
     Readonly<{ classType: Readonly<IrType>; representation: RustOptionalSharedClassRepresentation }>
   >();
+  const requiredClassTypes = new Map<number, Readonly<IrType>>();
   for (const [position, parameter] of method.parameters.entries()) {
     if (
       !parameter.initializer &&
@@ -7397,54 +7448,80 @@ function getIrClassMethodParameterPlanRust(
         ? 'optional-undefined-shared-ref-cell-class'
         : undefined
       : getRustSharedClassTypeRepresentationRust(parameter.type, context);
-    if (!representation || !isRustOptionalSharedClassRepresentation(representation)) return undefined;
+    if (
+      !representation ||
+      (representation !== 'shared-ref-cell-class' && !isRustOptionalSharedClassRepresentation(representation))
+    ) {
+      return undefined;
+    }
     const classType = parameter.optional
       ? parameter.type
-      : getRustSharedClassPayloadTypeRust(parameter.type, representation, context);
+      : isRustOptionalSharedClassRepresentation(representation)
+        ? getRustSharedClassPayloadTypeRust(parameter.type, representation, context)
+        : parameter.type;
     const location = getIrClassDeclarationLocationForTypeRust(classType, context, module);
     if (!location || !isIrSimpleMethodParameterClassRust(location.declaration)) return undefined;
-    optionalClassParameters.set(position, { classType, representation });
+    if (isRustOptionalSharedClassRepresentation(representation)) {
+      optionalClassParameters.set(position, { classType, representation });
+    } else {
+      requiredClassTypes.set(position, classType);
+    }
   }
-  if (optionalClassParameters.size > 1) return undefined;
-  const mutatedOptionalClassPositions = getIrClassMethodOptionalParameterMutationPositionsRust(
+  if (optionalClassParameters.size + requiredClassTypes.size > 1) return undefined;
+  const mutatedClassPositions = getIrClassMethodParameterMutationPositionsRust(
     method,
+    requiredClassTypes,
     optionalClassParameters,
     module,
     context,
   );
-  if (!mutatedOptionalClassPositions) return undefined;
+  if (!mutatedClassPositions) return undefined;
+  const requiredClassParameters = new Map(
+    [...requiredClassTypes].map(([position, classType]) => [
+      position,
+      {
+        classType,
+        representation: mutatedClassPositions.has(position)
+          ? ('mutable-borrowed-class' as const)
+          : ('borrowed-class' as const),
+      },
+    ]),
+  );
   return {
     identity: `${module.packageName}\0${module.source}\0${declaration.binding.id}\0${method.name}`,
-    mutatedOptionalClassPositions,
+    mutatedClassPositions,
     optionalClassParameters,
+    requiredClassParameters,
   };
 }
 
-function getIrClassMethodOptionalParameterMutationPositionsRust(
+function getIrClassMethodParameterMutationPositionsRust(
   method: Readonly<IrClassMethod>,
+  requiredClassTypes: ReadonlyMap<number, Readonly<IrType>>,
   optionalClassParameters: IrClassMethodParameterPlanRust['optionalClassParameters'],
   module: Readonly<IrModule>,
   context: EmitContext,
 ): ReadonlySet<number> | undefined {
-  const optionalParametersById = new Map(
-    [...optionalClassParameters.keys()].flatMap((position) => {
-      const parameter = method.parameters[position];
-      return parameter ? [[parameter.binding.id, parameter] as const] : [];
+  const classParametersById = new Map(
+    [
+      ...[...requiredClassTypes].map(([position, classType]) => ({
+        classType,
+        optional: false,
+        position,
+        representation: undefined,
+      })),
+      ...[...optionalClassParameters].map(([position, carrier]) => ({
+        classType: carrier.classType,
+        optional: true,
+        position,
+        representation: carrier.representation,
+      })),
+    ].flatMap((record) => {
+      const parameter = method.parameters[record.position];
+      return parameter ? [[parameter.binding.id, { ...record, parameter }] as const] : [];
     }),
   );
-  const optionalCarriersById = new Map(
-    [...optionalClassParameters].flatMap(([position, carrier]) => {
-      const parameter = method.parameters[position];
-      return parameter ? [[parameter.binding.id, carrier] as const] : [];
-    }),
-  );
-  const optionalParameterPositionsById = new Map(
-    [...optionalClassParameters.keys()].flatMap((position) => {
-      const parameter = method.parameters[position];
-      return parameter ? [[parameter.binding.id, position] as const] : [];
-    }),
-  );
-  const mutatedOptionalClassPositions = new Set<number>();
+  const mutatedClassPositions = new Set<number>();
   const mutatedOptionalParameterIds = new Set<string>();
   const sentinelCheckedOptionalParameterIds = new Set<string>();
   const allowedReferences = new WeakSet<object>();
@@ -7459,47 +7536,50 @@ function getIrClassMethodOptionalParameterMutationPositionsRust(
           return false;
         }
         if (expression.kind === 'function') {
-          if ([...optionalParametersById].some(([id]) => irExpressionUsesBindingRust(expression, id))) {
+          if ([...classParametersById].some(([id]) => irExpressionUsesBindingRust(expression, id))) {
             supported = false;
           }
           return false;
         }
         if (expression.kind === 'assignment') {
-          const usesOptionalParameter = [...optionalParametersById].some(([id]) =>
+          const usesClassParameter = [...classParametersById].some(([id]) =>
             irExpressionUsesBindingRust(expression.left, id),
           );
-          if (usesOptionalParameter) {
+          if (usesClassParameter) {
             const left = expression.left;
-            const parameter =
+            const classTarget =
               left.kind === 'property' &&
               !left.optional &&
               left.structuralAccess === undefined &&
               left.object.kind === 'identifier' &&
-              left.object.reference.kind === 'binding' &&
-              left.object.presence === 'narrowedPresent'
-                ? optionalParametersById.get(left.object.reference.binding.id)
+              left.object.reference.kind === 'binding'
+                ? { bindingId: left.object.reference.binding.id, object: left.object }
                 : undefined;
-            const carrier = parameter ? optionalCarriersById.get(parameter.binding.id) : undefined;
-            const location = carrier
-              ? getIrClassDeclarationLocationForTypeRust(carrier.classType, context, module)
+            const record = classTarget ? classParametersById.get(classTarget.bindingId) : undefined;
+            const location = record
+              ? getIrClassDeclarationLocationForTypeRust(record.classType, context, module)
               : undefined;
             const field =
               left.kind === 'property'
                 ? location?.declaration.fields.find((candidate) => !candidate.static && candidate.name === left.name)
                 : undefined;
-            const position = parameter ? optionalParameterPositionsById.get(parameter.binding.id) : undefined;
-            if (!parameter || !field || !isIrRequiredPrimitiveClassFieldRust(field) || position === undefined) {
+            if (
+              !record ||
+              (record.optional && classTarget?.object.presence !== 'narrowedPresent') ||
+              !field ||
+              !isIrRequiredPrimitiveClassFieldRust(field)
+            ) {
               supported = false;
             } else {
-              mutatedOptionalClassPositions.add(position);
-              mutatedOptionalParameterIds.add(parameter.binding.id);
+              mutatedClassPositions.add(record.position);
+              if (record.optional) mutatedOptionalParameterIds.add(record.parameter.binding.id);
             }
           }
         }
         if (
           expression.kind === 'unary' &&
           (expression.operator === '++' || expression.operator === '--' || expression.operator === 'delete') &&
-          [...optionalParametersById].some(([id]) => irExpressionUsesBindingRust(expression.operand, id))
+          [...classParametersById].some(([id]) => irExpressionUsesBindingRust(expression.operand, id))
         ) {
           supported = false;
         }
@@ -7509,20 +7589,20 @@ function getIrClassMethodOptionalParameterMutationPositionsRust(
             [expression.right, expression.left],
           ] as const;
           for (const [candidate, sentinel] of pairs) {
-            const carrier =
+            const record =
               candidate.kind === 'identifier' && candidate.reference.kind === 'binding'
-                ? optionalCarriersById.get(candidate.reference.binding.id)
+                ? classParametersById.get(candidate.reference.binding.id)
                 : undefined;
-            const expectedSentinel = carrier ? getRustOptionalSharedClassSentinel(carrier.representation) : undefined;
+            const expectedSentinel = record?.representation
+              ? getRustOptionalSharedClassSentinel(record.representation)
+              : undefined;
             if (
-              candidate.kind === 'identifier' &&
-              candidate.reference.kind === 'binding' &&
-              optionalParametersById.has(candidate.reference.binding.id) &&
+              record?.optional &&
               expectedSentinel !== undefined &&
               getIrSharedClassSentinelExpressionRust(sentinel) === expectedSentinel
             ) {
               allowedReferences.add(candidate);
-              sentinelCheckedOptionalParameterIds.add(candidate.reference.binding.id);
+              sentinelCheckedOptionalParameterIds.add(record.parameter.binding.id);
             }
           }
         }
@@ -7531,26 +7611,29 @@ function getIrClassMethodOptionalParameterMutationPositionsRust(
           !expression.optional &&
           expression.structuralAccess === undefined &&
           expression.object.kind === 'identifier' &&
-          expression.object.reference.kind === 'binding' &&
-          expression.object.presence === 'narrowedPresent'
+          expression.object.reference.kind === 'binding'
         ) {
-          const parameter = optionalParametersById.get(expression.object.reference.binding.id);
-          const carrier = parameter ? optionalCarriersById.get(parameter.binding.id) : undefined;
-          const location = carrier
-            ? getIrClassDeclarationLocationForTypeRust(carrier.classType, context, module)
+          const record = classParametersById.get(expression.object.reference.binding.id);
+          const location = record
+            ? getIrClassDeclarationLocationForTypeRust(record.classType, context, module)
             : undefined;
           const field = location?.declaration.fields.find(
             (candidate) => !candidate.static && candidate.name === expression.name,
           );
-          if (parameter && field && isIrRequiredPrimitiveClassFieldRust(field)) {
+          if (
+            record &&
+            (!record.optional || expression.object.presence === 'narrowedPresent') &&
+            field &&
+            isIrRequiredPrimitiveClassFieldRust(field)
+          ) {
             allowedReferences.add(expression.object);
-            projected.add(parameter.binding.id);
+            projected.add(record.parameter.binding.id);
           }
         }
         if (
           expression.kind === 'identifier' &&
           expression.reference.kind === 'binding' &&
-          optionalParametersById.has(expression.reference.binding.id)
+          classParametersById.has(expression.reference.binding.id)
         ) {
           references.push(expression);
         }
@@ -7560,9 +7643,9 @@ function getIrClassMethodOptionalParameterMutationPositionsRust(
   }
   return supported &&
     references.every((reference) => allowedReferences.has(reference)) &&
-    [...optionalParametersById].every(([id]) => projected.has(id)) &&
+    [...classParametersById].every(([id]) => projected.has(id)) &&
     [...mutatedOptionalParameterIds].every((id) => sentinelCheckedOptionalParameterIds.has(id))
-    ? mutatedOptionalClassPositions
+    ? mutatedClassPositions
     : undefined;
 }
 
@@ -7754,7 +7837,7 @@ function isIrSimpleConstructorOwnerDeclarationRust(
   );
 }
 
-function isIrExactBorrowedClassConstructorArgumentRust(
+function isIrExactBorrowedClassArgumentRust(
   expression: Readonly<IrExpression>,
   parameterType: Readonly<IrType>,
   parameterModule: Readonly<IrModule>,
@@ -15820,11 +15903,14 @@ function getIrCallBorrowedRepresentationsRust(
     return context.borrowedParameterRepresentations.get(expression.callee.reference.binding.id) ?? new Map();
   }
   const method = getIrClassMethodCallParameterPlanRust(expression, context);
-  return new Map(
-    [...(method?.plan.optionalClassParameters ?? [])].map(
+  return new Map([
+    ...[...(method?.plan.requiredClassParameters ?? [])].map(
+      ([position, parameter]) => [position, parameter.representation] as const,
+    ),
+    ...[...(method?.plan.optionalClassParameters ?? [])].map(
       ([position, carrier]) => [position, carrier.representation] as const,
     ),
-  );
+  ]);
 }
 
 function getIrClassMethodCallParameterPlanRust(
@@ -15876,6 +15962,16 @@ function getIrClassMethodCallParameterPlanRust(
   }
   for (const [position, parameter] of method.parameters.entries()) {
     const argument = expression.arguments[position];
+    const requiredClassParameter = plan.requiredClassParameters.get(position);
+    if (requiredClassParameter) {
+      if (
+        !argument ||
+        !isIrExactBorrowedClassArgumentRust(argument, requiredClassParameter.classType, location.module, context)
+      ) {
+        return undefined;
+      }
+      continue;
+    }
     const carrier = plan.optionalClassParameters.get(position);
     if (carrier) {
       if (
