@@ -26998,9 +26998,9 @@ describe('emitIrModuleRust identity assertions', () => {
       `interface A { value: number } interface B { value: string }
        export function wrong(shape: A | B): A | B { return shape as A | B; }`,
     );
-    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
-      'rust-contextual-general-union-construction-unrepresented',
-    );
+    // A union-source assertion belongs to the checked-carrier recovery family, which owns the
+    // refusal even when the contextual constructor could otherwise claim the expression.
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-union-cast-unsupported');
   });
 
   it('salvages an unrelated declaration while keeping the identity assertion', () => {
