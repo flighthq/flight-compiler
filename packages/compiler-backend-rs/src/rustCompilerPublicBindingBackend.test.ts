@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRustCompilerBackend } from './rustCompilerPublicBindingBackend.js';
+import { createRustCompilerPublicBindingBackend } from './rustCompilerPublicBindingBackend.js';
 
-describe('createRustCompilerBackend', () => {
+describe('createRustCompilerPublicBindingBackend', () => {
   it('attaches the versioned public binding planner without changing the emission backend', () => {
-    const backend = createRustCompilerBackend();
+    const backend = createRustCompilerPublicBindingBackend();
 
     expect(backend.name).toBe('rust');
     expect(

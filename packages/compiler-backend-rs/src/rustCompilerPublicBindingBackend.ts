@@ -2,7 +2,7 @@ import type { CompilerBackend, RustCompilerBackendOptions } from '../../compiler
 import { createRustCompilerBackend as createRustCompilerEmissionBackend } from './rustCompilerBackend.js';
 import { createCompilerRustPublicBindingPlan } from './rustPublicBindingPlan.js';
 
-export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
+export function createRustCompilerPublicBindingBackend(): CompilerBackend<RustCompilerBackendOptions> {
   const backend = createRustCompilerEmissionBackend();
   return {
     ...backend,
