@@ -25154,7 +25154,6 @@ describe('emitIrModuleRust static Array.isArray', () => {
       const result = lower(
         'array-is-array-checkpoint.ts',
         `class Counter { value: number; constructor(value: number) { this.value = value; } }
-         function record(log: number[]): number[] { log.push(1); return [7]; }
          export function arrayDomain(): boolean {
            const values = [1];
            const answer = Array.isArray(values);
@@ -25172,9 +25171,10 @@ describe('emitIrModuleRust static Array.isArray', () => {
            return !primitive && !exactClass;
          }
          export function effectDomain(): boolean {
-           const log: number[] = [];
-           const answer = Array.isArray(record(log));
-           return answer && log.length === 1;
+           let calls = 0;
+           const record = (): number[] => { calls += 1; return [7]; };
+           const answer = Array.isArray(record());
+           return answer && calls === 1;
          }
          export function sharedDomains(): boolean {
            const values = [1];
