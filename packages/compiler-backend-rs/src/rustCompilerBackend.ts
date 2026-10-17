@@ -2526,6 +2526,17 @@ function isArrayShiftCallRust(
   );
 }
 
+function isArrayPopCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'pop'
+  );
+}
+
 function emitArrayShiftCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
     Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
@@ -5349,11 +5360,14 @@ interface RustArrayBoundsPlan {
 }
 
 interface RustArrayBoundsRefusal {
-  readonly member: 'index' | 'shift';
+  readonly member: 'index' | 'pop' | 'shift';
   readonly message: string;
   readonly rule:
     | 'rust-array-index-key-domain-unrepresented'
     | 'rust-array-index-result-absence-unrepresented'
+    | 'rust-array-pop-invocation-unrepresented'
+    | 'rust-array-pop-result-carrier-unrepresented'
+    | 'rust-array-pop-result-observation-unrepresented'
     | 'rust-array-shift-invocation-unrepresented'
     | 'rust-array-shift-result-carrier-unrepresented'
     | 'rust-array-shift-result-observation-unrepresented';
@@ -5364,6 +5378,7 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
   const elementReads: Array<Readonly<Extract<IrExpression, { kind: 'element' }>>> = [];
+  const popCalls: Array<Readonly<Extract<IrExpression, { kind: 'call' }>>> = [];
   const shiftCalls: Array<Readonly<Extract<IrExpression, { kind: 'call' }>>> = [];
 
   analyzeIrModuleTraversal(module, {
@@ -5385,6 +5400,8 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
         elementReads.push(expression);
       } else if (expression.kind === 'call' && isArrayShiftCallRust(expression)) {
         shiftCalls.push(expression);
+      } else if (expression.kind === 'call' && isArrayPopCallRust(expression)) {
+        popCalls.push(expression);
       }
     },
     functionSignature(signature, path_) {
@@ -5476,6 +5493,33 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
         message:
           'array.shift can return undefined for an empty array, but this observed result has no Rust Option carrier',
         rule: 'rust-array-shift-result-observation-unrepresented',
+      });
+    }
+  }
+
+  for (const expression of popCalls) {
+    if (expression.arguments.length !== 0) {
+      refusals.push({
+        member: 'pop',
+        message: 'array.pop with arguments has no exact Rust invocation',
+        rule: 'rust-array-pop-invocation-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustSingleUndefinedOptionCarrier(expression.semantics.resultType)) {
+      refusals.push({
+        member: 'pop',
+        message: 'array.pop result does not have one undefined-admitting Rust Option carrier',
+        rule: 'rust-array-pop-result-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustArrayAbsenceRepresentedUse(uses.get(expression), bindingTypes, arrayElementBindingIds)) {
+      refusals.push({
+        member: 'pop',
+        message:
+          'array.pop can return undefined for an empty array, but this observed result has no Rust Option carrier',
+        rule: 'rust-array-pop-result-observation-unrepresented',
       });
     }
   }
@@ -5876,7 +5920,9 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
     if (expression.optionalChain?.receiverNullish === 'excluded') return false;
     return expression.optional || expression.absent === 'optionalMember';
   }
-  if (expression.kind === 'call') return expression.optional || isArrayShiftCallRust(expression);
+  if (expression.kind === 'call') {
+    return expression.optional || isArrayPopCallRust(expression) || isArrayShiftCallRust(expression);
+  }
   // An array index is absent-admitting in the source language whatever the index is, which is why
   // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
   // through `get`, which is both the Option the operator needs and the faithful behaviour.

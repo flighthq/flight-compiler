@@ -12422,6 +12422,37 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('returns an empty-safe Option from pop and preserves pop coalescing', () => {
+    const result = lower(
+      'array-pop-bounds.ts',
+      `export function takeLast(items: number[]): number | undefined { return items.pop(); }
+       export function takeLastOr(items: number[], fallback: number): number { return items.pop() ?? fallback; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.pop()');
+    expect(output).toContain('unwrap_or_else(|| fallback)');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut empty = vec![];',
+          'assert_eq!(take_last(&mut empty), None);',
+          'assert_eq!(empty, Vec::<f64>::new());',
+          'let mut present = vec![3.0, 4.0];',
+          'assert_eq!(take_last(&mut present), Some(4.0));',
+          'assert_eq!(present, vec![3.0]);',
+          'let mut fallback_empty = vec![];',
+          'assert_eq!(take_last_or(&mut fallback_empty, 8.0), 8.0);',
+          'let mut fallback_present = vec![5.0, 6.0];',
+          'assert_eq!(take_last_or(&mut fallback_present, 8.0), 6.0);',
+          'assert_eq!(fallback_present, vec![5.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
   it('keeps an empty-safe shift exact through a represented shared-array alias', () => {
     const result = lower(
       'shared-array-shift-bounds.ts',
@@ -12438,6 +12469,28 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(output).toContain('let mut shift_values = values.borrow_mut()');
     if (rustcAvailable) {
       runRustSource(output, 'assert_eq!(take_shared(false), Some(7.0)); assert_eq!(take_shared(true), None);');
+    }
+  });
+
+  it('keeps an empty-safe pop exact through a represented shared-array alias', () => {
+    const result = lower(
+      'shared-array-pop-bounds.ts',
+      `export function takeSharedLast(empty: boolean): number | undefined {
+         const values = [7];
+         const alias = values;
+         if (empty) alias.pop();
+         return values.pop();
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('values.borrow_mut().pop()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        'assert_eq!(take_shared_last(false), Some(7.0)); assert_eq!(take_shared_last(true), None);',
+      );
     }
   });
 
@@ -12458,11 +12511,42 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       rule: 'rust-array-shift-result-carrier-unrepresented',
       source: 'export function take(values: (number | null)[]): number | null | undefined { return values.shift(); }',
     },
+    {
+      rule: 'rust-array-pop-result-observation-unrepresented',
+      source: 'export function take(values: number[]): number { return values.pop()!; }',
+    },
+    {
+      rule: 'rust-array-pop-result-carrier-unrepresented',
+      source: 'export function take(values: (number | null)[]): number | null | undefined { return values.pop(); }',
+    },
   ])('preflight-refuses incompatible array bounds case with $rule', ({ rule, source }) => {
     const result = lower('array-bounds-refused.ts', source);
     expect(result.diagnostics).toEqual([]);
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
     expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses arguments to array pop', () => {
+    const result = lower(
+      'array-pop-arguments.ts',
+      'export function take(values: number[]): number | undefined { return values.pop(); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'take',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.pop call');
+    }
+    (returned.expression.arguments as unknown as Array<{ kind: 'literal'; value: number }>).push({
+      kind: 'literal',
+      value: 1,
+    });
+    delete (returned.expression.semantics as { signature?: unknown }).signature;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-pop-invocation-unrepresented');
     expect(failure.classification).toBe('target-runtime');
   });
 
@@ -12473,6 +12557,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
          const values = [1];
          const alias = values;
          alias.push(values.shift() ?? 0);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
+  it('preserves the existing shared-array borrow-conflict refusal for nested pop mutation', () => {
+    const result = lower(
+      'array-pop-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1];
+         const alias = values;
+         alias.push(values.pop() ?? 0);
          return alias.length;
        }`,
     );
@@ -12492,6 +12590,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
 
     expect(capture(first).rule).toBe('rust-array-index-key-domain-unrepresented');
     expect(capture(second).rule).toBe('rust-array-index-key-domain-unrepresented');
+  });
+
+  it('selects array pop refusal rules independently of declaration order', () => {
+    const declarations = [
+      'export function observed(values: number[]): number { return values.pop()!; }',
+      'export function incompatible(values: (number | null)[]): number | null | undefined { return values.pop(); }',
+    ];
+    const first = lower('array-pop-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-pop-order-b.ts', [...declarations].reverse().join('\n')).module;
+    const capture = (module: Readonly<Parameters<typeof emitIrModuleRust>[0]>) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(capture(first).rule).toBe('rust-array-pop-result-carrier-unrepresented');
+    expect(capture(second).rule).toBe('rust-array-pop-result-carrier-unrepresented');
   });
 });
 
