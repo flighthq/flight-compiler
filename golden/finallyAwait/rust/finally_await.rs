@@ -6,13 +6,19 @@ use flight_runtime::FlightTask;
 pub async fn attempt(task: FlightTask<f64>) -> f64 {
   let mut result: f64 = 0.0;
   let mut done: bool = false;
-  let __try_result = task.settle();
+  let try_completion_result: Result<Option<f64>, String> = 'try_completion: {
+    let try_value = match task.settle() {
+      Ok(try_value) => try_value,
+      Err(try_error) => break 'try_completion Err(try_error),
+    };
+    result = try_value;
+    break 'try_completion Ok(None);
+  };
   done = true;
-  match __try_result {
-    Ok(__value) => {
-      result = __value;
-    }
-    Err(__error) => panic!("unhandled task rejection: {}", __error),
+  match try_completion_result {
+    Ok(Some(try_return_value)) => return try_return_value,
+    Ok(None) => {},
+    Err(try_error_2) => flight_runtime::panic_task_rejection(try_error_2),
   }
   return if done { result } else { result };
 }

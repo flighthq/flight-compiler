@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 pub fn find_index(values: Vec<f64>, target: f64) -> f64 {
-  return values.iter().position(|x| x == &target).map(|i| i as f64).unwrap_or(-1.0);
+  return { let array_index_of_receiver = &values; let array_index_of_candidate = &target; array_index_of_receiver.iter().position(|array_index_of_value| *array_index_of_value == *array_index_of_candidate).map(|index| index as f64).unwrap_or(-1.0) };
 }
 
 pub fn find_last_index(values: Vec<f64>, target: f64) -> f64 {
-  return values.iter().rposition(|x| x == &target).map(|i| i as f64).unwrap_or(-1.0);
+  return { let array_last_index_of_receiver = &values; let array_last_index_of_candidate = &target; array_last_index_of_receiver.iter().rposition(|array_last_index_of_value| *array_last_index_of_value == *array_last_index_of_candidate).map(|index| index as f64).unwrap_or(-1.0) };
 }
 
 pub fn contains_value(values: Vec<f64>, target: f64) -> bool {
-  return values.iter().position(|x| x == &target).map(|i| i as f64).unwrap_or(-1.0) != -1.0;
+  return { let array_index_of_receiver_2 = &values; let array_index_of_candidate_2 = &target; array_index_of_receiver_2.iter().position(|array_index_of_value_2| *array_index_of_value_2 == *array_index_of_candidate_2).map(|index| index as f64).unwrap_or(-1.0) } != -1.0;
 }

@@ -2,9 +2,9 @@
 #![forbid(unsafe_code)]
 
 pub fn merge_arrays(a: Vec<f64>, b: Vec<f64>) -> Vec<f64> {
-  return { let mut __concat = a; __concat.extend(b); __concat };
+  return { let array_concat_receiver = &a; let array_concat_argument = &b; let mut array_concat_values = (*array_concat_receiver).clone(); array_concat_values.extend(array_concat_argument.iter().cloned()); array_concat_values };
 }
 
 pub fn append_one(values: Vec<f64>, extra: f64) -> Vec<f64> {
-  return { let mut __concat = values; __concat.extend(vec![extra]); __concat };
+  return { let array_concat_receiver_2 = &values; let array_concat_argument_2 = &vec![extra]; let mut array_concat_values_2 = (*array_concat_receiver_2).clone(); array_concat_values_2.extend(array_concat_argument_2.iter().cloned()); array_concat_values_2 };
 }

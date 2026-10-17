@@ -4,10 +4,22 @@
 use flight_runtime::FlightTask;
 
 pub async fn attempt(task: FlightTask<f64>, fallback: f64, log: &mut Vec<f64>) -> f64 {
-  let try_result = match task.settle() {
-    Ok(__value) => __value,
-    Err(_) => fallback,
+  let try_completion_result: Result<Option<f64>, String> = 'try_completion: {
+    match task.settle() {
+      Ok(try_value) => break 'try_completion Ok(Some(try_value)),
+      Err(try_error) => break 'try_completion Err(try_error),
+    }
+  };
+  let try_completion_value: Result<Option<f64>, String> = match try_completion_result {
+    Ok(try_carried_completion) => Ok(try_carried_completion),
+    Err(_) => {
+      Ok(Some(fallback))
+    }
   };
   { let array_push_argument0 = 1.0; log.push(array_push_argument0); log.len() as f64 };
-  return try_result;
+  match try_completion_value {
+    Ok(Some(try_return_value)) => return try_return_value,
+    Ok(None) => unreachable!(),
+    Err(try_error_2) => flight_runtime::panic_task_rejection(try_error_2),
+  }
 }
