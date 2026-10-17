@@ -255,9 +255,21 @@ type RustAsyncTryCatchCompletionPlan =
       statements: readonly Readonly<IrStatement>[];
     }>;
 
+type RustAsyncTryFinalizerCompletionPlan =
+  | Readonly<{
+      kind: 'await';
+      postStatements: readonly Readonly<IrStatement>[];
+      preStatements: readonly Readonly<IrStatement>[];
+      step: Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>;
+    }>
+  | Readonly<{
+      kind: 'straight';
+      statements: readonly Readonly<IrStatement>[];
+    }>;
+
 interface RustAsyncTryFinallyCompletionPlan {
   readonly catchPlan?: RustAsyncTryCatchCompletionPlan | undefined;
-  readonly finallyStatements: readonly Readonly<IrStatement>[];
+  readonly finalizerPlan: RustAsyncTryFinalizerCompletionPlan;
   readonly tryStatements: readonly Readonly<IrStatement>[];
 }
 
@@ -6900,6 +6912,43 @@ function getAsyncTryCatchCompletionPlanRust(
   };
 }
 
+function getAsyncTryFinalizerCompletionPlanRust(
+  finallyBody: Readonly<NonNullable<Extract<IrStatement, { kind: 'try' }>['finallyBody']>>,
+  evidence: Readonly<RustAsyncTryCompletionEvidence>,
+  context: EmitContext,
+): RustAsyncTryFinalizerCompletionPlan {
+  const statements = getIrDirectStatementsRust(finallyBody);
+  if (evidence.suspensionCount === 0) return { kind: 'straight', statements };
+
+  const steps = statements.flatMap((candidate, index) => {
+    const step = getIrAsyncTryDirectAwaitStepRust(candidate);
+    return step ? [{ index, step }] : [];
+  });
+  const selected = steps[0];
+  if (
+    (finallyBody.kind === 'block' && finallyBody.label) ||
+    evidence.suspensionCount !== 1 ||
+    steps.length !== 1 ||
+    !selected ||
+    selected.step.kind === 'return' ||
+    !statements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable') ||
+    evidence.abruptStatements.length > 0
+  ) {
+    emissionRuleError(
+      context,
+      'async try/finally awaited finalizer requires one flat finalizer with exactly one direct non-return await and no abrupt completion',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  const step = selected.step;
+  return {
+    kind: 'await',
+    postStatements: statements.slice(selected.index + 1),
+    preStatements: statements.slice(0, selected.index),
+    step,
+  };
+}
+
 function getAsyncTryFinallyCompletionPlanRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   context: EmitContext,
@@ -6920,6 +6969,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   const catchPlan = statement.catchClause
     ? getAsyncTryCatchCompletionPlanRust(statement.catchClause, catchEvidence!, context)
     : undefined;
+  const finalizerPlan = getAsyncTryFinalizerCompletionPlanRust(statement.finallyBody, finallyEvidence, context);
   const trySteps = tryStatements.flatMap((candidate) => {
     const step = getIrAsyncTryDirectAwaitStepRust(candidate);
     return step ? [step] : [];
@@ -6951,10 +7001,10 @@ function getAsyncTryFinallyCompletionPlanRust(
     (catchEvidence?.abruptStatements.every((candidate) => permittedCatchCompletions.has(candidate)) ?? true) &&
     finallyEvidence.abruptStatements.length === 0;
   const exactSuspensions =
-    (trySteps.length > 0 || catchPlan?.kind === 'await') &&
+    (trySteps.length > 0 || catchPlan?.kind === 'await' || finalizerPlan.kind === 'await') &&
     tryEvidence.suspensionCount === trySteps.length &&
     (catchEvidence?.suspensionCount ?? 0) === (catchPlan?.kind === 'await' ? 1 : 0) &&
-    finallyEvidence.suspensionCount === 0;
+    finallyEvidence.suspensionCount === (finalizerPlan.kind === 'await' ? 1 : 0);
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
@@ -6964,7 +7014,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   }
   return {
     ...(catchPlan ? { catchPlan } : {}),
-    finallyStatements,
+    finalizerPlan,
     tryStatements,
   };
 }
@@ -7411,6 +7461,33 @@ function emitAsyncTryFinallyAwaitCatchCompletionRust(
   ];
 }
 
+function emitAsyncTryAwaitedFinalizerCompletionRust(
+  plan: Readonly<Extract<RustAsyncTryFinalizerCompletionPlan, { kind: 'await' }>>,
+  pending: string,
+  context: EmitContext,
+): string[] {
+  const step = plan.step;
+  assertIrAsyncTrySettledStepCarrierRust(step, context);
+  const target = emitOwnedOperandRust(step.awaitTarget, context);
+  const error = getGeneratedTargetNameRust('finally_error', context);
+  const value = getGeneratedTargetNameRust('finally_value', context);
+  return [
+    ...emitStatements(plan.preStatements, context),
+    `match ${target}.settle() {`,
+    ...indentSourceLines([
+      `Ok(${step.kind === 'expression' ? '_' : value}) => {`,
+      ...indentSourceLines([
+        ...emitAsyncTrySettledStepRust(step, context, value),
+        ...emitStatements(plan.postStatements, context),
+        pending,
+      ]),
+      '}',
+      `Err(${error}) => Err(${error}),`,
+    ]),
+    '}',
+  ];
+}
+
 function emitAsyncTryFinallyCompletionRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
@@ -7447,7 +7524,17 @@ function emitAsyncTryFinallyCompletionRust(
       '};',
     );
   }
-  lines.push(...emitStatements(plan.finallyStatements, context));
+  if (plan.finalizerPlan.kind === 'await') {
+    const pendingCompletion = completion;
+    completion = getGeneratedTargetNameRust('finally_completion_value', context);
+    lines.push(
+      `let ${completion}: Result<Option<${returnType}>, String> = {`,
+      ...indentSourceLines(emitAsyncTryAwaitedFinalizerCompletionRust(plan.finalizerPlan, pendingCompletion, context)),
+      '};',
+    );
+  } else {
+    lines.push(...emitStatements(plan.finalizerPlan.statements, context));
+  }
   const value = getGeneratedTargetNameRust('try_return_value', context);
   const tryCanCompleteNormally =
     plan.tryStatements.at(-1)?.kind !== 'return' && plan.tryStatements.at(-1)?.kind !== 'throw';
@@ -7470,7 +7557,7 @@ function emitAsyncTryFinallyCompletionRust(
   } else {
     const error = getGeneratedTargetNameRust('try_error', context);
     lines.push(
-      `match ${pending} {`,
+      `match ${completion} {`,
       ...indentSourceLines([
         `Ok(Some(${value})) => return ${value},`,
         `Ok(None) => ${tryCanCompleteNormally ? '{}' : 'unreachable!()'},`,

@@ -3708,21 +3708,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     });
   });
 
-  it('keeps finalizer suspension outside bindingless one-await catch', () => {
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(
-        lower(
-          'try-bindingless-catch-await-finalizer-refusal.ts',
-          'export async function attempt(primary: Promise<number>, recovery: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return await primary; } catch { return await recovery; } finally { await cleanup; } }',
-        ).module,
-      ),
-    );
-
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
-    expect(failure.message).toContain('non-abrupt finally');
-  });
-
   it.skipIf(!rustcAvailable)(
     'runs bypass, Normal/Return fulfillment, rejection replacement, source throw, and finally ordering for bindingless one-await catch in one native build',
     () => {
@@ -3758,6 +3743,178 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).not.toThrow();
     },
   );
+
+  it.each([
+    [
+      'expression settlement',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<void>, log: number[]): Promise<number> { try { return await primary; } finally { log.push(1); await cleanup; log.push(2); } }',
+      'Ok(_) => {',
+    ],
+    [
+      'assignment settlement',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<number>, log: number[]): Promise<number> { let cleaned = 0; try { return await primary; } finally { cleaned = await cleanup; log.push(cleaned); } }',
+      'cleaned = finally_value;',
+    ],
+    [
+      'declaration settlement',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<number>, log: number[]): Promise<number> { try { return await primary; } finally { const cleaned: number = await cleanup; log.push(cleaned); } }',
+      'let cleaned: f64 = finally_value;',
+    ],
+  ])('lowers one-await finalizer with %s through the shared completion carrier', (_name, source, effect) => {
+    const output = emitIrModuleRust(lower('try-one-await-finalizer.ts', source).module).contents;
+
+    expect(output).toContain('Result<Option<f64>, String>');
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(2);
+    expect(output).toContain(effect);
+    expect(output).toContain('Err(finally_error) => Err(finally_error),');
+    expect(output.indexOf(effect)).toBeLessThan(output.indexOf('return try_return_value'));
+  });
+
+  it.each([
+    [
+      'Normal',
+      'export async function attempt(primary: Promise<void>, cleanup: Promise<void>): Promise<void> { try { await primary; } finally { await cleanup; } }',
+    ],
+    [
+      'Return',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return await primary; } finally { await cleanup; } }',
+    ],
+    [
+      'Error',
+      'export async function attempt(primary: Promise<void>, cleanup: Promise<void>): Promise<void> { try { await primary; throw new Error("source"); } finally { await cleanup; } }',
+    ],
+  ])(
+    'preserves pending %s completion on one-await finalizer fulfillment and overrides it on rejection',
+    (_name, source) => {
+      const output = emitIrModuleRust(lower('try-one-await-finalizer-semantics.ts', source).module).contents;
+      const cleanupSettlement = output.indexOf('match cleanup.settle() {');
+      const preservedCompletion = output.indexOf('try_completion_result', cleanupSettlement);
+      const replacementError = output.indexOf('Err(finally_error) => Err(finally_error),', cleanupSettlement);
+      const finalDispatch = output.indexOf('match finally_completion_value {', cleanupSettlement);
+
+      expect(cleanupSettlement).toBeGreaterThan(-1);
+      expect(preservedCompletion).toBeGreaterThan(cleanupSettlement);
+      expect(replacementError).toBeGreaterThan(preservedCompletion);
+      expect(finalDispatch).toBeGreaterThan(replacementError);
+    },
+  );
+
+  it('composes one-await catch before one-await finalizer without changing the completion carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-one-await-finalizer-catch.ts',
+        'export async function attempt(primary: Promise<number>, recovery: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return await primary; } catch { return await recovery; } finally { await cleanup; } }',
+      ).module,
+    ).contents;
+    const protectedSettlement = output.indexOf('match primary.settle() {');
+    const catchSettlement = output.indexOf('match recovery.settle() {', protectedSettlement);
+    const finalizerSettlement = output.indexOf('match cleanup.settle() {', catchSettlement);
+    const preservedCatchCompletion = output.indexOf('try_completion_value', finalizerSettlement);
+
+    expect(output.match(/Result<Option<f64>, String>/g)).toHaveLength(3);
+    expect(protectedSettlement).toBeGreaterThan(-1);
+    expect(catchSettlement).toBeGreaterThan(protectedSettlement);
+    expect(finalizerSettlement).toBeGreaterThan(catchSettlement);
+    expect(preservedCatchCompletion).toBeGreaterThan(finalizerSettlement);
+    expect(output).toContain('Err(finally_error) => Err(finally_error),');
+  });
+
+  it('keeps synchronous finally emission unchanged beside one-await finalizer support', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-one-await-finalizer-sync.ts',
+        'export async function attempt(primary: Promise<number>, log: number[]): Promise<number> { try { return await primary; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(1);
+    expect(output).not.toContain('finally_completion_value');
+    expect(output.indexOf('log.push(array_push_argument0)')).toBeLessThan(
+      output.indexOf('match try_completion_result {'),
+    );
+  });
+
+  it.each([
+    [
+      'a return await',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<number>): Promise<number> { try { return await primary; } finally { return await cleanup; } }',
+    ],
+    [
+      'multiple awaits',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await second; } }',
+    ],
+    [
+      'a nested await',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<void>, enabled: boolean): Promise<number> { try { return await primary; } finally { if (enabled) await cleanup; } }',
+    ],
+    [
+      'a nested return',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<void>, enabled: boolean): Promise<number> { try { return await primary; } finally { await cleanup; if (enabled) return 1; } }',
+    ],
+    [
+      'a finalizer throw',
+      'export async function attempt(primary: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return await primary; } finally { await cleanup; throw new Error("replacement"); } }',
+    ],
+  ])('stably refuses one-await finalizer with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-one-await-finalizer-refusal.ts', source).module),
+    );
+
+    expect({
+      classification: failure.classification,
+      message: failure.message,
+      rule: failure.rule,
+    }).toEqual({
+      classification: 'compiler-restriction',
+      message:
+        'rust emission failed for @flighthq/math/packages/math/src/try-one-await-finalizer-refusal.ts: async try/finally awaited finalizer requires one flat finalizer with exactly one direct non-return await and no abrupt completion',
+      rule: 'rust-async-try-completion-unrepresented',
+    });
+  });
+
+  it('reuses protected assignment carrier refusals for one-await finalizer', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'try-one-await-finalizer-assignment-refusal.ts',
+          'interface Box { value: number; } export async function attempt(primary: Promise<number>, cleanup: Promise<number>, box: Box): Promise<number> { try { return await primary; } finally { box.value = await cleanup; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-protected-assignment-place-unrepresented');
+    expect(failure.message).toContain('one direct binding target');
+  });
+
+  it('refuses a non-task operand for one-await finalizer settlement', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'try-one-await-finalizer-operand-refusal.ts',
+          'export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } finally { await 1; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+    expect(failure.message).toContain('one direct Flight task settlement');
+  });
+
+  it('keeps terminal protected bare FlightTask adoption outside one-await finalizer', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'try-one-await-finalizer-bare-task-refusal.ts',
+          'export async function attempt(primary: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return primary; } finally { await cleanup; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-task-adoption-protected-unrepresented');
+  });
 
   it.skipIf(!rustcAvailable)('runs fulfilled and caught deferred returns through finally exactly once', () => {
     const output = emitIrModuleRust(
@@ -4171,10 +4328,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     [
       'an additional suspension',
       'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
-    ],
-    [
-      'a finalizer suspension',
-      'export async function attempt(task: Promise<number>, cleanup: Promise<number>): Promise<number> { try { return await task; } finally { await cleanup; } }',
     ],
     [
       'a nested finally',
