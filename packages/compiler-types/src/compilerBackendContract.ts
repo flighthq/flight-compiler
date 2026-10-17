@@ -1,4 +1,5 @@
-import type { CompilerHaxeDualBindingPlan } from './compilerHaxeDualBindingContract.js';
+import type { CompilerCppPublicBindingPlan, CompilerHaxeDualBindingPlan } from './compilerHaxeDualBindingContract.js';
+import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
@@ -7,6 +8,7 @@ import type {
   CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
 } from './compilerRuntimeContract.js';
+import type { CompilerRustPublicBindingPlan } from './compilerRustPublicBindingContract.js';
 import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
@@ -46,6 +48,22 @@ export interface BackendEmitContext<Options> {
   readonly options: Readonly<Options>;
 }
 
+export type CompilerBackendPublicBindingPlan =
+  | CompilerCppPublicBindingPlan
+  | CompilerHaxeDualBindingPlan
+  | CompilerRustPublicBindingPlan;
+
+export interface CompilerBackendPublicBindingRefusal {
+  readonly code: string;
+  readonly message: string;
+  readonly module: CompilerModuleIdentity;
+}
+
+export interface CompilerBackendPublicBindingRequest<Options> extends BackendEmitContext<Options> {
+  readonly facade: CompilerModuleFacadePlan;
+  readonly refusals: readonly CompilerBackendPublicBindingRefusal[];
+}
+
 /**
  * What orchestration knows about a refusal when it asks a backend for a replaceable placeholder: the module's
  * own reason and nothing more. The backend supplies the path and the file shape, because both are target
@@ -83,6 +101,10 @@ export interface CompilerBackend<Options = Record<string, never>> {
    */
   readonly createEmissionSession?:
     | ((context: BackendEmitContext<Options>) => CompilerBackendEmissionSession)
+    | undefined;
+  /** Versioned target-owned public identities reported beside the target-neutral package facade. */
+  readonly createPublicBindingPlan?:
+    | ((request: Readonly<CompilerBackendPublicBindingRequest<Options>>) => CompilerBackendPublicBindingPlan)
     | undefined;
   /**
    * Optionally writes a replaceable stub for a module refused for its own reasons, so a best-effort run

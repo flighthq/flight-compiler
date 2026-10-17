@@ -1,4 +1,5 @@
-export { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
+export { emitIrModuleRust } from './rustCompilerBackend.js';
+export { createRustCompilerBackend } from './rustCompilerPublicBindingBackend.js';
 export { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 export { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
 export { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceSyntax.js';

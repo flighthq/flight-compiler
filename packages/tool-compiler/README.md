@@ -63,7 +63,14 @@ flight-compile check <workspace> --target cpp --format json \
   --binding-profile=bindings/web-types.json
 ```
 
-Each file must be an identified `flight-cpp-external-bindings/1` profile with non-empty `identity` and `profile` fields. Duplicate profile identities or duplicate `sourceName`/`space` bindings make the invocation fail instead of letting argument order choose an ABI. The JSON run records the selected identities, profile names, and SHA-256 digests of the exact file contents, so a measurement remains attributable even when it used an uncommitted downstream profile patch. Unreadable, malformed, or non-C++ profile requests exit 2. Omitting the option preserves the existing profile-free check behavior and output.
+Each file must be an identified `flight-cpp-external-bindings/1` profile with non-empty `identity` and `profile` fields. Duplicate profile identities or duplicate `sourceName`/`space` bindings make the invocation fail instead of letting argument order choose an ABI. The JSON run records the selected identities, profile names, and SHA-256 digests of the exact file contents, so a measurement remains attributable even when it used an uncommitted downstream profile patch. Unreadable, malformed, or target-mismatched profile requests exit 2. Omitting the option preserves the existing profile-free check behavior and output.
+
+Rust generation and check runs accept the same repeatable `--binding-profile` option with identified `flight-rust-external-bindings/1` profiles. `--runtime-crate` selects the Rust import spelling supplied by the downstream workspace; it does not create or edit Cargo files. Rust package-compilation reports include the deterministic `flight-rust-public-binding-plan/1`, and JSON check reports expose that plan together with the selected profile provenance and explicit runtime crate.
+
+```sh
+flight-compile src --target rust --out generated --runtime-crate flight_runtime \
+  --binding-profile=bindings/host.json
+```
 
 Programmatic package and workspace compilation uses `compileTypeScriptPackageGraph`. Its versioned graph names package roots, declared package dependencies, entry modules, and exact importer-to-module edges. The result contains normalized output, a deterministic per-module refusal ledger, source-to-output ownership, required include paths, and the module initialization plan. C++ callers can supply `packageTargets` and `externalBindings` without adding SDL, Dawn, native GL, or another host SDK to the compiler.
 

@@ -161,6 +161,38 @@ describe('compileCompilerCommandLineDirectory', () => {
     expect(emitted).toContain('#include "vendor/flight.hpp"');
     expect(emitted).toContain('flight::String label()');
   });
+
+  it('reads Rust runtime-crate and host-binding profiles at the filesystem edge', () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'flight-command-line-rust-profile-'));
+    workspaces.push(workspace);
+    const source = path.join(workspace, 'src');
+    mkdirSync(source);
+    writeFileSync(
+      path.join(source, 'bridge.ts'),
+      'export function task(value: number): Promise<number> { return Promise.resolve(value); } export function blob(value: Blob): Blob { return value; }',
+    );
+    const profile = path.join(workspace, 'host.json');
+    writeFileSync(profile, rustBindingProfile('test/blob/1', 'blob', 'Blob', 'flight_host::Blob'));
+    const output = path.join(workspace, 'out');
+
+    expect(
+      compileCompilerCommandLineDirectory([
+        source,
+        '--target',
+        'rust',
+        '--out',
+        output,
+        '--runtime-crate',
+        'downstream_runtime',
+        '--binding-profile',
+        profile,
+      ]),
+    ).toBe(0);
+
+    const emitted = readFileSync(path.join(output, 'bridge.rs'), 'utf8');
+    expect(emitted).toContain('use downstream_runtime::FlightTask;');
+    expect(emitted).toContain('value: flight_host::Blob');
+  });
 });
 
 describe('isCompilerCommandLineEntryPoint', () => {
@@ -505,5 +537,22 @@ function bindingProfile(identity: string, profile: string, sourceName: string, t
     identity,
     profile,
     schema: 'flight-cpp-external-bindings/1',
+  });
+}
+
+function rustBindingProfile(identity: string, profile: string, sourceName: string, targetName: string): string {
+  return JSON.stringify({
+    bindings: [
+      {
+        nullability: 'non-null',
+        ownership: 'shared',
+        sourceName,
+        space: 'type',
+        targetName,
+      },
+    ],
+    identity,
+    profile,
+    schema: 'flight-rust-external-bindings/1',
   });
 }

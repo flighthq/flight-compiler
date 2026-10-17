@@ -1,6 +1,11 @@
 import type ts from 'typescript';
 
-import type { BackendCompilation, BackendEmissionFailureCode, CompilerBackend } from './compilerBackendContract.js';
+import type {
+  BackendCompilation,
+  BackendEmissionFailureCode,
+  CompilerBackend,
+  CompilerBackendPublicBindingPlan,
+} from './compilerBackendContract.js';
 import type { CompilerDiagnostic, CompilerDiagnosticCode } from './compilerDiagnosticContract.js';
 import type { CompilerEmittedSourceParser } from './compilerEmittedSourceSyntaxContract.js';
 import type { CompilerInvariantCode } from './compilerInvariantContract.js';
@@ -239,6 +244,8 @@ export interface CompilerPackageCompilationReport {
   readonly initialization: CompilerModuleEvaluationPlan;
   readonly modules: readonly CompilerPackageCompilationModuleReport[];
   readonly packages: readonly CompilerPackageCompilationPackageReport[];
+  /** Target-owned public identities, when the selected backend provides a versioned plan. */
+  readonly publicBindings?: CompilerBackendPublicBindingPlan | undefined;
   readonly runtimeAbi?: CompilerRuntimeAbiManifest | undefined;
   readonly schema: 'flight-compiler-package-report/1';
   readonly typescript: CompilerTypeScriptAnalysisIdentity;

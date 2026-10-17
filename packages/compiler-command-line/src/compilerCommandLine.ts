@@ -5,7 +5,10 @@ import {
   createCppCompilerBackend,
 } from '../../compiler-backend-cpp/src/index.js';
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
-import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
+import {
+  createCompilerRuntimeExternalSymbolBindingPlanRust,
+  createRustCompilerBackend,
+} from '../../compiler-backend-rs/src/index.js';
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
   compareCompilerPackageCheckBaseline,
@@ -45,6 +48,8 @@ import type {
   FlightPackageEnvironment,
   FlightPackageManifest,
   HaxeCompilerEmissionMode,
+  RustCompilerExternalBinding,
+  RustCompilerExternalBindingManifest,
 } from '../../compiler-types/src/index.js';
 
 // Pointing the compiler at a directory.
@@ -64,6 +69,16 @@ export function compileCompilerCommandLineRequest(
     capabilities.writeError(`${parsed.failure}\n\n${getCompilerCommandLineUsage()}\n`);
     return { emitted: 0, exitCode: 2, refusals: [] };
   }
+  const bindingProfiles = readCompilerCommandLineBindingProfiles(
+    parsed.bindingProfilePaths,
+    parsed.target,
+    parsed.runtimeProfile,
+    capabilities.readBindingProfile,
+  );
+  if ('failure' in bindingProfiles) {
+    capabilities.writeError(`${bindingProfiles.failure}\n\n${getCompilerCommandLineUsage()}\n`);
+    return { emitted: 0, exitCode: 2, refusals: [] };
+  }
   const backend = createCompilerCommandLineBackend(parsed);
   const backendOptions: Record<string, unknown> =
     parsed.target === 'haxe'
@@ -74,10 +89,14 @@ export function compileCompilerCommandLineRequest(
       : parsed.target === 'cpp'
         ? {
             ...(parsed.cAbi === undefined ? {} : { cAbi: parsed.cAbi }),
+            ...(bindingProfiles.cpp === undefined ? {} : { externalBindings: bindingProfiles.cpp }),
             runtimeProfile: parsed.runtimeProfile,
             ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
           }
-        : {};
+        : {
+            ...(bindingProfiles.rust === undefined ? {} : { hostBindings: bindingProfiles.rust }),
+            ...(parsed.runtimeCrate === undefined ? {} : { runtimeCrate: parsed.runtimeCrate }),
+          };
   const sources = capabilities.listSourceFiles(parsed.sourceDirectory);
   if (sources.length === 0) {
     capabilities.writeError(`No TypeScript modules under ${parsed.sourceDirectory}\n`);
@@ -135,7 +154,12 @@ export function compileCompilerCommandLineRequest(
     ];
   });
   capabilities.write(createCompilerCommandLineReport(emitted, refusals));
-  return { emitted, exitCode: refusals.length > 0 && !parsed.reportOnly ? 1 : 0, refusals };
+  return {
+    emitted,
+    exitCode: refusals.length > 0 && !parsed.reportOnly ? 1 : 0,
+    ...(result.report.publicBindings === undefined ? {} : { publicBindings: result.report.publicBindings }),
+    refusals,
+  };
 }
 
 // What a check found. The check package renders the report -- the findings, the policy classes, the
@@ -168,13 +192,14 @@ function createCompilerCommandLineCheckSummaryLine(result: Readonly<CompilerComm
     result.bindingProfiles === undefined
       ? ''
       : ` Binding profiles: ${result.bindingProfiles.map((profile) => profile.identity).join(', ')}.`;
+  const runtimeCrate = result.runtimeCrate === undefined ? '' : ` Runtime crate: ${result.runtimeCrate}.`;
   return (
     `${String(result.eligiblePackageNames.length)} package(s) checked, ` +
     `${String(result.report.totals.directFindings)} direct finding(s), ` +
     `${String(result.comparison.introduced.length)} introduced, ${String(gating)} gating, ` +
     `${String(result.comparison.unchanged.length)} baselined, ` +
     `${String(result.comparison.resolvedFindingIdentities.length)} resolved, ` +
-    `policy ${result.policyResult.policy.id}.${excluded}${bindingProfiles}`
+    `policy ${result.policyResult.policy.id}.${excluded}${bindingProfiles}${runtimeCrate}`
   );
 }
 
@@ -254,11 +279,17 @@ export function validateCompilerCommandLineCheckRequest(
   }
   const baseline = readCompilerCommandLineCheckBaseline(capabilities, parsed);
   if ('failure' in baseline) return refuseCompilerCommandLineCheck(capabilities, `${baseline.failure}\n`, parsed);
-  const bindingProfiles = readCompilerCommandLineCheckBindingProfiles(parsed, capabilities);
+  const bindingProfiles = readCompilerCommandLineBindingProfiles(
+    parsed.bindingProfilePaths,
+    parsed.target,
+    parsed.runtimeProfile,
+    capabilities.readBindingProfile,
+  );
   if ('failure' in bindingProfiles) {
     return refuseCompilerCommandLineCheck(capabilities, `${bindingProfiles.failure}\n`, parsed);
   }
   let report: CompilerPackageCheckReport;
+  let publicBindings: CompilerCommandLineCheckOutcome['publicBindings'];
   try {
     // One compilation of the whole selected closure, not one per package: the module graph, the export
     // lanes, and the identity a baseline records are all graph facts, and a per-package run would answer
@@ -271,9 +302,10 @@ export function validateCompilerCommandLineCheckRequest(
     const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
     const compilation = compileTypeScriptPackageGraph({
       backend: createCompilerCommandLineBackend(parsed),
-      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed, bindingProfiles.externalBindings),
+      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed, bindingProfiles),
       ...input,
     });
+    publicBindings = compilation.report.publicBindings;
     report = createCompilerPackageCheckReport(compilation.report, {
       provenance: capabilities.readProvenance?.() ?? createCompilerCommandLineCheckProvenance(parsed, capabilities),
       sourcePortability,
@@ -290,7 +322,9 @@ export function validateCompilerCommandLineCheckRequest(
     excludedRoots: selection.excludedRoots,
     exitCode: policyResult.passed ? 0 : 1,
     policyResult,
+    ...(publicBindings === undefined ? {} : { publicBindings }),
     report,
+    ...(parsed.runtimeCrate === undefined ? {} : { runtimeCrate: parsed.runtimeCrate }),
   };
   const rendered = createCompilerCommandLineCheckReport(outcome, parsed.format);
   if (parsed.reportPath === undefined) {
@@ -366,15 +400,20 @@ function createCompilerCommandLineCheckProvenance(
 
 function createCompilerCommandLineCheckBackendOptions(
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+  bindingProfiles: Readonly<CompilerCommandLineBindingProfiles>,
 ): Record<string, unknown> {
   return parsed.target === 'cpp'
     ? {
         runtimeProfile: parsed.runtimeProfile,
-        ...(externalBindings === undefined ? {} : { externalBindings }),
+        ...(bindingProfiles.cpp === undefined ? {} : { externalBindings: bindingProfiles.cpp }),
         ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
       }
-    : {};
+    : parsed.target === 'rust'
+      ? {
+          ...(bindingProfiles.rust === undefined ? {} : { hostBindings: bindingProfiles.rust }),
+          ...(parsed.runtimeCrate === undefined ? {} : { runtimeCrate: parsed.runtimeCrate }),
+        }
+      : {};
 }
 
 function createCompilerCommandLineBackend(parsed: Readonly<{ target: 'cpp' | 'haxe' | 'rust' }>) {
@@ -411,8 +450,10 @@ function refuseCompilerCommandLineCheck(
 const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp|haxe|rust> --out <directory>
 
   --package <name>        Package name the modules belong to (default: @local/source)
+  --binding-profile <file> Compose a target external binding profile; repeat for several
   --emission-mode <mode>  Haxe emission: extern or transpile (default: transpile)
   --root-package <name>   Root package for Haxe output (default: the target's own)
+  --runtime-crate <name>  Rust runtime crate import spelling (default: flight_runtime)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
   --c-abi <header>        Emit a package C ABI header and C++ adapter
@@ -424,6 +465,7 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
 
 interface ParsedCompilerCommandLineRequest {
   readonly bestEffort: boolean;
+  readonly bindingProfilePaths: readonly string[];
   readonly cAbi?: Readonly<CppCompilerCAbiOutput> | undefined;
   readonly emitPathPrefixes?: readonly string[] | undefined;
   readonly emissionMode: HaxeCompilerEmissionMode;
@@ -432,6 +474,7 @@ interface ParsedCompilerCommandLineRequest {
   readonly progress: boolean;
   readonly reportOnly: boolean;
   readonly rootPackage?: string | undefined;
+  readonly runtimeCrate?: string | undefined;
   readonly runtimeHeader?: string | undefined;
   readonly runtimeProfile: 'flight-cpp' | 'standard-library';
   readonly sourceDirectory: string;
@@ -443,6 +486,7 @@ function parseCompilerCommandLineRequest(
 ): ParsedCompilerCommandLineRequest | Readonly<{ failure: string }> {
   const positional: string[] = [];
   const named = new Map<string, string>();
+  const bindingProfilePaths: string[] = [];
   let bestEffort = false;
   let progress = false;
   let reportOnly = false;
@@ -458,6 +502,19 @@ function parseCompilerCommandLineRequest(
     }
     if (argument === '--report') {
       reportOnly = true;
+      continue;
+    }
+    if (argument === '--binding-profile' || argument.startsWith('--binding-profile=')) {
+      const inline = argument.startsWith('--binding-profile=')
+        ? argument.slice('--binding-profile='.length)
+        : undefined;
+      const value = inline ?? request.argv[index + 1];
+      if (value === undefined || value.length === 0 || (inline === undefined && value.startsWith('--'))) {
+        return { failure: '--binding-profile requires a value' };
+      }
+      if (bindingProfilePaths.includes(value)) return { failure: `--binding-profile ${value} is supplied twice` };
+      bindingProfilePaths.push(value);
+      if (inline === undefined) index += 1;
       continue;
     }
     if (!argument.startsWith('--')) {
@@ -509,6 +566,14 @@ function parseCompilerCommandLineRequest(
           : '--runtime-header must be a portable quoted-include path',
     };
   }
+  const runtimeCrate = named.get('runtime-crate');
+  if (runtimeCrate !== undefined && target !== 'rust') return { failure: '--runtime-crate requires --target rust' };
+  if (runtimeCrate !== undefined && !isRustCrateIdentifier(runtimeCrate)) {
+    return { failure: '--runtime-crate must be a Rust crate identifier' };
+  }
+  if (bindingProfilePaths.length > 0 && target === 'haxe') {
+    return { failure: '--binding-profile requires --target cpp or rust' };
+  }
   const cAbiHeaderPath = named.get('c-abi');
   const configuredCAbiAdapterPath = named.get('c-abi-adapter');
   if ((cAbiHeaderPath !== undefined || configuredCAbiAdapterPath !== undefined) && target !== 'cpp') {
@@ -537,6 +602,7 @@ function parseCompilerCommandLineRequest(
   const packageName = named.get('package') ?? '@local/source';
   return {
     bestEffort,
+    bindingProfilePaths,
     ...(cAbiHeaderPath === undefined || cAbiAdapterPath === undefined
       ? {}
       : {
@@ -553,6 +619,7 @@ function parseCompilerCommandLineRequest(
     progress,
     reportOnly,
     ...(rootPackage === undefined ? {} : { rootPackage }),
+    ...(runtimeCrate === undefined ? {} : { runtimeCrate }),
     ...(runtimeHeader === undefined ? {} : { runtimeHeader }),
     runtimeProfile,
     sourceDirectory,
@@ -562,6 +629,10 @@ function parseCompilerCommandLineRequest(
 
 function isPortableIncludePath(value: string): boolean {
   return value.length > 0 && !value.includes('\\') && !/["<>\r\n]/u.test(value);
+}
+
+function isRustCrateIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
 }
 
 function isPortablePackageOutputPath(value: string, extension: '.cpp' | '.h'): boolean {
@@ -597,6 +668,7 @@ const commandLineValueOptions = new Set([
   '--out',
   '--package',
   '--root-package',
+  '--runtime-crate',
   '--runtime-header',
   '--runtime-profile',
   '--target',
@@ -631,7 +703,9 @@ function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLine
     })),
     exitCode: result.exitCode,
     policyResult: result.policyResult,
+    ...(result.publicBindings === undefined ? {} : { publicBindings: result.publicBindings }),
     report: result.report,
+    ...(result.runtimeCrate === undefined ? {} : { runtimeCrate: result.runtimeCrate }),
   };
 }
 
@@ -647,7 +721,8 @@ const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target 
   --baseline <file>       Compare findings against a baseline; the file is never rewritten
   --format <text|json>    Report format (default: text)
   --report <file>         Write the report to a file as well as printing the summary
-  --binding-profile <file> Compose a flight-cpp external binding profile; repeat for several
+  --binding-profile <file> Compose a target external binding profile; repeat for several
+  --runtime-crate <name>  Rust runtime crate import spelling (default: flight_runtime)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling`;
 
@@ -658,6 +733,7 @@ interface ParsedCompilerCommandLineCheckRequest {
   readonly format: CompilerCommandLineCheckFormat;
   readonly selectedPackageNames: readonly string[];
   readonly reportPath?: string | undefined;
+  readonly runtimeCrate?: string | undefined;
   readonly runtimeHeader?: string | undefined;
   readonly runtimeProfile: 'flight-cpp' | 'standard-library';
   readonly target: 'cpp' | 'haxe' | 'rust';
@@ -733,8 +809,13 @@ function parseCompilerCommandLineCheckRequest(
   if ((named.has('runtime-profile') || runtimeHeader !== undefined) && target !== 'cpp') {
     return { failure: '--runtime-profile and --runtime-header require --target cpp' };
   }
-  if (bindingProfilePaths.length > 0 && target !== 'cpp') {
-    return { failure: '--binding-profile requires --target cpp' };
+  const runtimeCrate = named.get('runtime-crate');
+  if (runtimeCrate !== undefined && target !== 'rust') return { failure: '--runtime-crate requires --target rust' };
+  if (runtimeCrate !== undefined && !isRustCrateIdentifier(runtimeCrate)) {
+    return { failure: '--runtime-crate must be a Rust crate identifier' };
+  }
+  if (bindingProfilePaths.length > 0 && target === 'haxe') {
+    return { failure: '--binding-profile requires --target cpp or rust' };
   }
   return {
     ...(named.get('baseline') === undefined ? {} : { baselinePath: named.get('baseline')! }),
@@ -742,6 +823,7 @@ function parseCompilerCommandLineCheckRequest(
     ...(environmentName === undefined ? {} : { environment: environmentName as FlightPackageEnvironment }),
     format,
     ...(reportPath === undefined ? {} : { reportPath }),
+    ...(runtimeCrate === undefined ? {} : { runtimeCrate }),
     ...(runtimeHeader === undefined ? {} : { runtimeHeader }),
     runtimeProfile,
     selectedPackageNames,
@@ -834,30 +916,37 @@ const commandLineCheckValueOptions = new Set([
   '--format',
   '--package',
   '--report',
+  '--runtime-crate',
   '--runtime-header',
   '--runtime-profile',
   '--target',
 ]);
 
-function readCompilerCommandLineCheckBindingProfiles(
-  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
-):
-  | Readonly<{
-      externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
-      provenance: readonly CompilerCommandLineCheckBindingProfile[];
-    }>
-  | Readonly<{ failure: string }> {
-  if (parsed.bindingProfilePaths.length === 0) return { provenance: [] };
-  if (capabilities.readBindingProfile === undefined) {
+interface CompilerCommandLineBindingProfiles {
+  readonly cpp?: Readonly<CppCompilerExternalBindingManifest> | undefined;
+  readonly provenance: readonly CompilerCommandLineCheckBindingProfile[];
+  readonly rust?: Readonly<RustCompilerExternalBindingManifest> | undefined;
+}
+
+function readCompilerCommandLineBindingProfiles(
+  paths: readonly string[],
+  target: 'cpp' | 'haxe' | 'rust',
+  runtimeProfile: 'flight-cpp' | 'standard-library',
+  readBindingProfile: ((path: string) => string | undefined) | undefined,
+): Readonly<CompilerCommandLineBindingProfiles> | Readonly<{ failure: string }> {
+  if (paths.length === 0) return { provenance: [] };
+  if (readBindingProfile === undefined) {
     return { failure: 'The caller cannot read --binding-profile files' };
   }
-  const bindings: CppCompilerExternalBinding[] = [];
+  if (target === 'haxe') return { failure: '--binding-profile requires --target cpp or rust' };
+  const cppBindings: CppCompilerExternalBinding[] = [];
+  const rustBindings: RustCompilerExternalBinding[] = [];
   const identities = new Set<string>();
   const symbols = new Set<string>();
   const provenance: CompilerCommandLineCheckBindingProfile[] = [];
-  for (const file of parsed.bindingProfilePaths) {
-    const contents = capabilities.readBindingProfile(file);
+  const schema = target === 'cpp' ? 'flight-cpp-external-bindings/1' : 'flight-rust-external-bindings/1';
+  for (const file of paths) {
+    const contents = readBindingProfile(file);
     if (contents === undefined) return { failure: `Binding profile ${file} could not be read` };
     let value: unknown;
     try {
@@ -869,7 +958,7 @@ function readCompilerCommandLineCheckBindingProfiles(
       value === null ||
       typeof value !== 'object' ||
       !('schema' in value) ||
-      value.schema !== 'flight-cpp-external-bindings/1' ||
+      value.schema !== schema ||
       !('identity' in value) ||
       typeof value.identity !== 'string' ||
       value.identity.length === 0 ||
@@ -879,22 +968,23 @@ function readCompilerCommandLineCheckBindingProfiles(
       !('bindings' in value) ||
       !Array.isArray(value.bindings)
     ) {
-      return { failure: `Binding profile ${file} is not an identified flight-cpp-external-bindings/1 profile` };
+      return { failure: `Binding profile ${file} is not an identified ${schema} profile` };
     }
     if (identities.has(value.identity)) return { failure: `Duplicate binding profile ${value.identity}` };
     identities.add(value.identity);
-    for (const binding of value.bindings as CppCompilerExternalBinding[]) {
+    for (const binding of value.bindings as (CppCompilerExternalBinding | RustCompilerExternalBinding)[]) {
       if (
         binding !== null &&
         typeof binding === 'object' &&
         typeof binding.sourceName === 'string' &&
         (binding.space === 'type' || binding.space === 'value')
       ) {
-        const symbol = `${binding.sourceName}:${binding.space}`;
+        const symbol = `${binding.sourceName.normalize('NFC')}:${binding.space}`;
         if (symbols.has(symbol)) return { failure: `Binding profiles provide ${symbol} more than once` };
         symbols.add(symbol);
       }
-      bindings.push(binding);
+      if (target === 'cpp') cppBindings.push(binding as CppCompilerExternalBinding);
+      else rustBindings.push(binding as RustCompilerExternalBinding);
     }
     provenance.push({
       digest: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
@@ -902,14 +992,22 @@ function readCompilerCommandLineCheckBindingProfiles(
       profile: value.profile,
     });
   }
-  const externalBindings: CppCompilerExternalBindingManifest = {
-    bindings,
-    schema: 'flight-cpp-external-bindings/1',
-  };
   try {
-    createCompilerRuntimeExternalSymbolBindingPlanCpp(parsed.runtimeProfile, externalBindings);
+    if (target === 'cpp') {
+      const cpp: CppCompilerExternalBindingManifest = {
+        bindings: cppBindings,
+        schema: 'flight-cpp-external-bindings/1',
+      };
+      createCompilerRuntimeExternalSymbolBindingPlanCpp(runtimeProfile, cpp);
+      return { cpp, provenance };
+    }
+    const rust: RustCompilerExternalBindingManifest = {
+      bindings: rustBindings,
+      schema: 'flight-rust-external-bindings/1',
+    };
+    createCompilerRuntimeExternalSymbolBindingPlanRust(rust);
+    return { provenance, rust };
   } catch (error) {
     return { failure: `Binding profile composition is invalid: ${describeCompilerCommandLineFailure(error)}` };
   }
-  return { externalBindings, provenance };
 }

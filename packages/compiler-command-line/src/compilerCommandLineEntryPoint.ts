@@ -25,6 +25,7 @@ export function compileCompilerCommandLineDirectory(argv: readonly string[]): nu
         { argv },
         {
           listSourceFiles: listTypeScriptSources,
+          readBindingProfile: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined),
           write: (text) => process.stdout.write(text),
           writeError: (text) => process.stderr.write(text),
           writeOutputFile: (directory, relativePath, contents) => {

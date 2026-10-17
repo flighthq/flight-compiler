@@ -2,6 +2,7 @@
 //
 // The filesystem and the output stream arrive as capabilities so that the decision layer — which
 // modules to compile, what to report, what to exit with — can be exercised without a disk.
+import type { CompilerBackendPublicBindingPlan } from './compilerBackendContract.js';
 import type { FlightPackageEligibilitySubsetExcludedRoot } from './compilerInventoryContract.js';
 import type {
   CompilerPackageCheckComparison,
@@ -26,6 +27,8 @@ export interface CompilerCommandLineSource {
 
 export interface CompilerCommandLineCapabilities {
   readonly listSourceFiles: (directory: string) => readonly CompilerCommandLineSource[];
+  /** A downstream C++ or Rust binding profile's JSON text, or undefined when it cannot be read. */
+  readonly readBindingProfile?: ((path: string) => string | undefined) | undefined;
   readonly write: (text: string) => void;
   readonly writeError: (text: string) => void;
   readonly writeOutputFile: (directory: string, relativePath: string, contents: string) => void;
@@ -47,6 +50,7 @@ export interface CompilerCommandLineRefusal {
 export interface CompilerCommandLineResult {
   readonly emitted: number;
   readonly exitCode: number;
+  readonly publicBindings?: CompilerBackendPublicBindingPlan | undefined;
   readonly refusals: readonly CompilerCommandLineRefusal[];
 }
 
@@ -70,7 +74,7 @@ export interface CompilerCommandLineCheckCapabilities {
   readonly readArtifactRevision?: ((artifact: string) => string | undefined) | undefined;
   /** The baseline file's text, or undefined when the file is not there. Never called to write one. */
   readonly readBaseline: (path: string) => string | undefined;
-  /** A downstream C++ binding profile's JSON text, or undefined when the file cannot be read. */
+  /** A downstream C++ or Rust binding profile's JSON text, or undefined when the file cannot be read. */
   readonly readBindingProfile?: ((path: string) => string | undefined) | undefined;
   /**
    * What produced this run, whole. A caller that knows the compiler, target, and upstream revisions --
@@ -104,7 +108,7 @@ export interface CompilerCommandLineCheckBindingProfile {
 // A run that happened: the compilation report and the two judgments made over it. Absent baseline means an
 // empty one, so every finding is introduced and nothing is resolved -- which is what "no baseline" means.
 export interface CompilerCommandLineCheckOutcome {
-  /** Present only when the run explicitly composed downstream C++ binding profiles. */
+  /** Present only when the run explicitly composed downstream target binding profiles. */
   readonly bindingProfiles?: readonly CompilerCommandLineCheckBindingProfile[] | undefined;
   readonly comparison: CompilerPackageCheckComparison;
   /** The packages the eligibility plan put in scope, sorted. */
@@ -116,7 +120,10 @@ export interface CompilerCommandLineCheckOutcome {
   readonly excludedRoots: readonly FlightPackageEligibilitySubsetExcludedRoot[];
   readonly exitCode: 0 | 1;
   readonly policyResult: CompilerPackageCheckPolicyResult;
+  readonly publicBindings?: CompilerBackendPublicBindingPlan | undefined;
   readonly report: CompilerPackageCheckReport;
+  /** Present only when a Rust run explicitly selects a runtime crate spelling. */
+  readonly runtimeCrate?: string | undefined;
 }
 
 // A run that could not be carried out: the invocation was wrong, or the workspace could not be read, so

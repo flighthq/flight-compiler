@@ -227,6 +227,26 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
+  const publicBindings = options.backend.createPublicBindingPlan?.({
+    facade: exports,
+    ...(moduleResolution === undefined ? {} : { moduleResolution }),
+    modules,
+    options: options.backendOptions,
+    refusals: [...records.values()]
+      .flatMap((record) =>
+        record.refusals.map((refusal) => ({
+          code: refusal.rule ?? refusal.code,
+          message: refusal.message,
+          module: cloneCompilerPackageGraphIdentity(record.module),
+        })),
+      )
+      .sort(
+        (left, right) =>
+          compareCompilerPackageGraphModules(left.module, right.module) ||
+          compareTextCodeUnits(left.code, right.code) ||
+          compareTextCodeUnits(left.message, right.message),
+      ),
+  });
 
   // Every module refused for its own reasons gets a replaceable file at its own path, so a best-effort run
   // leaves somewhere for a hand edit to land instead of nothing. Modules that merely inherited a refusal already
@@ -391,6 +411,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
             .sort(compareTextCodeUnits),
         };
       }),
+      ...(publicBindings === undefined ? {} : { publicBindings }),
       ...(options.backend.runtimeAbi ? { runtimeAbi: options.backend.runtimeAbi() } : {}),
       schema: 'flight-compiler-package-report/1',
       typescript: createCompilerTypeScriptAnalysisIdentity(),

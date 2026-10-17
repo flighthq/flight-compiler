@@ -304,6 +304,47 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(written.get('/out/value.hpp')).toContain('#include "custom/runtime.hpp"');
   });
 
+  it('passes a Rust runtime crate and identified host-binding profiles through while reporting public bindings', () => {
+    const written = new Map<string, string>();
+    const profile = rustBindingProfile('test/blob/1', 'blob', 'Blob', 'flight_host::Blob');
+    const result = compileCompilerCommandLineRequest(
+      {
+        argv: [
+          '/src',
+          '--target',
+          'rust',
+          '--out',
+          '/out',
+          '--runtime-crate',
+          'downstream_runtime',
+          '--binding-profile=/profiles/blob.json',
+        ],
+      },
+      {
+        ...capabilities(
+          [
+            source(
+              'bridge.ts',
+              'export function task(value: number): Promise<number> { return Promise.resolve(value); } export function blob(value: Blob): Blob { return value; }',
+            ),
+          ],
+          written,
+          [],
+        ),
+        readBindingProfile: (file) => (file === '/profiles/blob.json' ? profile : undefined),
+      },
+    );
+
+    expect(result).toMatchObject({
+      emitted: 1,
+      exitCode: 0,
+      publicBindings: { schema: 'flight-rust-public-binding-plan/1' },
+      refusals: [],
+    });
+    expect(written.get('/out/bridge.rs')).toContain('use downstream_runtime::FlightTask;');
+    expect(written.get('/out/bridge.rs')).toContain('value: flight_host::Blob');
+  });
+
   it('rejects runtime-header values with characters unsafe for quoted includes', () => {
     const errors: string[] = [];
     const unsafe = ['', '"bad.hpp', '<bad>.hpp', 'bad\npath.hpp'];
@@ -327,6 +368,9 @@ describe('compileCompilerCommandLineRequest', () => {
       ['/src', '--target', 'haxe', '--out', '/out', '--runtime-profile', 'flight-cpp'],
       ['/src', '--target', 'cpp', '--out', '/out', '--runtime-header', '../bad\\runtime.hpp'],
       ['/src', '--target', 'rust', '--out', '/out', '--root-package', 'flight'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--runtime-crate', 'flight_runtime'],
+      ['/src', '--target', 'rust', '--out', '/out', '--runtime-crate', 'bad-crate'],
+      ['/src', '--target', 'haxe', '--out', '/out', '--binding-profile', '/profile.json'],
       ['/src', '--target', 'rust', '--out', '/out', '--unknown', 'value'],
       ['/src', '/other', '--target', 'rust', '--out', '/out'],
       ['/src', '--target', 'cpp', '--out', '/out', '--target', 'haxe'],
@@ -359,6 +403,9 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(errors.join('')).toContain('require --target cpp');
     expect(errors.join('')).toContain('portable quoted-include path');
     expect(errors.join('')).toContain('--root-package requires --target haxe');
+    expect(errors.join('')).toContain('--runtime-crate requires --target rust');
+    expect(errors.join('')).toContain('--runtime-crate must be a Rust crate identifier');
+    expect(errors.join('')).toContain('--binding-profile requires --target cpp or rust');
     expect(errors.join('')).toContain('Unknown option --unknown');
     expect(errors.join('')).toContain('Exactly one source directory is required');
     expect(errors.join('')).toContain('may be supplied once');
@@ -721,6 +768,8 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--target');
     expect(usage).toContain('--out');
     expect(usage).toContain('--package');
+    expect(usage).toContain('--binding-profile');
+    expect(usage).toContain('--runtime-crate');
     expect(usage).toContain('--runtime-header');
     expect(usage).toContain('--runtime-profile');
     expect(usage).toContain('--c-abi');
@@ -852,7 +901,50 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     });
   });
 
-  it('refuses unreadable, malformed, duplicate, and non-C++ binding profile requests', () => {
+  it('renders deterministic Rust public bindings with the selected runtime crate and host profile', () => {
+    const hostTypes: CheckPackage = {
+      directory: 'host-types',
+      name: '@flighthq/host-types',
+      sources: {
+        'index.ts':
+          'export function task(value: number): Promise<number> { return Promise.resolve(value); }\n' +
+          'export function keepBlob(value: Blob): Blob { return value; }\n',
+      },
+    };
+    const profile = rustBindingProfile('test/blob/1', 'blob', 'Blob', 'flight_host::Blob');
+    const first = checkRun([hostTypes], { bindingProfiles: { '/profiles/blob.json': profile } });
+    const second = checkRun([hostTypes], { bindingProfiles: { '/profiles/blob.json': profile } });
+    const argv = [
+      '/ws',
+      '--target',
+      'rust',
+      '--runtime-crate',
+      'downstream_runtime',
+      '--binding-profile',
+      '/profiles/blob.json',
+      '--format',
+      'json',
+    ];
+
+    const result = validateCompilerCommandLineCheckRequest({ argv }, first.capabilities);
+    validateCompilerCommandLineCheckRequest({ argv }, second.capabilities);
+
+    expect(result.exitCode).toBe(0);
+    expect(first.out.join('')).toBe(second.out.join(''));
+    expect(JSON.parse(first.out.join('')) as unknown).toMatchObject({
+      bindingProfiles: [{ identity: 'test/blob/1', profile: 'blob' }],
+      publicBindings: {
+        bindings: expect.arrayContaining([
+          expect.objectContaining({ binding: expect.objectContaining({ availability: 'available' }) }),
+        ]),
+        schema: 'flight-rust-public-binding-plan/1',
+      },
+      runtimeCrate: 'downstream_runtime',
+      schema: 'flight-compiler-check-run/1',
+    });
+  });
+
+  it('refuses unreadable, malformed, duplicate, and unsupported-target binding profile requests', () => {
     const malformed = checkRun([quiet], { bindingProfiles: { '/profiles/bad.json': '{' } });
     const duplicates = checkRun([quiet], {
       bindingProfiles: {
@@ -861,7 +953,12 @@ describe('validateCompilerCommandLineCheckRequest', () => {
       },
     });
     const missing = checkRun([quiet]);
-    const nonCpp = checkRun([quiet]);
+    const wrongRustSchema = checkRun([quiet], {
+      bindingProfiles: {
+        '/profiles/cpp.json': bindingProfile('test/cpp/1', 'cpp', 'NativeHost', 'host::Native'),
+      },
+    });
+    const unsupportedTarget = checkRun([quiet]);
 
     expect(
       validateCompilerCommandLineCheckRequest(
@@ -893,15 +990,22 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     ).toBe(2);
     expect(
       validateCompilerCommandLineCheckRequest(
-        { argv: ['/ws', '--target', 'rust', '--binding-profile', '/profiles/unused.json'] },
-        nonCpp.capabilities,
+        { argv: ['/ws', '--target', 'rust', '--binding-profile', '/profiles/cpp.json'] },
+        wrongRustSchema.capabilities,
+      ).exitCode,
+    ).toBe(2);
+    expect(
+      validateCompilerCommandLineCheckRequest(
+        { argv: ['/ws', '--target', 'haxe', '--binding-profile', '/profiles/unused.json'] },
+        unsupportedTarget.capabilities,
       ).exitCode,
     ).toBe(2);
 
     expect(malformed.err.join('')).toContain('is not valid JSON');
     expect(duplicates.err.join('')).toContain('NativeHost:type more than once');
     expect(missing.err.join('')).toContain('could not be read');
-    expect(nonCpp.err.join('')).toContain('--binding-profile requires --target cpp');
+    expect(wrongRustSchema.err.join('')).toContain('identified flight-rust-external-bindings/1 profile');
+    expect(unsupportedTarget.err.join('')).toContain('--binding-profile requires --target cpp or rust');
   });
 
   it('reports source portability findings alongside target results in text and JSON', () => {
@@ -1364,6 +1468,23 @@ function bindingProfile(identity: string, profile: string, sourceName: string, t
   });
 }
 
+function rustBindingProfile(identity: string, profile: string, sourceName: string, targetName: string): string {
+  return JSON.stringify({
+    bindings: [
+      {
+        nullability: 'non-null',
+        ownership: 'shared',
+        sourceName,
+        space: 'type',
+        targetName,
+      },
+    ],
+    identity,
+    profile,
+    schema: 'flight-rust-external-bindings/1',
+  });
+}
+
 function checkOutcome(result: Readonly<CompilerCommandLineCheckResult>): Readonly<CompilerCommandLineCheckOutcome> {
   if (isCompilerCommandLineCheckRefusal(result)) throw new Error(`Expected an outcome, got ${result.reason}`);
   return result;
@@ -1447,6 +1568,7 @@ describe('getCompilerCommandLineCheckUsage', () => {
     expect(usage).toContain('--environment');
     expect(usage).toContain('--baseline');
     expect(usage).toContain('--binding-profile');
+    expect(usage).toContain('--runtime-crate');
     expect(usage).toContain('--format');
     expect(usage).toContain('--report');
     expect(usage).not.toContain('--out');

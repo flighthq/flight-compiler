@@ -1,5 +1,6 @@
 import {
   compileTypeScriptModules,
+  compileTypeScriptPackageGraph,
   createCppCompilerBackend,
   createHaxeCompilerBackend,
   createRustCompilerBackend,
@@ -35,6 +36,54 @@ describe('@flighthq/tool-compiler', () => {
     expect(rust.compilation.files[0]?.path).toBe('clamp.rs');
     expect(rust.compilation.files[0]?.contents).toContain('pub fn clamp(value: f64, min: f64, max: f64) -> f64');
     expect(compileTypeScriptModules({ backend: haxeBackend, backendOptions: {}, sources: [input] })).toEqual(haxe);
+  });
+
+  it('reports the Rust public binding plan deterministically through the public facade', () => {
+    const sources = [
+      {
+        packageName: '@scope/math',
+        packageRoot: '/flight/packages/math',
+        sourceFile: parseTypeScriptSource(
+          '/flight/packages/math/src/nested/add.ts',
+          'export function add(left: number, right: number): number { return left + right; }',
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@scope/math',
+        packageRoot: '/flight/packages/math',
+        sourceFile: parseTypeScriptSource(
+          '/flight/packages/math/src/nested/scale.ts',
+          'export function scale(value: number): number { return value * 2; }',
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const backend = createRustCompilerBackend();
+    const compile = (orderedSources: typeof sources) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        graph: {
+          entries: [],
+          moduleDependencies: [],
+          packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+          schema: 'flight-compiler-package-graph/1',
+        },
+        sources: orderedSources,
+      });
+    const first = compile(sources);
+    const second = compile([...sources].reverse());
+
+    expect(first.report.publicBindings).toEqual(second.report.publicBindings);
+    expect(first.report.publicBindings).toMatchObject({
+      crates: [{ cargoName: 'scope-math', packageName: '@scope/math', rustName: 'scope_math' }],
+      modules: expect.arrayContaining([
+        expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'add'] }) }),
+        expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'scale'] }) }),
+      ]),
+      schema: 'flight-rust-public-binding-plan/1',
+    });
   });
 
   it('compiles the neighboring declarations and closed Tray exclusions through a C++ session', () => {
