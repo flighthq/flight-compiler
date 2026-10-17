@@ -65,6 +65,7 @@ export type * from './compilerRuntimeTaskCapabilityContract.js';
 export type * from './compilerRustOwnershipContract.js';
 export type * from './compilerRustPublicBindingContract.js';
 export type * from './compilerRustReferenceRepresentationContract.js';
+export type * from './compilerRustSourceTreeFinalizationContract.js';
 export type * from './compilerRustSourceTreePlanContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceFingerprint.js';

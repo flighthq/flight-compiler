@@ -2,6 +2,11 @@ export { emitIrModuleRust } from './rustCompilerBackend.js';
 export { createRustCompilerPublicBindingBackend as createRustCompilerBackend } from './rustCompilerPublicBindingBackend.js';
 export { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 export { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
+export {
+  createCompilerRustSourceTreeFinalization,
+  emitEmittedFileSourceFragmentRust,
+  isCompilerRustSourceTreeFinalizationFailure,
+} from './rustSourceTreeFinalization.js';
 export { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceSyntax.js';
 export { createRustCompilerTargetCompilationSmoke } from './rustCompilerTargetCompilationSmoke.js';
 export { createCompilerRustAmbientMemberBindingPlan } from './rustAmbientMemberBinding.js';
