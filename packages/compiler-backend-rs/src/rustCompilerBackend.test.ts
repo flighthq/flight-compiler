@@ -8474,6 +8474,36 @@ describe('emitIrModuleRust', () => {
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
 
+  it('keeps readonly class aliases live through primitive fields and a post-alias method call', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-class-alias.ts',
+        `class Counter {
+           value = 4;
+           label = "ready";
+           current(): number { return this.value; }
+         }
+         export function readonlyClassAlias(): number {
+           const value = new Counter();
+           const alias = value;
+           const before = value.value;
+           const label = alias.label;
+           return before * 100 + value.current() * 10 + (label === "ready" ? alias.value : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let value: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new()));');
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&value);');
+    expect(output).toContain('let before: f64 = value.borrow().value;');
+    expect(output).toContain('let label: String = alias.borrow().label.clone();');
+    expect(output).toContain('value.borrow().current()');
+    expect(output).toContain('alias.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(readonly_class_alias(), 444.0);')).not.toThrow();
+    }
+  });
+
   it('borrows a shared class once for mutating and readonly instance methods', () => {
     const output = emitIrModuleRust(
       lower(
@@ -9366,6 +9396,60 @@ describe('emitIrModuleRust', () => {
     expect(unsupportedFailure.classification).toBe('compiler-restriction');
     expect(overlapFailure.rule).toBe('rust-reference-shared-class-borrow-conflict');
     expect(overlapFailure.classification).toBe('compiler-restriction');
+  });
+
+  it('refuses unbound instance method values before native method-as-field emission', () => {
+    const cases = [
+      `class Counter { value = 0; current(): number { return this.value; } }
+       export function run(): number { const value = new Counter(); const current = value.current; return 0; }`,
+      `class Counter { value = 0; current(): number { return this.value; } }
+       export function run(): number {
+         const value = new Counter(); const alias = value; const current = alias.current; return value.value;
+       }`,
+      `class Counter { value = 0; current(): number { return this.value; } }
+       export function run(): number { const current = new Counter().current; return 0; }`,
+      `class Counter { value = 0; current(): number { return this.value; } }
+       function make(): Counter { return new Counter(); }
+       export function run(): number { const current = make().current; return 0; }`,
+    ];
+
+    for (const [index, source] of cases.entries()) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower(`class-method-value-${String(index)}.ts`, source).module),
+      );
+      expect(failure.rule).toBe('rust-reference-shared-class-member-unrepresented');
+      expect(failure.classification).toBe('compiler-restriction');
+      expect(failure.message).toContain('is used as a value without represented Rust receiver binding');
+    }
+
+    const provider = lower(
+      'method-value-provider.ts',
+      `export class Counter { value = 0; current(): number { return this.value; } }`,
+    ).module;
+    const consumer = lower(
+      'method-value-consumer.ts',
+      `import { Counter } from './method-value-provider.js';
+       export function run(): number { const value: Counter = new Counter(); const current = value.current; return 0; }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './method-value-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(consumer));
+
+    expect(failure.rule).toBe('rust-reference-shared-class-member-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('preserves shared mutable Map identity with a local Rc RefCell HashMap carrier', () => {

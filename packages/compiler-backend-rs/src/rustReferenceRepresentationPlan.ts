@@ -135,6 +135,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   propagateRustReferenceHashCollectionParameterMutation(modules, input.moduleResolution, 'set');
   activateRustSharedClassReturnBindings(modules, input.moduleResolution);
   activateRustSharedClassFunctionReturnAliases(modules, input.moduleResolution);
+  activateRustSharedClassAliasGroups(modules, input.moduleResolution);
   activateRustSharedClassIdentityComparisons(modules, input.moduleResolution);
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'map');
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'set');
@@ -339,6 +340,7 @@ function createRustReferenceModulePlan(
 
   addRustSharedArrayRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassIdentityRefusals(module, modules, moduleResolution, refusals);
+  addRustSharedClassMethodValueRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassReturnRefusals(module, modules, moduleResolution, refusals);
   addRustSharedHashCollectionRefusals(module, modules, moduleResolution, refusals, 'map');
@@ -864,6 +866,62 @@ function createRustSharedClassAnalysis(
     }
   }
   return { ambiguousBindingIds, bindingIds, groupByBindingId, groupsByKey, variablesByBindingId };
+}
+
+function activateRustSharedClassAliasGroups(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  // A source alias preserves both names even when neither mutates the object. Elect the shared carrier
+  // only after proving the whole local group, because a raw Rust move would invalidate the earlier name.
+  for (const module of modules) {
+    const evidenceById = new Map(module.ownership.bindings.map((evidence) => [evidence.binding.id, evidence]));
+    for (const group of module.sharedClasses.groupsByKey.values()) {
+      const variables = [...group].flatMap((id) => {
+        const variable = module.sharedClasses.variablesByBindingId.get(id);
+        return variable ? [variable] : [];
+      });
+      const firstType = variables[0]?.type;
+      if (
+        variables.length !== group.size ||
+        !firstType ||
+        !isRustSharedClassTypeSupported(firstType, module, modules, moduleResolution) ||
+        variables.some((variable) => {
+          const evidence = evidenceById.get(variable.binding.id);
+          return (
+            variable.mutable ||
+            !variable.type ||
+            !isRustReferenceSameClassType(variable.type, module, firstType, module, modules, moduleResolution) ||
+            !evidence ||
+            evidence.declaration !== 'immutable' ||
+            evidence.binding.scope === 'module'
+          );
+        })
+      ) {
+        continue;
+      }
+      const roots = variables.filter(
+        (variable) =>
+          isRustSimpleClassConstruction(variable.initializer, variable.type, module, modules, moduleResolution) ||
+          (variable.initializer !== undefined &&
+            isRustReferenceSharedClassReturnCall(variable.initializer, module, modules, moduleResolution)),
+      );
+      if (roots.length !== 1) continue;
+      const represented = variables.every((variable) => {
+        const initializer = variable.initializer;
+        return (
+          (initializer?.kind === 'identifier' &&
+            initializer.reference.kind === 'binding' &&
+            group.has(initializer.reference.binding.id)) ||
+          isRustSimpleClassConstruction(initializer, variable.type, module, modules, moduleResolution) ||
+          (initializer !== undefined &&
+            isRustReferenceSharedClassReturnCall(initializer, module, modules, moduleResolution))
+        );
+      });
+      if (!represented) continue;
+      for (const id of group) module.sharedClasses.bindingIds.add(id);
+    }
+  }
 }
 
 function createRustSharedHashCollectionAnalysis(
@@ -1684,6 +1742,12 @@ function isRustSharedClassIdentifierUseRepresented(
     if (parent.optional || parent.structuralAccess) return false;
     if (getRustReferenceClassField(expression, parent.name, module, modules, moduleResolution)) return true;
     const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
+    if (
+      (!isCallExpression(call) || call.callee !== parent) &&
+      getRustReferenceClassInstanceMethod(expression, parent.name, module, modules, moduleResolution)
+    ) {
+      return true;
+    }
     return (
       isCallExpression(call) &&
       call.callee === parent &&
@@ -2334,6 +2398,35 @@ function addRustSharedClassIdentityRefusals(
         'rust-reference-shared-class-identity-unrepresented',
         `${moduleKey(module.module)}:identity:${JSON.stringify(path_)}`,
         `operator ${expression.operator} does not compare two owned values of one exact supported simple class identity`,
+      );
+    },
+  });
+}
+
+function addRustSharedClassMethodValueRefusals(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  analyzeIrModuleTraversal(module.module, {
+    expression(expression, path_) {
+      if (expression.kind !== 'property') return;
+      const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
+      if (path_.at(-1) === 'callee' && isCallExpression(parent) && parent.callee === expression) return;
+      const location = getRustReferenceClassInstanceMethod(
+        expression.object,
+        expression.name,
+        module,
+        modules,
+        moduleResolution,
+      );
+      if (!location) return;
+      addRustReferenceRefusal(
+        refusals,
+        'rust-reference-shared-class-member-unrepresented',
+        `${moduleKey(module.module)}:method-value:${JSON.stringify(path_)}`,
+        `instance method ${location.declaration.binding.name}.${location.method.name} is used as a value without represented Rust receiver binding`,
       );
     },
   });
@@ -3225,16 +3318,23 @@ function getRustSimpleClassMethod(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): Readonly<{ declaration: Readonly<IrClassDeclaration>; method: Readonly<IrClassMethod> }> | undefined {
   if (expression.reference.kind !== 'binding') return undefined;
-  const location = getRustReferenceClassDeclaration(
-    module.bindingTypes.get(expression.reference.binding.id),
-    module,
-    modules,
-    moduleResolution,
+  const location = getRustReferenceClassInstanceMethod(expression, name, module, modules, moduleResolution);
+  return location && isRustSimpleClassDeclarationSupported(location.declaration) ? location : undefined;
+}
+
+function getRustReferenceClassInstanceMethod(
+  expression: Readonly<IrExpression>,
+  name: string,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): Readonly<{ declaration: Readonly<IrClassDeclaration>; method: Readonly<IrClassMethod> }> | undefined {
+  const type = getRustReferenceClassIdentityExpressionType(expression, module);
+  const location = getRustReferenceClassDeclaration(type, module, modules, moduleResolution);
+  const method = location?.declaration.methods.find(
+    (candidate) => !candidate.static && candidate.accessor === undefined && candidate.name === name,
   );
-  if (!location || !isRustSimpleClassDeclarationSupported(location.declaration)) return undefined;
-  const methods = location.declaration.methods.filter((method) => !method.static && method.name === name);
-  const method = methods.length === 1 ? methods[0] : undefined;
-  return method ? { declaration: location.declaration, method } : undefined;
+  return location && method ? { declaration: location.declaration, method } : undefined;
 }
 
 function getRustSimpleClassMethodCall(

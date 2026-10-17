@@ -737,6 +737,28 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
   });
 
+  it('elects the class carrier when readonly aliases remain live through fields and methods', () => {
+    const module = lower(
+      'readonly-alias-class.ts',
+      `class Counter {
+         value = 4;
+         label = "ready";
+         current(): number { return this.value; }
+       }
+       export function inspect(): number {
+         const value = new Counter();
+         const alias = value;
+         const before = value.value;
+         const label = alias.label;
+         return before * 100 + value.current() * 10 + (label === "ready" ? alias.value : 0);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'value']);
+  });
+
   it('elects one class carrier for exact synchronous primitive instance methods', () => {
     const module = lower(
       'alias-class-method.ts',
@@ -901,7 +923,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(
       getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [dynamic] }), dynamic).refusals,
     ).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-use-unrepresented' })]),
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
     );
     expect(
       getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [optional] }), optional).refusals,
@@ -912,6 +934,70 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [overlapping] }), overlapping).refusals,
     ).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
+    );
+  });
+
+  it('refuses unbound instance method values for every exact class receiver form', () => {
+    const cases = [
+      lower(
+        'singleton-class-method-value.ts',
+        `class Counter { value = 0; current(): number { return this.value; } }
+         export function run(): number { const value = new Counter(); const current = value.current; return 0; }`,
+      ),
+      lower(
+        'alias-class-method-value.ts',
+        `class Counter { value = 0; current(): number { return this.value; } }
+         export function run(): number {
+           const value = new Counter(); const alias = value; const current = alias.current; return value.value;
+         }`,
+      ),
+      lower(
+        'temporary-class-method-value.ts',
+        `class Counter { value = 0; current(): number { return this.value; } }
+         export function run(): number { const current = new Counter().current; return 0; }`,
+      ),
+      lower(
+        'returned-class-method-value.ts',
+        `class Counter { value = 0; current(): number { return this.value; } }
+         function make(): Counter { return new Counter(); }
+         export function run(): number { const current = make().current; return 0; }`,
+      ),
+    ];
+
+    for (const module of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
+      );
+    }
+
+    const provider = lower(
+      'method-value-provider.ts',
+      `export class Counter { value = 0; current(): number { return this.value; } }`,
+    );
+    const consumer = lower(
+      'method-value-consumer.ts',
+      `import { Counter } from './method-value-provider.js';
+       export function run(): number { const value: Counter = new Counter(); const current = value.current; return 0; }`,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './method-value-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const consumerPlan = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [consumer, provider] }),
+      consumer,
+    );
+
+    expect(consumerPlan.refusals).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
     );
   });
 
