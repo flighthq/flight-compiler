@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub fn doubled(values: Vec<f64>) -> Vec<f64> {
-  return values.into_iter().map(|value| value * 2.0).collect::<Vec<_>>();
+  return { let array_map_receiver = &values; let mut array_map_callback = |value| value * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
 
 pub fn positives(values: Vec<f64>) -> Vec<f64> {

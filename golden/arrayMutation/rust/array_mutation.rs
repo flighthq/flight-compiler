@@ -12,11 +12,11 @@ pub fn collect(values: Vec<f64>) -> Vec<f64> {
 }
 
 pub fn has_value(values: Vec<String>, target: String) -> bool {
-  return values.contains(&target);
+  return { let array_includes_receiver = &values; let array_includes_candidate = &target; array_includes_receiver.contains(array_includes_candidate) };
 }
 
 pub fn reversed(values: Vec<f64>) -> Vec<f64> {
-  let mut copy: Vec<f64> = values.into_iter().map(|v| v).collect::<Vec<_>>();
+  let mut copy: Vec<f64> = { let array_map_receiver = &values; let mut array_map_callback = |v| v; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
   copy.reverse();
   return copy;
 }

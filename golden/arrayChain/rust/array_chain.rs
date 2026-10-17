@@ -6,7 +6,7 @@ pub fn sum_positive(values: Vec<f64>) -> f64 {
 }
 
 pub fn double_evens(values: Vec<f64>) -> Vec<f64> {
-  return { let array_filter_receiver_2 = &values; let mut array_filter_callback_2 = |v| (v % 2.0) == 0.0; let array_filter_values_2 = array_filter_receiver_2; let array_filter_result_2 = array_filter_values_2.iter().enumerate().filter(|(array_filter_index_2, array_filter_element_2)| (array_filter_callback_2)(array_filter_element_2.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result_2 }.into_iter().map(|v| v * 2.0).collect::<Vec<_>>();
+  return { let array_map_receiver = &{ let array_filter_receiver_2 = &values; let mut array_filter_callback_2 = |v| (v % 2.0) == 0.0; let array_filter_values_2 = array_filter_receiver_2; let array_filter_result_2 = array_filter_values_2.iter().enumerate().filter(|(array_filter_index_2, array_filter_element_2)| (array_filter_callback_2)(array_filter_element_2.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result_2 }; let mut array_map_callback = |v| v * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
 
 pub fn has_large_positive(values: Vec<f64>) -> bool {

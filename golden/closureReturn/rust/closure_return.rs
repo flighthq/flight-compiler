@@ -8,7 +8,7 @@ pub fn make_adder(base: f64) -> Rc<dyn Fn(f64) -> f64> {
 }
 
 pub fn apply_to_each(values: Vec<f64>, transform: Rc<dyn Fn(f64) -> f64>) -> Vec<f64> {
-  return values.into_iter().map(|x_2| transform(x_2)).collect::<Vec<_>>();
+  return { let array_map_receiver = &values; let array_map_callback = &transform; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
 
 pub fn compose(f: Rc<dyn Fn(f64) -> f64>, g: Rc<dyn Fn(f64) -> f64>) -> Rc<dyn Fn(f64) -> f64> {

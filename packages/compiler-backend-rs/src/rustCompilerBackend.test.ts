@@ -5027,16 +5027,16 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('"hello".to_owned()');
   });
 
-  it('emits array map as into_iter().map().collect()', () => {
+  it('emits array map through the staged map and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'array-map.ts',
         'export function doubled(items: number[]): number[] { return items.map((x: number): number => x * 2.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.map(');
+    expect(output).toContain('.iter().enumerate().map(');
     expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).not.toContain('into_iter().map');
   });
 
   it('emits array filter through the staged filter and collect chain', () => {
@@ -7170,17 +7170,17 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.iter().enumerate().all(');
   });
 
-  it('refuses array forEach as unbound Rust member', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'arr-foreach.ts',
-          `export function log(items: number[]): void {
-            items.forEach((x) => { const _y = x; });
-          }`,
-        ).module,
-      ),
-    ).toThrow('has no Rust binding');
+  it('emits array forEach through the staged unit-for-each chain', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-foreach.ts',
+        `export function log(items: number[]): void {
+          items.forEach((x) => { const _y = x; });
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.iter().enumerate().for_each(');
+    expect(output).toContain('let _ = (array_for_each_callback)(');
   });
 
   it('emits array.length as .len() with f64 cast', () => {
@@ -7822,7 +7822,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('fold');
   });
 
-  it('emits array map with function reference as wrapper closure', () => {
+  it('emits array map with a function reference staged once', () => {
     const output = emitIrModuleRust(
       lower(
         'arr-map-ref.ts',
@@ -7830,8 +7830,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          export function apply(items: number[]): number[] { return items.map(double); }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('map');
+    expect(output).toContain('let array_map_callback = &double;');
+    expect(output).toContain('.iter().enumerate().map(');
   });
 
   it('emits class with extends and composition field access', () => {
@@ -9400,7 +9400,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('collect');
   });
 
-  it('emits array map with iterator adaptor', () => {
+  it('emits array map through the staged map and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'map.ts',
@@ -9409,8 +9409,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.map(');
+    expect(output).toContain('.iter().enumerate().map(');
     expect(output).toContain('collect');
   });
 
@@ -15146,7 +15145,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('.iter().enumerate().any(');
   });
 
-  it('emits array.map as into_iter().map().collect()', () => {
+  it('emits array.map through the staged map and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'map.ts',
@@ -15155,7 +15154,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
+    expect(output).toContain('.iter().enumerate().map(');
     expect(output).toContain('map');
     expect(output).toContain('collect');
   });
@@ -21625,15 +21624,15 @@ describe('emitIrModuleRust class composition with concrete base', () => {
 });
 
 describe('emitIrModuleRust array map with variable callback', () => {
-  it('emits into_iter().map() with wrapper for variable callback', () => {
+  it('emits a staged map with the variable callback referenced once', () => {
     const output = emitIrModuleRust(
       lower(
         'map-var.ts',
         'export function apply(items: number[], f: (x: number) => number): number[] { return items.map(f); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.map(');
+    expect(output).toContain('let array_map_callback = &f;');
+    expect(output).toContain('.iter().enumerate().map(');
     expect(output).toContain('.collect::<Vec<_>>()');
   });
 });
@@ -23349,7 +23348,7 @@ describe('emitIrModuleRust array some and every', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-some-result-carrier-unrepresented');
   });
 
-  it('leaves map, forEach, and reduce outside the exact predicate path', () => {
+  it('leaves reduce outside the exact callback path while map uses it', () => {
     const output = emitIrModuleRust(
       lower(
         'array-predicate-neighbors.ts',
@@ -23364,7 +23363,8 @@ describe('emitIrModuleRust array some and every', () => {
 
     expect(output).toContain('array_find_');
     expect(output).not.toContain('into_iter().find');
-    expect(output).toContain('into_iter().map(');
+    expect(output).toContain('array_map_');
+    expect(output).not.toContain('into_iter().map');
     expect(output).not.toContain('array_some_');
     expect(output).not.toContain('array_every_');
   });
@@ -23528,6 +23528,177 @@ describe('emitIrModuleRust array find and filter', () => {
 
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
       'rust-array-filter-result-carrier-unrepresented',
+    );
+  });
+});
+
+describe('emitIrModuleRust array map and forEach', () => {
+  it('stages dense receivers and adapts callback parameters for map and forEach', () => {
+    const result = lower(
+      'array-map-for-each-exact.ts',
+      `export function mapped(values: readonly number[]): string[] {
+         return values.map((value: number, index: number): string => index >= 0 ? value.toString() : value.toString());
+       }
+       export function mappedCarrier(values: boolean[]): number[] {
+         return values.map((): number => 1);
+       }
+       export function each(values: readonly string[]): void {
+         values.forEach((value: string): void => { const _x = value; });
+       }
+       export function eachCarrier(values: boolean[]): void {
+         values.forEach((): number => 1);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().map(');
+    expect(output).toContain('.iter().enumerate().for_each(');
+    expect(output).toContain('(array_map_callback)(array_map_element.clone(), array_map_index as f64)');
+    expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).toContain('let _ = (array_for_each_callback)(');
+    expect(output).not.toContain('into_iter().map');
+  });
+
+  it('stages the receiver, then the callback, then the borrow', () => {
+    const result = lower(
+      'array-map-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(log: number[], marker: number): (value: number) => number {
+         log.push(marker);
+         return (value: number): number => value * 2;
+       }
+       export function evaluated(log: number[]): number[] {
+         return recordReceiver(log, 1, [1, 2, 3]).map(recordCallback(log, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_map_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_map_callback = &record_callback(', receiver);
+    const values = output.indexOf('let array_map_values = array_map_receiver;', callback);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(callback);
+  });
+
+  it('releases a shared forEach borrow before either alias is reused', () => {
+    const result = lower(
+      'array-for-each-shared.ts',
+      `export function run(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         alias.forEach((value: number): void => { const _x = value; });
+         values.push(4);
+         return alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_for_each_receiver = &alias;');
+    expect(output).toContain('let array_for_each_values = array_for_each_receiver.borrow();');
+    expect(output).toContain('drop(array_for_each_values);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-map-invocation-unrepresented',
+      source: 'export function pick(values: number[]): number[] { return values.map(); }',
+    },
+    {
+      rule: 'rust-array-map-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.map((value: number): number => value, undefined); }',
+    },
+    {
+      rule: 'rust-array-for-each-invocation-unrepresented',
+      source:
+        'export function pick(values: number[], callbacks: [(value: number) => void]): void { values.forEach(...callbacks); }',
+    },
+    {
+      rule: 'rust-array-for-each-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): void { values.forEach?.((value: number): void => { const _x = value; }); }',
+    },
+    {
+      rule: 'rust-array-map-element-carrier-unrepresented',
+      source:
+        'export function pick(values: (number | string)[]): number[] { return values.map((value: number | string): number => typeof value === "number" ? value : 0); }',
+    },
+    {
+      rule: 'rust-array-for-each-sparse-receiver-unrepresented',
+      source:
+        'export function pick(values: (number | undefined)[]): void { values.forEach((value: number | undefined): void => { const _x = value; }); }',
+    },
+    {
+      rule: 'rust-array-map-callback-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.map((value: number, index: number, all: number[]): number => value + index + all.length); }',
+    },
+    {
+      rule: 'rust-array-map-callback-return-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): { value: number }[] { return values.map((value: number): { value: number } => ({ value })); }',
+    },
+    {
+      rule: 'rust-array-for-each-callback-return-unrepresented',
+      source:
+        'export function pick(values: number[]): void { values.forEach((value: number): { value: number } => ({ value })); }',
+    },
+    {
+      rule: 'rust-array-map-alias-borrow-conflict',
+      source:
+        'export function pick(values: number[]): number[] { return values.map((value: number): number => values.length + value); }',
+    },
+    {
+      rule: 'rust-array-for-each-alias-borrow-conflict',
+      source:
+        'export function pick(values: number[]): void { values.forEach((value: number): void => { const _x = values.length + value; }); }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-map-for-each-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a mutated non-callback map result carrier', () => {
+    const result = lower(
+      'array-map-result.ts',
+      'export function pick(values: number[]): number[] { return values.map((value: number): number => value * 2); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the map call');
+    call.expression.semantics.resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-map-result-carrier-unrepresented');
+  });
+
+  it('refuses a mutated non-unit forEach result carrier', () => {
+    const result = lower(
+      'array-for-each-result.ts',
+      'export function pick(values: number[]): void { values.forEach((value: number): void => { const _x = value; }); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'expression') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the forEach call');
+    call.expression.semantics.resultType = { kind: 'primitive', name: 'number' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-for-each-result-carrier-unrepresented',
     );
   });
 });

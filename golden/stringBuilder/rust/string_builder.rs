@@ -14,5 +14,5 @@ pub fn build_path(segments: Vec<String>) -> String {
 }
 
 pub fn prefix_all(items: Vec<String>, prefix: String) -> Vec<String> {
-  return items.into_iter().map(|item| format!("{}{}", prefix, item)).collect::<Vec<_>>();
+  return { let array_map_receiver = &items; let mut array_map_callback = |item| format!("{}{}", prefix, item); let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
