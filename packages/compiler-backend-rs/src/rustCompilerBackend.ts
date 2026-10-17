@@ -215,6 +215,11 @@ interface IrClassConstructorParameterPlanRust {
   readonly optionalClassPositions: ReadonlySet<number>;
 }
 
+interface IrClassMethodParameterPlanRust {
+  readonly identity: string;
+  readonly optionalClassPositions: ReadonlySet<number>;
+}
+
 interface RustAsyncTryCompletionEvidence {
   readonly abruptStatements: readonly Readonly<IrStatement>[];
   readonly suspensionCount: number;
@@ -820,6 +825,21 @@ function emitIrModuleRustWithContext(
         kind: 'union',
         types: [parameter.type, { kind: 'undefined' }],
       });
+    }
+    for (const method of declaration.methods) {
+      const methodPlan = getIrClassMethodParameterPlanRust(method, declaration, module, context);
+      for (const position of methodPlan?.optionalClassPositions ?? []) {
+        const parameter = method.parameters[position];
+        if (!parameter) continue;
+        optionalSharedClassParameterRepresentations.set(
+          parameter.binding.id,
+          'optional-undefined-shared-ref-cell-class',
+        );
+        bindingTypes.set(parameter.binding.id, {
+          kind: 'union',
+          types: [parameter.type, { kind: 'undefined' }],
+        });
+      }
     }
   }
   collectPrimitiveUnionBindingsRust(module, context);
@@ -3460,7 +3480,7 @@ function emitConstructorArgumentsRust(
 }
 
 function hasIrOptionalParameterInvocationEvidenceRust(
-  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  expression: Readonly<Extract<IrExpression, { kind: 'call' | 'new' }>>,
   parameters: readonly Readonly<IrParameter>[],
   position: number,
 ): boolean {
@@ -6777,6 +6797,171 @@ function getIrClassConstructorFieldAssignmentsRust(
     instanceFields.every((field) => assigned.some((entry) => entry.name === field.name))
     ? assigned
     : undefined;
+}
+
+function getIrClassMethodParameterPlanRust(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): IrClassMethodParameterPlanRust | undefined {
+  if (
+    method.abstract ||
+    method.accessor !== undefined ||
+    method.async ||
+    method.branded ||
+    method.overloads.length > 0 ||
+    method.static ||
+    method.typeParameters.length > 0 ||
+    method.returns.kind !== 'primitive' ||
+    (method.returns.name !== 'boolean' &&
+      method.returns.name !== 'number' &&
+      method.returns.name !== 'string' &&
+      method.returns.name !== 'void')
+  ) {
+    return undefined;
+  }
+  const optionalClassPositions = new Set<number>();
+  for (const [position, parameter] of method.parameters.entries()) {
+    if (
+      !parameter.initializer &&
+      !parameter.optional &&
+      !parameter.rest &&
+      isIrRequiredPrimitiveTypeRust(parameter.type)
+    ) {
+      continue;
+    }
+    if (
+      position !== method.parameters.length - 1 ||
+      parameter.initializer ||
+      !parameter.optional ||
+      parameter.rest ||
+      parameter.type.kind !== 'named' ||
+      parameter.type.typeArguments.length > 0
+    ) {
+      return undefined;
+    }
+    const location = getIrClassDeclarationLocationForTypeRust(parameter.type, context, module);
+    if (!location || !isIrSimpleMethodParameterClassRust(location.declaration)) return undefined;
+    optionalClassPositions.add(position);
+  }
+  if (
+    optionalClassPositions.size > 1 ||
+    !isIrClassMethodOptionalParameterBodySupportedRust(method, optionalClassPositions, module, context)
+  ) {
+    return undefined;
+  }
+  return {
+    identity: `${module.packageName}\0${module.source}\0${declaration.binding.id}\0${method.name}`,
+    optionalClassPositions,
+  };
+}
+
+function isIrClassMethodOptionalParameterBodySupportedRust(
+  method: Readonly<IrClassMethod>,
+  optionalClassPositions: ReadonlySet<number>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
+  const optionalParametersById = new Map(
+    [...optionalClassPositions].flatMap((position) => {
+      const parameter = method.parameters[position];
+      return parameter ? [[parameter.binding.id, parameter] as const] : [];
+    }),
+  );
+  const allowedReferences = new WeakSet<object>();
+  const references: object[] = [];
+  const projected = new Set<string>();
+  let supported = true;
+  for (const statement of method.body) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (expression.kind === 'await') {
+          supported = false;
+          return false;
+        }
+        if (expression.kind === 'function') {
+          if ([...optionalParametersById].some(([id]) => irExpressionUsesBindingRust(expression, id))) {
+            supported = false;
+          }
+          return false;
+        }
+        if (
+          expression.kind === 'assignment' &&
+          [...optionalParametersById].some(([id]) => irExpressionUsesBindingRust(expression.left, id))
+        ) {
+          supported = false;
+        }
+        if (
+          expression.kind === 'unary' &&
+          (expression.operator === '++' || expression.operator === '--' || expression.operator === 'delete') &&
+          [...optionalParametersById].some(([id]) => irExpressionUsesBindingRust(expression.operand, id))
+        ) {
+          supported = false;
+        }
+        if (expression.kind === 'binary' && (expression.operator === '===' || expression.operator === '!==')) {
+          const pairs = [
+            [expression.left, expression.right],
+            [expression.right, expression.left],
+          ] as const;
+          for (const [candidate, sentinel] of pairs) {
+            if (
+              candidate.kind === 'identifier' &&
+              candidate.reference.kind === 'binding' &&
+              optionalParametersById.has(candidate.reference.binding.id) &&
+              getIrSharedClassSentinelExpressionRust(sentinel) === 'undefined'
+            ) {
+              allowedReferences.add(candidate);
+            }
+          }
+        }
+        if (
+          expression.kind === 'property' &&
+          !expression.optional &&
+          expression.structuralAccess === undefined &&
+          expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'binding' &&
+          expression.object.presence === 'narrowedPresent'
+        ) {
+          const parameter = optionalParametersById.get(expression.object.reference.binding.id);
+          const location = parameter
+            ? getIrClassDeclarationLocationForTypeRust(parameter.type, context, module)
+            : undefined;
+          const field = location?.declaration.fields.find(
+            (candidate) => !candidate.static && candidate.name === expression.name,
+          );
+          if (parameter && field && isIrRequiredPrimitiveClassFieldRust(field)) {
+            allowedReferences.add(expression.object);
+            projected.add(parameter.binding.id);
+          }
+        }
+        if (
+          expression.kind === 'identifier' &&
+          expression.reference.kind === 'binding' &&
+          optionalParametersById.has(expression.reference.binding.id)
+        ) {
+          references.push(expression);
+        }
+        return undefined;
+      },
+    });
+  }
+  return (
+    supported &&
+    references.every((reference) => allowedReferences.has(reference)) &&
+    [...optionalParametersById].every(([id]) => projected.has(id))
+  );
+}
+
+function isIrSimpleMethodParameterClassRust(declaration: Readonly<IrClassDeclaration>): boolean {
+  return (
+    !declaration.abstract &&
+    declaration.extends === undefined &&
+    declaration.implements.length === 0 &&
+    declaration.typeParameters.length === 0 &&
+    declaration.fields.length > 0 &&
+    declaration.fields.every(isIrRequiredPrimitiveClassFieldRust)
+  );
 }
 
 function getIrClassConstructorParameterPlanRust(
@@ -13485,9 +13670,79 @@ function getIrCallBorrowedRepresentationsRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): ReadonlyMap<number, CompilerRustReferenceRepresentation> {
-  return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-    ? (context.borrowedParameterRepresentations.get(expression.callee.reference.binding.id) ?? new Map())
-    : new Map();
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
+    return context.borrowedParameterRepresentations.get(expression.callee.reference.binding.id) ?? new Map();
+  }
+  const method = getIrClassMethodCallParameterPlanRust(expression, context);
+  return new Map(
+    [...(method?.plan.optionalClassPositions ?? [])].map(
+      (position) => [position, 'optional-undefined-shared-ref-cell-class'] as const,
+    ),
+  );
+}
+
+function getIrClassMethodCallParameterPlanRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+):
+  | Readonly<{
+      declaration: Readonly<IrClassDeclaration>;
+      method: Readonly<IrClassMethod>;
+      module: Readonly<IrModule>;
+      plan: IrClassMethodParameterPlanRust;
+    }>
+  | undefined {
+  if (
+    expression.optional ||
+    expression.typeArguments.length > 0 ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined ||
+    expression.semantics.signature?.providedArgumentCount === 'dynamic' ||
+    expression.semantics.signature?.restParameter !== undefined ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    expression.callee.structuralAccess ||
+    expression.callee.object.kind !== 'identifier'
+  ) {
+    return undefined;
+  }
+  const callee = expression.callee;
+  let receiverType = getIrSharedClassIdentityExpressionTypeRust(callee.object, context);
+  const receiverRepresentation = getRustSharedClassExpressionRepresentationRust(callee.object, context);
+  if (receiverType && isRustOptionalSharedClassRepresentation(receiverRepresentation)) {
+    receiverType = getRustSharedClassPayloadTypeRust(receiverType, receiverRepresentation, context);
+  }
+  const location = getIrClassDeclarationLocationForTypeRust(receiverType, context, context.module);
+  const methods = location?.declaration.methods.filter(
+    (candidate) => !candidate.static && candidate.accessor === undefined && candidate.name === callee.name,
+  );
+  const method = methods?.length === 1 ? methods[0] : undefined;
+  if (!location || !method || expression.arguments.length > method.parameters.length) return undefined;
+  const plan = getIrClassMethodParameterPlanRust(method, location.declaration, location.module, context);
+  if (!plan) return undefined;
+  const signature = expression.semantics.signature;
+  if (
+    signature !== undefined &&
+    (signature.parameterCount !== method.parameters.length ||
+      signature.providedArgumentCount !== expression.arguments.length)
+  ) {
+    return undefined;
+  }
+  for (const [position, parameter] of method.parameters.entries()) {
+    const argument = expression.arguments[position];
+    if (plan.optionalClassPositions.has(position)) {
+      if (!hasIrOptionalParameterInvocationEvidenceRust(expression, method.parameters, position)) return undefined;
+      if (argument && !isIrOptionalClassConstructorArgumentRust(argument, parameter.type, location.module, context)) {
+        return undefined;
+      }
+      continue;
+    }
+    if (!argument) return undefined;
+  }
+  if (plan.optionalClassPositions.size === 0 && expression.semantics.optionalParameters !== undefined) {
+    return undefined;
+  }
+  return { declaration: location.declaration, method, module: location.module, plan };
 }
 
 function getIrClassConcreteBaseRust(

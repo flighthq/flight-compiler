@@ -11257,6 +11257,135 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }
   });
 
+  it('emits readonly optional class method carriers with independent receiver mutability', () => {
+    const module = lower(
+      'optional-class-method.ts',
+      `class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+         merge(other?: Counter): number { if (other !== undefined) this.value += other.value; return this.value; }
+       }
+       export function run(): number {
+         const receiver = new Counter(1); const receiverAlias = receiver;
+         const other = new Counter(4); const otherAlias = other;
+         return receiverAlias.inspect() + receiver.inspect(undefined) + receiverAlias.merge(otherAlias);
+       }`,
+    ).module;
+
+    const output = emitIrModuleRust(module).contents;
+
+    expect(output).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('fn merge(&mut self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('other.as_ref().unwrap().borrow().value');
+    expect(output).toContain('.borrow().inspect(None)');
+    expect(output).toContain('.borrow_mut().merge(Some(Rc::clone(&other_alias)))');
+  });
+
+  it('emits an imported optional class method carrier without a public callable plan', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-class-method-provider.ts',
+      `export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         inspect(other?: Counter): number { return other !== undefined ? other.value : this.value; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-class-method-consumer.ts',
+      `import { Counter } from './optional-class-method-provider.js';
+       export function run(): number {
+         const receiver: Counter = new Counter(1); const receiverAlias: Counter = receiver;
+         const other: Counter = new Counter(4); const otherAlias: Counter = other;
+         return receiverAlias.inspect(otherAlias) + receiver.inspect();
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Optional-class-method-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-class-method-consumer.ts',
+          },
+          specifier: './optional-class-method-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-class-method-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(consumerOutput).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
+    expect(consumerOutput).toContain('.borrow().inspect(None)');
+  });
+
+  it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
+    const missingEvidence = lower(
+      'optional-class-method-evidence.ts',
+      `class Counter {
+         value = 1;
+         inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+       }
+       export function run(): number { const value = new Counter(); return value.inspect(); }`,
+    ).module;
+    const run = missingEvidence.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const returned = run?.kind === 'function' ? run.body[1] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected optional class method call');
+    delete (call.semantics as { optionalParameters?: unknown }).optionalParameters;
+    const overlapping = lower(
+      'optional-class-method-overlap.ts',
+      `class Counter {
+         value = 1;
+         inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+       }
+       export function run(): number { const value = new Counter(); return value.inspect(value); }`,
+    ).module;
+    const mutating = lower(
+      'optional-class-method-mutation.ts',
+      `class Counter { value = 1; read(other?: Counter): number { other!.value = 2; return other!.value; } }
+       export function run(): number { const value = new Counter(); return value.value; }`,
+    ).module;
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(missingEvidence)).rule).toBe(
+      'rust-reference-shared-class-call-unrepresented',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(overlapping)).rule).toBe(
+      'rust-reference-shared-class-borrow-conflict',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mutating)).rule).toBe(
+      'rust-reference-shared-class-member-unrepresented',
+    );
+  });
+
   it('refuses inexact constructor argument and default-parameter class carriers', () => {
     const mismatch = lower(
       'shared-class-constructor-mismatch.ts',
