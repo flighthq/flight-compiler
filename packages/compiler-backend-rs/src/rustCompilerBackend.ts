@@ -13572,32 +13572,51 @@ function emitRustImportedEnumMemberRust(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): string | undefined {
+  const declaration = resolveRustImportedEnumMemberDeclarationRust(expression, context);
+  if (!declaration) return undefined;
   const object = expression.object;
+  if (object.kind === 'identifier' && object.reference.kind === 'binding') {
+    return `${getBindingTargetNameRust(object.reference.binding, context)}::${safeRustTypeName(expression.name)}`;
+  }
+  if (object.kind !== 'property') return undefined;
+  return `${emitExpression(object, context)}::${safeRustTypeName(expression.name)}`;
+}
+
+// The evidence a member read carries, independent of how it is spelled. Named and namespace imports
+// reduce to the same question: which declaration, and does it own this member. A property read that
+// resolves no enum is not this shape and keeps whatever path it already had.
+function resolveRustImportedEnumMemberDeclarationRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<IrEnumDeclaration> | undefined {
+  const object = expression.object;
+  let targetModule: Readonly<IrModule> | undefined;
+  let exportedName: string;
+  let space: 'type' | 'value';
   if (object.kind === 'identifier' && object.reference.kind === 'binding') {
     const imported = getRustNamedImportBindingRust(object.reference.binding.id, context);
     if (!imported) return undefined;
-    const targetModule = resolveImportModuleRust(imported.specifier, imported.imported, context);
-    if (!targetModule) return undefined;
-    const declaration = resolveRustImportedEnumDeclarationRust(
-      targetModule,
-      imported.imported,
-      imported.space,
-      context,
-    );
-    if (!declaration) return undefined;
-    assertRustImportedEnumMemberExistsRust(declaration, expression.name, context);
-    return `${getBindingTargetNameRust(object.reference.binding, context)}::${safeRustTypeName(expression.name)}`;
-  }
-  if (object.kind !== 'property' || object.object.kind !== 'identifier' || object.object.reference.kind !== 'binding')
+    targetModule = resolveImportModuleRust(imported.specifier, imported.imported, context);
+    exportedName = imported.imported;
+    space = imported.space;
+  } else if (
+    object.kind === 'property' &&
+    object.object.kind === 'identifier' &&
+    object.object.reference.kind === 'binding'
+  ) {
+    const namespace = getRustNamespaceImportBindingRust(object.object.reference.binding.id, context);
+    if (!namespace) return undefined;
+    targetModule = resolveImportModuleRust(namespace.specifier, object.name, context);
+    exportedName = object.name;
+    space = 'value';
+  } else {
     return undefined;
-  const namespace = getRustNamespaceImportBindingRust(object.object.reference.binding.id, context);
-  if (!namespace) return undefined;
-  const targetModule = resolveImportModuleRust(namespace.specifier, object.name, context);
+  }
   if (!targetModule) return undefined;
-  const declaration = resolveRustImportedEnumDeclarationRust(targetModule, object.name, 'value', context);
+  const declaration = resolveRustImportedEnumDeclarationRust(targetModule, exportedName, space, context);
   if (!declaration) return undefined;
   assertRustImportedEnumMemberExistsRust(declaration, expression.name, context);
-  return `${emitExpression(object, context)}::${safeRustTypeName(expression.name)}`;
+  return declaration;
 }
 
 function getRustNamedImportBindingRust(
@@ -19670,9 +19689,10 @@ function getIrExpressionClassDeclarationRust(
   return declaration?.kind === 'class' ? declaration : undefined;
 }
 
-// A local enum member read is a variant of that enum, which the member emitter already spells as a
-// path into the type. The shared expression inference has no entry for it because a general member
-// read can mean a field, so the assertion lane supplies the exact evidence it needs.
+// An enum member read is a variant of that enum, which the member emitter already spells as a path
+// into the type, locally or through a consumer import alias. The shared expression inference has no
+// entry for it because a general member read can mean a field, so the assertion lane supplies the
+// exact evidence it needs and reuses the imported-member resolver's own declaration evidence.
 function inferRustNumericEnumAssertionSourceTypeRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -19680,7 +19700,9 @@ function inferRustNumericEnumAssertionSourceTypeRust(
   const inferred = inferIrExpressionTypeRust(expression, context);
   if (inferred) return inferred;
   if (expression.kind !== 'property') return undefined;
-  const declaration = getIrExpressionEnumDeclarationRust(expression.object, context);
+  const declaration =
+    getIrExpressionEnumDeclarationRust(expression.object, context) ??
+    resolveRustImportedEnumMemberDeclarationRust(expression, context);
   return declaration
     ? {
         kind: 'named',

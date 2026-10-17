@@ -27196,12 +27196,6 @@ describe('emitIrModuleRust exact numeric enum assertions', () => {
       specifier: './enum-wide.js',
       consumerSource: 'export function wrong(value: Wide): number { return value as number; }',
     },
-    {
-      name: 'an imported enum member read',
-      source: 'export enum Color { Red = 1 }',
-      specifier: './enum-member.js',
-      consumerSource: 'export function wrong(): number { return Color.Red as number; }',
-    },
   ])('refuses $name with the deterministic cast rule', ({ source, specifier, consumerSource }) => {
     const importedName = /export enum (\w+)/u.exec(source)![1]!;
     const api = lower('enum-refused-api.ts', source).module;
@@ -27581,6 +27575,266 @@ describe('emitIrModuleRust imported enum member reads', () => {
     ];
 
     runRustSourceTree(files, 'assert_eq!(enum_native_consumer::red(), enum_native_api::Color::Red);');
+  });
+});
+
+describe('emitIrModuleRust imported numeric enum member assertions', () => {
+  it('converts named, aliased, and namespace-imported members through i32 exactly once', () => {
+    const api = lower('enum-assert-api.ts', 'export enum Color { Red = 1, Green = 2 }').module;
+    const consumer = lower(
+      'enum-assert-consumer.ts',
+      `import { Color } from './enum-assert-api.js';
+       import { Color as C } from './enum-assert-api.js';
+       import * as ns from './enum-assert-api.js';
+       export function named(): number { return Color.Green as number; }
+       export function aliased(): number { return C.Red as number; }
+       export function namespaced(): number { return ns.Color.Green as number; }`,
+    ).module;
+    const output = emitRustModuleInGraph([api, consumer], consumer, [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './enum-assert-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+    ]);
+
+    expect(output).toContain('return ((Color::Green) as i32) as f64;');
+    expect(output).toContain('return ((C::Red) as i32) as f64;');
+    expect(output).toContain('return ((ns::Color::Green) as i32) as f64;');
+    expect(output.match(/\(\(ns::Color::Green\) as i32\) as f64/gu)).toHaveLength(1);
+    expect(output).not.toContain('.0 as f64');
+    expect(
+      emitRustModuleInGraph([api, consumer], consumer, [
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          specifier: './enum-assert-api.js',
+          target: getRustTestModuleIdentity(api),
+        },
+      ]),
+    ).toBe(output);
+  });
+
+  it('converts explicit and star barrel members at the i32 boundaries', () => {
+    const api = lower(
+      'enum-assert-boundary-api.ts',
+      'export enum Bound { Low = -2147483648, High = 2147483647 }',
+    ).module;
+    const explicit = lower('enum-assert-explicit.ts', "export { Bound } from './enum-assert-boundary-api.js';").module;
+    const star = lower('enum-assert-star.ts', "export * from './enum-assert-boundary-api.js';").module;
+    const consumer = lower(
+      'enum-assert-barrel-consumer.ts',
+      `import { Bound } from './enum-assert-explicit.js';
+       import { Bound as StarBound } from './enum-assert-star.js';
+       export function low(): number { return Bound.Low as number; }
+       export function high(): number { return StarBound.High as number; }`,
+    ).module;
+    const output = emitRustModuleInGraph([api, explicit, star, consumer], consumer, [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './enum-assert-explicit.js',
+        target: getRustTestModuleIdentity(explicit),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './enum-assert-star.js',
+        target: getRustTestModuleIdentity(star),
+      },
+      {
+        importer: getRustTestModuleIdentity(explicit),
+        specifier: './enum-assert-boundary-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+      {
+        importer: getRustTestModuleIdentity(star),
+        specifier: './enum-assert-boundary-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+    ]);
+
+    expect(output).toContain('return ((Bound::Low) as i32) as f64;');
+    expect(output).toContain('return ((StarBound::High) as i32) as f64;');
+  });
+
+  it.each([
+    {
+      name: 'a numeric namespace wrapper member',
+      source: `export enum Flags { None = 0, Visible = 1 }
+               export namespace Flags { export function toggle(flags: Flags): Flags { return flags | Flags.Visible; } }`,
+      member: 'Flags.Visible',
+    },
+    {
+      name: 'a string enum member',
+      source: 'export enum Label { A = "a" }',
+      member: 'Label.A',
+    },
+    {
+      name: 'an out-of-range discriminant',
+      source: 'export enum Wide { A = 4294967296 }',
+      member: 'Wide.A',
+    },
+    {
+      name: 'a fractional discriminant',
+      source: 'export enum Fractional { A = 1.5 }',
+      member: 'Fractional.A',
+    },
+  ])('refuses $name with the enum cast rule', ({ source, member }) => {
+    const api = lower('enum-assert-refused-api.ts', source).module;
+    const importedName = member.slice(0, member.indexOf('.'));
+    const consumer = lower(
+      'enum-assert-refused-consumer.ts',
+      `import { ${importedName} } from './enum-assert-refused-api.js';
+       export function wrong(): number { return ${member} as number; }`,
+    ).module;
+
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([api, consumer], consumer, [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './enum-assert-refused-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ]),
+      ),
+    ).toBe('rust-cast-requires-type-directed-lowering');
+  });
+
+  it('keeps an absent imported member on the imported-member rule', () => {
+    const api = lower('enum-assert-missing-api.ts', 'export enum Color { Red = 1 }').module;
+    const consumer = lower(
+      'enum-assert-missing-consumer.ts',
+      `import { Color } from './enum-assert-missing-api.js';
+       export function wrong(): number { return Color.Missing as number; }`,
+    ).module;
+
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([api, consumer], consumer, [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './enum-assert-missing-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ]),
+      ),
+    ).toBe('rust-imported-enum-member-unresolved');
+  });
+
+  it('keeps an ambiguous star member on the export rule', () => {
+    const one = lower('enum-assert-one.ts', 'export enum Color { Red = 1 }').module;
+    const two = lower('enum-assert-two.ts', 'export enum Color { Red = 2 }').module;
+    const barrel = lower(
+      'enum-assert-ambiguous.ts',
+      "export * from './enum-assert-one.js';\nexport * from './enum-assert-two.js';",
+    ).module;
+    const consumer = lower(
+      'enum-assert-ambiguous-consumer.ts',
+      `import { Color } from './enum-assert-ambiguous.js';
+       export function wrong(): number { return Color.Red as number; }`,
+    ).module;
+
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([one, two, barrel, consumer], consumer, [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './enum-assert-ambiguous.js',
+            target: getRustTestModuleIdentity(barrel),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './enum-assert-one.js',
+            target: getRustTestModuleIdentity(one),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './enum-assert-two.js',
+            target: getRustTestModuleIdentity(two),
+          },
+        ]),
+      ),
+    ).toBe('rust-export-name-ambiguous');
+  });
+
+  it('salvages an unrelated declaration while keeping the imported assertion', () => {
+    const api = lower('enum-assert-salvage-api.ts', 'export enum Color { Red = 1 }').module;
+    const module = lower(
+      'enum-assert-salvage-consumer.ts',
+      `import { Color } from './enum-assert-salvage-api.js';
+       interface Point { value: number }
+       export function numeric(): number { return Color.Red as number; }
+       export function wrong(point: Point): string { return point as string; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(module),
+            specifier: './enum-assert-salvage-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([api, module]),
+      moduleFiles: [{ file: session.emitModule(api)[0]!, module: getRustTestModuleIdentity(api) }],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'string assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'string assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('return ((Color::Red) as i32) as f64;');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function numeric');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 4');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a two-module crate whose consumer asserts an imported member', () => {
+    const api = lower('enum-assert-native-api.ts', 'export enum Color { Red = 1, Green = 2 }').module;
+    const consumer = lower(
+      'enum-assert-native-consumer.ts',
+      `import { Color } from './enum-assert-native-api.js';
+       export function green(): number { return Color.Green as number; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './enum-assert-native-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([api, consumer]),
+      moduleFiles: [api, consumer].map((module) => ({
+        file: session.emitModule(module)[0]!,
+        module: getRustTestModuleIdentity(module),
+      })),
+    });
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    runRustSourceTree(files, 'assert_eq!(enum_assert_native_consumer::green(), 2.0);');
   });
 });
 
