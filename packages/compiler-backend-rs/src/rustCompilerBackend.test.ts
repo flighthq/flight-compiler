@@ -4427,7 +4427,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       lower('arr-concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }')
         .module,
     ).contents;
-    expect(output).toContain('__concat');
+    expect(output).toContain('array_concat_values');
     expect(output).toContain('.extend(');
   });
 
@@ -10971,7 +10971,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const output = emitIrModuleRust(
       lower('concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }').module,
     ).contents;
-    expect(output).toContain('__concat');
+    expect(output).toContain('array_concat_values');
     expect(output).toContain('extend');
   });
 
@@ -13190,7 +13190,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
       ).module,
     ).contents;
     expect(output).toContain('extend');
-    expect(output).toContain('__concat');
+    expect(output).toContain('array_concat_values');
   });
 
   it('emits string.replace with replacen and trailing 1', () => {
@@ -14780,6 +14780,244 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
     expect(failure.rule).toBe('rust-array-push-result-carrier-unrepresented');
     expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('clones exact dense concat sources and preserves empty, number, string, self, and evaluation semantics', () => {
+    const result = lower(
+      'array-concat-exact.ts',
+      `function record(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       export function emptyLeft(): number[] {
+         const left: number[] = [];
+         const right = [1, 2];
+         const joined = left.concat(right);
+         left.push(8);
+         right.push(9);
+         return joined;
+       }
+       export function numbers(): number[] {
+         const left = [1, 2];
+         const right = [3, 4];
+         const joined = left.concat(right);
+         left.push(8);
+         right.push(9);
+         return joined;
+       }
+       export function strings(): string[] {
+         const left = ["left"];
+         const right = ["right"];
+         const joined = left.concat(right);
+         left.push("changed-left");
+         right.push("changed-right");
+         return joined;
+       }
+       export function selfConcat(): number[] {
+         const values = [1, 2];
+         const joined = values.concat(values);
+         values.push(3);
+         return joined;
+       }
+       export function evaluated(log: number[]): number[] {
+         return record(log, 1, [4]).concat(record(log, 2, [5]));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_concat_receiver = &left;');
+    expect(output).toContain('let mut array_concat_values = (*array_concat_receiver).clone();');
+    expect(output).toContain('array_concat_values.extend(array_concat_argument.iter().cloned());');
+    const evaluatedReceiver = output.indexOf(' = &record(');
+    const evaluatedArgument = output.indexOf(' = &record(', evaluatedReceiver + 1);
+    expect(evaluatedReceiver).toBeGreaterThan(-1);
+    expect(evaluatedArgument).toBeGreaterThan(evaluatedReceiver);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(empty_left(), vec![1.0, 2.0]);',
+          'assert_eq!(numbers(), vec![1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(strings(), vec!["left".to_owned(), "right".to_owned()]);',
+          'assert_eq!(self_concat(), vec![1.0, 2.0, 1.0, 2.0]);',
+          'let mut log = vec![];',
+          'assert_eq!(evaluated(&mut log), vec![4.0, 5.0]);',
+          'assert_eq!(log, vec![1.0, 2.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('concatenates shared aliases with sequential immutable borrows into an independent Vec', () => {
+    const result = lower(
+      'shared-array-concat-exact.ts',
+      `export function sharedConcat(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const joined = values.concat(alias);
+         alias.push(3);
+         values.push(4);
+         return joined;
+       }
+       export function sharedSelfConcat(): number[] {
+         const values = [5, 6];
+         const alias = values;
+         const joined = alias.concat(alias);
+         values.push(7);
+         return joined;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_concat_receiver = &values;');
+    expect(output).toContain('let array_concat_argument = &alias;');
+    expect(output).toContain('array_concat_receiver.borrow().clone()');
+    expect(output).toContain('array_concat_argument.borrow().iter().cloned()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        'assert_eq!(shared_concat(), vec![1.0, 2.0, 1.0, 2.0]); assert_eq!(shared_self_concat(), vec![5.0, 6.0, 5.0, 6.0]);',
+      );
+    }
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-concat-invocation-unrepresented',
+      source: 'export function merge(values: number[]): number[] { return values.concat(); }',
+    },
+    {
+      rule: 'rust-array-concat-invocation-unrepresented',
+      source:
+        'export function merge(values: number[], left: number[], right: number[]): number[] { return values.concat(left, right); }',
+    },
+    {
+      rule: 'rust-array-concat-invocation-unrepresented',
+      source:
+        'export function merge(values: number[], groups: number[][]): number[] { return values.concat(...groups); }',
+    },
+    {
+      rule: 'rust-array-concat-invocation-unrepresented',
+      source:
+        'export function merge(values: number[], other: number[]): number[] | undefined { return values.concat?.(other); }',
+    },
+    {
+      rule: 'rust-array-concat-argument-carrier-unrepresented',
+      source: 'export function merge(values: number[]): number[] { return values.concat(1); }',
+    },
+    {
+      rule: 'rust-array-concat-element-carrier-unrepresented',
+      source:
+        'export function merge(values: (number | string)[], other: (number | string)[]): (number | string)[] { return values.concat(other); }',
+    },
+    {
+      rule: 'rust-array-concat-element-carrier-unrepresented',
+      source:
+        'export function merge(values: number[][], other: number[][]): number[][] { return values.concat(other); }',
+    },
+    {
+      rule: 'rust-array-concat-element-carrier-unrepresented',
+      source:
+        'class Point { x: number = 0; } export function merge(values: Point[], other: Point[]): Point[] { return values.concat(other); }',
+    },
+    {
+      rule: 'rust-array-concat-element-carrier-unrepresented',
+      source:
+        'interface Point { x: number } export function merge(values: Point[], other: Point[]): Point[] { return values.concat(other); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function merge(): number[] { const values = [1, , 3]; return values.concat([4]); }',
+    },
+  ])('stably refuses unsupported concat semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-concat-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses dynamic spread concat arity', () => {
+    const dynamic = lower(
+      'array-concat-dynamic.ts',
+      'export function merge(values: number[], groups: number[][]): number[] { return values.concat(...groups); }',
+    );
+    const declaration = dynamic.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'merge',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.concat call');
+    }
+    expect(returned.expression.semantics.signature?.providedArgumentCount).toBe('dynamic');
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(dynamic.module)).rule).toBe(
+      'rust-array-concat-invocation-unrepresented',
+    );
+  });
+
+  it('stably refuses mismatched concat argument or result carriers', () => {
+    const getConcatCall = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'merge',
+      );
+      const returned =
+        declaration?.kind === 'function'
+          ? declaration.body.find((statement) => statement.kind === 'return')
+          : undefined;
+      if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected returned array.concat call');
+      }
+      return { call: returned.expression, declaration };
+    };
+
+    const mismatchedArgument = lower(
+      'array-concat-argument-carrier.ts',
+      'export function merge(values: number[], other: number[]): number[] { return values.concat(other); }',
+    );
+    const mismatched = getConcatCall(mismatchedArgument.module);
+    if (mismatched.declaration?.kind !== 'function' || !mismatched.declaration.parameters[1]) {
+      throw new Error('expected second concat parameter');
+    }
+    (mismatched.declaration.parameters[1] as { type: unknown }).type = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedArgument.module)).rule).toBe(
+      'rust-array-concat-argument-carrier-unrepresented',
+    );
+
+    const mismatchedResult = lower(
+      'array-concat-result-carrier.ts',
+      'export function merge(values: number[], other: number[]): number[] { return values.concat(other); }',
+    );
+    const resultCall = getConcatCall(mismatchedResult.module).call;
+    (resultCall.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedResult.module)).rule).toBe(
+      'rust-array-concat-result-carrier-unrepresented',
+    );
+  });
+
+  it('uses the shared-array borrow-conflict rule for a concat argument that nests the receiver alias', () => {
+    const result = lower(
+      'array-concat-borrow-conflict.ts',
+      `export function conflict(): number[] {
+         const values = [1, 2, 3];
+         const alias = values;
+         const joined = alias.concat(values.slice());
+         values.push(4);
+         return joined;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
   it('preserves efficient discarded reverse mutation and forwards an owned returned carrier', () => {
@@ -16553,7 +16791,7 @@ describe('emitIrModuleRust array method bindings', () => {
       lower('array-concat.ts', `export function merge(a: number[], b: number[]): number[] { return a.concat(b); }`)
         .module,
     ).contents;
-    expect(output).toContain('__concat');
+    expect(output).toContain('array_concat_values');
     expect(output).toContain('.extend(');
   });
 
@@ -17498,7 +17736,7 @@ describe('emitIrModuleRust array concat', () => {
       ).module,
     ).contents;
     expect(output).toContain('extend');
-    expect(output).toContain('__concat');
+    expect(output).toContain('array_concat_values');
   });
 });
 

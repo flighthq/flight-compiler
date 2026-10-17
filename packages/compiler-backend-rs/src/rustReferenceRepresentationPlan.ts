@@ -1373,6 +1373,14 @@ function isRustSharedArrayIdentifierUseRepresented(
     const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
     if (!isCallExpression(call)) return false;
     const position = path_.at(-1) as number;
+    if (
+      position === 0 &&
+      call.callee.kind === 'property' &&
+      call.callee.member?.receiver === 'array' &&
+      call.callee.member.name === 'concat'
+    ) {
+      return true;
+    }
     const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
     return target.kind === 'function' && getRustReferenceArrayMutationPositions(target.function).has(position);
   }
@@ -1396,7 +1404,21 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
   }
   const receiverId = call.callee.object.reference.binding.id;
   const group = module.sharedArrays.groupByBindingId.get(receiverId);
-  if (!group || !call.arguments.some((argument) => expressionUsesRustSharedArrayGroup(argument, group, module))) {
+  if (
+    !group ||
+    !call.arguments.some((argument) => {
+      if (
+        call.callee.kind === 'property' &&
+        call.callee.member?.name === 'concat' &&
+        argument.kind === 'identifier' &&
+        argument.reference.kind === 'binding' &&
+        module.sharedArrays.groupByBindingId.get(argument.reference.binding.id) === group
+      ) {
+        return false;
+      }
+      return expressionUsesRustSharedArrayGroup(argument, group, module);
+    })
+  ) {
     return;
   }
   addRustReferenceRefusal(
@@ -3897,11 +3919,13 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
 
 const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
+  'concat',
   'slice',
 ]);
 
 const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
+  'concat',
   'includes',
   'indexOf',
   'join',

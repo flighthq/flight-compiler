@@ -1474,6 +1474,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
       if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
       if (isArraySliceCallRust(expression)) return emitArraySliceCallRust(expression, context);
       if (isArraySpliceCallRust(expression)) return emitArraySpliceCallRust(expression, context);
@@ -1525,16 +1526,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `${receiver}.copy_from(${source}, ${offset})`;
       }
       if (isArrayShiftCallRust(expression)) return emitArrayShiftCallRust(expression, context);
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'array' &&
-        expression.callee.member.name === 'concat' &&
-        expression.arguments.length === 1
-      ) {
-        const receiver = emitExpression(expression.callee.object, context);
-        const other = emitExpression(expression.arguments[0]!, context);
-        return `{ let mut __concat = ${receiver}; __concat.extend(${other}); __concat }`;
-      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind !== 'countingMethod' && binding.kind !== 'propertyMethod') {
@@ -2984,6 +2975,17 @@ function isArrayReverseCallRust(
   );
 }
 
+function isArrayConcatCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'concat'
+  );
+}
+
 function isArraySliceCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3025,6 +3027,35 @@ function emitArrayGrowthCallRust(
   const lengthReceiver = emitSharedReferenceReceiverRust(expression.callee.object, false, context);
   const initializers = arguments_.map(({ emitted, name }) => `let ${name} = ${emitted};`);
   return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
+}
+
+function emitArrayConcatCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const argument = expression.arguments[0];
+  if (!argument || expression.arguments.length !== 1) {
+    return emissionError(context, 'array.concat emission requires exactly one array argument');
+  }
+  const receiverName = getGeneratedTargetNameRust('array_concat_receiver', context);
+  const argumentName = getGeneratedTargetNameRust('array_concat_argument', context);
+  const resultName = getGeneratedTargetNameRust('array_concat_values', context);
+  const receiverShared = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const argumentShared = getRustSharedArrayBindingRust(argument, context);
+  const receiver = receiverShared
+    ? `&${getBindingTargetNameRust(receiverShared, context)}`
+    : `&${emitExpression(expression.callee.object, context)}`;
+  const other = argumentShared
+    ? `&${getBindingTargetNameRust(argumentShared, context)}`
+    : `&${emitExpression(argument, context)}`;
+  const clonedReceiver = receiverShared ? `${receiverName}.borrow().clone()` : `(*${receiverName}).clone()`;
+  const argumentValues = argumentShared
+    ? `${argumentName}.borrow().iter().cloned()`
+    : `${argumentName}.iter().cloned()`;
+  // Receiver and argument are materialized in source order. Their immutable borrows end at each
+  // statement, so a shared self-concat never overlaps RefCell borrows and neither source is consumed.
+  return `{ let ${receiverName} = ${receiver}; let ${argumentName} = ${other}; let mut ${resultName} = ${clonedReceiver}; ${resultName}.extend(${argumentValues}); ${resultName} }`;
 }
 
 function emitArrayReverseCallRust(
@@ -7655,7 +7686,7 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
 }
 
 type RustArrayGrowthMember = 'push' | 'unshift';
-type RustArrayOperationMember = RustArrayGrowthMember | 'reverse' | 'slice' | 'splice';
+type RustArrayOperationMember = RustArrayGrowthMember | 'concat' | 'reverse' | 'slice' | 'splice';
 
 interface RustArrayOperationRefusal {
   readonly member: RustArrayOperationMember;
@@ -7669,6 +7700,10 @@ interface RustArrayOperationRefusal {
     | 'rust-array-unshift-invocation-unrepresented'
     | 'rust-array-unshift-result-carrier-unrepresented'
     | 'rust-array-unshift-result-observation-unrepresented'
+    | 'rust-array-concat-argument-carrier-unrepresented'
+    | 'rust-array-concat-element-carrier-unrepresented'
+    | 'rust-array-concat-invocation-unrepresented'
+    | 'rust-array-concat-result-carrier-unrepresented'
     | 'rust-array-reverse-element-carrier-unrepresented'
     | 'rust-array-reverse-identity-carrier-unrepresented'
     | 'rust-array-reverse-invocation-unrepresented'
@@ -7694,6 +7729,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     }>
   > = [];
   const reverseCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
+  const concatCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
@@ -7723,6 +7762,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
 
       if (expression.kind === 'call' && expression.callee.kind === 'property' && getArrayGrowthMemberRust(expression)) {
         growthCalls.push({ callee: expression.callee, expression });
+      } else if (expression.kind === 'call' && isArrayConcatCallRust(expression)) {
+        concatCalls.push(expression);
       } else if (expression.kind === 'call' && isArrayReverseCallRust(expression)) {
         reverseCalls.push(expression);
       } else if (expression.kind === 'call' && isArraySliceCallRust(expression)) {
@@ -7760,6 +7801,71 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   const refusals: RustArrayOperationRefusal[] = [];
+  for (const expression of concatCalls) {
+    const signature = expression.semantics.signature;
+    const argumentExpression = expression.arguments[0];
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 1 ||
+      expression.arguments.length !== 1 ||
+      !argumentExpression ||
+      argumentExpression.kind === 'spread'
+    ) {
+      refusals.push({
+        member: 'concat',
+        message:
+          'array.concat currently requires a non-optional receiver and exactly one fixed non-spread array argument',
+        rule: 'rust-array-concat-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const argumentType = inferRustArrayGrowthArgumentTypeRust(argumentExpression, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    const argument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
+    if (receiver?.kind !== 'array' || argument?.kind !== 'array') {
+      refusals.push({
+        member: 'concat',
+        message: 'array.concat argument requires an exact dense array carrier',
+        rule: 'rust-array-concat-argument-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (
+      !isRustArrayConcatElementCarrierRust(receiver.element, context) ||
+      !isRustArrayConcatElementCarrierRust(argument.element, context)
+    ) {
+      refusals.push({
+        member: 'concat',
+        message:
+          'array.concat elements require primitive boolean, number, or string value carriers; union and identity-bearing carriers are not represented',
+        rule: 'rust-array-concat-element-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustArrayConcatArgumentCarrierRust(receiver.element, argument.element, context)) {
+      refusals.push({
+        member: 'concat',
+        message: 'array.concat argument does not have the exact Rust element carrier of the receiver',
+        rule: 'rust-array-concat-argument-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!receiverType || !isRustArrayConcatResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
+      refusals.push({
+        member: 'concat',
+        message: 'array.concat result does not have the exact mutable Rust Vec element carrier of the receiver',
+        rule: 'rust-array-concat-result-carrier-unrepresented',
+      });
+    }
+  }
+
   for (const { callee, expression } of growthCalls) {
     const member = getArrayGrowthMemberRust(expression)!;
     const signature = expression.semantics.signature;
@@ -8134,6 +8240,37 @@ function isRustArraySliceElementCarrierRust(type: Readonly<IrType>, context: Emi
     resolved.kind === 'undefined' ||
     getIrObjectTypePropertiesRust(resolved, context) !== undefined
   );
+}
+
+function isRustArrayConcatElementCarrierRust(type: Readonly<IrType>, context: EmitContext): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  return (
+    (resolved.kind === 'primitive' &&
+      (resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string')) ||
+    (resolved.kind === 'literal' &&
+      (typeof resolved.value === 'boolean' || typeof resolved.value === 'number' || typeof resolved.value === 'string'))
+  );
+}
+
+function isRustArrayConcatArgumentCarrierRust(
+  receiverElement: Readonly<IrType>,
+  argumentElement: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (analyzeIrTypeStructuralAssignability(receiverElement, argumentElement).status !== 'compatible') return false;
+  if (analyzeIrTypeStructuralAssignability(argumentElement, receiverElement).status !== 'compatible') return false;
+  return emitType(receiverElement, context) === emitType(argumentElement, context);
+}
+
+function isRustArrayConcatResultCarrierRust(
+  receiverType: Readonly<IrType>,
+  resultType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const receiver = resolveIrTypeAliasValueRust(receiverType, context, new Set());
+  const result = resolveIrTypeAliasValueRust(resultType, context, new Set());
+  if (receiver.kind !== 'array' || result.kind !== 'array' || result.readonly) return false;
+  return isRustArrayConcatArgumentCarrierRust(receiver.element, result.element, context);
 }
 
 function isRustArraySliceResultCarrierRust(
