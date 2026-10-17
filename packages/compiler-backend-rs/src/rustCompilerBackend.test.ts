@@ -2067,6 +2067,121 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('last = task.clone().await;');
   });
 
+  it('adopts only evidenced bare task shapes at a native async return boundary', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-task-adoption.ts',
+        `async function inner(): Promise<number> { return 3; }
+         export async function fromParameter(task: Promise<number>): Promise<number> { return task; }
+         export async function fromReady(): Promise<number> { return Promise.resolve(4); }
+         export async function fromCall(): Promise<number> { return inner(); }
+         export async function fromCast(task: Promise<number>): Promise<number> { return task as Promise<number>; }
+         export async function fromConditional(first: Promise<number>, second: Promise<number>, chooseFirst: boolean): Promise<number> { return chooseFirst ? first : second; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return task.await;');
+    expect(output).toContain('return FlightTask::ready(4.0).await;');
+    expect(output).toContain('return inner().await;');
+    expect(output).toContain('return if choose_first { first.await } else { second.await };');
+    expect(output).not.toContain('as FlightTask');
+  });
+
+  it('preserves explicit await and non-task async returns without task adoption', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-task-adoption-controls.ts',
+        `type Box = { value: number };
+         async function inner(): Promise<number> { return 2; }
+         export async function explicit(task: Promise<number>): Promise<number> { return await task; }
+         export async function explicitCall(): Promise<number> { return await inner(); }
+         export async function scalar(value: number): Promise<number> { return value; }
+         export async function object(): Promise<Box> { return { value: 1 }; }
+         export async function array(): Promise<number[]> { return [1, 2]; }
+         export async function optional(value: number | undefined): Promise<number | undefined> { return value; }
+         export async function mixed(task: Promise<number>, chooseTask: boolean): Promise<number> { return chooseTask ? task : 1; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return task.await;');
+    expect(output).toContain('return inner().await;');
+    expect(output).toContain('return 2.0;');
+    expect(output).toContain('return value;');
+    // The contextual object construction still carries the function's task type in IR. Its shape,
+    // rather than that contextual type alone, keeps task adoption off the literal.
+    expect(output).toContain('return FlightTask<Box> { value: 1.0, };');
+    expect(output).toContain('return vec![1.0, 2.0];');
+    expect(output).toContain('return if choose_task { task } else { 1.0 };');
+    expect(output.match(/\.await/gu)).toHaveLength(2);
+  });
+
+  it.skipIf(!rustcAvailable)('runs bare task adoption and repeated task ownership against the runtime fixture', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-task-adoption-runtime.ts',
+        `async function inner(): Promise<number> { return 3; }
+         export async function fromParameter(task: Promise<number>): Promise<number> { return task; }
+         export async function fromReady(): Promise<number> { return Promise.resolve(4); }
+         export async function fromCall(): Promise<number> { return inner(); }
+         export async function fromConditional(first: Promise<number>, second: Promise<number>, chooseFirst: boolean): Promise<number> { return chooseFirst ? first : second; }
+         export async function repeated(task: Promise<number>, useAgain: boolean): Promise<number> { const first = await task; if (useAgain) return task; return first; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let first: f64 = task.clone().await;');
+    expect(output).toContain('return task.clone().await;');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `assert_eq!(flight_runtime::block_on(from_parameter(flight_runtime::FlightTask::ready(2.0))), 2.0);
+         assert_eq!(flight_runtime::block_on(from_ready()), 4.0);
+         assert_eq!(flight_runtime::block_on(from_call()), 3.0);
+         assert_eq!(flight_runtime::block_on(from_conditional(flight_runtime::FlightTask::ready(5.0), flight_runtime::FlightTask::ready(6.0), false)), 6.0);
+         assert_eq!(flight_runtime::block_on(repeated(flight_runtime::FlightTask::ready(7.0), true)), 7.0);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'argument',
+      'async function inner(): Promise<number> { return 1; } function consume(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return consume(inner()); }',
+    ],
+    [
+      'storage',
+      'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { const task: Promise<number> = inner(); return task; }',
+    ],
+    [
+      'sync return',
+      'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { return inner(); }',
+    ],
+    [
+      'assignment',
+      'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { let task: Promise<number> = Promise.resolve(0); task = inner(); return task; }',
+    ],
+  ])('stably refuses a native future in a FlightTask %s context', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('native-future-task-adapter.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
+  });
+
+  it('stably refuses implicit bare task adoption inside a protected try region', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'protected-async-task-adoption.ts',
+          'export async function protectedReturn(task: Promise<number>): Promise<number> { try { return task; } catch { return 0; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-task-adoption-protected-unrepresented');
+  });
+
   it('refuses an async function whose declared return is not a task type', () => {
     const module = lower('broken.ts', 'export async function broken(value: number): Promise<number> { return value; }');
     const declaration = module.module.declarations[0];

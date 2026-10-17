@@ -199,6 +199,7 @@ interface RustAsyncTryDeferredReturnPlan {
 
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
+  allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
   // The declaration currently being emitted. A refusal names where in the source to look, and the
   // declaration is the granularity the IR retains an origin at.
   currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
@@ -210,6 +211,7 @@ interface EmitContext {
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   asyncTryStatements: ReadonlySet<object>;
+  insideProtectedTry: boolean;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
   refCellWrappedBindingIds: ReadonlySet<string>;
@@ -245,6 +247,7 @@ interface EmitContext {
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
+  nativeAsyncFunction: boolean;
   sourceModules: readonly Readonly<IrModule>[];
   sourceTreeReferences: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
   needsCellImport: Set<'Cell'>;
@@ -488,6 +491,7 @@ function emitIrModuleRustWithContext(
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
     asyncTryStatements,
+    insideProtectedTry: false,
     cellWrappedBindingIds,
     refCellWrappedBindingIds,
     classBindingNames,
@@ -535,6 +539,7 @@ function emitIrModuleRustWithContext(
     bindingTypes,
     module,
     moduleResolution,
+    nativeAsyncFunction: false,
     sourceModules: replaceIrModuleBackendContext(sourceModules, module),
     sourceTreeReferences: sourceTree?.references ?? [],
     needsCellImport: new Set(),
@@ -1254,7 +1259,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // the promise: a promise settles once and every await sees that settlement. A task reached more
       // than once is therefore cloned, which the runtime contract's first-call-wins settlement is
       // what makes equivalent.
-      return `${emitOwnedOperandRust(expression.expression, context)}.await`;
+      return emitAwaitExpressionRust(expression.expression, context);
     case 'binary': {
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
@@ -1365,6 +1370,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call':
+      if (isIrNativeAsyncFunctionCallRust(expression, context) && context.allowedNativeFutureCall !== expression) {
+        emissionError(
+          context,
+          'a native Rust future cannot enter a FlightTask carrier without the runtime ABI/2 task adapter',
+          'rust-native-future-task-adapter-unavailable',
+          'target-runtime',
+        );
+      }
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
       if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
       {
@@ -1630,7 +1643,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const closureContext: EmitContext = {
         ...context,
         activeTypeParameters: expression.typeParameters,
+        allowedNativeFutureCall: undefined,
         enclosingReturnType: expression.returns,
+        insideProtectedTry: false,
+        nativeAsyncFunction: false,
         returnsAbsent: hasIrTypeAbsentMember(expression.returns),
         returnsSharedClass:
           expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
@@ -2171,6 +2187,82 @@ function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext):
   return awaited;
 }
 
+function isIrTaskTypeRust(type: Readonly<IrType> | undefined): boolean {
+  return (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Promise' &&
+    type.typeArguments.length === 1
+  );
+}
+
+function getIrReferencedFunctionRust(
+  reference: Readonly<IrIdentifierReference>,
+  context: EmitContext,
+): Readonly<IrFunctionDeclaration> | undefined {
+  if (reference.kind !== 'binding') return undefined;
+  const local = context.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.id === reference.binding.id,
+  );
+  if (local?.kind === 'function') return local;
+  const imported = context.module.imports
+    .flatMap((item) => item.bindings.map((binding) => ({ binding, specifier: item.specifier })))
+    .find(({ binding }) => !binding.typeOnly && binding.binding.id === reference.binding.id);
+  if (!imported || imported.binding.imported === '*') return undefined;
+  const targetModule = resolveImportModuleRust(imported.specifier, imported.binding.imported, context);
+  if (!targetModule) return undefined;
+  const exportedBinding = targetModule.exports.find(
+    (item) => item.kind === 'local' && !item.typeOnly && item.exported === imported.binding.imported,
+  );
+  const exportedBindingId = exportedBinding?.kind === 'local' ? exportedBinding.binding.id : undefined;
+  const target = targetModule.declarations.find(
+    (declaration) =>
+      declaration.kind === 'function' &&
+      (declaration.binding.id === exportedBindingId ||
+        (declaration.exported && declaration.binding.name === imported.binding.imported)),
+  );
+  return target?.kind === 'function' ? target : undefined;
+}
+
+function isIrNativeAsyncFunctionCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): boolean {
+  return (
+    expression.callee.kind === 'identifier' &&
+    getIrReferencedFunctionRust(expression.callee.reference, context)?.async === true
+  );
+}
+
+function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  switch (expression.kind) {
+    case 'identifier':
+    case 'call':
+      return isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context));
+    case 'cast':
+      return isIrTaskTypeRust(expression.type) && canIrExpressionDenoteTaskRust(expression.expression, context);
+    case 'conditional':
+      return (
+        canIrExpressionDenoteTaskRust(expression.whenTrue, context) &&
+        canIrExpressionDenoteTaskRust(expression.whenFalse, context)
+      );
+    default:
+      return false;
+  }
+}
+
+function emitAsyncTaskAdoptionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  if (!context.nativeAsyncFunction || !canIrExpressionDenoteTaskRust(expression, context)) return undefined;
+  if (context.insideProtectedTry) {
+    emissionRuleError(
+      context,
+      'bare task adoption inside a protected try region requires completion-aware Rust lowering',
+      'rust-async-task-adoption-protected-unrepresented',
+    );
+  }
+  return emitAwaitExpressionRust(expression, context);
+}
+
 // Rust distinguishes a method that observes its receiver from one that changes it, and the two are
 // not interchangeable to a caller. Taking `&mut self` everywhere is the conservative choice that
 // makes every method exclusive, so a shared read of one value blocks a read of another. The mutation
@@ -2261,21 +2353,24 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
   }
   const returnsSharedClass = outer.sharedClassReturnBindingIds.has(declaration.binding.id);
+  const nativeReturnType = declaration.async
+    ? getIrTaskAwaitedTypeRust(declaration.returns, outer)
+    : declaration.returns;
   const context: EmitContext = {
     ...outer,
     activeTypeParameters: declaration.typeParameters,
-    enclosingReturnType: declaration.returns,
-    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    allowedNativeFutureCall: undefined,
+    enclosingReturnType: nativeReturnType,
+    insideProtectedTry: false,
+    nativeAsyncFunction: declaration.async,
+    returnsAbsent: hasIrTypeAbsentMember(nativeReturnType),
     returnsSharedClass,
   };
   if (returnsSharedClass) {
     context.needsRcImport.add('Rc');
     context.needsRefCellImport.add('RefCell');
   }
-  const returnType = emitType(
-    declaration.async ? getIrTaskAwaitedTypeRust(declaration.returns, context) : declaration.returns,
-    context,
-  );
+  const returnType = emitType(nativeReturnType, context);
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
@@ -3224,6 +3319,22 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
   )
     return `${source}.clone()`;
   return source;
+}
+
+function emitAwaitOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  return expression.kind === 'call' && isIrNativeAsyncFunctionCallRust(expression, context)
+    ? emitOwnedOperandRust(expression, { ...context, allowedNativeFutureCall: expression })
+    : emitOwnedOperandRust(expression, context);
+}
+
+function emitAwaitExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind === 'cast' && canIrExpressionDenoteTaskRust(expression, context)) {
+    return emitAwaitExpressionRust(expression.expression, context);
+  }
+  if (expression.kind === 'conditional' && canIrExpressionDenoteTaskRust(expression, context)) {
+    return `if ${emitExpression(expression.condition, context)} { ${emitAwaitExpressionRust(expression.whenTrue, context)} } else { ${emitAwaitExpressionRust(expression.whenFalse, context)} }`;
+  }
+  return `${emitAwaitOperandRust(expression, context)}.await`;
 }
 
 function emitReturnedUnionArrayElementReadRust(
@@ -5024,6 +5135,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
       if (statement.expression && context.enclosingReturnType) {
+        const adoptedTask = emitAsyncTaskAdoptionRust(statement.expression, context);
+        if (adoptedTask) return [`return ${normalizeSourceTextGrouping(adoptedTask)};`];
         const unionArrayElementRead = emitReturnedUnionArrayElementReadRust(
           statement.expression,
           context.enclosingReturnType,
@@ -5107,11 +5220,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`panic!("{:?}", ${emitExpression(thrown, context)});`];
     }
     case 'try': {
-      if (getAsyncTryDeferredReturnPlanRust(statement, context)) {
-        return emitAsyncTryCatchRust(statement, context);
+      const protectedContext: EmitContext = { ...context, insideProtectedTry: true };
+      if (getAsyncTryDeferredReturnPlanRust(statement, protectedContext)) {
+        return emitAsyncTryCatchRust(statement, protectedContext);
       }
       if (context.asyncTryStatements.has(statement)) {
-        return emitAsyncTryCatchRust(statement, context);
+        return emitAsyncTryCatchRust(statement, protectedContext);
       }
       if (statement.finallyBody) {
         emissionError(context, 'synchronous try/finally requires catch_unwind with resume_unwind');
@@ -5125,13 +5239,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         ? [
             'Ok(__catch_result) => return __catch_result,',
             `Err(${catchBinding}) => {`,
-            ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
+            ...indentSourceLines(emitStatementBody(statement.catchClause.body, protectedContext)),
             '}',
           ]
         : ['Ok(_) => {}', 'Err(_) => {}'];
       return [
         'match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {',
-        ...indentSourceLines(emitStatementBody(statement.tryBody, context)),
+        ...indentSourceLines(emitStatementBody(statement.tryBody, protectedContext)),
         '})) {',
         ...indentSourceLines(matchArms),
         '}',
