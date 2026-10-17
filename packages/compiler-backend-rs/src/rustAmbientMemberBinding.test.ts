@@ -17,7 +17,7 @@ describe('createCompilerRustAmbientMemberBindingPlan', () => {
     expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(81);
+    expect(second.bindings).toHaveLength(82);
   });
 });
 
@@ -122,6 +122,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'concat', receiver: 'array' })).toEqual({
       kind: 'method',
       targetName: 'extend',
+    });
+  });
+
+  it('records array fill as a method with dedicated backend semantics', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'fill', receiver: 'array' })).toEqual({
+      kind: 'method',
+      targetName: 'fill',
     });
   });
 

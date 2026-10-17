@@ -39,6 +39,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'arrayBuffer.byteLength': { kind: 'countingMethod', targetName: 'byte_length' },
   'array.concat': { kind: 'method', targetName: 'extend' },
   'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
+  'array.fill': { kind: 'method', targetName: 'fill' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },
   'array.find': { borrowsElement: true, collect: false, kind: 'iterator', targetName: 'find' },
   'array.findIndex': { kind: 'predicatePosition', targetName: 'position' },

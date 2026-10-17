@@ -15595,6 +15595,305 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(lowered.module))).toBe(rule);
   });
 
+  it('preserves exact fill bounds across number, boolean, and string carriers', () => {
+    const result = lower(
+      'array-fill-exact.ts',
+      `export function full(): number[] {
+         const values = [1, 2, 3];
+         values.fill(9);
+         return values;
+       }
+       export function range(start: number, end: number): number[] {
+         const values = [1, 2, 3, 4];
+         values.fill(7, start, end);
+         return values;
+       }
+       export function booleans(): boolean[] {
+         const values = [false, false, false];
+         return values.fill(true, 1);
+       }
+       export function strings(): string[] {
+         const values = ["a", "b", "c"];
+         return values.fill("x", 0, 2);
+       }
+       export function reusableString(value: string): string[] {
+         const values = ["a", "b"];
+         values.fill(value);
+         return [value, values[0] ?? "", values[1] ?? ""];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('array_fill_start.is_nan()');
+    expect(output).toContain('array_fill_start.trunc()');
+    expect(output).toContain('array_fill_end.is_nan()');
+    expect(output).toContain('array_fill_end.trunc()');
+    expect(output).toContain('(*array_fill_value).clone()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(full(), vec![9.0, 9.0, 9.0]);',
+          'assert_eq!(range(1.8, 3.9), vec![1.0, 7.0, 7.0, 4.0]);',
+          'assert_eq!(range(-3.8, -1.2), vec![1.0, 7.0, 7.0, 4.0]);',
+          'assert_eq!(range(f64::NAN, 2.0), vec![7.0, 7.0, 3.0, 4.0]);',
+          'assert_eq!(range(1.0, f64::NAN), vec![1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(range(f64::NEG_INFINITY, f64::INFINITY), vec![7.0, 7.0, 7.0, 7.0]);',
+          'assert_eq!(range(f64::INFINITY, f64::INFINITY), vec![1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(range(2.0, 2.0), vec![1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(range(3.0, 1.0), vec![1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(range(-99.0, 99.0), vec![7.0, 7.0, 7.0, 7.0]);',
+          'assert_eq!(booleans(), vec![false, true, true]);',
+          'assert_eq!(strings(), vec!["x".to_owned(), "x".to_owned(), "c".to_owned()]);',
+          'assert_eq!(reusable_string("x".to_owned()), vec!["x".to_owned(), "x".to_owned(), "x".to_owned()]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('evaluates fill value and bounds once from left to right before mutation', () => {
+    const result = lower(
+      'array-fill-evaluation.ts',
+      `function record(log: number[], marker: number, value: number): number {
+         log.push(marker);
+         return value;
+       }
+       export function tracked(log: number[]): number[] {
+         const values = [1, 2, 3, 4];
+         values.fill(record(log, 1, 8), record(log, 2, 1.8), record(log, 3, 3.9));
+         values.push(record(log, 4, 5));
+         return values;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_fill_receiver = &mut values;');
+    const value = output.indexOf('let array_fill_value = &record(');
+    const start = output.indexOf('let array_fill_start: f64 = record(');
+    const end = output.indexOf('let array_fill_end: f64 = record(');
+    const mutation = output.indexOf('for array_fill_index in');
+    expect(receiver).toBeGreaterThan(-1);
+    expect(value).toBeGreaterThan(receiver);
+    expect(start).toBeGreaterThan(value);
+    expect(end).toBeGreaterThan(start);
+    expect(mutation).toBeGreaterThan(end);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut log = vec![];',
+          'assert_eq!(tracked(&mut log), vec![1.0, 8.0, 8.0, 4.0, 5.0]);',
+          'assert_eq!(log, vec![1.0, 2.0, 3.0, 4.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('mutates borrowed arrays and forwards owned fill results for follow-up mutation', () => {
+    const result = lower(
+      'array-fill-owned.ts',
+      `export function borrowed(values: string[]): void { values.fill("x", 1); }
+       export function returned(): number[] {
+         const values = [1, 2, 3];
+         return values.fill(6, 1);
+       }
+       export function moved(): number {
+         const values = [1, 2, 3];
+         const returned = values.fill(6, 1, 3);
+         returned.push(4);
+         return (returned[0] ?? 0) * 1000 + (returned[1] ?? 0) * 100 + (returned[2] ?? 0) * 10 + returned.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn borrowed(values: &mut Vec<String>)');
+    expect(output).toContain('let mut array_fill_receiver_2 = values;');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut words = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];',
+          'borrowed(&mut words);',
+          'assert_eq!(words, vec!["a".to_owned(), "x".to_owned(), "x".to_owned()]);',
+          'assert_eq!(returned(), vec![1.0, 6.0, 6.0]);',
+          'assert_eq!(moved(), 1664.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves fill receiver identity through shared aliases and returned-result use', () => {
+    const result = lower(
+      'shared-array-fill-exact.ts',
+      `export function sharedFill(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const returned = alias.fill(8, 1, 3);
+         returned.push(4);
+         values.push(5);
+         return (alias[0] ?? 0) * 10000 + (alias[1] ?? 0) * 1000 + (alias[2] ?? 0) * 100 + (alias[3] ?? 0) * 10 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_fill_receiver = Rc::clone(&alias)');
+    expect(output).toContain('let mut array_fill_values = array_fill_receiver.borrow_mut()');
+    expect(output).toContain('drop(array_fill_values); array_fill_receiver');
+    expect(output).toContain('returned.borrow_mut().push');
+    expect(output).toContain('values.borrow_mut().push');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_fill(), 18845.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-fill-invocation-unrepresented',
+      source: 'export function fill(values: number[]): number[] | undefined { return values.fill?.(1); }',
+    },
+    {
+      rule: 'rust-array-fill-invocation-unrepresented',
+      source:
+        'export function fill(left: number[], right: number[], pick: boolean): void { (pick ? left : right).fill(1); }',
+    },
+    {
+      rule: 'rust-array-fill-invocation-unrepresented',
+      source:
+        'export function fill(values: number[], range: [number, number]): number[] { return values.fill(1, ...range); }',
+    },
+    {
+      rule: 'rust-array-fill-bounds-domain-unrepresented',
+      source: 'export function fill(values: number[], start: any): void { values.fill(1, start); }',
+    },
+    {
+      rule: 'rust-array-fill-element-carrier-unrepresented',
+      source: 'export function fill(values: (number | string)[], value: number | string): void { values.fill(value); }',
+    },
+    {
+      rule: 'rust-array-fill-element-carrier-unrepresented',
+      source: 'export function fill(values: any[], value: any): void { values.fill(value); }',
+    },
+    {
+      rule: 'rust-array-fill-element-carrier-unrepresented',
+      source: 'export function fill(values: number[][], value: number[]): void { values.fill(value); }',
+    },
+    {
+      rule: 'rust-array-fill-element-carrier-unrepresented',
+      source:
+        'class Point { x: number = 0; } export function fill(values: Point[], value: Point): void { values.fill(value); }',
+    },
+    {
+      rule: 'rust-array-fill-element-carrier-unrepresented',
+      source:
+        'interface Point { x: number } export function fill(values: Point[], value: Point): void { values.fill(value); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function fill(): void { const values = [1, , 3]; values.fill(0); }',
+    },
+    {
+      rule: 'rust-array-fill-identity-carrier-unrepresented',
+      source: 'export function fill(values: number[]): number[] { return values.fill(1); }',
+    },
+    {
+      rule: 'rust-array-fill-identity-carrier-unrepresented',
+      source: 'export function fill(): number { const values = [1, 2, 3]; return values.fill(1).length; }',
+    },
+  ])('stably refuses unsupported exact fill semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-fill-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses zero, excess, and incompatible fill carriers', () => {
+    const getFillCall = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'fill',
+      );
+      const returned =
+        declaration?.kind === 'function'
+          ? declaration.body.find((statement) => statement.kind === 'return')
+          : undefined;
+      if (declaration?.kind !== 'function' || returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected returned array.fill call');
+      }
+      return { call: returned.expression, declaration };
+    };
+    const source =
+      'export function fill(values: number[], value: number): number[] { return values.fill(value, 0, 1); }';
+
+    for (const argumentCount of [0, 4]) {
+      const invocation = lower(`array-fill-${argumentCount}.ts`, source);
+      const call = getFillCall(invocation.module).call;
+      if (argumentCount === 0) {
+        (call.arguments as unknown as unknown[]).splice(0);
+      } else {
+        (call.arguments as unknown as unknown[]).push(call.arguments[2]);
+      }
+      delete (call.semantics as { signature?: unknown }).signature;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(invocation.module)).rule).toBe(
+        'rust-array-fill-invocation-unrepresented',
+      );
+    }
+
+    const mismatchedValue = lower('array-fill-value-carrier.ts', source);
+    const value = getFillCall(mismatchedValue.module);
+    (value.declaration.parameters[1] as { type: unknown }).type = { kind: 'primitive', name: 'string' };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedValue.module)).rule).toBe(
+      'rust-array-fill-value-carrier-unrepresented',
+    );
+
+    const mismatchedResult = lower('array-fill-result-carrier.ts', source);
+    const result = getFillCall(mismatchedResult.module).call;
+    (result.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedResult.module)).rule).toBe(
+      'rust-array-fill-result-carrier-unrepresented',
+    );
+
+    const readonlyReceiver = lower('array-fill-readonly-carrier.ts', source);
+    const receiver = getFillCall(readonlyReceiver.module).declaration.parameters[0];
+    if (!receiver || receiver.type.kind !== 'array') throw new Error('expected array fill receiver parameter');
+    (receiver.type as { readonly: boolean }).readonly = true;
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(readonlyReceiver.module)).rule).toBe(
+      'rust-array-fill-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a non-shared fill argument that reads its receiver during the mutable borrow', () => {
+    const result = lower(
+      'array-fill-direct-borrow-conflict.ts',
+      `export function conflict(): void {
+         const values = [1, 2, 3];
+         values.fill(values[0] ?? 0);
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-fill-alias-borrow-conflict');
+  });
+
+  it('uses the shared-array borrow-conflict rule for fill arguments that read a receiver alias', () => {
+    const result = lower(
+      'array-fill-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         alias.fill(values[0] ?? 0);
+         values.push(4);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('preserves efficient discarded reverse mutation and forwards an owned returned carrier', () => {
     const result = lower(
       'array-reverse-exact.ts',

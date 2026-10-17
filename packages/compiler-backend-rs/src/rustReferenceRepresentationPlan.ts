@@ -658,7 +658,7 @@ function createRustSharedArrayAnalysis(
   const parents = new Map<string, string>();
   const aliasEdges: Array<readonly [string, string]> = [];
   const ordinaryAliasBindingIds = new Set<string>();
-  const reverseAliasEdges: Array<readonly [string, string]> = [];
+  const identityMethodAliasEdges: Array<readonly [string, string]> = [];
   const ambiguousBindingIds = new Set<string>();
   const find = (id: string): string => {
     const parent = parents.get(id);
@@ -709,22 +709,24 @@ function createRustSharedArrayAnalysis(
       if (
         variable.initializer?.kind === 'call' &&
         variable.initializer.optional === false &&
-        variable.initializer.arguments.length === 0 &&
         variable.initializer.callee.kind === 'property' &&
         variable.initializer.callee.optional === false &&
         variable.initializer.callee.member?.receiver === 'array' &&
-        variable.initializer.callee.member.name === 'reverse' &&
+        ((variable.initializer.callee.member.name === 'reverse' && variable.initializer.arguments.length === 0) ||
+          (variable.initializer.callee.member.name === 'fill' &&
+            variable.initializer.arguments.length >= 1 &&
+            variable.initializer.arguments.length <= 3)) &&
         variable.initializer.callee.object.kind === 'identifier' &&
         variable.initializer.callee.object.reference.kind === 'binding' &&
         bindingTypes.get(variable.initializer.callee.object.reference.binding.id)?.kind === 'array'
       ) {
-        reverseAliasEdges.push([variable.binding.id, variable.initializer.callee.object.reference.binding.id]);
+        identityMethodAliasEdges.push([variable.binding.id, variable.initializer.callee.object.reference.binding.id]);
       }
     },
   });
 
   const evidenceById = new Map(ownership.bindings.map((evidence) => [evidence.binding.id, evidence]));
-  for (const edge of reverseAliasEdges) {
+  for (const edge of identityMethodAliasEdges) {
     const receiverId = edge[1];
     if (ordinaryAliasBindingIds.has(receiverId) || evidenceById.get(receiverId)?.reuse === 'multiple') {
       aliasEdges.push(edge);
@@ -4183,6 +4185,7 @@ function freezeRustReferenceRepresentationPlanValue(value: unknown, seen: WeakSe
 }
 
 const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'fill',
   'pop',
   'push',
   'reverse',

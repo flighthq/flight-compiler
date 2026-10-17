@@ -172,6 +172,35 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([]);
   });
 
+  it('promotes an observed fill result only when the original array identity remains live', () => {
+    const shared = lower(
+      'fill-result-shared.ts',
+      `export function sharedFill(): number {
+         const values = [1, 2, 3];
+         const returned = values.fill(0);
+         returned.push(4);
+         return values.length;
+       }`,
+    );
+    const moved = lower(
+      'fill-result-moved.ts',
+      `export function movedFill(): number {
+         const values = [1, 2, 3];
+         const returned = values.fill(0);
+         return returned.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [shared] }), shared)
+        .sharedArrayBindings.map(({ binding }) => binding.name)
+        .sort(),
+    ).toEqual(['returned', 'values']);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [moved] }), moved).sharedArrayBindings,
+    ).toEqual([]);
+  });
+
   it('refuses overlapping shared-array borrows before emitting RefCell runtime failure', () => {
     const module = lower(
       'alias-conflict.ts',

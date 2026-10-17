@@ -205,6 +205,13 @@ describe('collectIrModuleMovedBindingIdsRust', () => {
 });
 
 describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
+  it('detects array fill as referent mutation', () => {
+    const module = lower(`
+      export function overwrite(values: number[]): void { values.fill(0); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['values']);
+  });
+
   it('elects a parameter assigned into, one grown, and one handed to a function that mutates it', () => {
     const module = lower(`
       export function bump(cell: { value: number }, next: number): void { cell.value = next; }
