@@ -1473,7 +1473,7 @@ function rustBindingProfile(identity: string, profile: string, sourceName: strin
     bindings: [
       {
         nullability: 'non-null',
-        ownership: 'shared',
+        ownership: 'owned',
         sourceName,
         space: 'type',
         targetName,
