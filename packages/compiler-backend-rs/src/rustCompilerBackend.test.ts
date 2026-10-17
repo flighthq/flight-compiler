@@ -8411,23 +8411,152 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('refuses an unconstructed contextual callable-union return', () => {
+  it('constructs optional and exact one-parameter void callables in their nominal union variants', () => {
     const result = lower(
       'callable-union-return.ts',
-      `type HandlerSlot = ((value: number) => void) | string;
-       export function store(handler: (value?: number) => void): HandlerSlot {
-         return handler;
-       }`,
+      `type Handler = (value: number) => void;
+       type Reporter = (value?: number) => void;
+       type HandlerSlot = Handler | string;
+       type ReporterSlot = Reporter | string;
+       export function storeOptional(handler: (value?: number) => void): HandlerSlot { return handler; }
+       export function storeReporter(handler: Reporter): ReporterSlot { return handler; }`,
     );
+    const output = emitIrModuleRust(result.module).contents;
 
     expect(result.diagnostics).toEqual([]);
-    expect(() => emitIrModuleRust(result.module)).toThrow(
-      expect.objectContaining({
-        classification: 'compiler-restriction',
-        message: expect.stringContaining('requires represented Rust enum construction'),
-        rule: 'rust-contextual-general-union-construction-unrepresented',
-      }),
+    expect(output).toContain('type Reporter = Rc<dyn Fn(Option<f64>) -> ()>;');
+    expect(output).toContain(
+      'HandlerSlot::Handler(Rc::new(move |contextual_callable_argument0: f64| contextual_callable(Some(contextual_callable_argument0))))',
     );
+    expect(output).toContain('return ReporterSlot::Reporter(handler);');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `let optional_value = Rc::new(std::cell::Cell::new(0.0));
+           let optional_observer = Rc::clone(&optional_value);
+           let optional: Rc<dyn Fn(Option<f64>) -> ()> = Rc::new(move |value| optional_observer.set(value.unwrap()));
+           match store_optional(optional) {
+             HandlerSlot::Handler(handler) => handler(7.0),
+             HandlerSlot::String(_) => panic!("wrong optional variant"),
+           }
+           assert_eq!(optional_value.get(), 7.0);
+           let reporter_value = Rc::new(std::cell::Cell::new(0.0));
+           let reporter_observer = Rc::clone(&reporter_value);
+           let reporter: Reporter = Rc::new(move |value| reporter_observer.set(value.unwrap()));
+           match store_reporter(reporter) {
+             ReporterSlot::Reporter(stored) => stored(Some(11.0)),
+             ReporterSlot::String(_) => panic!("wrong reporter variant"),
+           }
+           assert_eq!(reporter_value.get(), 11.0);`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('evaluates an adapted callable producer once and retains its one Rc owner', () => {
+    const result = lower(
+      'callable-union-producer.ts',
+      `type Handler = (value: number) => void;
+       type HandlerSlot = Handler | string;
+       export function storeProduced(produce: () => (value?: number) => void): HandlerSlot {
+         return produce();
+       }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output.match(/let contextual_callable = produce\(\)/gu)).toHaveLength(1);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `let evaluations = Rc::new(std::cell::Cell::new(0));
+           let invocations = Rc::new(std::cell::Cell::new(0.0));
+           let evaluation_observer = Rc::clone(&evaluations);
+           let invocation_observer = Rc::clone(&invocations);
+           let produce: Rc<dyn Fn() -> Rc<dyn Fn(Option<f64>) -> ()>> = Rc::new(move || {
+             evaluation_observer.set(evaluation_observer.get() + 1);
+             let invocation_observer = Rc::clone(&invocation_observer);
+             Rc::new(move |value| invocation_observer.set(value.unwrap()))
+           });
+           let stored = store_produced(produce);
+           assert_eq!(evaluations.get(), 1);
+           match stored {
+             HandlerSlot::Handler(handler) => handler(13.0),
+             HandlerSlot::String(_) => panic!("wrong produced variant"),
+           }
+           assert_eq!(evaluations.get(), 1);
+           assert_eq!(invocations.get(), 13.0);`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('keeps unsupported contextual callable-union constructions on the stable refusal', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(lower(file, source).module));
+    const cases = [
+      [
+        'multiple.ts',
+        `type Slot = ((value: number) => void) | ((value: string) => void) | boolean;
+         export function store(handler: (value: number) => void): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'rest.ts',
+        `type Callback = (...values: number[]) => void;
+         type Slot = Callback | string;
+         export function store(handler: Callback): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'generic.ts',
+        `type Callback = <Value>(value: Value) => void;
+         type Slot = Callback | string;
+         export function store(handler: Callback): Slot { return handler; }`,
+        'rust-generic-callable-representation-unrepresented',
+      ],
+      [
+        'overload.ts',
+        `type Callback = ((value: number) => void) & ((value: string) => void);
+         type Slot = Callback | string;
+         export function store(handler: Callback): Slot { return handler; }`,
+        'rust-overloaded-callable-representation-unrepresented',
+      ],
+      [
+        'required-narrower.ts',
+        `type Slot = ((value?: number) => void) | string;
+         export function store(handler: (value: number) => void): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'result.ts',
+        `type Slot = ((value: number) => void) | string;
+         export function store(handler: (value: number) => number): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'structural.ts',
+        `export function store(handler: (value: number) => void): ((value: number) => void) | string {
+           return handler;
+         }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'erased.ts',
+        `type Slot = ((value: number) => void) | string;
+         export function store(handler: any): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+    ] as const;
+
+    expect(
+      cases.map(([file, source]) => {
+        const failure = refusal(file, source);
+        return [file, failure.classification, failure.rule];
+      }),
+    ).toEqual(cases.map(([file, , rule]) => [file, 'compiler-restriction', rule]));
   });
 
   it('keeps an already constructed general-union carrier valid across a return', () => {

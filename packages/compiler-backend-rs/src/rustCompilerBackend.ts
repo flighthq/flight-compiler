@@ -121,6 +121,7 @@ import {
   isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 import { createCompilerRustSourceTreeFinalization } from './rustSourceTreeFinalization.js';
+import { createRustUnionRepresentationPlan } from './rustUnionRepresentationPlan.js';
 
 interface PrimitiveUnionEnum {
   readonly name: string;
@@ -3005,6 +3006,150 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
   return source;
 }
 
+function emitContextualCallableUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const plan = createRustUnionRepresentationPlan(targetType, {
+    resolveAliasTarget(type) {
+      return resolveIrTypeAliasTargetRust(type, context);
+    },
+    resolveVariantName(type) {
+      return getGeneralUnionVariantNameRust(type, context);
+    },
+  });
+  if (plan.kind === 'refused' || plan.sentinels.kind !== 'none') return undefined;
+  const ownerLocation =
+    plan.owner.reference.kind === 'binding' && plan.owner.reference.binding.space === 'type'
+      ? getIrNamedTypeDeclarationLocationRust(plan.owner.reference.binding, context, context.module)
+      : undefined;
+  if (
+    plan.owner.typeArguments.length > 0 ||
+    ownerLocation?.declaration.kind !== 'typeAlias' ||
+    ownerLocation.declaration.typeParameters.length > 0
+  ) {
+    return undefined;
+  }
+  const callableVariants = plan.valueVariants.filter(
+    (variant): variant is typeof variant & { readonly resolvedType: Extract<IrType, { kind: 'function' }> } =>
+      variant.resolvedType.kind === 'function',
+  );
+  if (callableVariants.length !== 1) return undefined;
+  const variant = callableVariants[0]!;
+  const sourceType = inferIrExpressionTypeRust(expression, context);
+  const source = sourceType ? resolveIrCallableTypeRust(sourceType, context, new Set()) : undefined;
+  const target = variant.resolvedType;
+  if (
+    !source ||
+    source.typeParameters.length > 0 ||
+    target.typeParameters.length > 0 ||
+    source.parameters.length !== 1 ||
+    target.parameters.length !== 1 ||
+    source.parameters[0]!.rest ||
+    target.parameters[0]!.rest ||
+    !isIrVoidTypeRust(source.returns, context, new Set()) ||
+    !isIrVoidTypeRust(target.returns, context, new Set())
+  ) {
+    return undefined;
+  }
+
+  const sourceParameter = source.parameters[0]!;
+  const targetParameter = target.parameters[0]!;
+  const sourceStorage = emitFunctionTypeParameterRust(sourceParameter, context);
+  const targetStorage = emitFunctionTypeParameterRust(targetParameter, context);
+  const owner = emitType(plan.owner, context);
+  const ownedSource = emitOwnedOperandRust(expression, context);
+  if (sourceStorage === targetStorage) return `${owner}::${variant.name}(${ownedSource})`;
+  if (
+    !isIrRequiredNumberParameterRust(targetParameter, context) ||
+    !isIrOptionalNumberParameterRust(sourceParameter, context)
+  ) {
+    return undefined;
+  }
+
+  context.needsRcImport.add('Rc');
+  const sourceName = getGeneratedTargetNameRust('contextual_callable', context);
+  const argumentName = getGeneratedTargetNameRust('contextual_callable_argument0', context);
+  return `{ let ${sourceName} = ${ownedSource}; ${owner}::${variant.name}(Rc::new(move |${argumentName}: f64| ${sourceName}(Some(${argumentName})))) }`;
+}
+
+function isIrOptionalNumberParameterRust(
+  parameter: Readonly<{ optional: boolean; rest: boolean; type: IrType }>,
+  context: EmitContext,
+): boolean {
+  if (parameter.rest) return false;
+  const resolved = resolveIrTypeAliasValueRust(parameter.type, context, new Set());
+  if (parameter.optional) return resolved.kind === 'primitive' && resolved.name === 'number';
+  if (resolved.kind !== 'union') return false;
+  const members = flattenIrUnionTypesRust(resolved.types).map((member) =>
+    resolveIrTypeAliasValueRust(member, context, new Set()),
+  );
+  return (
+    members.length === 2 &&
+    members.some((member) => member.kind === 'undefined') &&
+    members.some((member) => member.kind === 'primitive' && member.name === 'number')
+  );
+}
+
+function isIrRequiredNumberParameterRust(
+  parameter: Readonly<{ optional: boolean; rest: boolean; type: IrType }>,
+  context: EmitContext,
+): boolean {
+  if (parameter.optional || parameter.rest) return false;
+  const resolved = resolveIrTypeAliasValueRust(parameter.type, context, new Set());
+  return resolved.kind === 'primitive' && resolved.name === 'number';
+}
+
+function isIrVoidTypeRust(type: Readonly<IrType>, context: EmitContext, resolving: ReadonlySet<string>): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, resolving);
+  return resolved.kind === 'primitive' && resolved.name === 'void';
+}
+
+function resolveIrCallableTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  const resolved = resolveIrTypeAliasValueRust(type, context, resolving);
+  return resolved.kind === 'function' ? resolved : undefined;
+}
+
+function resolveIrTypeAliasTargetRust(
+  type: Readonly<IrTypeReference>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
+  if (location?.declaration.kind !== 'typeAlias') return undefined;
+  try {
+    const substitution = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+    return resolveIrTypeStructuralSubstitution(location.declaration.type, substitution);
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+    throw error;
+  }
+}
+
+function resolveIrTypeAliasValueRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return type;
+  const key = type.reference.binding.id;
+  if (resolving.has(key)) return type;
+  const target = resolveIrTypeAliasTargetRust(type, context);
+  return target ? resolveIrTypeAliasValueRust(target, context, new Set(resolving).add(key)) : type;
+}
+
 function collectIrModuleApiReferencedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
   const ids = new Set<string>();
   function collectFromType(type: Readonly<IrType>): void {
@@ -3800,18 +3945,24 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     return `${binding}: Option<${emitType(parameterType, context)}>`;
   }
   if (parameter.optional) {
-    const type = emitType(parameterType, context);
-    if (hasIrTypeNullMemberRust(parameter.type) && hasIrTypeUndefinedMemberRust(parameter.type)) {
-      emissionError(context, 'optional parameters containing both null and undefined require distinct Rust sentinels');
-    }
-    const optionalType =
-      hasIrTypeUndefinedMemberRust(parameter.type) && !hasIrTypeNullMemberRust(parameter.type)
-        ? type
-        : `Option<${type}>`;
-    return `${binding}: ${optionalType}`;
+    return `${binding}: ${emitFunctionTypeParameterRust({ ...parameter, type: parameterType }, context)}`;
   }
   if (parameter.rest) return `${binding}: ${emitType(parameterType, context)}`;
   return `${binding}: ${emitType(parameterType, context)}`;
+}
+
+function emitFunctionTypeParameterRust(
+  parameter: Readonly<{ optional: boolean; rest: boolean; type: IrType }>,
+  context: EmitContext,
+): string {
+  const type = emitType(parameter.type, context);
+  if (!parameter.optional) return type;
+  if (hasIrTypeNullMemberRust(parameter.type) && hasIrTypeUndefinedMemberRust(parameter.type)) {
+    emissionError(context, 'optional parameters containing both null and undefined require distinct Rust sentinels');
+  }
+  return hasIrTypeUndefinedMemberRust(parameter.type) && !hasIrTypeNullMemberRust(parameter.type)
+    ? type
+    : `Option<${type}>`;
 }
 
 function emitRecord(
@@ -3951,6 +4102,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           const wrapped = emitPrimitiveUnionConstructionRust(statement.expression, targetEnum, context);
           if (wrapped) return [`return ${wrapped};`];
         }
+        const callableUnion = emitContextualCallableUnionConstructionRust(
+          statement.expression,
+          context.enclosingReturnType,
+          context,
+        );
+        if (callableUnion) return [`return ${callableUnion};`];
         if (
           hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
           !hasSameRustRepresentationAsType(statement.expression, context.enclosingReturnType, context)
@@ -4073,8 +4230,15 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'array':
       return `Vec<${emitType(type.element, context)}>`;
     case 'function': {
+      if (type.typeParameters.length > 0) {
+        emissionRuleError(
+          context,
+          'generic callable values require Rust monomorphization before they can enter a concrete carrier',
+          'rust-generic-callable-representation-unrepresented',
+        );
+      }
       context.needsRcImport.add('Rc');
-      const parameters = type.parameters.map((parameter) => emitType(parameter.type, context));
+      const parameters = type.parameters.map((parameter) => emitFunctionTypeParameterRust(parameter, context));
       const returns = emitType(type.returns, context);
       return `Rc<dyn Fn(${parameters.join(', ')}) -> ${returns}>`;
     }
@@ -4088,6 +4252,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return emitType(resolved, context);
     }
     case 'intersection': {
+      if (type.types.filter((member) => member.kind === 'function').length > 1) {
+        emissionRuleError(
+          context,
+          'overloaded callable values require one elected Rust dispatch carrier before emission',
+          'rust-overloaded-callable-representation-unrepresented',
+        );
+      }
       const scalarDomain = getIrTypePrimitiveDomainRust(type, context);
       if (scalarDomain) return emitType({ kind: 'primitive', name: scalarDomain }, context);
       const callableObject = getOrCreateCallableObjectRecordRust(type, context);

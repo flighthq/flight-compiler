@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/callableUnionParameterity.ts: returning a contextual general union alternative requires represented Rust enum construction
