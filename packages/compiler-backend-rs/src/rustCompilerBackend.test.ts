@@ -22831,18 +22831,124 @@ describe('emitIrModuleRust intersection type', () => {
 });
 
 describe('emitIrModuleRust synchronous try-finally', () => {
-  it('refuses synchronous try/finally without catch', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'try-finally.ts',
-          `export function cleanup(): void {
-             let x: number = 0;
-             try { x = 1; } finally { x = 2; }
-           }`,
-        ).module,
-      ),
-    ).toThrow(/catch_unwind/u);
+  it('emits normal-or-panic completion around one finalizer', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-finally.ts',
+        `export function settle(log: number[]): number {
+           let value = 0;
+           try { value = 1; log.push(value); } finally { log.push(2); }
+           return value;
+         }`,
+      ).module,
+    ).contents;
+    const protection = output.indexOf('std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {');
+    const cleanup = output.indexOf('log.push(array_push_argument0_2)');
+    const resume = output.indexOf('std::panic::resume_unwind(try_finally_panic)');
+
+    expect(protection).toBeGreaterThan(-1);
+    expect(cleanup).toBeGreaterThan(protection);
+    expect(resume).toBeGreaterThan(cleanup);
+  });
+
+  it.skipIf(!rustcAvailable)('runs the finalizer once on normal completion and resumes the exact panic payload', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-finally-runtime.ts',
+        `export function settle(log: number[]): number {
+           let value = 0;
+           try { value = 1; } finally { log.push(2); }
+           return value;
+         }
+         export function protect(action: () => void, log: number[]): void {
+           try { action(); } finally { log.push(3); }
+         }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      `let mut normal_log = vec![];
+       assert_eq!(settle(&mut normal_log), 1.0);
+       assert_eq!(normal_log, vec![2.0]);
+       let original = std::sync::Arc::new(());
+       let thrown = std::sync::Arc::clone(&original);
+       let action: Rc<dyn Fn() -> ()> = Rc::new(move || std::panic::panic_any(std::sync::Arc::clone(&thrown)));
+       let mut panic_log = vec![];
+       let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| protect(action, &mut panic_log))).unwrap_err();
+       assert_eq!(panic_log, vec![3.0]);
+       let resumed = failure.downcast_ref::<std::sync::Arc<()>>().unwrap();
+       assert!(std::sync::Arc::ptr_eq(&original, resumed));`,
+    );
+  });
+
+  it.skipIf(!rustcAvailable)('lets a finalizer panic replace the pending protected panic', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-finally-override-runtime.ts',
+        `export function replace(protectedAction: () => void, finalizer: () => void): void {
+           try { protectedAction(); } finally { finalizer(); }
+         }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      `let protected_payload = std::sync::Arc::new(());
+       let protected_thrown = std::sync::Arc::clone(&protected_payload);
+       let finalizer_payload = std::sync::Arc::new(());
+       let finalizer_thrown = std::sync::Arc::clone(&finalizer_payload);
+       let protected_action: Rc<dyn Fn() -> ()> = Rc::new(move || std::panic::panic_any(std::sync::Arc::clone(&protected_thrown)));
+       let finalizer: Rc<dyn Fn() -> ()> = Rc::new(move || std::panic::panic_any(std::sync::Arc::clone(&finalizer_thrown)));
+       let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| replace(protected_action, finalizer))).unwrap_err();
+       let observed = failure.downcast_ref::<std::sync::Arc<()>>().unwrap();
+       assert!(!std::sync::Arc::ptr_eq(&protected_payload, observed));
+       assert!(std::sync::Arc::ptr_eq(&finalizer_payload, observed));`,
+    );
+  });
+
+  it.each([
+    ['a catch clause', 'export function invalid(): void { try {} catch {} finally {} }', 'try/finally with catch'],
+    [
+      'a protected return',
+      'export function invalid(): void { try { return; } finally {} }',
+      'protected body contains return',
+    ],
+    [
+      'a finalizer return',
+      'export function invalid(): void { try {} finally { return; } }',
+      'finalizer contains return',
+    ],
+    [
+      'a protected break',
+      'export function invalid(): void { while (true) { try { break; } finally {} } }',
+      'protected body contains break',
+    ],
+    [
+      'a finalizer continue',
+      'export function invalid(): void { while (true) { try {} finally { continue; } } }',
+      'finalizer contains continue',
+    ],
+    [
+      'a labeled transfer',
+      'export function invalid(): void { outer: while (true) { try { break outer; } finally {} } }',
+      'protected body contains labeled break',
+    ],
+    [
+      'a nested finally',
+      'export function invalid(): void { try { try {} finally {} } finally {} }',
+      'protected body contains a nested finally',
+    ],
+  ])('stably refuses synchronous try/finally with %s', (_name, source, message) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-finally-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-sync-try-finally-completion-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain(message);
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
   });
 });
 

@@ -8926,6 +8926,54 @@ function collectIrStatementAsyncTryCompletionEvidenceRust(
   };
 }
 
+function hasIrStatementNestedFinallyRust(statement: Readonly<IrStatement>): boolean {
+  const nestedFinallyPaths: CompilerIrTraversalPath[] = [];
+  const nestedFunctionPaths: CompilerIrTraversalPath[] = [];
+  analyzeIrStatementSubtreeTraversal(statement, {
+    functionSignature(_signature, path_) {
+      nestedFunctionPaths.push(path_);
+    },
+    statement(candidate, path_) {
+      if (candidate.kind === 'try' && candidate.finallyBody) nestedFinallyPaths.push(path_);
+    },
+  });
+  return nestedFinallyPaths.some(
+    (path_) =>
+      !nestedFunctionPaths.some(
+        (functionPath) => functionPath.length < path_.length && isRustTraversalPathPrefix(functionPath, path_),
+      ),
+  );
+}
+
+function assertIrSynchronousTryFinallyCompletionRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>> & { finallyBody: IrStatement },
+  context: EmitContext,
+): void {
+  const rule = 'rust-sync-try-finally-completion-unrepresented';
+  if (statement.catchClause) {
+    emissionRuleError(context, 'synchronous try/finally with catch requires a general Rust completion record', rule);
+  }
+  const regions = [
+    { body: statement.tryBody, name: 'protected body' },
+    { body: statement.finallyBody, name: 'finalizer' },
+  ] as const;
+  for (const region of regions) {
+    if (hasIrStatementNestedFinallyRust(region.body)) {
+      emissionRuleError(context, `synchronous try/finally ${region.name} contains a nested finally`, rule);
+    }
+    const transfer = collectIrStatementAsyncTryCompletionEvidenceRust(region.body).abruptStatements.find(
+      (candidate) => candidate.kind !== 'throw',
+    );
+    if (!transfer) continue;
+    const labeled = (transfer.kind === 'break' || transfer.kind === 'continue') && transfer.target ? 'labeled ' : '';
+    emissionRuleError(
+      context,
+      `synchronous try/finally ${region.name} contains ${labeled}${transfer.kind} control transfer`,
+      rule,
+    );
+  }
+}
+
 function isIrCatchBindingReferenceRust(expression: Readonly<IrExpression>, bindingId: string): boolean {
   return expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
@@ -10655,6 +10703,25 @@ function emitStatementValueExpressionRust(
   return `{ ${[...statements, emitExpression(completion.expression, context)].join(' ')} }`;
 }
 
+function emitSynchronousTryFinallyRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>> & { finallyBody: IrStatement },
+  context: EmitContext,
+): string[] {
+  assertIrSynchronousTryFinallyCompletionRust(statement, context);
+  const completion = getGeneratedTargetNameRust('try_finally_completion', context);
+  const panic = getGeneratedTargetNameRust('try_finally_panic', context);
+  const protectedContext: EmitContext = { ...context, insideProtectedTry: true };
+  return [
+    `let ${completion} = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {`,
+    ...indentSourceLines(emitStatementBody(statement.tryBody, protectedContext)),
+    '}));',
+    ...emitStatement(statement.finallyBody, context),
+    `if let Err(${panic}) = ${completion} {`,
+    `  std::panic::resume_unwind(${panic});`,
+    '}',
+  ];
+}
+
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
   switch (statement.kind) {
     case 'block':
@@ -10792,7 +10859,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         return emitAsyncTryCatchRust(statement, protectedContext);
       }
       if (statement.finallyBody) {
-        emissionError(context, 'synchronous try/finally requires catch_unwind with resume_unwind');
+        return emitSynchronousTryFinallyRust(
+          statement as Readonly<typeof statement> & { finallyBody: IrStatement },
+          context,
+        );
       }
       const catchBinding = statement.catchClause
         ? statement.catchClause.binding
