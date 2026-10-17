@@ -5395,7 +5395,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it('refuses a non-optional array element variable initializer', () => {
     const module = lower(
       'array-init.ts',
-      'export function first(items: string[]): string { if (items.length === 0) { return ""; } const head: string = items[0]!; return head; }',
+      'export function second(items: string[]): string { if (items.length === 0) { return ""; } const result: string = items[1]!; return result; }',
     );
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module.module));
     expect(failure.rule).toBe('rust-array-index-result-absence-unrepresented');
@@ -28030,11 +28030,9 @@ describe('emitIrModuleRust typeof representation refusals', () => {
     const module = lower(
       'typeof-origin.ts',
       `interface Texture { size: number }
-function read(): Texture | undefined { return undefined; }
-export function sizeWhenPresent(): number {
-  const texture = read();
-  if (typeof texture !== 'undefined') return texture.size;
-  return 0;
+type ErasedTexture = unknown;
+export function textureIsPresent(texture: ErasedTexture): boolean {
+  return typeof texture !== 'undefined';
 }`,
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
