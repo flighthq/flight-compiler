@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrModule } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 describe('C++ structural-row weak keys', () => {
   it('retains the audited Renderable union on the current reference-owner plan', () => {
@@ -176,6 +177,7 @@ function captureFailure(action: () => unknown): Error & { rule?: string | undefi
 
 function emit(modules: readonly IrModule[], module: IrModule, moduleResolution?: CompilerModuleResolutionPlan): string {
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(modules),
     ...(moduleResolution ? { moduleResolution } : {}),
     modules,
     options: { runtimeProfile: 'flight-cpp' },

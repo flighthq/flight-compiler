@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 function emitReadonlyViewModules(contract: string, consumer: string): string {
   const moduleResolution: CompilerModuleResolutionPlan = {
@@ -38,6 +39,7 @@ function emitReadonlyViewModules(contract: string, consumer: string): string {
   expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
   const modules = results.map((result) => result.module);
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
     moduleResolution,
     modules,
     options: { runtimeProfile: 'flight-cpp' },

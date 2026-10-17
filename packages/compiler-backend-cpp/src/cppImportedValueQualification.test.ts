@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 describe('C++ imported value qualification', () => {
   it('avoids local collisions and projects namespace imports inside lambdas', () => {
@@ -44,6 +45,7 @@ describe('C++ imported value qualification', () => {
     const modules = results.map((result) => result.module);
     const consumer = modules[1]!;
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -104,6 +106,7 @@ describe('C++ imported value qualification', () => {
       };
       const modules = lowerTypeScriptSources(sources, moduleResolution).map((result) => result.module);
       return createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: {
@@ -183,6 +186,21 @@ describe('C++ imported value qualification', () => {
     expect(modules.flatMap((result) => result.diagnostics)).toEqual([]);
     const lowered = modules.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(lowered, {
+        edges: [
+          {
+            importer: lowered[1],
+            specifier: './LightUnit',
+            target: { packageName: typesPackage, source: 'packages/types/src/LightUnit.ts' },
+          },
+          {
+            importer: lowered[2],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: typesPackage, source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: {
         edges: [
           {
@@ -355,6 +373,7 @@ function emitCrossPackageQualificationFixture(
   moduleResolution: CompilerModuleResolutionPlan,
 ): string {
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(fixture.modules, moduleResolution),
     moduleResolution,
     modules: fixture.modules,
     options: {

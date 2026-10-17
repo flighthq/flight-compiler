@@ -10,6 +10,7 @@ import type {
   IrType,
 } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 import {
   createIrTypeReferenceRepresentationPlanCpp,
   createIrTypeReferenceRepresentationPlannerCpp,
@@ -1297,6 +1298,7 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       });
     }
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },

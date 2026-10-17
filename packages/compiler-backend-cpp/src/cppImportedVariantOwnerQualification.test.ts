@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 describe('C++ imported variant owner qualification', () => {
   it('qualifies imported owners for variant narrowing and concrete value construction', () => {
@@ -41,6 +42,10 @@ describe('C++ imported variant owner qualification', () => {
     );
     const consumer = results[1]!;
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -362,6 +367,7 @@ function emitConsumer(
   consumerIndex: number,
 ): string {
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(results.map((result) => result.module)),
     ...(moduleResolution ? { moduleResolution } : {}),
     modules: results.map((result) => result.module),
     options: {

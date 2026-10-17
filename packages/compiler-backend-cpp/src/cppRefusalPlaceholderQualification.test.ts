@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrModule } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 describe('C++ refusal placeholder qualification', () => {
   const options = {
@@ -32,6 +33,7 @@ describe('C++ refusal placeholder qualification', () => {
        export function readPos(reader: Reader): number { return reader.pos + BASE; }`,
     );
     const full = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(fullFixture.modules, fullFixture.moduleResolution),
       moduleResolution: fullFixture.moduleResolution,
       modules: fullFixture.modules,
       options,
@@ -248,6 +250,7 @@ describe('C++ refusal placeholder qualification', () => {
     modules: IrModule[];
   }): string {
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(fixture.modules, fixture.moduleResolution),
       moduleResolution: fixture.moduleResolution,
       modules: fixture.modules,
       options,

@@ -27,6 +27,7 @@ import type {
   IrUnionMemberTestEvidence,
 } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, createCppCompilerPublicBindingPlan, emitIrModuleCpp } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -108,6 +109,7 @@ function emitRecordShapeConversionFiles(consumerSource: string, providerDeclarat
     moduleResolution,
   ).map((result) => result.module);
   const session = createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation([consumer!, provider!], moduleResolution),
     moduleResolution,
     modules: [consumer!, provider!],
     options: {
@@ -134,6 +136,10 @@ function emitCppModuleCppSession(
   index: number,
 ): string {
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(
+      results.map((result) => result.module),
+      moduleResolution,
+    ),
     moduleResolution,
     modules: results.map((result) => result.module),
     options: { runtimeProfile: 'flight-cpp' },
@@ -2591,6 +2597,7 @@ function emitImportedGeolocationAccessModules() {
   const { moduleResolution, results } = lowerImportedGeolocationAccessModules();
   const modules = results.map((result) => result.module);
   const session = createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
     moduleResolution,
     modules,
     options: {
@@ -2827,7 +2834,11 @@ describe('createCppCompilerBackend', () => {
   it('emits through createEmissionSession without module resolution', () => {
     const backend = createCppCompilerBackend();
     const module = lower('value.ts', 'export const value = 1;').module;
-    const session = backend.createEmissionSession!({ modules: [module], options: {} });
+    const session = backend.createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([module]),
+      modules: [module],
+      options: {},
+    });
 
     expect(session.emitModule(module)).toEqual([emitIrModuleCpp(module)]);
   });
@@ -2846,6 +2857,7 @@ describe('createCppCompilerBackend', () => {
     const backend = createCppCompilerBackend();
     const modules = [consumer, model];
     const session = backend.createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -3095,6 +3107,7 @@ describe('createCppCompilerBackend', () => {
     const results = lowerTypeScriptSources(files, moduleResolution);
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -3129,6 +3142,7 @@ describe('createCppCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -3241,6 +3255,7 @@ describe('createCppCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([app, hostWeb, types], moduleResolution),
       moduleResolution,
       modules: [app, hostWeb, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -3354,6 +3369,7 @@ describe('createCppCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -3852,6 +3868,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedCommandAndPickingErasedRowModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -3891,6 +3908,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedSceneErasedRowProbeModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -3983,6 +4001,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4099,6 +4118,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4216,6 +4236,10 @@ describe('createCppCompilerBackend', () => {
     ]);
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, {
+        edges: [],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4357,6 +4381,10 @@ describe('createCppCompilerBackend', () => {
     ]);
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, {
+        edges: [],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4471,6 +4499,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4594,6 +4623,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4715,6 +4745,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4845,6 +4876,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4967,6 +4999,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -4994,6 +5027,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -5026,6 +5060,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -5057,6 +5092,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -5271,6 +5307,7 @@ describe('createCppCompilerBackend', () => {
     };
     const emit = (bindings: readonly Readonly<CppCompilerExternalBinding>[]) =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: {
@@ -5336,6 +5373,7 @@ describe('createCppCompilerBackend', () => {
 
     const emitBoth = (order: readonly [Readonly<IrModule>, Readonly<IrModule>]): readonly string[] => {
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation([colliding, plain], resolutionPlan),
         moduleResolution: resolutionPlan,
         modules: [colliding, plain],
         options: { runtimeProfile: 'flight-cpp' },
@@ -5662,6 +5700,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -5672,6 +5711,7 @@ describe('createCppCompilerBackend', () => {
     // the backend no longer has the owner that proves named-member storage. The same access must refuse
     // rather than guessing from the key literals or materializing a replacement object.
     const unavailableOwnerSession = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([modules[3]!], moduleResolution),
       moduleResolution,
       modules: [modules[3]!],
       options: { runtimeProfile: 'flight-cpp' },
@@ -5705,6 +5745,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -5772,6 +5813,7 @@ describe('createCppCompilerBackend', () => {
     );
     const module = tagged!.module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([module], resolutionPlan),
       moduleResolution: resolutionPlan,
       modules: [module],
       options: { runtimeProfile: 'flight-cpp' },
@@ -5838,6 +5880,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolutionPlan),
       moduleResolution: resolutionPlan,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -6625,6 +6668,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -7289,6 +7333,7 @@ describe('createCppCompilerBackend', () => {
       const modules = results.map((result) => result.module);
       return {
         session: createCppCompilerBackend().createEmissionSession!({
+          moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
           moduleResolution,
           modules,
           options: { runtimeProfile: 'flight-cpp' },
@@ -7325,6 +7370,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedHasBoundsRectangleModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -7627,6 +7673,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -7790,6 +7837,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -7909,6 +7957,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -8096,6 +8145,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8242,6 +8292,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8435,6 +8486,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTypeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8473,6 +8525,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTypeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8495,6 +8548,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTypeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8517,6 +8571,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTypeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8565,6 +8620,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedRenderStateAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8659,6 +8715,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTextureAtlasFrameUnionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8706,6 +8763,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTextureAtlasFrameUnionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -8747,6 +8805,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedSceneTypeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8797,6 +8856,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedTextureAndTextShaperAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8827,6 +8887,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedSceneResourceAssertionModules();
     const modules = results.map((result) => result.module);
     const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8846,6 +8907,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedPhysicsShapeAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8874,6 +8936,7 @@ describe('createCppCompilerBackend', () => {
     const modules = results.map((result) => result.module);
     const failure = captureBackendEmissionFailure(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -8895,6 +8958,7 @@ describe('createCppCompilerBackend', () => {
     const modules = results.map((result) => result.module);
     const failure = captureBackendEmissionFailure(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -8915,6 +8979,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedSwfBoundsAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -8959,6 +9024,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedPhysics3DLegacyAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9225,6 +9291,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedGltfMaterialExtensionAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9283,6 +9350,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedAwd2MaterialHandlerAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9338,6 +9406,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedMeshAndMovieClipAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9367,6 +9436,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedDialogAndGizmoAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9398,6 +9468,7 @@ describe('createCppCompilerBackend', () => {
     const { moduleResolution, results } = lowerImportedSelectionStateAssertionModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -9494,6 +9565,7 @@ describe('createCppCompilerBackend', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -9910,6 +9982,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -10098,6 +10171,16 @@ int main() {
         },
       );
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation([consumer!.module, types!.module], {
+          edges: [
+            {
+              importer: undefined as never,
+              specifier: '@flighthq/types',
+              target: { packageName: '@flighthq/types', source: 'packages/types/src/animationPlayer.ts' },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        }),
         moduleResolution: {
           edges: [
             {
@@ -11790,6 +11873,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([texture, environment], moduleResolution),
       moduleResolution,
       modules: [texture, environment],
       options: { runtimeProfile: 'flight-cpp' },
@@ -11851,6 +11935,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, vocabulary], moduleResolution),
       moduleResolution,
       modules: [consumer, vocabulary],
       options: { runtimeProfile: 'flight-cpp' },
@@ -11883,6 +11968,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, library], moduleResolution),
       moduleResolution,
       modules: [consumer, library],
       options: { runtimeProfile: 'flight-cpp' },
@@ -11916,6 +12002,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, geometry], moduleResolution),
       moduleResolution,
       modules: [consumer, geometry],
       options: { runtimeProfile: 'flight-cpp' },
@@ -11947,6 +12034,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, guards], moduleResolution),
       moduleResolution,
       modules: [consumer, guards],
       options: { runtimeProfile: 'flight-cpp' },
@@ -12033,6 +12121,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -12081,6 +12170,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -12149,6 +12239,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -12180,6 +12271,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -12220,6 +12312,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, beta, alpha], moduleResolution),
       moduleResolution,
       modules: [consumer, beta, alpha],
       options: {
@@ -12299,6 +12392,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolutionPlan),
       moduleResolution: resolutionPlan,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -12377,6 +12471,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolutionPlan),
       moduleResolution: resolutionPlan,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -12462,6 +12557,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolutionPlan),
       moduleResolution: resolutionPlan,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -12518,6 +12614,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -12606,6 +12703,7 @@ int main() {
       ]),
     );
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], moduleResolution),
       moduleResolution,
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -12726,6 +12824,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -13462,6 +13561,10 @@ export interface CanvasTextureResolvers extends Entity {
       schema: 'flight-cpp-external-bindings/1' as const,
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: { externalBindings, runtimeProfile: 'flight-cpp' },
@@ -13581,6 +13684,10 @@ export interface CanvasTextureResolvers extends Entity {
       schema: 'flight-cpp-external-bindings/1' as const,
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: { externalBindings, runtimeProfile: 'flight-cpp' },
@@ -14089,6 +14196,10 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
       moduleResolution,
     );
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: { runtimeProfile: 'flight-cpp' },
@@ -15113,6 +15224,10 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
         moduleResolution,
       ) as readonly any[];
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(
+          results.map((result) => result.module),
+          moduleResolution,
+        ),
         moduleResolution,
         modules: results.map((result) => result.module),
         options: { runtimeProfile: 'flight-cpp' },
@@ -15201,6 +15316,10 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
         moduleResolution,
       ) as readonly any[];
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(
+          results.map((result) => result.module),
+          moduleResolution,
+        ),
         moduleResolution,
         modules: results.map((result) => result.module),
         options: { runtimeProfile: 'flight-cpp' },
@@ -17541,6 +17660,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -17621,6 +17741,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -17677,6 +17798,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -17763,6 +17885,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -17847,6 +17970,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -17970,6 +18094,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -18058,6 +18183,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -18134,6 +18260,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -18204,6 +18331,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -18383,6 +18511,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     });
 
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -18640,6 +18769,10 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -18746,6 +18879,10 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     expect(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(
+          results.map((result) => result.module),
+          moduleResolution,
+        ),
         moduleResolution,
         modules: results.map((result) => result.module),
         options: {
@@ -19598,6 +19735,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -20289,6 +20427,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -20493,6 +20632,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -20552,6 +20692,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -20643,6 +20784,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -21495,6 +21637,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -21693,6 +21836,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       schema: 'flight-cpp-external-bindings/1' as const,
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -24249,6 +24393,10 @@ int main() {
       moduleResolution,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -24341,6 +24489,10 @@ int main() {
     );
     const runtimeKey = node?.kind === 'interface' ? node.properties[0]?.computedKey : undefined;
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -24405,6 +24557,10 @@ int main() {
       moduleResolution,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -24460,6 +24616,10 @@ int main() {
       (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Branch',
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -24521,6 +24681,10 @@ int main() {
       (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Branch',
     );
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: { runtimeProfile: 'flight-cpp' },
@@ -24574,6 +24738,10 @@ int main() {
       source: 'packages/duplicate/src/Key.ts',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [...results.map((result) => result.module), duplicateOwner],
+        moduleResolution,
+      ),
       moduleResolution,
       modules: [...results.map((result) => result.module), duplicateOwner],
       options: { runtimeProfile: 'flight-cpp' },
@@ -24711,6 +24879,7 @@ int main() {
       source: 'packages/duplicate/src/ambiguous-symbol-owner.ts',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([module, duplicate]),
       modules: [module, duplicate],
       options: { runtimeProfile: 'flight-cpp' },
     });
@@ -25135,6 +25304,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, texture, types], moduleResolution),
       moduleResolution,
       modules: [consumer, texture, types],
       options: { runtimeProfile: 'flight-cpp' },
@@ -25399,6 +25569,10 @@ int main() {
        export function pick(): string { return TextureAtlasRotation.counterclockwise90; }`,
     ).module;
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: {
         edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
         schema: 'flight-compiler-module-resolution/1',
@@ -25422,6 +25596,16 @@ int main() {
        export function pick(): string { return TextureAtlasRotation.counterclockwise90; }`,
     ).module;
     const barrelEmitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([barrelConsumer, contract, rotation], {
+        edges: [
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: contract.packageName, source: contract.source },
+          },
+          { specifier: './rotation', target: { packageName: rotation.packageName, source: rotation.source } },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: {
         edges: [
           {
@@ -26022,6 +26206,7 @@ int main() {
     Object.assign(state.declarations[0]!, { mutable: true });
     const mutableFailure = captureBackendEmissionFailure(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(mutableModules, moduleResolution),
         moduleResolution,
         modules: mutableModules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -26158,6 +26343,7 @@ int main() {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules),
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     });
@@ -26364,6 +26550,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -26454,6 +26641,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -26545,6 +26733,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -26742,6 +26931,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -26826,6 +27016,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -27038,6 +27229,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -27206,6 +27398,7 @@ int main() {
         const modules = results.map((result) => result.module);
         const failure = captureBackendEmissionFailure(() =>
           createCppCompilerBackend().createEmissionSession!({
+            moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
             moduleResolution,
             modules,
             options: { runtimeProfile: 'flight-cpp' },
@@ -27283,6 +27476,7 @@ int main() {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -27691,6 +27885,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -27759,6 +27954,10 @@ int main() {
       moduleResolution,
     );
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -28107,6 +28306,7 @@ int main() {
     const types = modules.find((module) => module.source.endsWith('/FlightDocumentFieldSchema.ts'))!;
     const tokens = modules.find((module) => module.source.endsWith('/substitute.ts'))!;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -29878,6 +30078,7 @@ int main() {
       schema: 'flight-cpp-external-bindings/1' as const,
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -30068,6 +30269,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -30227,6 +30429,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -30321,6 +30524,7 @@ int main() {
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -30416,6 +30620,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -30605,6 +30810,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -30719,6 +30925,7 @@ int main() {
       type: { kind: 'named', reference: { kind: 'binding' } },
     });
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -30967,6 +31174,7 @@ int main() {
       ).map((result) => result.module);
     const modules = lowerGuards('');
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { externalBindings, runtimeProfile: 'flight-cpp' },
@@ -30989,6 +31197,7 @@ int main() {
     );
     expect(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(nonmatching, moduleResolution),
         moduleResolution,
         modules: nonmatching,
         options: { externalBindings, runtimeProfile: 'flight-cpp' },
@@ -31194,6 +31403,7 @@ int main() {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules),
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[1]!)[0]!.contents;
@@ -31238,6 +31448,7 @@ int main() {
     ]);
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules),
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[1]!)[0]!.contents;
@@ -31451,6 +31662,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -31692,6 +31904,10 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: { runtimeProfile: 'flight-cpp' },
@@ -32475,6 +32691,7 @@ Resolver make_resolver(TextureRef texture) {
     const consumer = modules[6]!;
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -32682,6 +32899,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -33583,6 +33801,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -33721,6 +33940,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer!, provider!], moduleResolution),
       moduleResolution,
       modules: [consumer!, provider!],
       options: { runtimeProfile: 'flight-cpp' },
@@ -34381,6 +34601,7 @@ Resolver make_resolver(TextureRef texture) {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, barrel, model], moduleResolution),
       moduleResolution,
       modules: [consumer, barrel, model],
       options: { runtimeProfile: 'flight-cpp' },
@@ -35144,6 +35365,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35198,6 +35420,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35274,6 +35497,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const texture = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35372,6 +35596,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35420,6 +35645,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35489,6 +35715,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -35516,6 +35743,7 @@ Resolver make_resolver(TextureRef texture) {
     expect(early).not.toMatch(/\bReadonly</u);
 
     const defaultNamespaceInteraction = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35568,6 +35796,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35620,6 +35849,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const b = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -35660,6 +35890,7 @@ Resolver make_resolver(TextureRef texture) {
         moduleResolution,
       ).map((result) => result.module);
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -35740,6 +35971,7 @@ Resolver make_resolver(TextureRef texture) {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -36229,6 +36461,7 @@ Resolver make_resolver(TextureRef texture) {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, contract, status], moduleResolution),
       moduleResolution,
       modules: [consumer, contract, status],
       options: { runtimeProfile: 'flight-cpp' },
@@ -36916,6 +37149,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const emit = (modules: readonly Readonly<IrModule>[], module: Readonly<IrModule>) =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, plan),
         moduleResolution: plan,
         modules,
         options: {
@@ -36994,6 +37228,7 @@ Resolver make_resolver(TextureRef texture) {
       plan,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([types!.module, collision!.module], plan),
       moduleResolution: plan,
       modules: [types!.module, collision!.module],
       options: {
@@ -37182,6 +37417,7 @@ Resolver make_resolver(TextureRef texture) {
       plan,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([typesModule!.module, consumerModule!.module], plan),
       moduleResolution: plan,
       modules: [typesModule!.module, consumerModule!.module],
       options: {
@@ -37268,6 +37504,7 @@ Resolver make_resolver(TextureRef texture) {
     };
     const emit = (modules: readonly Readonly<IrModule>[], target: Readonly<IrModule>) =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, plan),
         moduleResolution: plan,
         modules,
         options: {
@@ -37438,6 +37675,7 @@ Resolver make_resolver(TextureRef texture) {
       plan,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([typesModule!.module, consumerModule!.module], plan),
       moduleResolution: plan,
       modules: [typesModule!.module, consumerModule!.module],
       options: {
@@ -37850,6 +38088,10 @@ Resolver make_resolver(TextureRef texture) {
        export function get(): CollisionBuiltInShape2D { return probe; }`,
     ).module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, types], {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
       moduleResolution: {
         edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
         schema: 'flight-compiler-module-resolution/1',
@@ -37928,6 +38170,7 @@ Resolver make_resolver(TextureRef texture) {
       plan,
     );
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer!.module, types!.module], plan),
       moduleResolution: plan,
       modules: [consumer!.module, types!.module],
       options: { runtimeProfile: 'flight-cpp' },
@@ -38037,6 +38280,7 @@ Resolver make_resolver(TextureRef texture) {
       schema: 'flight-compiler-module-resolution/1',
     };
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, producer], moduleResolution),
       moduleResolution,
       modules: [consumer, producer],
       options: { runtimeProfile: 'flight-cpp' },
@@ -38144,6 +38388,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -38216,6 +38461,7 @@ Resolver make_resolver(TextureRef texture) {
       schema: 'flight-compiler-module-resolution/1',
     };
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, contract, entity, scale], moduleResolution),
       moduleResolution,
       modules: [consumer, contract, entity, scale],
       options: { runtimeProfile: 'flight-cpp' },
@@ -38463,6 +38709,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -38510,6 +38757,7 @@ Resolver make_resolver(TextureRef texture) {
       schema: 'flight-compiler-module-resolution/1',
     };
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, model], moduleResolution),
       moduleResolution,
       modules: [consumer, model],
       options: { runtimeProfile: 'flight-cpp' },
@@ -38694,6 +38942,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -39052,6 +39301,7 @@ Resolver make_resolver(TextureRef texture) {
       },
     });
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -39188,6 +39438,7 @@ Resolver make_resolver(TextureRef texture) {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -39627,6 +39878,7 @@ int main() {
     });
 
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -40007,6 +40259,7 @@ int main() {
     const types = modules.find((module) => module.source.endsWith('/Sensors.ts'))!;
     const consumer = modules.find((module) => module.packageName === '@flighthq/sensors')!;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -40470,6 +40723,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -40717,6 +40971,7 @@ int main() {
       'export function second(): { x: number; y: number } { return { x: 3, y: 4 }; }',
     ).module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([first, second]),
       modules: [first, second],
       options: { runtimeProfile: 'flight-cpp' },
     });
@@ -41269,6 +41524,10 @@ int main() {
       moduleResolution,
     );
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        results.map((result) => result.module),
+        moduleResolution,
+      ),
       moduleResolution,
       modules: results.map((result) => result.module),
       options: {
@@ -41393,6 +41652,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -41483,6 +41743,7 @@ int main() {
       moduleResolution,
     ).map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -41571,6 +41832,7 @@ int main() {
     const [provider, consumer] = modules;
     if (!provider || !consumer) throw new Error('Expected provider and consumer modules');
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -41706,6 +41968,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -41758,6 +42021,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42514,6 +42778,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedColorLutCacheModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42538,6 +42803,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedColorLutCacheModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42575,6 +42841,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42597,6 +42864,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42616,6 +42884,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42653,6 +42922,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedGlRenderTextureEffectModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42675,6 +42945,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedGlRenderTextureEffectModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42712,6 +42983,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedGizmoAlignmentModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42735,6 +43007,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedGizmoAlignmentModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42772,6 +43045,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42799,6 +43073,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42839,6 +43114,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneDocumentSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42863,6 +43139,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneDocumentSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42903,6 +43180,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneDocumentTextureModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -42948,6 +43226,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedRiveSceneDocumentTextureModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -42988,6 +43267,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedPermissionOutcomeModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -43009,6 +43289,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedPermissionRequestOutcomeModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -43077,6 +43358,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedPermissionOutcomeModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -43114,6 +43396,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedTreeViewSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -43135,6 +43418,7 @@ int main() {
     const { moduleResolution, results } = lowerImportedTreeViewSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -43426,6 +43710,7 @@ int main() {
     const { moduleResolution, results } = lowerReexportedGenericCallableRowArgument();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -44037,6 +44322,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -44470,6 +44756,7 @@ int main() {
       moduleResolution,
     ).map((result) => result.module);
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -44651,6 +44938,7 @@ int main() {
       schema: 'flight-compiler-module-resolution/1',
     };
     const output = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([model, barrel, consumer], moduleResolution),
       moduleResolution,
       modules: [model, barrel, consumer],
       options: { runtimeProfile: 'flight-cpp' },
@@ -46169,6 +46457,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -46387,6 +46676,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -47025,6 +47315,7 @@ int main() {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -47577,6 +47868,7 @@ int main() {
     expect(provider?.diagnostics).toEqual([]);
     expect(consumer?.diagnostics).toEqual([]);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer!.module, provider!.module], moduleResolution),
       moduleResolution,
       modules: [consumer!.module, provider!.module],
       options: {
@@ -48230,6 +48522,7 @@ describe('emitIrModuleCpp reexport emission', () => {
     };
     const backend = createCppCompilerBackend();
     const session = backend.createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([facade, target], resolution),
       moduleResolution: resolution,
       modules: [facade, target],
       options: {},
@@ -48255,6 +48548,7 @@ describe('emitIrModuleCpp reexport emission', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([facade, target], resolution),
       moduleResolution: resolution,
       modules: [facade, target],
       options: {},
@@ -48274,6 +48568,13 @@ describe('emitIrModuleCpp reexport emission', () => {
     const barrel = lowerPackage('@flighthq/math', 'index.ts', "export * from './vector.js';").module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/math';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, barrel, vector],
+        cppStarResolution([
+          { module: vector, specifier: './vector.js' },
+          { module: barrel, specifier: '@flighthq/math' },
+        ]),
+      ),
       moduleResolution: cppStarResolution([
         { module: vector, specifier: './vector.js' },
         { module: barrel, specifier: '@flighthq/math' },
@@ -48296,6 +48597,13 @@ describe('emitIrModuleCpp reexport emission', () => {
     const facadeOfTypes = lowerPackage('@flighthq/types', 'index.ts', "export * from '@flighthq/math/vector';").module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, facadeOfTypes, vector],
+        cppStarResolution([
+          { module: vector, specifier: '@flighthq/math/vector' },
+          { module: facadeOfTypes, specifier: '@flighthq/types' },
+        ]),
+      ),
       moduleResolution: cppStarResolution([
         { module: vector, specifier: '@flighthq/math/vector' },
         { module: facadeOfTypes, specifier: '@flighthq/types' },
@@ -48319,6 +48627,10 @@ describe('emitIrModuleCpp reexport emission', () => {
     const other = lowerPackage('@flighthq/core', 'other.ts', 'export interface Shape { area: number }').module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from './other.js';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, other],
+        cppStarResolution([{ module: other, specifier: './other.js' }]),
+      ),
       moduleResolution: cppStarResolution([{ module: other, specifier: './other.js' }]),
       modules: [facade, other],
       options: {},
@@ -48383,6 +48695,7 @@ describe('emitIrModuleCpp reexport emission', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {},
@@ -48455,6 +48768,7 @@ describe('emitIrModuleCpp reexport emission', () => {
       );
       const modules = lowered.map((result) => result.module);
       const session = createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
         moduleResolution: resolution,
         modules,
         options: {},
@@ -48524,6 +48838,7 @@ describe('emitIrModuleCpp reexport emission', () => {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {},
@@ -48549,6 +48864,14 @@ describe('emitIrModuleCpp reexport emission', () => {
     ).module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, barrel, first, second],
+        cppStarResolution([
+          { module: first, specifier: '@flighthq/other/first' },
+          { module: second, specifier: '@flighthq/other/second' },
+          { module: barrel, specifier: '@flighthq/types' },
+        ]),
+      ),
       moduleResolution: cppStarResolution([
         { module: first, specifier: '@flighthq/other/first' },
         { module: second, specifier: '@flighthq/other/second' },
@@ -48578,6 +48901,13 @@ describe('emitIrModuleCpp reexport emission', () => {
     ).module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, barrel, vector],
+        cppStarResolution([
+          { module: vector, specifier: '@flighthq/math/vector' },
+          { module: barrel, specifier: '@flighthq/types' },
+        ]),
+      ),
       moduleResolution: cppStarResolution([
         { module: vector, specifier: '@flighthq/math/vector' },
         { module: barrel, specifier: '@flighthq/types' },
@@ -48601,6 +48931,13 @@ describe('emitIrModuleCpp reexport emission', () => {
     ).module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, barrel, vector],
+        cppStarResolution([
+          { module: vector, specifier: '@flighthq/math/vector' },
+          { module: barrel, specifier: '@flighthq/types' },
+        ]),
+      ),
       moduleResolution: cppStarResolution([
         { module: vector, specifier: '@flighthq/math/vector' },
         { module: barrel, specifier: '@flighthq/types' },
@@ -48618,6 +48955,10 @@ describe('emitIrModuleCpp reexport emission', () => {
     const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export interface Vector { x: number }').module;
     const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/math/vector';").module;
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(
+        [facade, vector],
+        cppStarResolution([{ module: vector, specifier: '@flighthq/math/vector' }]),
+      ),
       moduleResolution: cppStarResolution([{ module: vector, specifier: '@flighthq/math/vector' }]),
       modules: [facade, vector],
       options: { packageTargets: { '@flighthq/math': { includePrefix: 'flight/math', namespace: 'flight::math' } } },
@@ -48811,6 +49152,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       moduleResolution,
     ).map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -48911,6 +49253,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     expect(ambiguousPlanner.resolveStructuralRow(sourceType, modules[2]!)).toBeUndefined();
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -48988,6 +49331,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       moduleResolution,
     ).map((lowered) => lowered.module);
     const importedBinding = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(importedModules, moduleResolution),
       moduleResolution,
       modules: importedModules,
       options: {
@@ -49217,6 +49561,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     });
     expect(recursiveResults).toEqual([{ kind: 'primitive', name: 'void' }]);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -49333,6 +49678,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       },
     ]);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -49487,6 +49833,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       ],
     });
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -49619,6 +49966,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       },
     ]);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -49702,6 +50050,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -49787,6 +50136,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const modules = results.map((result) => result.module);
     const failure = captureBackendEmissionFailure(() =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
         moduleResolution,
         modules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -49893,6 +50243,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -50758,6 +51109,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     (presentVariable.declarations[0] as { type?: IrType }).type = { kind: 'unknown', source: 'unknown' };
     const createSession = (availableModules: readonly IrModule[]) =>
       createCppCompilerBackend().createEmissionSession!({
+        moduleEvaluation: createCppTestModuleEvaluation(availableModules, resolution),
         moduleResolution: resolution,
         modules: availableModules,
         options: { runtimeProfile: 'flight-cpp' },
@@ -50994,6 +51346,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -51164,6 +51517,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -51330,6 +51684,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -51537,6 +51892,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -51649,6 +52005,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -51760,6 +52117,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -51826,6 +52184,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -51930,6 +52289,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -52259,6 +52619,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -52394,6 +52755,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, resolution),
       moduleResolution: resolution,
       modules,
       options: {
@@ -52513,6 +52875,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // declaration remains uniquely reachable through the contract barrel.
     const emissionModules = modules.slice(1);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(emissionModules, resolution),
       moduleResolution: resolution,
       modules: emissionModules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -52809,6 +53172,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -52883,6 +53247,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, provider], moduleResolution),
       moduleResolution,
       modules: [consumer, provider],
       options: { runtimeProfile: 'flight-cpp' },
@@ -52936,6 +53301,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -52980,6 +53346,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       schema: 'flight-compiler-module-resolution/1',
     };
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([consumer, hierarchy, node], moduleResolution),
       moduleResolution,
       modules: [consumer, hierarchy, node],
       options: { runtimeProfile: 'flight-cpp' },
@@ -54086,6 +54453,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
@@ -54277,6 +54645,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     const modules = results.map((result) => result.module);
     const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {

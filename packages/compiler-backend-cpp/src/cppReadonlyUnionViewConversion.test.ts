@@ -5,6 +5,7 @@ import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 function captureRefusal(source: string) {
   try {
@@ -116,6 +117,7 @@ describe('nominal union to readonly structural-view union conversion', () => {
     );
     const modules = results.map((result) => result.module);
     const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {

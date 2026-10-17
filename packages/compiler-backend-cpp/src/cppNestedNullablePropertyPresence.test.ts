@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, CppCompilerExternalBinding } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 const moduleResolution: CompilerModuleResolutionPlan = {
   edges: [{ specifier: './body', target: { packageName: '@flighthq/types', source: 'packages/types/src/body.ts' } }],
@@ -43,6 +44,10 @@ function emitConsumer(body: string): string {
   );
   expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
   const session = createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(
+      results.map((result) => result.module),
+      moduleResolution,
+    ),
     moduleResolution,
     modules: results.map((result) => result.module),
     options: {

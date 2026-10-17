@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrModule } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 describe('C++ exported type owner lookup cache', () => {
   it('reuses a complete recursive barrel lookup within one session', () => {
@@ -207,6 +208,7 @@ function createAmbiguousFixture(): {
 
 function createSession(modules: readonly IrModule[], moduleResolution: CompilerModuleResolutionPlan) {
   return createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
     moduleResolution,
     modules,
     options: {

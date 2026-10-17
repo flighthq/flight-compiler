@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 function compile(source: string): string {
   const lowering = lowerTypeScriptSource(
@@ -12,6 +13,7 @@ function compile(source: string): string {
   );
   expect(lowering.diagnostics).toEqual([]);
   const session = createCppCompilerBackend().createEmissionSession!({
+    moduleEvaluation: createCppTestModuleEvaluation([lowering.module]),
     modules: [lowering.module],
     options: {
       packageTargets: {

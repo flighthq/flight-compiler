@@ -16,6 +16,7 @@ import {
 } from './cppCAbiEmission.js';
 import { createIrModulesCAbiPlanCpp } from './cppCAbiPlan.js';
 import { createCppCompilerBackend } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 const geometryTarget = {
   packageTargets: {
@@ -455,8 +456,13 @@ describe('createCppCompilerBackend C ABI package output', () => {
   it('does no package-finalization work when disabled and returns two package-owned files when elected', () => {
     const module = lower('geometry.ts', 'export function scale(value: number): number { return value * 2; }');
     const backend = createCppCompilerBackend();
-    const disabled = backend.createEmissionSession!({ modules: [module], options: geometryTarget });
+    const disabled = backend.createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([module]),
+      modules: [module],
+      options: geometryTarget,
+    });
     const enabled = backend.createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation([module]),
       modules: [module],
       options: {
         ...geometryTarget,
@@ -537,6 +543,7 @@ function createPackageGraphFinalization(
         typeValueLanes: 'independent',
       },
     },
+    moduleEvaluation: createCppTestModuleEvaluation([module]),
     moduleFiles: files.map((file) => ({ file, module: identity })),
   };
 }

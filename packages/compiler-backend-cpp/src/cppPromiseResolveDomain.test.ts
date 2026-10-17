@@ -5,6 +5,7 @@ import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+import { createCppTestModuleEvaluation } from './cppModuleEvaluationTestSupport.js';
 
 // The runtime resolver deduces its task type from the value it is handed, so a literal whose own domain is
 // narrower than the declaration's would settle the narrower task -- `Task<flight::Undefined>` where the
@@ -154,6 +155,7 @@ describe('the domain a Promise.resolve settlement carries', () => {
     );
     const modules = results.map((result) => result.module);
     const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleEvaluation: createCppTestModuleEvaluation(modules, moduleResolution),
       moduleResolution,
       modules,
       options: {
