@@ -262,10 +262,22 @@ type RustAsyncTryCatchCompletionPlan =
       step: RustAsyncTryDirectAwaitStep;
     }>
   | Readonly<{
+      betweenStatements: readonly Readonly<IrStatement>[];
+      binding?: Readonly<IrBindingIdentity> | undefined;
+      first: Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>;
+      kind: 'await-two';
+      postStatements: readonly Readonly<IrStatement>[];
+      preStatements: readonly Readonly<IrStatement>[];
+      rethrowBinding?: Readonly<IrBindingIdentity> | undefined;
+      second: RustAsyncTryDirectAwaitStep;
+    }>
+  | Readonly<{
       kind: 'straight';
       rethrowBinding?: Readonly<IrBindingIdentity> | undefined;
       statements: readonly Readonly<IrStatement>[];
     }>;
+
+type RustAsyncTryAwaitCatchCompletionPlan = Exclude<RustAsyncTryCatchCompletionPlan, Readonly<{ kind: 'straight' }>>;
 
 type RustAsyncTryFinalizerCompletionPlan =
   | Readonly<{
@@ -291,7 +303,7 @@ interface RustAsyncTryLocalCompletionPlan {
 }
 
 interface RustAsyncTryTerminalAwaitCatchCompletionPlan extends RustAsyncTryLocalCompletionPlan {
-  readonly catchPlan: Extract<RustAsyncTryCatchCompletionPlan, Readonly<{ kind: 'await' }>>;
+  readonly catchPlan: RustAsyncTryAwaitCatchCompletionPlan;
 }
 
 interface RustAsyncTryFinallyCompletionPlan extends RustAsyncTryLocalCompletionPlan {
@@ -7981,29 +7993,48 @@ function getAsyncTryCatchCompletionPlanRust(
   const bindingUseFailure = catchClause.binding
     ? getIrAsyncTryCatchBindingUseFailureRust(catchClause.body, catchClause.binding)
     : undefined;
+  const oneAwait = evidence.suspensionCount === 1 && steps.length === 1;
+  const twoAwaits = evidence.suspensionCount === 2 && steps.length === 2 && steps[0]?.step.kind !== 'return';
   if (
     (catchClause.body.kind === 'block' && catchClause.body.label) ||
-    evidence.suspensionCount !== 1 ||
-    steps.length !== 1 ||
+    (!oneAwait && !twoAwaits) ||
     !areIrAsyncTryStraightLineStatementsRust(statements, true) ||
     evidence.abruptStatements.some((candidate) => candidate !== permittedCompletion) ||
     bindingUseFailure
   ) {
     emissionRuleError(
       context,
-      'async protected awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
+      'async protected awaited catch requires one flat handler with one or two direct awaits, a non-return first await when there are two, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
       'rust-async-try-completion-unrepresented',
     );
   }
-  const selected = steps[0]!;
+  const first = steps[0]!;
+  if (twoAwaits) {
+    const second = steps[1]!;
+    return {
+      betweenStatements: statements.slice(first.index + 1, second.index),
+      ...(catchClause.binding ? { binding: catchClause.binding } : {}),
+      first: first.step as Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>,
+      kind: 'await-two',
+      postStatements: statements.slice(second.index + 1),
+      preStatements: statements.slice(0, first.index),
+      ...(rethrowBinding ? { rethrowBinding } : {}),
+      second: second.step,
+    };
+  }
   return {
     ...(catchClause.binding ? { binding: catchClause.binding } : {}),
     kind: 'await',
-    postStatements: statements.slice(selected.index + 1),
-    preStatements: statements.slice(0, selected.index),
+    postStatements: statements.slice(first.index + 1),
+    preStatements: statements.slice(0, first.index),
     ...(rethrowBinding ? { rethrowBinding } : {}),
-    step: selected.step,
+    step: first.step,
   };
+}
+
+function getAsyncTryCatchAwaitCountRust(plan: Readonly<RustAsyncTryCatchCompletionPlan> | undefined): number {
+  if (!plan || plan.kind === 'straight') return 0;
+  return plan.kind === 'await-two' ? 2 : 1;
 }
 
 function getAsyncTryTerminalAwaitCatchCompletionPlanRust(
@@ -8039,10 +8070,10 @@ function getAsyncTryTerminalAwaitCatchCompletionPlanRust(
       'rust-async-try-completion-unrepresented',
     );
   }
-  if (catchPlan.kind !== 'await') {
+  if (catchPlan.kind === 'straight') {
     emissionRuleError(
       context,
-      'async try/catch awaited handler requires exactly one direct catch await',
+      'async try/catch awaited handler requires one or two direct catch awaits',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -8145,15 +8176,15 @@ function getAsyncTryFinallyCompletionPlanRust(
   const exactSuspensions =
     (trySteps.length > 0 ||
       protectedTaskReturn !== undefined ||
-      catchPlan?.kind === 'await' ||
+      getAsyncTryCatchAwaitCountRust(catchPlan) > 0 ||
       finalizerPlan.kind === 'await') &&
     tryEvidence.suspensionCount === trySteps.length &&
-    (catchEvidence?.suspensionCount ?? 0) === (catchPlan?.kind === 'await' ? 1 : 0) &&
+    (catchEvidence?.suspensionCount ?? 0) === getAsyncTryCatchAwaitCountRust(catchPlan) &&
     finallyEvidence.suspensionCount === (finalizerPlan.kind === 'await' ? 1 : 0);
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most one direct catch await with an optional used immutable String binding, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most two direct catch awaits with an optional used immutable String binding, and a non-abrupt finally',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -8659,12 +8690,55 @@ function emitAsyncTryCatchCompletionRust(
 }
 
 function emitAsyncTryAwaitCatchCompletionRust(
-  plan: Readonly<Extract<RustAsyncTryCatchCompletionPlan, { kind: 'await' }>>,
+  plan: Readonly<RustAsyncTryAwaitCatchCompletionPlan>,
   context: EmitContext,
 ): string[] {
   const handlerContext = plan.binding
     ? { ...context, movedBindingIds: new Set([...context.movedBindingIds, plan.binding.id]) }
     : context;
+  if (plan.kind === 'await-two') {
+    const first = plan.first;
+    const second = plan.second;
+    assertIrAsyncTrySettledStepCarrierRust(first, handlerContext);
+    assertIrAsyncTrySettledStepCarrierRust(second, handlerContext);
+    const firstTarget = emitOwnedOperandRust(first.awaitTarget, handlerContext);
+    const firstError = getGeneratedTargetNameRust('catch_first_error', context);
+    const firstValue = getGeneratedTargetNameRust('catch_first_value', context);
+    const secondTarget = emitOwnedOperandRust(second.awaitTarget, handlerContext);
+    const secondError = getGeneratedTargetNameRust('catch_second_error', context);
+    const secondValue = getGeneratedTargetNameRust('catch_second_value', context);
+    const secondFulfilled =
+      second.kind === 'return'
+        ? [`Ok(${secondValue}) => Ok(Some(${secondValue})),`]
+        : [
+            `Ok(${second.kind === 'expression' ? '_' : secondValue}) => {`,
+            ...indentSourceLines([
+              ...emitAsyncTrySettledStepRust(second, handlerContext, secondValue),
+              ...emitAsyncTryCatchCompletionRust(plan.postStatements, plan.rethrowBinding, handlerContext),
+            ]),
+            '}',
+          ];
+    const secondSettlement = [
+      `match ${secondTarget}.settle() {`,
+      ...indentSourceLines([...secondFulfilled, `Err(${secondError}) => Err(${secondError}),`]),
+      '}',
+    ];
+    return [
+      ...emitStatements(plan.preStatements, handlerContext),
+      `match ${firstTarget}.settle() {`,
+      ...indentSourceLines([
+        `Ok(${first.kind === 'expression' ? '_' : firstValue}) => {`,
+        ...indentSourceLines([
+          ...emitAsyncTrySettledStepRust(first, handlerContext, firstValue),
+          ...emitStatements(plan.betweenStatements, handlerContext),
+          ...secondSettlement,
+        ]),
+        '}',
+        `Err(${firstError}) => Err(${firstError}),`,
+      ]),
+      '}',
+    ];
+  }
   const step = plan.step;
   assertIrAsyncTrySettledStepCarrierRust(step, handlerContext);
   const target = emitOwnedOperandRust(step.awaitTarget, handlerContext);
@@ -8737,9 +8811,9 @@ function emitAsyncTryLocalCompletionRust(
       ? getBindingTargetNameRust(statement.catchClause.binding, context)
       : '_';
     const catchCompletion =
-      plan.catchPlan.kind === 'await'
-        ? emitAsyncTryAwaitCatchCompletionRust(plan.catchPlan, context)
-        : emitAsyncTryCatchCompletionRust(plan.catchPlan.statements, plan.catchPlan.rethrowBinding, context);
+      plan.catchPlan.kind === 'straight'
+        ? emitAsyncTryCatchCompletionRust(plan.catchPlan.statements, plan.catchPlan.rethrowBinding, context)
+        : emitAsyncTryAwaitCatchCompletionRust(plan.catchPlan, context);
     lines.push(
       `let ${completion}: Result<Option<${returnType}>, String> = match ${pending} {`,
       ...indentSourceLines([
@@ -8765,7 +8839,9 @@ function emitAsyncTryCompletionDispatchRust(
   const catchCanCompleteNormally = plan.catchPlan
     ? plan.catchPlan.kind === 'straight'
       ? plan.catchPlan.statements.at(-1)?.kind !== 'return' && plan.catchPlan.statements.at(-1)?.kind !== 'throw'
-      : plan.catchPlan.step.kind !== 'return' &&
+      : (plan.catchPlan.kind === 'await'
+          ? plan.catchPlan.step.kind !== 'return'
+          : plan.catchPlan.second.kind !== 'return') &&
         plan.catchPlan.postStatements.at(-1)?.kind !== 'return' &&
         plan.catchPlan.postStatements.at(-1)?.kind !== 'throw'
     : false;
