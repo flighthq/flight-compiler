@@ -552,6 +552,7 @@ to the published surface, so review it as one.
 | `createCompilerLoweringPassSwitchSuspension` | function |
 | `createCompilerLoweringPassVariableHoisting` | function |
 | `createCompilerModuleEvaluationPlan` | function |
+| `createCompilerModuleEvaluationPlanProjection` | function |
 | `createCompilerModuleFacadeIdentities` | function |
 | `createCompilerModuleFacadePlan` | function |
 | `createCompilerModuleFacadePlanForEntries` | function |
@@ -622,7 +623,6 @@ to the published surface, so review it as one.
 | `ExportConflict` | type |
 | `ExportKind` | type |
 | `ExportRecord` | type |
-| `filterCompilerModuleEvaluationPlan` | function |
 | `fingerprintSourceText` | function |
 | `fingerprintTypeScriptNode` | function |
 | `FlightPackageEligibilityFailure` | type |

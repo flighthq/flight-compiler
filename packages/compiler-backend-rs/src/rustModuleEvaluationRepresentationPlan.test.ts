@@ -13,6 +13,7 @@ import type {
   IrModule,
 } from '../../compiler-types/src/index.js';
 import { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
+import { createCompilerRustModuleEvaluationRepresentationFinalizationState } from './rustModuleEvaluationRepresentationFinalization.js';
 import {
   createCompilerRustModuleEvaluationRepresentationPlan,
   isCompilerRustModuleEvaluationRepresentationPlanningFailure,
@@ -258,6 +259,44 @@ describe('createCompilerRustModuleEvaluationRepresentationPlan', () => {
     );
   });
 
+  it('projects the authoritative evaluation closure while retained output contains unrelated modules', () => {
+    const evaluated = lower('@scope/math', 'entry.ts', 'export const value = 1;');
+    const unrelated = lower('@scope/math', 'unrelated.ts', 'export const other = 2;');
+    const input = createInput([evaluated], [evaluated], []);
+    const sourceTree = createCompilerRustSourceTreePlan({
+      facade: input.finalization.facade,
+      modules: [evaluated, unrelated],
+    });
+    input.sourceTree = structuredClone(sourceTree) as Mutable<CompilerRustSourceTreePlan>;
+    input.finalization.moduleFiles.push({
+      file: { contents: '', path: getModuleFilePath(sourceTree, unrelated) },
+      module: identity(unrelated),
+    });
+
+    const plan = createCompilerRustModuleEvaluationRepresentationPlan(input);
+
+    expect(plan.modules.map(({ module }) => module.name)).toEqual(['Entry']);
+    expect(plan.entries.map(({ module }) => module.name)).toEqual(['Entry']);
+  });
+
+  it('accepts an empty authoritative evaluation closure beside retained source output', () => {
+    const unrelated = lower('@scope/math', 'unrelated.ts', 'export const other = 2;');
+    const input = createInput([], [], []);
+    const sourceTree = createCompilerRustSourceTreePlan({
+      facade: input.finalization.facade,
+      modules: [unrelated],
+    });
+    input.sourceTree = structuredClone(sourceTree) as Mutable<CompilerRustSourceTreePlan>;
+    input.finalization.moduleFiles.push({
+      file: { contents: '', path: getModuleFilePath(sourceTree, unrelated) },
+      module: identity(unrelated),
+    });
+
+    const plan = createCompilerRustModuleEvaluationRepresentationPlan(input);
+
+    expect(plan).toMatchObject({ eligibility: { outcome: 'eligible' }, entries: [], groups: [], modules: [] });
+  });
+
   it('represents same-crate SCC lifecycle intent and classifies cross-crate SCCs stably', () => {
     const first = lower(
       '@scope/math',
@@ -346,6 +385,63 @@ describe('isCompilerRustModuleEvaluationRepresentationPlanningFailure', () => {
         Object.assign(new Error('empty'), { ...failure, subjects: [] }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', () => {
+  it('freezes an incomplete output-scope projection without advertising eligibility', () => {
+    const retained = lower('@scope/math', 'retained.ts', 'export const value = 1;');
+    const placeholder = lower('@scope/math', 'placeholder.ts', 'export const missing = unknownCall();');
+    const input = createInput([retained], [retained], [], [placeholder]);
+    input.finalization.refusals = [
+      { code: 'rust-call-unsupported', message: 'call refused', module: identity(placeholder) },
+    ];
+
+    const state = createCompilerRustModuleEvaluationRepresentationFinalizationState(undefined, input);
+
+    expect(state.projection).toMatchObject({
+      kind: 'output-scope-incomplete',
+      refusal: { code: 'rust-module-evaluation-output-scope-incomplete', subject: 'full-output' },
+    });
+    expect(state.projection).not.toHaveProperty('eligibility');
+    expect(isDeeplyFrozen(state, new WeakSet())).toBe(true);
+  });
+
+  it('treats an omitted evaluation file as incomplete instead of semantically refiltering', () => {
+    const module = lower('@scope/math', 'entry.ts', 'export const value = 1;');
+    const input = createInput([module], [module], []);
+    input.finalization.moduleFiles = [];
+
+    const state = createCompilerRustModuleEvaluationRepresentationFinalizationState(undefined, input);
+
+    expect(state.projection).toMatchObject({
+      kind: 'output-scope-incomplete',
+      subjects: [JSON.stringify([module.packageName, module.source, module.name])],
+    });
+  });
+
+  it('reuses the first plan by identity and refuses changed finalization provenance', () => {
+    const module = lower('@scope/math', 'entry.ts', 'export const value = 1;');
+    const input = createInput([module], [module], []);
+    const first = createCompilerRustModuleEvaluationRepresentationFinalizationState(undefined, input);
+    const repeat = createCompilerRustModuleEvaluationRepresentationFinalizationState(first, input);
+
+    expect(first.projection.kind).toBe('plan');
+    expect(repeat).toBe(first);
+
+    input.finalization.refusals = [{ code: 'changed-refusal', message: 'changed', module: identity(module) }];
+    let failure: unknown;
+    try {
+      createCompilerRustModuleEvaluationRepresentationFinalizationState(first, input);
+    } catch (error) {
+      failure = error;
+    }
+    expect(isCompilerRustModuleEvaluationRepresentationPlanningFailure(failure)).toBe(true);
+    expect(failure).toMatchObject({
+      code: 'rust-module-evaluation-representation-finalization-mismatch',
+      kind: 'rust-module-evaluation-representation-planning',
+    });
+    expect(first.projection.kind).toBe('plan');
   });
 });
 

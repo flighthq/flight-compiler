@@ -12,7 +12,7 @@ import type {
 import {
   collectCompilerModuleLinkRequests,
   createCompilerModuleEvaluationPlan,
-  filterCompilerModuleEvaluationPlan,
+  createCompilerModuleEvaluationPlanProjection,
   isCompilerModuleEvaluationFailure,
 } from './compilerModuleEvaluation.js';
 
@@ -405,14 +405,14 @@ describe('createCompilerModuleEvaluationPlan', () => {
   });
 });
 
-describe('filterCompilerModuleEvaluationPlan', () => {
+describe('createCompilerModuleEvaluationPlanProjection', () => {
   it('retains candidate evidence and order deterministically without mutation', () => {
     const first = lowerModule('first.ts', 'export const first = 1;');
     const second = lowerModule('second.ts', 'export const second = 2;');
     const candidate = createCompilerModuleEvaluationPlan(createInput([second, first], [], [second, first]));
     const snapshot = structuredClone(candidate);
 
-    const projected = filterCompilerModuleEvaluationPlan(candidate, [first, second]);
+    const projected = createCompilerModuleEvaluationPlanProjection(candidate, [first, second]);
 
     expect(projected).toEqual(candidate);
     expect(projected).not.toBe(candidate);
@@ -430,7 +430,7 @@ describe('filterCompilerModuleEvaluationPlan', () => {
     const candidate = createCompilerModuleEvaluationPlan(
       createInput([alpha, unavailable, zeta], [], [zeta, unavailable, alpha]),
     );
-    const projected = filterCompilerModuleEvaluationPlan(candidate, [zeta, alpha]);
+    const projected = createCompilerModuleEvaluationPlanProjection(candidate, [zeta, alpha]);
 
     expect(projected.entries).toEqual([getModuleIdentity(zeta), getModuleIdentity(alpha)]);
     expect(projected.groups).toEqual([candidate.groups[0], candidate.groups[2]]);
@@ -446,7 +446,7 @@ describe('filterCompilerModuleEvaluationPlan', () => {
       createInput([entry, dependency], [createDependency(entry, './dependency.js', dependency)], [entry]),
     );
 
-    expect(() => filterCompilerModuleEvaluationPlan(candidate, [entry])).toThrowError(
+    expect(() => createCompilerModuleEvaluationPlanProjection(candidate, [entry])).toThrowError(
       expect.objectContaining({ code: 'non-closed-selection', kind: 'compiler-module-evaluation' }),
     );
   });
@@ -462,7 +462,7 @@ describe('filterCompilerModuleEvaluationPlan', () => {
       ),
     );
 
-    expect(() => filterCompilerModuleEvaluationPlan(candidate, [first])).toThrowError(
+    expect(() => createCompilerModuleEvaluationPlanProjection(candidate, [first])).toThrowError(
       expect.objectContaining({ code: 'partial-scc-selection', kind: 'compiler-module-evaluation' }),
     );
   });

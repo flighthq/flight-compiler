@@ -197,7 +197,7 @@ export interface CompilerRustModuleEvaluationRepresentationPlan {
 export interface CompilerRustModuleEvaluationRepresentationPlanInput {
   readonly constantPlan: CompilerRustModuleConstantPlan;
   readonly finalization: CompilerBackendPackageGraphFinalization;
-  /** Exact retained semantic modules corresponding to `finalization.moduleFiles`. */
+  /** Exact semantic modules in the authoritative `finalization.moduleEvaluation` closure. */
   readonly modules: readonly Readonly<IrModule>[];
   readonly referencePlan: CompilerRustReferenceRepresentationPlan;
   readonly sourceTree: CompilerRustSourceTreePlan;
@@ -206,6 +206,7 @@ export interface CompilerRustModuleEvaluationRepresentationPlanInput {
 
 export type CompilerRustModuleEvaluationRepresentationPlanningFailureCode =
   | 'rust-module-evaluation-representation-duplicate-identity'
+  | 'rust-module-evaluation-representation-finalization-mismatch'
   | 'rust-module-evaluation-representation-invalid-input'
   | 'rust-module-evaluation-representation-path-mismatch'
   | 'rust-module-evaluation-representation-projection-mismatch';

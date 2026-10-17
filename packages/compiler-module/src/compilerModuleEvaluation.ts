@@ -123,7 +123,7 @@ export function createCompilerModuleEvaluationPlan(
  * Projects an already-validated candidate onto the modules that remain available after emission. The candidate is
  * the authority on all evidence and ordering: filtering never reconstructs bindings, dependencies, steps, or SCCs.
  */
-export function filterCompilerModuleEvaluationPlan(
+export function createCompilerModuleEvaluationPlanProjection(
   candidate: Readonly<CompilerModuleEvaluationPlan>,
   availableModules: readonly Readonly<CompilerModuleIdentity>[],
 ): CompilerModuleEvaluationPlan {

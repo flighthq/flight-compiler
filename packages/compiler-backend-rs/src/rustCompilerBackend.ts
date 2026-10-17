@@ -38,7 +38,7 @@ import {
   isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
-import { filterCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
+import { createCompilerModuleEvaluationPlanProjection } from '../../compiler-module/src/index.js';
 import {
   analyzeCompilerRuntimeExternalConstructorAbiCompleteness,
   analyzeCompilerRuntimeExternalSymbolCompleteness,
@@ -73,6 +73,7 @@ import type {
   CompilerRustModuleConstantModulePlan,
   CompilerRustModuleConstantPlan,
   CompilerRustModuleConstantRefusal,
+  CompilerRustModuleEvaluationRepresentationPlanningFailure,
   CompilerRustModuleStateBindingPlan,
   CompilerRustModuleStatePlan,
   CompilerRustReferenceRepresentation,
@@ -138,6 +139,8 @@ import {
 // collision-suffixed cannot be allocated differently by the plan than by the emitted source.
 const { safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
 import { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
+import { createCompilerRustModuleEvaluationRepresentationFinalizationState } from './rustModuleEvaluationRepresentationFinalization.js';
+import { isCompilerRustModuleEvaluationRepresentationPlanningFailure } from './rustModuleEvaluationRepresentationPlan.js';
 import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
@@ -638,6 +641,9 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       // plan suppresses it so the tree stays collision-free. The orchestration asks for one anyway, and
       // undefined is its documented answer for a module that owns no file.
       let suppressedPlaceholderKeys: ReadonlySet<string> | undefined;
+      let moduleEvaluationRepresentationFinalizationState:
+        | ReturnType<typeof createCompilerRustModuleEvaluationRepresentationFinalizationState>
+        | undefined;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -695,18 +701,34 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
           try {
             assertRustModuleEvaluationFinalization(moduleEvaluation, finalization.moduleEvaluation);
-            suppressedPlaceholderKeys = new Set(
+            const pendingSuppressedPlaceholderKeys = new Set(
               (finalization.refusals ?? [])
                 .filter((refusal) => refusal.code === 'duplicate-emitted-path')
                 .map((refusal) => getRustPlaceholderModuleKey(refusal.module)),
             );
-            return createCompilerRustSourceTreeFinalization({
+            let pendingPlaceholderFiles: typeof placeholderFiles;
+            let pendingModuleEvaluationRepresentationFinalizationState:
+              | ReturnType<typeof createCompilerRustModuleEvaluationRepresentationFinalizationState>
+              | undefined;
+            const result = createCompilerRustSourceTreeFinalization({
               finalization,
               observePlan(plan) {
+                pendingModuleEvaluationRepresentationFinalizationState =
+                  createCompilerRustModuleEvaluationRepresentationFinalizationState(
+                    moduleEvaluationRepresentationFinalizationState,
+                    {
+                      constantPlan: moduleConstantPlan,
+                      finalization,
+                      modules,
+                      referencePlan: referenceRepresentationPlan,
+                      sourceTree: plan,
+                      statePlan: moduleStatePlan,
+                    },
+                  );
                 const keys = new Set(
                   (finalization.placeholderModules ?? []).map((module) => getRustPlaceholderModuleKey(module)),
                 );
-                placeholderFiles = new Map(
+                pendingPlaceholderFiles = new Map(
                   plan.files.flatMap((file) => {
                     if (file.ownership.kind !== 'placeholder') return [];
                     const key = getRustPlaceholderModuleKey(file.ownership.module);
@@ -744,10 +766,24 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                 ),
               semanticModules: modules,
             });
+            if (
+              pendingPlaceholderFiles === undefined ||
+              pendingModuleEvaluationRepresentationFinalizationState === undefined
+            ) {
+              throw new Error('Rust source-tree finalization did not expose its canonical plan');
+            }
+            placeholderFiles = pendingPlaceholderFiles;
+            suppressedPlaceholderKeys = pendingSuppressedPlaceholderKeys;
+            moduleEvaluationRepresentationFinalizationState = pendingModuleEvaluationRepresentationFinalizationState;
+            return result;
           } catch (error) {
-            // Two failure kinds belong to the run and a caller may branch on them. Anything else -- a
+            // These failure kinds belong to the run and a caller may branch on them. Anything else -- a
             // contract TypeError, an invariant -- is a defect and keeps its own identity.
-            if (isCompilerRustSourceTreePlanningFailure(error) || isCompilerRustSourceTreeFinalizationFailure(error)) {
+            if (
+              isCompilerRustSourceTreePlanningFailure(error) ||
+              isCompilerRustSourceTreeFinalizationFailure(error) ||
+              isCompilerRustModuleEvaluationRepresentationPlanningFailure(error)
+            ) {
               throw createRustBackendFinalizationFailure(error);
             }
             throw error;
@@ -21676,7 +21712,11 @@ function wrapRustPlaceholderCommentLine(line: string): string[] {
 }
 
 function createRustBackendFinalizationFailure(
-  failure: Readonly<CompilerRustSourceTreePlanningFailure | CompilerRustSourceTreeFinalizationFailure>,
+  failure: Readonly<
+    | CompilerRustModuleEvaluationRepresentationPlanningFailure
+    | CompilerRustSourceTreePlanningFailure
+    | CompilerRustSourceTreeFinalizationFailure
+  >,
 ): CompilerBackendFinalizationFailure {
   const result = Object.assign(new Error(failure.message, { cause: failure }), {
     backend: 'rust',
@@ -21694,7 +21734,7 @@ function assertRustModuleEvaluationFinalization(
 ): void {
   let projected: CompilerModuleEvaluationPlan;
   try {
-    projected = filterCompilerModuleEvaluationPlan(
+    projected = createCompilerModuleEvaluationPlanProjection(
       candidate,
       authoritative.modules.map(({ module }) => module),
     );

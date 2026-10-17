@@ -8,7 +8,7 @@ import ts from 'typescript';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import {
   createCompilerModuleEvaluationPlan,
-  filterCompilerModuleEvaluationPlan,
+  createCompilerModuleEvaluationPlanProjection,
 } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
@@ -207,7 +207,7 @@ export function keep(value: number): number { return value + 1; }`;
     });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
-      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
+      moduleEvaluation: createCompilerModuleEvaluationPlanProjection(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -329,7 +329,7 @@ export function keep(value: number): number { return value + 1; }`;
     });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
-      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
+      moduleEvaluation: createCompilerModuleEvaluationPlanProjection(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -367,7 +367,7 @@ export function keep(): number { return counter++; }`;
     });
     session.finalizePackageGraph!({
       facade: createFacade([module]),
-      moduleEvaluation: filterCompilerModuleEvaluationPlan(moduleEvaluation, []),
+      moduleEvaluation: createCompilerModuleEvaluationPlanProjection(moduleEvaluation, []),
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [

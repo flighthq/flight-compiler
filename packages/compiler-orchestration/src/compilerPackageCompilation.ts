@@ -11,7 +11,7 @@ import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js'
 import {
   createCompilerModuleFacadePlanForEntries,
   createCompilerModuleEvaluationPlan,
-  filterCompilerModuleEvaluationPlan,
+  createCompilerModuleEvaluationPlanProjection,
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
@@ -228,7 +228,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   }
   refuseCompilerPackageGraphOutputCollisions(records);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
-  const initialization = filterCompilerModuleEvaluationPlan(
+  const initialization = createCompilerModuleEvaluationPlanProjection(
     candidateModuleEvaluation,
     candidateModuleEvaluation.modules.flatMap(({ module }) => {
       const record = records.get(getCompilerPackageGraphModuleKey(module));

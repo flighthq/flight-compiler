@@ -62,8 +62,13 @@ export function createCompilerRustModuleEvaluationRepresentationPlan(
   const retainedModules = createRustModuleEvaluationUniqueIdentityMap(input.modules, 'modules');
   const retainedFiles = createRustModuleEvaluationUniqueIdentityMap(input.finalization.moduleFiles, 'moduleFiles');
   const neutralModules = createRustModuleEvaluationUniqueIdentityMap(evaluation.modules, 'moduleEvaluation.modules');
-  assertRustModuleEvaluationExactProjection(retainedModules, retainedFiles, 'modules', 'moduleFiles');
   assertRustModuleEvaluationExactProjection(retainedModules, neutralModules, 'modules', 'moduleEvaluation.modules');
+  assertRustModuleEvaluationContainsProjection(
+    retainedFiles,
+    neutralModules,
+    'moduleFiles',
+    'moduleEvaluation.modules',
+  );
 
   const sourceTreeModules = createRustModuleEvaluationUniqueIdentityMap(input.sourceTree.modules, 'sourceTree.modules');
   const sourceFiles = createRustModuleEvaluationSourceFiles(input.sourceTree.files);
@@ -895,6 +900,7 @@ function getRustModuleEvaluationValueIdentity(
 const rustModuleEvaluationRepresentationPlanningFailureCodes: ReadonlySet<CompilerRustModuleEvaluationRepresentationPlanningFailureCode> =
   new Set([
     'rust-module-evaluation-representation-duplicate-identity',
+    'rust-module-evaluation-representation-finalization-mismatch',
     'rust-module-evaluation-representation-invalid-input',
     'rust-module-evaluation-representation-path-mismatch',
     'rust-module-evaluation-representation-projection-mismatch',

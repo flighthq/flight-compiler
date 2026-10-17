@@ -1,7 +1,7 @@
 export {
   collectCompilerModuleLinkRequests,
   createCompilerModuleEvaluationPlan,
-  filterCompilerModuleEvaluationPlan,
+  createCompilerModuleEvaluationPlanProjection,
   isCompilerModuleEvaluationFailure,
 } from './compilerModuleEvaluation.js';
 export { createCompilerModuleFacadeIdentities, isCompilerModuleFacadeFailure } from './compilerModuleFacadeIdentity.js';
