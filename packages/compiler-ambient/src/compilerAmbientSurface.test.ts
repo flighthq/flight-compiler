@@ -39,6 +39,11 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('stringify(value: unknown, replacer?: unknown, space?: number | string): string;');
     expect(source).toContain('toUpperCase(): string;');
     expect(source).toContain('interface WeakMap<K extends object, V>');
+    expect(source).toContain('interface ArrayLike<T>');
+    expect(source).toContain('from<T>(source: Iterable<T> | ArrayLike<T>): T[];');
+    expect(source).toContain(
+      'from<T, U>(source: Iterable<T> | ArrayLike<T>, map: (value: T, index: number) => U, thisArg?: unknown): U[];',
+    );
   });
 
   it('declares the portable binary, text, regexp, URL, and internationalization surfaces', () => {

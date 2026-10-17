@@ -26184,7 +26184,7 @@ describe('emitIrModuleRust static Array.of', () => {
     expect(importedOutput).not.toContain('array_of_value');
   });
 
-  it.skipIf(!rustcAvailable)('runs the exact scalar Array.of checkpoint', () => {
+  it.skipIf(!rustcAvailable)('runs the exact scalar Array.of and Array.from checkpoint', () => {
     const result = lower(
       'array-of-checkpoint.ts',
       `export function arrayOfCheckpoint(): boolean {
@@ -26195,13 +26195,235 @@ describe('emitIrModuleRust static Array.of', () => {
          const alias = values;
          const independent = Array.of(9);
          values.push(3);
-         return empty.length === 0 && alias.length === 3 && independent.length === 1 && calls === 12;
+         const make = (): string[] => { calls = calls * 10 + 3; return ["a", "b"]; };
+         const words = Array.from(make());
+         words.push("c");
+         const source = [1, 2];
+         const sourceAlias = source;
+         const copy = Array.from<number>(sourceAlias);
+         const copyAlias = copy;
+         source.push(3);
+         copy.push(9);
+         const flags = Array.from([true, false]);
+         const fromEmpty = Array.from<number>([]);
+         return empty.length === 0 && alias.length === 3 && independent.length === 1 && calls === 123 &&
+           words.join("") === "abc" && source.reduce((total, value) => total * 10 + value, 0) === 123 &&
+           copyAlias.reduce((total, value) => total * 10 + value, 0) === 129 && flags.length === 2 &&
+           fromEmpty.length === 0;
        }`,
     );
 
     expect(result.diagnostics).toEqual([]);
     const output = emitIrModuleRust(result.module).contents;
     expect(() => runRustSource(output, 'assert!(array_of_checkpoint());')).not.toThrow();
+  });
+});
+
+describe('emitIrModuleRust static Array.from', () => {
+  it.each([
+    ['mutable numbers', 'export function copy(values: number[]): number[] { return Array.from(values); }'],
+    ['readonly numbers', 'export function copy(values: readonly number[]): number[] { return Array.from(values); }'],
+    ['booleans', 'export function copy(values: boolean[]): boolean[] { return Array.from(values); }'],
+    [
+      'scalar literal aliases',
+      'type Label = "a" | "b"; export function copy(values: Label[]): Label[] { return Array.from(values); }',
+    ],
+    [
+      'explicit aliased dense literals',
+      'type Count = number; export function copy(): Count[] { return Array.from<Count>([1, 2]); }',
+    ],
+    ['typed empty literals', 'export function copy(): number[] { return Array.from<number>([]); }'],
+  ])('copies exact %s into a fresh vector', (_name, source) => {
+    const result = lower('array-from-scalars.ts', source);
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_from_source = &');
+    expect(output).toContain('(*array_from_source).clone()');
+    expect(output).not.toContain('Vec::from');
+  });
+
+  it('stages an effectful source once and releases shared borrows before later mutations', () => {
+    const result = lower(
+      'array-from-identity.ts',
+      `function make(log: number[]): string[] { log.push(1); return ["a", "b"]; }
+       export function effectful(log: number[]): string[] { return Array.from(make(log)); }
+       export function independent(): number {
+         const source = [1, 2];
+         const alias = source;
+         const copy = Array.from(alias);
+         const copyAlias = copy;
+         source.push(3);
+         copy.push(9);
+         return alias.length * 10 + copyAlias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_from_source = &make(log); (*array_from_source).clone()');
+    expect(output.match(/make\(/gu)).toHaveLength(2);
+    expect(output).toContain('let array_from_source_2 = alias.borrow(); (*array_from_source_2).clone()');
+    expect(output).toContain('Rc::new(RefCell::new({ let array_from_source_2 = alias.borrow();');
+    expect(output).toContain('let copy_alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&copy);');
+  });
+
+  it.each([
+    'export function values(): number[] { return Array.from(); }',
+    'export function values(input: number[][]): number[] { return Array.from(...input); }',
+    'export function values(input: number[]): number[] { return Array.from?.(input) ?? []; }',
+    'export function values(input: number[]): string[] { return Array.from(input, value => String(value)); }',
+    'export function values(input: number[]): string[] { return Array.from(input, value => String(value), {}); }',
+  ])('refuses a non-exact invocation before lowering', (source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-from-invocation.ts', source).module))).toBe(
+      'rust-array-from-invocation-unrepresented',
+    );
+  });
+
+  it('refuses mutated invocation evidence before extra-argument erasure', () => {
+    const result = lower(
+      'array-from-signature.ts',
+      'export function values(input: number[]): number[] { return Array.from(input); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Array.from return');
+    }
+    (returned.expression.semantics as { signature: unknown }).signature = {
+      parameterCount: 2,
+      providedArgumentCount: 1,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-from-invocation-unrepresented');
+  });
+
+  it.each([
+    [
+      'array-like objects',
+      'export function values(input: { readonly length: number; readonly [index: number]: number }): number[] { return Array.from(input); }',
+    ],
+    [
+      'sets',
+      'export function values(): string[] { const input = new Set<string>(); const alias = input; return Array.from(alias); }',
+    ],
+    [
+      'maps',
+      'export function values(): (readonly [string, number])[] { const input = new Map<string, number>(); const alias = input; return Array.from(alias); }',
+    ],
+    [
+      'shared array-like classes',
+      'class Box { readonly length = 1; readonly 0 = 2; } export function values(): number[] { const input = new Box(); const alias = input; return Array.from(alias); }',
+    ],
+    ['typed arrays', 'export function values(input: Uint8Array): number[] { return Array.from(input); }'],
+    ['tuples', 'export function values(input: readonly [number, number]): number[] { return Array.from(input); }'],
+  ])('refuses the dedicated source carrier for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-from-source.ts', source).module))).toBe(
+      'rust-array-from-source-carrier-unrepresented',
+    );
+  });
+
+  it.each([
+    ['nested arrays', 'export function values(input: number[][]): number[][] { return Array.from(input); }'],
+    [
+      'objects',
+      'export function values(input: { value: number }[]): { value: number }[] { return Array.from(input); }',
+    ],
+    [
+      'classes',
+      'class Box { value: number; constructor(value: number) { this.value = value; } } export function values(input: Box[]): Box[] { return Array.from(input); }',
+    ],
+    [
+      'mixed scalar unions',
+      'export function values(input: (number | string)[]): (number | string)[] { return Array.from(input); }',
+    ],
+    [
+      'nullable scalars',
+      'export function values(input: (number | null)[]): (number | null)[] { return Array.from(input); }',
+    ],
+  ])('refuses the dedicated element carrier for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-from-element.ts', source).module))).toBe(
+      'rust-array-from-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a mutated result carrier before source and element carrier failures', () => {
+    const result = lower(
+      'array-from-result.ts',
+      `export function first(input: number[]): number[] { return Array.from(input); }
+       export function second(input: number[][]): number[][] { return Array.from(input); }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'first',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Array.from return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-from-result-carrier-unrepresented');
+  });
+
+  it('does not intercept local, imported, or neighbouring static spellings', () => {
+    const localOutput = emitIrModuleRust(
+      lower(
+        'array-from-local.ts',
+        `class Array { static from(value: number[]): number[] { return value; } }
+         export function local(value: number[]): number[] { return Array.from(value); }
+         export function task(): Promise<number> { return Promise.resolve(1); }`,
+      ).module,
+    ).contents;
+    expect(localOutput).toContain('Array::from(value)');
+    expect(localOutput).toContain('FlightTask::ready(1.0)');
+    expect(localOutput).not.toContain('array_from_source');
+
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-from-namespace.ts',
+      'export function from(values: number[]): number[] { return values; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-from-imported.ts',
+      `import * as Array from './array-from-namespace.js';
+       export function imported(values: number[]): number[] { return Array.from(values); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Array-from-imported',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/array-from-imported.ts',
+          },
+          specifier: './array-from-namespace.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/array-from-namespace.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+    expect(importedOutput).toContain('use crate::array_from_namespace as Array;');
+    expect(importedOutput).toContain('Array::from(values)');
+    expect(importedOutput).not.toContain('array_from_source');
   });
 });
 

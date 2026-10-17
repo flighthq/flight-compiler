@@ -98,6 +98,11 @@ interface StringConstructor {
 }
 declare var String: StringConstructor;
 
+interface ArrayLike<T> {
+  readonly length: number;
+  readonly [index: number]: T;
+}
+
 interface ReadonlyArray<T> {
   readonly length: number;
   readonly [index: number]: T;
@@ -151,6 +156,8 @@ interface Array<T> {
 
 interface ArrayConstructor {
   new <T>(length?: number): T[];
+  from<T>(source: Iterable<T> | ArrayLike<T>): T[];
+  from<T, U>(source: Iterable<T> | ArrayLike<T>, map: (value: T, index: number) => U, thisArg?: unknown): U[];
   isArray(value: unknown): boolean;
   of<T>(...values: T[]): T[];
 }
