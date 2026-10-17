@@ -457,6 +457,243 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     }
   });
 
+  it('plans one shared HashSet carrier and one mutable HashSet borrow across a module boundary', () => {
+    const provider = lower('set-provider.ts', 'export function fill(values: Set<string>): void { values.add("key"); }');
+    const consumer = lower(
+      'set-consumer.ts',
+      `import { fill } from './set-provider.js';
+       export function aliasSet(): number {
+         const values = new Set<string>();
+         const alias = values;
+         fill(alias);
+         return values.size;
+       }`,
+    );
+    const moduleResolution = resolve('./set-provider.js', provider, consumer);
+    const plan = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [provider, consumer] });
+    const first = getModulePlan(plan, consumer);
+    const second = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution: structuredClone(moduleResolution),
+      modules: [structuredClone(provider), structuredClone(consumer)],
+    });
+
+    expect(second).toEqual(plan);
+    expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+    expect(getModulePlan(plan, provider).callables).toEqual([
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'fill' }),
+        parameters: [{ position: 0, representation: 'mutable-borrowed-hash-set' }],
+      }),
+    ]);
+    expect(first.refusals).toEqual([]);
+    expect(first.sharedSetBindings.map(({ binding, representation }) => [binding.name, representation]).sort()).toEqual(
+      [
+        ['alias', 'shared-ref-cell-hash-set'],
+        ['values', 'shared-ref-cell-hash-set'],
+      ],
+    );
+  });
+
+  it('refuses observed Set mutator results and overlapping shared Set borrows', () => {
+    const observed = lower(
+      'set-result.ts',
+      `export function setResult(): Set<string> {
+         const values = new Set<string>();
+         const alias = values;
+         return alias.add("key");
+       }`,
+    );
+    const conflict = lower(
+      'set-conflict.ts',
+      `export function setConflict(): number {
+         const values = new Set<string>();
+         const alias = values;
+         alias.add(values.has("key") ? "present" : "absent");
+         return alias.size;
+       }`,
+    );
+    const callConflict = lower(
+      'set-call-conflict.ts',
+      `function fill(values: Set<string>, size: number): void { values.add(size.toString()); }
+       export function setCallConflict(): number {
+         const values = new Set<string>();
+         const alias = values;
+         fill(alias, values.size);
+         return alias.size;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [observed] }), observed).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-set-mutator-result-unrepresented' }),
+      ]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [conflict] }), conflict).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-set-borrow-conflict' })]);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [callConflict] }), callConflict).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-set-borrow-conflict' })]);
+  });
+
+  it('refuses non-exact and identity-valued shared Set element domains', () => {
+    const namedAlias = lower(
+      'set-named-alias.ts',
+      `type Values = Set<string>;
+       export function setNamedAlias(): number {
+         const values: Values = new Set<string>();
+         const alias = values;
+         alias.add("key");
+         return values.size;
+       }`,
+    );
+    const numberElement = lower(
+      'set-number.ts',
+      `export function setNumber(): number {
+         const values = new Set<number>();
+         const alias = values;
+         alias.add(0);
+         return values.size;
+       }`,
+    );
+    const identityElement = lower(
+      'set-object.ts',
+      `export function setObject(): number {
+         const values = new Set<{ id: number }>();
+         const alias = values;
+         alias.add({ id: 1 });
+         return values.size;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [namedAlias] }), namedAlias).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-set-use-unrepresented' })]),
+    );
+    for (const module of [numberElement, identityElement]) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-set-element-unrepresented' })]),
+      );
+    }
+  });
+
+  it('refuses shared Set iteration, dynamic calls, suspension, escape, reassignment, and ambiguous aliases', () => {
+    const cases: Array<readonly [IrModule, string]> = [
+      [
+        lower(
+          'set-iteration.ts',
+          `export function setIteration(): number {
+             const values = new Set<string>();
+             const alias = values;
+             alias.add("key");
+             for (const entry of values) { entry; }
+             return alias.size;
+           }`,
+        ),
+        'rust-reference-shared-set-use-unrepresented',
+      ],
+      [
+        lower(
+          'set-non-root.ts',
+          `function create(): Set<string> { return new Set<string>(); }
+           export function setNonRoot(): number {
+             const values = create();
+             const alias = values;
+             alias.add("key");
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-use-unrepresented',
+      ],
+      [
+        lower(
+          'set-dynamic.ts',
+          `export function setDynamic(mutate: (value: Set<string>) => void): number {
+             const values = new Set<string>();
+             const alias = values;
+             mutate(alias);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-call-unrepresented',
+      ],
+      [
+        lower(
+          'set-optional-call.ts',
+          `export function setOptionalCall(mutate: ((value: Set<string>) => void) | undefined): number {
+             const values = new Set<string>();
+             const alias = values;
+             mutate?.(alias);
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-call-unrepresented',
+      ],
+      [
+        lower(
+          'set-suspension.ts',
+          `export async function setSuspension(task: Promise<void>): Promise<number> {
+             const values = new Set<string>();
+             const alias = values;
+             await task;
+             alias.add("key");
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-suspension-unrepresented',
+      ],
+      [
+        lower(
+          'set-escape.ts',
+          `export function setEscape(consume: (callback: () => void) => void): number {
+             const values = new Set<string>();
+             const alias = values;
+             consume(() => alias.add("key"));
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-closure-escape-unrepresented',
+      ],
+      [
+        lower(
+          'set-reassignment.ts',
+          `export function setReassignment(): number {
+             let values = new Set<string>();
+             const alias = values;
+             values = new Set<string>();
+             alias.add("key");
+             return values.size;
+           }`,
+        ),
+        'rust-reference-shared-set-binding-reassignment-unrepresented',
+      ],
+      [
+        lower(
+          'set-ambiguous.ts',
+          `export function setAmbiguous(flag: boolean): number {
+             const left = new Set<string>();
+             const right = new Set<string>();
+             const alias = flag ? left : right;
+             alias.add("key");
+             return alias.size;
+           }`,
+        ),
+        'rust-reference-shared-set-alias-ambiguous',
+      ],
+    ];
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
   it('requires the versioned module-resolution contract', () => {
     const module = lower('value.ts', 'export const value = 1;');
     expect(() =>

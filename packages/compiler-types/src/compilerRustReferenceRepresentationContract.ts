@@ -5,8 +5,10 @@ import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export type CompilerRustReferenceRepresentation =
   | 'mutable-borrowed-hash-map'
+  | 'mutable-borrowed-hash-set'
   | 'mutable-borrowed-vec'
   | 'shared-ref-cell-hash-map'
+  | 'shared-ref-cell-hash-set'
   | 'shared-ref-cell-vec';
 
 export interface CompilerRustReferenceParameterPlan {
@@ -40,7 +42,16 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-shared-map-mutator-result-unrepresented'
   | 'rust-reference-shared-map-suspension-unrepresented'
   | 'rust-reference-shared-map-use-unrepresented'
-  | 'rust-reference-shared-map-value-unrepresented';
+  | 'rust-reference-shared-map-value-unrepresented'
+  | 'rust-reference-shared-set-alias-ambiguous'
+  | 'rust-reference-shared-set-binding-reassignment-unrepresented'
+  | 'rust-reference-shared-set-borrow-conflict'
+  | 'rust-reference-shared-set-call-unrepresented'
+  | 'rust-reference-shared-set-closure-escape-unrepresented'
+  | 'rust-reference-shared-set-element-unrepresented'
+  | 'rust-reference-shared-set-mutator-result-unrepresented'
+  | 'rust-reference-shared-set-suspension-unrepresented'
+  | 'rust-reference-shared-set-use-unrepresented';
 
 export interface CompilerRustReferenceRepresentationRefusal {
   readonly code: CompilerRustReferenceRepresentationRefusalCode;
@@ -63,6 +74,11 @@ export interface CompilerRustReferenceModulePlan {
   readonly sharedMapBindings: readonly Readonly<{
     binding: IrBindingIdentity;
     representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-hash-map'>;
+  }>[];
+  /** Local Set aliases represented by one single-threaded shared RefCell carrier. */
+  readonly sharedSetBindings: readonly Readonly<{
+    binding: IrBindingIdentity;
+    representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-hash-set'>;
   }>[];
 }
 

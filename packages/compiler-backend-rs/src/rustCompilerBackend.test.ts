@@ -7937,6 +7937,161 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('preserves shared mutable Set identity with a local Rc RefCell HashSet carrier', () => {
+    const result = lower(
+      'shared-set.ts',
+      `export function aliasSet(): number {
+         const values = new Set<string>();
+         const alias = values;
+         alias.add("key");
+         return values.size;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use std::cell::RefCell;');
+    expect(output).toContain('use std::rc::Rc;');
+    expect(output).toContain(
+      'let values: Rc<RefCell<std::collections::HashSet<String>>> = Rc::new(RefCell::new(std::collections::HashSet::new()));',
+    );
+    expect(output).toContain('let alias: Rc<RefCell<std::collections::HashSet<String>>> = Rc::clone(&values);');
+    expect(output).toContain('alias.borrow_mut().insert("key".to_owned());');
+    expect(output).toContain('values.borrow().len() as f64');
+    expect(output).not.toContain('values.clone()');
+  });
+
+  it.skipIf(!rustcAvailable)('runs aliasSet with both Set aliases observing size one', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-set.ts',
+        `export function aliasSet(): number {
+           const values = new Set<string>();
+           const alias = values;
+           alias.add("key");
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(() => runRustSource(output, 'assert_eq!(alias_set(), 1.0);')).not.toThrow();
+  });
+
+  it('scopes shared Set has, delete, and clear borrows to each operation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-set-operations.ts',
+        `export function sharedSetHas(): boolean {
+           const values = new Set<string>();
+           const alias = values;
+           alias.add("key");
+           return values.has("key");
+         }
+         export function sharedSetRemove(): number {
+           const values = new Set<string>();
+           const alias = values;
+           alias.add("key");
+           values.delete("key");
+           alias.clear();
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('values.borrow().contains("key")');
+    expect(output).toContain('values.borrow_mut().remove("key");');
+    expect(output).toContain('alias.borrow_mut().clear();');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('lends a shared Set through one temporary mutable call borrow and reuses it afterwards', () => {
+    const provider = lower(
+      'set-provider.ts',
+      'export function fill(values: Set<string>): void { values.add("key"); }',
+    ).module;
+    const consumer = lower(
+      'alias-set-call.ts',
+      `import { fill } from './set-provider.js';
+       export function aliasSetCall(): number {
+         const values = new Set<string>();
+         const alias = values;
+         fill(alias);
+         return values.size;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './set-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn fill(values: &mut std::collections::HashSet<String>)');
+    expect(output).toContain('fill(&mut *alias.borrow_mut());');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) {
+      expect(() => compileRustModulePair('set_provider', providerOutput, 'alias_set_call', output)).not.toThrow();
+    }
+  });
+
+  it('captures a shared Set only in a proven synchronous non-escaping closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-set-closure.ts',
+        `export function aliasSetClosure(): number {
+           const values = new Set<string>();
+           const alias = values;
+           const fill = (): void => { alias.add("key"); };
+           fill();
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let alias = Rc::clone(&alias);');
+    expect(output).toContain('alias.borrow_mut().insert("key".to_owned())');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('refuses shared Set borrow conflicts and observed add results before emission', () => {
+    const conflict = lower(
+      'alias-set-conflict.ts',
+      `export function aliasSetConflict(): number {
+         const values = new Set<string>();
+         const alias = values;
+         alias.add(values.has("key") ? "present" : "absent");
+         return alias.size;
+       }`,
+    ).module;
+    const observed = lower(
+      'alias-set-result.ts',
+      `export function aliasSetResult(): Set<string> {
+         const values = new Set<string>();
+         const alias = values;
+         return alias.add("key");
+       }`,
+    ).module;
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(conflict)).rule).toBe(
+      'rust-reference-shared-set-borrow-conflict',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(observed)).rule).toBe(
+      'rust-reference-shared-set-mutator-result-unrepresented',
+    );
+  });
+
   it('refuses an unconstructed contextual callable-union return', () => {
     const result = lower(
       'callable-union-return.ts',

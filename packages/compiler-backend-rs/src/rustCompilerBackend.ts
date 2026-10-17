@@ -182,6 +182,7 @@ interface EmitContext {
   referentMutatedParameterIds: ReadonlySet<string>;
   sharedArrayBindingIds: ReadonlySet<string>;
   sharedMapBindingIds: ReadonlySet<string>;
+  sharedSetBindingIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   // Every module's own binding allocation, keyed by module identity. An import has to spell an exported
   // name the way its declaring module allocates it -- `WIDGET` for a constant called `Widget`, not the
@@ -316,7 +317,8 @@ function emitIrModuleRustWithContext(
     referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
   );
   const sharedMapBindingIds = new Set(referenceModulePlan?.sharedMapBindings.map(({ binding }) => binding.id) ?? []);
-  const sharedReferenceBindingIds = new Set([...sharedArrayBindingIds, ...sharedMapBindingIds]);
+  const sharedSetBindingIds = new Set(referenceModulePlan?.sharedSetBindings.map(({ binding }) => binding.id) ?? []);
+  const sharedReferenceBindingIds = new Set([...sharedArrayBindingIds, ...sharedMapBindingIds, ...sharedSetBindingIds]);
   const allCellWrappedIds = closureEvidence.closures
     .filter(
       (closure) =>
@@ -423,6 +425,7 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds,
     sharedArrayBindingIds,
     sharedMapBindingIds,
+    sharedSetBindingIds,
     taggedUnionBindingNames,
     bindingTypes,
     module,
@@ -1357,7 +1360,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               (expression.callee.member.receiver === 'array' &&
                 RUST_SHARED_ARRAY_MUTATING_METHODS.has(expression.callee.member.name)) ||
                 (expression.callee.member.receiver === 'map' &&
-                  RUST_SHARED_MAP_MUTATING_METHODS.has(expression.callee.member.name)),
+                  RUST_SHARED_MAP_MUTATING_METHODS.has(expression.callee.member.name)) ||
+                (expression.callee.member.receiver === 'set' &&
+                  RUST_SHARED_SET_MUTATING_METHODS.has(expression.callee.member.name)),
               context,
             );
           const borrows =
@@ -1490,7 +1495,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (
         expression.reference.kind === 'binding' &&
         (context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
-          context.sharedMapBindingIds.has(expression.reference.binding.id))
+          context.sharedMapBindingIds.has(expression.reference.binding.id) ||
+          context.sharedSetBindingIds.has(expression.reference.binding.id))
       ) {
         return `${emitIdentifierReferenceRust(expression.reference, context)}.borrow().clone()`;
       }
@@ -1948,22 +1954,24 @@ function isIrTypeTypedArrayRust(type: Readonly<IrType> | undefined): boolean {
   );
 }
 
-function isIrTypeSupportedSharedMapRust(type: Readonly<IrType> | undefined): type is Readonly<IrType> {
+function isIrTypeSupportedSharedHashCollectionRust(
+  type: Readonly<IrType> | undefined,
+  kind: 'map' | 'set',
+): type is Readonly<IrType> {
   if (
     type?.kind !== 'named' ||
     type.reference.kind !== 'ambient' ||
-    type.reference.name !== 'Map' ||
-    type.typeArguments.length !== 2
+    type.reference.name !== (kind === 'map' ? 'Map' : 'Set') ||
+    type.typeArguments.length !== (kind === 'map' ? 2 : 1)
   ) {
     return false;
   }
-  const key = type.typeArguments[0];
+  const element = type.typeArguments[0];
+  if (element?.kind !== 'primitive' || element.name !== 'string') return false;
+  if (kind === 'set') return true;
   const value = type.typeArguments[1];
   return (
-    key?.kind === 'primitive' &&
-    key.name === 'string' &&
-    value?.kind === 'primitive' &&
-    (value.name === 'boolean' || value.name === 'number' || value.name === 'string')
+    value?.kind === 'primitive' && (value.name === 'boolean' || value.name === 'number' || value.name === 'string')
   );
 }
 
@@ -3122,7 +3130,8 @@ function collectCellCapturedBindingIdsRust(
     (context.cellWrappedBindingIds.size === 0 &&
       context.refCellWrappedBindingIds.size === 0 &&
       context.sharedArrayBindingIds.size === 0 &&
-      context.sharedMapBindingIds.size === 0)
+      context.sharedMapBindingIds.size === 0 &&
+      context.sharedSetBindingIds.size === 0)
   )
     return [];
   const found = new Set<string>();
@@ -3134,7 +3143,8 @@ function collectCellCapturedBindingIdsRust(
         (context.cellWrappedBindingIds.has(expr.reference.binding.id) ||
           context.refCellWrappedBindingIds.has(expr.reference.binding.id) ||
           context.sharedArrayBindingIds.has(expr.reference.binding.id) ||
-          context.sharedMapBindingIds.has(expr.reference.binding.id))
+          context.sharedMapBindingIds.has(expr.reference.binding.id) ||
+          context.sharedSetBindingIds.has(expr.reference.binding.id))
       ) {
         found.add(expr.reference.binding.id);
       }
@@ -3174,7 +3184,8 @@ function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitCo
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
     (context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
-      context.sharedMapBindingIds.has(expression.reference.binding.id))
+      context.sharedMapBindingIds.has(expression.reference.binding.id) ||
+      context.sharedSetBindingIds.has(expression.reference.binding.id))
   ) {
     return `&mut *${emitIdentifierReferenceRust(expression.reference, context)}.borrow_mut()`;
   }
@@ -3197,13 +3208,14 @@ function getRustSharedArrayBindingRust(
     : undefined;
 }
 
-function getRustSharedMapBindingRust(
+function getRustSharedHashCollectionBindingRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrBindingIdentity> | undefined {
   return expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
-    context.sharedMapBindingIds.has(expression.reference.binding.id)
+    (context.sharedMapBindingIds.has(expression.reference.binding.id) ||
+      context.sharedSetBindingIds.has(expression.reference.binding.id))
     ? expression.reference.binding
     : undefined;
 }
@@ -3214,7 +3226,7 @@ function emitSharedReferenceReceiverRust(
   context: EmitContext,
 ): string {
   const binding =
-    getRustSharedArrayBindingRust(expression, context) ?? getRustSharedMapBindingRust(expression, context);
+    getRustSharedArrayBindingRust(expression, context) ?? getRustSharedHashCollectionBindingRust(expression, context);
   return binding
     ? `${getBindingTargetNameRust(binding, context)}.${mutable ? 'borrow_mut' : 'borrow'}()`
     : emitExpression(expression, context);
@@ -4489,22 +4501,32 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
-  if (context.sharedMapBindingIds.has(variable.binding.id)) {
+  const sharedHashCollectionKind = context.sharedMapBindingIds.has(variable.binding.id)
+    ? 'map'
+    : context.sharedSetBindingIds.has(variable.binding.id)
+      ? 'set'
+      : undefined;
+  if (sharedHashCollectionKind) {
     const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
-    if (!isIrTypeSupportedSharedMapRust(type) || !variable.initializer) {
+    if (!isIrTypeSupportedSharedHashCollectionRust(type, sharedHashCollectionKind) || !variable.initializer) {
+      const collectionName = sharedHashCollectionKind === 'map' ? 'Map' : 'Set';
       emissionError(
         context,
-        `shared Map binding ${variable.binding.name} requires an initialized exact Map<string, primitive> representation`,
-        'rust-reference-shared-map-use-unrepresented',
+        `shared ${collectionName} binding ${variable.binding.name} requires an initialized exact ${collectionName}<string${sharedHashCollectionKind === 'map' ? ', primitive' : ''}> representation`,
+        sharedHashCollectionKind === 'map'
+          ? 'rust-reference-shared-map-use-unrepresented'
+          : 'rust-reference-shared-set-use-unrepresented',
       );
     }
     context.needsRefCellImport.add('RefCell');
     context.needsRcImport.add('Rc');
     const name = getBindingTargetNameRust(variable.binding, context);
+    const sharedBindingIds =
+      sharedHashCollectionKind === 'map' ? context.sharedMapBindingIds : context.sharedSetBindingIds;
     const initializer =
       variable.initializer.kind === 'identifier' &&
       variable.initializer.reference.kind === 'binding' &&
-      context.sharedMapBindingIds.has(variable.initializer.reference.binding.id)
+      sharedBindingIds.has(variable.initializer.reference.binding.id)
         ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
         : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
@@ -6294,3 +6316,5 @@ const rustMathSpreadFoldTargets: Readonly<Record<string, { folder: string; ident
 const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set(['pop', 'push', 'reverse', 'shift', 'unshift']);
 
 const RUST_SHARED_MAP_MUTATING_METHODS: ReadonlySet<string> = new Set(['clear', 'delete', 'set']);
+
+const RUST_SHARED_SET_MUTATING_METHODS: ReadonlySet<string> = new Set(['add', 'clear', 'delete']);

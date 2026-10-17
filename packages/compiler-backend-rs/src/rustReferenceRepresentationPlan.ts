@@ -60,7 +60,8 @@ interface RustReferenceModuleRecord {
   readonly module: Readonly<IrModule>;
   readonly ownership: ReturnType<typeof analyzeIrModuleOwnershipEvidenceRust>;
   readonly sharedArrays: RustSharedArrayAnalysis;
-  readonly sharedMaps: RustSharedMapAnalysis;
+  readonly sharedMaps: RustSharedHashCollectionAnalysis;
+  readonly sharedSets: RustSharedHashCollectionAnalysis;
 }
 
 interface RustSharedArrayAnalysis {
@@ -70,20 +71,23 @@ interface RustSharedArrayAnalysis {
   readonly groupsByKey: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
-interface RustSharedMapAnalysis {
+interface RustSharedHashCollectionAnalysis {
   readonly ambiguousBindingIds: ReadonlySet<string>;
   readonly bindingIds: Set<string>;
   readonly groupByBindingId: ReadonlyMap<string, string>;
   readonly groupsByKey: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly variablesByBindingId: ReadonlyMap<string, RustSharedMapVariable>;
+  readonly kind: RustSharedHashCollectionKind;
+  readonly variablesByBindingId: ReadonlyMap<string, RustSharedHashCollectionVariable>;
 }
 
-interface RustSharedMapVariable {
+interface RustSharedHashCollectionVariable {
   readonly binding: Readonly<IrBindingIdentity>;
   readonly initializer: Readonly<IrExpression> | undefined;
   readonly mutable: boolean;
   readonly type: Readonly<IrType> | undefined;
 }
+
+type RustSharedHashCollectionKind = 'map' | 'set';
 
 type RustReferenceCallTarget =
   | Readonly<{ kind: 'ambiguous'; imported: RustReferenceImportRecord }>
@@ -100,10 +104,13 @@ export function createCompilerRustReferenceRepresentationPlan(
   }
   const modules = createRustReferenceModuleRecords(input.modules);
   propagateRustReferenceArrayParameterMutation(modules, input.moduleResolution);
-  propagateRustReferenceMapParameterMutation(modules, input.moduleResolution);
-  activateRustSharedMapUnsupportedUses(modules, input.moduleResolution);
+  propagateRustReferenceHashCollectionParameterMutation(modules, input.moduleResolution, 'map');
+  propagateRustReferenceHashCollectionParameterMutation(modules, input.moduleResolution, 'set');
+  activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'map');
+  activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'set');
   activateRustSharedArrayCallMutations(modules, input.moduleResolution);
-  activateRustSharedMapCallMutations(modules, input.moduleResolution);
+  activateRustSharedHashCollectionCallMutations(modules, input.moduleResolution, 'map');
+  activateRustSharedHashCollectionCallMutations(modules, input.moduleResolution, 'set');
   const plan: CompilerRustReferenceRepresentationPlan = {
     modules: [...modules]
       .sort((left, right) => compareTextCodeUnits(moduleKey(left.module), moduleKey(right.module)))
@@ -122,7 +129,8 @@ function createRustReferenceModuleRecords(
     const bindingTypes = new Map(ownership.bindings.map((binding) => [binding.binding.id, binding.type]));
     const mutatedParameters = collectIrModuleReferentMutatedParameterIdsRust(module);
     const sharedArrays = createRustSharedArrayAnalysis(module, ownership, bindingTypes);
-    const sharedMaps = createRustSharedMapAnalysis(module, ownership, bindingTypes);
+    const sharedMaps = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'map');
+    const sharedSets = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'set');
     const record: RustReferenceModuleRecord = {
       bindingTypes,
       calls: [],
@@ -137,6 +145,7 @@ function createRustReferenceModuleRecords(
       ownership,
       sharedArrays,
       sharedMaps,
+      sharedSets,
     };
     const functions = module.declarations.flatMap((declaration) =>
       declaration.kind === 'function'
@@ -198,9 +207,10 @@ function propagateRustReferenceArrayParameterMutation(
   }
 }
 
-function propagateRustReferenceMapParameterMutation(
+function propagateRustReferenceHashCollectionParameterMutation(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  kind: RustSharedHashCollectionKind,
 ): void {
   let changed = true;
   while (changed) {
@@ -209,7 +219,7 @@ function propagateRustReferenceMapParameterMutation(
       for (const { call, enclosingFunction } of module.calls) {
         const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
         if (target.kind !== 'function') continue;
-        for (const position of getRustReferenceMapMutationPositions(target.function)) {
+        for (const position of getRustReferenceHashCollectionMutationPositions(target.function, kind)) {
           const argument = call.arguments[position];
           if (argument?.kind !== 'identifier' || argument.reference.kind !== 'binding') continue;
           const argumentBindingId = argument.reference.binding.id;
@@ -218,7 +228,7 @@ function propagateRustReferenceMapParameterMutation(
           );
           if (callerPosition < 0 || enclosingFunction.mutatedParameterPositions.has(callerPosition)) continue;
           const callerParameter = enclosingFunction.declaration.parameters[callerPosition];
-          if (!callerParameter || !isRustSharedMapTypeSupported(callerParameter.type)) continue;
+          if (!callerParameter || !isRustSharedHashCollectionTypeSupported(callerParameter.type, kind)) continue;
           enclosingFunction.mutatedParameterPositions.add(callerPosition);
           changed = true;
         }
@@ -237,11 +247,14 @@ function createRustReferenceModulePlan(
   const refusals = new Map<string, CompilerRustReferenceRepresentationRefusal>();
 
   addRustSharedArrayRefusals(module, modules, moduleResolution, refusals);
-  addRustSharedMapRefusals(module, modules, moduleResolution, refusals);
+  addRustSharedHashCollectionRefusals(module, modules, moduleResolution, refusals, 'map');
+  addRustSharedHashCollectionRefusals(module, modules, moduleResolution, refusals, 'set');
 
   for (const evidence of module.ownership.bindings) {
     if (
-      (evidence.type.kind === 'array' || isRustSharedMapTypeSupported(evidence.type)) &&
+      (evidence.type.kind === 'array' ||
+        isRustSharedHashCollectionTypeSupported(evidence.type, 'map') ||
+        isRustSharedHashCollectionTypeSupported(evidence.type, 'set')) &&
       (evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent')
     ) {
       mutatedBindings.set(evidence.binding.id, evidence.binding);
@@ -255,12 +268,14 @@ function createRustReferenceModulePlan(
       getRustReferenceArrayMutationPositions(function_),
       'mutable-borrowed-vec',
     );
-    addRustReferenceCallablePlan(
-      callables,
-      function_.declaration.binding,
-      getRustReferenceMapMutationPositions(function_),
-      'mutable-borrowed-hash-map',
-    );
+    for (const kind of RUST_SHARED_HASH_COLLECTION_KINDS) {
+      addRustReferenceCallablePlan(
+        callables,
+        function_.declaration.binding,
+        getRustReferenceHashCollectionMutationPositions(function_, kind),
+        getRustReferenceHashCollectionBorrowedRepresentation(kind),
+      );
+    }
   }
 
   for (const { call } of module.calls) {
@@ -269,8 +284,10 @@ function createRustReferenceModulePlan(
     if (target.kind === 'local-unplanned') continue;
     if (target.kind !== 'function') {
       const hasArray = call.arguments.some((argument) => isRustReferenceArrayExpression(argument, module.bindingTypes));
-      const hasMap = call.arguments.some((argument) => isRustReferenceMapExpression(argument, module.bindingTypes));
-      if (!hasArray && !hasMap) continue;
+      const hashCollectionKinds = RUST_SHARED_HASH_COLLECTION_KINDS.filter((kind) =>
+        call.arguments.some((argument) => isRustReferenceHashCollectionExpression(argument, module.bindingTypes, kind)),
+      );
+      if (!hasArray && hashCollectionKinds.length === 0) continue;
       if (hasArray) {
         const code =
           target.kind === 'ambiguous'
@@ -289,19 +306,24 @@ function createRustReferenceModulePlan(
               : `array call target ${target.imported.binding.imported} has no represented Rust function declaration`,
         );
       }
-      if (hasMap) {
+      for (const kind of hashCollectionKinds) {
+        const collectionName = getRustReferenceHashCollectionName(kind);
         addRustReferenceRefusal(
           refusals,
-          'rust-reference-shared-map-call-unrepresented',
+          getRustReferenceHashCollectionRefusalCode(kind, 'call'),
           `${moduleKey(module.module)}:${call.callee.reference.binding.id}`,
-          `Map call target ${target.imported.binding.imported} is ${target.kind} and has no exact represented Rust mutable parameter`,
+          `${collectionName} call target ${target.imported.binding.imported} is ${target.kind} and has no exact represented Rust mutable parameter`,
         );
       }
       continue;
     }
     const unrepresentedMutationPositions = [...target.function.mutatedParameterPositions].filter((position) => {
       const type = target.function.declaration.parameters[position]?.type;
-      return type?.kind !== 'array' && (!type || !isRustSharedMapTypeSupported(type));
+      return (
+        type?.kind !== 'array' &&
+        !isRustSharedHashCollectionTypeSupported(type, 'map') &&
+        !isRustSharedHashCollectionTypeSupported(type, 'set')
+      );
     });
     if (target.imported && unrepresentedMutationPositions.length > 0) {
       addRustReferenceRefusal(
@@ -333,36 +355,8 @@ function createRustReferenceModulePlan(
         `argument ${String(position)} to ${call.callee.reference.binding.name} lacks a represented Rust Vec binding`,
       );
     }
-    const mapPositions = getRustReferenceMapMutationPositions(target.function);
-    addRustReferenceCallablePlan(callables, call.callee.reference.binding, mapPositions, 'mutable-borrowed-hash-map');
-    for (const position of mapPositions) {
-      const argument = call.arguments[position];
-      if (
-        argument?.kind === 'identifier' &&
-        argument.reference.kind === 'binding' &&
-        isRustSharedMapTypeSupported(module.bindingTypes.get(argument.reference.binding.id))
-      ) {
-        mutatedBindings.set(argument.reference.binding.id, argument.reference.binding);
-        addRustSharedMapCallBorrowConflictRefusal(module, call, position, refusals);
-        continue;
-      }
-      addRustReferenceRefusal(
-        refusals,
-        'rust-reference-shared-map-call-unrepresented',
-        `${moduleKey(module.module)}:${call.callee.reference.binding.id}:${String(position)}`,
-        `argument ${String(position)} to ${call.callee.reference.binding.name} lacks an exact represented Rust HashMap binding`,
-      );
-    }
-    for (const position of getRustReferenceAnyMapMutationPositions(target.function)) {
-      if (mapPositions.has(position)) continue;
-      const argument = call.arguments[position];
-      if (!argument || !isRustReferenceMapExpression(argument, module.bindingTypes)) continue;
-      addRustReferenceRefusal(
-        refusals,
-        'rust-reference-shared-map-call-unrepresented',
-        `${moduleKey(module.module)}:${call.callee.reference.binding.id}:${String(position)}`,
-        `argument ${String(position)} to ${call.callee.reference.binding.name} uses a Map key or value domain outside the exact represented Rust HashMap plan`,
-      );
+    for (const kind of RUST_SHARED_HASH_COLLECTION_KINDS) {
+      addRustReferenceHashCollectionCallPlan(callables, mutatedBindings, refusals, module, call, target.function, kind);
     }
   }
 
@@ -396,7 +390,62 @@ function createRustReferenceModulePlan(
         representation: 'shared-ref-cell-hash-map' as const,
       }))
       .sort((left, right) => compareTextCodeUnits(left.binding.id, right.binding.id)),
+    sharedSetBindings: [...module.sharedSets.bindingIds]
+      .map((id) => ({
+        binding: module.ownership.bindings.find((evidence) => evidence.binding.id === id)!.binding,
+        representation: 'shared-ref-cell-hash-set' as const,
+      }))
+      .sort((left, right) => compareTextCodeUnits(left.binding.id, right.binding.id)),
   };
+}
+
+function addRustReferenceHashCollectionCallPlan(
+  callables: Map<string, RustReferenceCallableDraft>,
+  mutatedBindings: Map<string, IrBindingIdentity>,
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+  module: RustReferenceModuleRecord,
+  call: IrCallExpression,
+  target: RustReferenceFunctionRecord,
+  kind: RustSharedHashCollectionKind,
+): void {
+  const positions = getRustReferenceHashCollectionMutationPositions(target, kind);
+  addRustReferenceCallablePlan(
+    callables,
+    call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding'
+      ? call.callee.reference.binding
+      : target.declaration.binding,
+    positions,
+    getRustReferenceHashCollectionBorrowedRepresentation(kind),
+  );
+  for (const position of positions) {
+    const argument = call.arguments[position];
+    if (
+      argument?.kind === 'identifier' &&
+      argument.reference.kind === 'binding' &&
+      isRustSharedHashCollectionTypeSupported(module.bindingTypes.get(argument.reference.binding.id), kind)
+    ) {
+      mutatedBindings.set(argument.reference.binding.id, argument.reference.binding);
+      addRustSharedHashCollectionCallBorrowConflictRefusal(module, call, position, refusals, kind);
+      continue;
+    }
+    addRustReferenceRefusal(
+      refusals,
+      getRustReferenceHashCollectionRefusalCode(kind, 'call'),
+      `${moduleKey(module.module)}:${call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding' ? call.callee.reference.binding.id : target.declaration.binding.id}:${String(position)}`,
+      `argument ${String(position)} to ${target.declaration.binding.name} lacks an exact represented Rust ${kind === 'map' ? 'HashMap' : 'HashSet'} binding`,
+    );
+  }
+  for (const position of getRustReferenceAnyHashCollectionMutationPositions(target, kind)) {
+    if (positions.has(position)) continue;
+    const argument = call.arguments[position];
+    if (!argument || !isRustReferenceHashCollectionExpression(argument, module.bindingTypes, kind)) continue;
+    addRustReferenceRefusal(
+      refusals,
+      getRustReferenceHashCollectionRefusalCode(kind, 'call'),
+      `${moduleKey(module.module)}:${call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding' ? call.callee.reference.binding.id : target.declaration.binding.id}:${String(position)}`,
+      `argument ${String(position)} to ${target.declaration.binding.name} uses a ${getRustReferenceHashCollectionName(kind)} domain outside the exact represented Rust ${kind === 'map' ? 'HashMap' : 'HashSet'} plan`,
+    );
+  }
 }
 
 function createRustSharedArrayAnalysis(
@@ -504,15 +553,16 @@ function activateRustSharedArrayCallMutations(
   }
 }
 
-function createRustSharedMapAnalysis(
+function createRustSharedHashCollectionAnalysis(
   module: Readonly<IrModule>,
   ownership: RustReferenceModuleRecord['ownership'],
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
-): RustSharedMapAnalysis {
+  kind: RustSharedHashCollectionKind,
+): RustSharedHashCollectionAnalysis {
   const parents = new Map<string, string>();
   const aliasEdges: Array<readonly [string, string]> = [];
   const ambiguousBindingIds = new Set<string>();
-  const variablesByBindingId = new Map<string, RustSharedMapVariable>();
+  const variablesByBindingId = new Map<string, RustSharedHashCollectionVariable>();
   const find = (id: string): string => {
     const parent = parents.get(id);
     if (!parent || parent === id) return id;
@@ -532,7 +582,7 @@ function createRustSharedMapAnalysis(
     variable(variable) {
       if (!('binding' in variable)) return;
       const type = bindingTypes.get(variable.binding.id);
-      if (!isRustMapLikeType(type, module)) return;
+      if (!isRustHashCollectionLikeType(type, module, kind)) return;
       variablesByBindingId.set(variable.binding.id, {
         binding: variable.binding,
         initializer: variable.initializer,
@@ -544,7 +594,7 @@ function createRustSharedMapAnalysis(
           [variable.initializer.whenTrue, variable.initializer.whenFalse].flatMap((alternative) =>
             alternative.kind === 'identifier' &&
             alternative.reference.kind === 'binding' &&
-            isRustMapLikeType(bindingTypes.get(alternative.reference.binding.id), module)
+            isRustHashCollectionLikeType(bindingTypes.get(alternative.reference.binding.id), module, kind)
               ? [alternative.reference.binding.id]
               : [],
           ),
@@ -554,7 +604,7 @@ function createRustSharedMapAnalysis(
       if (
         variable.initializer?.kind !== 'identifier' ||
         variable.initializer.reference.kind !== 'binding' ||
-        !isRustMapLikeType(bindingTypes.get(variable.initializer.reference.binding.id), module)
+        !isRustHashCollectionLikeType(bindingTypes.get(variable.initializer.reference.binding.id), module, kind)
       ) {
         return;
       }
@@ -589,67 +639,71 @@ function createRustSharedMapAnalysis(
       for (const id of group) bindingIds.add(id);
     }
   }
-  return { ambiguousBindingIds, bindingIds, groupByBindingId, groupsByKey, variablesByBindingId };
+  return { ambiguousBindingIds, bindingIds, groupByBindingId, groupsByKey, kind, variablesByBindingId };
 }
 
-function activateRustSharedMapCallMutations(
+function activateRustSharedHashCollectionCallMutations(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  kind: RustSharedHashCollectionKind,
 ): void {
   for (const module of modules) {
+    const analysis = getRustSharedHashCollectionAnalysis(module, kind);
     for (const { call } of module.calls) {
       const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
       if (target.kind !== 'function') {
         for (const argument of call.arguments) {
-          activateRustSharedMapGroupsUsedInExpression(module, argument);
+          activateRustSharedHashCollectionGroupsUsedInExpression(analysis, argument);
         }
         continue;
       }
-      for (const position of getRustReferenceAnyMapMutationPositions(target.function)) {
+      for (const position of getRustReferenceAnyHashCollectionMutationPositions(target.function, kind)) {
         const argument = call.arguments[position];
-        if (argument) activateRustSharedMapGroupsUsedInExpression(module, argument);
+        if (argument) activateRustSharedHashCollectionGroupsUsedInExpression(analysis, argument);
       }
     }
   }
 }
 
-function activateRustSharedMapUnsupportedUses(
+function activateRustSharedHashCollectionUnsupportedUses(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  kind: RustSharedHashCollectionKind,
 ): void {
   for (const module of modules) {
+    const analysis = getRustSharedHashCollectionAnalysis(module, kind);
     analyzeIrModuleTraversal(module.module, {
       expression(expression, path_) {
         if (
           expression.kind !== 'identifier' ||
           expression.reference.kind !== 'binding' ||
-          !module.sharedMaps.groupByBindingId.has(expression.reference.binding.id) ||
-          isRustSharedMapIdentifierUseRepresented(module, modules, moduleResolution, expression, path_)
+          !analysis.groupByBindingId.has(expression.reference.binding.id) ||
+          isRustSharedHashCollectionIdentifierUseRepresented(module, modules, moduleResolution, expression, path_, kind)
         ) {
           return;
         }
-        const groupKey = module.sharedMaps.groupByBindingId.get(expression.reference.binding.id)!;
-        for (const id of module.sharedMaps.groupsByKey.get(groupKey) ?? []) module.sharedMaps.bindingIds.add(id);
+        const groupKey = analysis.groupByBindingId.get(expression.reference.binding.id)!;
+        for (const id of analysis.groupsByKey.get(groupKey) ?? []) analysis.bindingIds.add(id);
       },
     });
   }
 }
 
-function activateRustSharedMapGroupsUsedInExpression(
-  module: RustReferenceModuleRecord,
+function activateRustSharedHashCollectionGroupsUsedInExpression(
+  analysis: RustSharedHashCollectionAnalysis,
   expression: Readonly<IrExpression>,
 ): void {
   const groupKeys = new Set<string>();
   analyzeIrExpressionSubtreeTraversal(expression, {
     expression(candidate) {
       if (candidate.kind !== 'identifier' || candidate.reference.kind !== 'binding') return undefined;
-      const groupKey = module.sharedMaps.groupByBindingId.get(candidate.reference.binding.id);
+      const groupKey = analysis.groupByBindingId.get(candidate.reference.binding.id);
       if (groupKey) groupKeys.add(groupKey);
       return undefined;
     },
   });
   for (const groupKey of groupKeys) {
-    for (const id of module.sharedMaps.groupsByKey.get(groupKey) ?? []) module.sharedMaps.bindingIds.add(id);
+    for (const id of analysis.groupsByKey.get(groupKey) ?? []) analysis.bindingIds.add(id);
   }
 }
 
@@ -915,19 +969,22 @@ function expressionUsesRustSharedArrayGroup(
   return found;
 }
 
-function addRustSharedMapRefusals(
+function addRustSharedHashCollectionRefusals(
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+  kind: RustSharedHashCollectionKind,
 ): void {
-  for (const id of module.sharedMaps.ambiguousBindingIds) {
+  const analysis = getRustSharedHashCollectionAnalysis(module, kind);
+  const collectionName = getRustReferenceHashCollectionName(kind);
+  for (const id of analysis.ambiguousBindingIds) {
     const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === id);
     const mutatedByCall = module.calls.some(({ call }) => {
       const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
       return (
         target.kind === 'function' &&
-        [...getRustReferenceAnyMapMutationPositions(target.function)].some((position) => {
+        [...getRustReferenceAnyHashCollectionMutationPositions(target.function, kind)].some((position) => {
           const argument = call.arguments[position];
           return (
             argument?.kind === 'identifier' &&
@@ -945,65 +1002,73 @@ function addRustSharedMapRefusals(
     }
     addRustReferenceRefusal(
       refusals,
-      'rust-reference-shared-map-alias-ambiguous',
+      getRustReferenceHashCollectionRefusalCode(kind, 'alias'),
       `${moduleKey(module.module)}:${id}`,
-      `mutable Map alias ${evidence.binding.name} has multiple possible source identity groups`,
+      `mutable ${collectionName} alias ${evidence.binding.name} has multiple possible source identity groups`,
     );
   }
-  if (module.sharedMaps.bindingIds.size === 0) return;
+  if (analysis.bindingIds.size === 0) return;
 
-  for (const group of module.sharedMaps.groupsByKey.values()) {
-    if (![...group].some((id) => module.sharedMaps.bindingIds.has(id))) continue;
+  for (const group of analysis.groupsByKey.values()) {
+    if (![...group].some((id) => analysis.bindingIds.has(id))) continue;
     const roots = [...group].filter((id) => {
-      const variable = module.sharedMaps.variablesByBindingId.get(id);
-      return variable?.initializer ? isZeroArgumentAmbientMapConstruction(variable.initializer) : false;
+      const variable = analysis.variablesByBindingId.get(id);
+      return variable?.initializer
+        ? isZeroArgumentAmbientHashCollectionConstruction(variable.initializer, kind)
+        : false;
     });
     if (roots.length !== 1) {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-use-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'use'),
         `${moduleKey(module.module)}:group:${[...group].sort(compareTextCodeUnits).join(',')}`,
-        'shared Map alias group must have exactly one local zero-argument new Map root',
+        `shared ${collectionName} alias group must have exactly one local zero-argument new ${collectionName} root`,
       );
     }
     for (const id of group) {
-      const variable = module.sharedMaps.variablesByBindingId.get(id);
+      const variable = analysis.variablesByBindingId.get(id);
       const initializer = variable?.initializer;
       const aliasInitializer =
         initializer?.kind === 'identifier' &&
         initializer.reference.kind === 'binding' &&
         group.has(initializer.reference.binding.id);
-      if (!variable || variable.mutable || (!aliasInitializer && !isZeroArgumentAmbientMapConstruction(initializer))) {
+      if (
+        !variable ||
+        variable.mutable ||
+        (!aliasInitializer && !isZeroArgumentAmbientHashCollectionConstruction(initializer, kind))
+      ) {
         addRustReferenceRefusal(
           refusals,
-          'rust-reference-shared-map-use-unrepresented',
+          getRustReferenceHashCollectionRefusalCode(kind, 'use'),
           `${moduleKey(module.module)}:${id}`,
-          `shared Map binding ${variable?.binding.name ?? id} is not an initialized local const in the alias group`,
+          `shared ${collectionName} binding ${variable?.binding.name ?? id} is not an initialized local const in the alias group`,
         );
       }
     }
   }
 
   for (const evidence of module.ownership.bindings) {
-    if (!module.sharedMaps.bindingIds.has(evidence.binding.id)) continue;
+    if (!analysis.bindingIds.has(evidence.binding.id)) continue;
     const subject = `${moduleKey(module.module)}:${evidence.binding.id}`;
-    const parts = getRustAmbientMapTypeParts(evidence.type);
-    if (!parts) {
+    const arguments_ = getRustAmbientHashCollectionTypeArguments(evidence.type, kind);
+    if (!arguments_) {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-use-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'use'),
         subject,
-        `shared Map binding ${evidence.binding.name} must retain its exact ambient Map type in the focused Rust carrier plan`,
+        `shared ${collectionName} binding ${evidence.binding.name} must retain its exact ambient ${collectionName} type in the focused Rust carrier plan`,
       );
-    } else if (parts.key.kind !== 'primitive' || parts.key.name !== 'string') {
+    } else if (arguments_[0]?.kind !== 'primitive' || arguments_[0].name !== 'string') {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-key-unrepresented',
+        kind === 'map'
+          ? 'rust-reference-shared-map-key-unrepresented'
+          : 'rust-reference-shared-set-element-unrepresented',
         subject,
-        `shared Map binding ${evidence.binding.name} requires an exact string key; SameValueZero and object-key identity are not represented by HashMap`,
+        `shared ${collectionName} binding ${evidence.binding.name} requires an exact string ${kind === 'map' ? 'key' : 'element'}; SameValueZero and object identity are not represented by the focused Rust carrier`,
       );
     }
-    if (parts && !isRustSharedMapPrimitiveValueType(parts.value)) {
+    if (kind === 'map' && arguments_?.[1] && !isRustSharedMapPrimitiveValueType(arguments_[1])) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-map-value-unrepresented',
@@ -1014,31 +1079,31 @@ function addRustSharedMapRefusals(
     if (evidence.binding.scope === 'module' || evidence.declaration !== 'immutable') {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-use-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'use'),
         subject,
-        `shared Map binding ${evidence.binding.name} is outside the supported local const carrier`,
+        `shared ${collectionName} binding ${evidence.binding.name} is outside the supported local const carrier`,
       );
     }
     if (evidence.mutation === 'bindingReassigned' || evidence.mutation === 'bindingAndReferent') {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-binding-reassignment-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'bindingReassignment'),
         subject,
-        `shared Map binding ${evidence.binding.name} is reassigned after alias creation`,
+        `shared ${collectionName} binding ${evidence.binding.name} is reassigned after alias creation`,
       );
     }
     if (evidence.boundaries.includes('suspension')) {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-suspension-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'suspension'),
         subject,
-        `shared Map binding ${evidence.binding.name} crosses a suspension boundary`,
+        `shared ${collectionName} binding ${evidence.binding.name} crosses a suspension boundary`,
       );
     }
   }
 
   for (const closure of analyzeIrModuleClosureEvidence(module.module).closures) {
-    const captures = closure.captures.filter((capture) => module.sharedMaps.bindingIds.has(capture.binding.id));
+    const captures = closure.captures.filter((capture) => analysis.bindingIds.has(capture.binding.id));
     if (captures.length === 0) continue;
     const subject = `${moduleKey(module.module)}:closure:${JSON.stringify(closure.path)}`;
     if (
@@ -1048,17 +1113,17 @@ function addRustSharedMapRefusals(
     ) {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-suspension-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'suspension'),
         subject,
-        'shared Map closure capture crosses an async or suspension boundary',
+        `shared ${collectionName} closure capture crosses an async or suspension boundary`,
       );
     }
     if (closure.escape === 'mayEscape') {
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-map-closure-escape-unrepresented',
+        getRustReferenceHashCollectionRefusalCode(kind, 'closureEscape'),
         subject,
-        'shared Map closure capture may escape into a lifetime or Send context not represented by Rc<RefCell<_>>',
+        `shared ${collectionName} closure capture may escape into a lifetime or Send context not represented by Rc<RefCell<_>>`,
       );
     }
   }
@@ -1066,37 +1131,46 @@ function addRustSharedMapRefusals(
   analyzeIrModuleTraversal(module.module, {
     expression(expression, path_) {
       if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
-        if (!module.sharedMaps.bindingIds.has(expression.reference.binding.id)) return;
-        if (!isRustSharedMapIdentifierUseRepresented(module, modules, moduleResolution, expression, path_)) {
+        if (!analysis.bindingIds.has(expression.reference.binding.id)) return;
+        if (
+          !isRustSharedHashCollectionIdentifierUseRepresented(
+            module,
+            modules,
+            moduleResolution,
+            expression,
+            path_,
+            kind,
+          )
+        ) {
           const callArgument = path_.at(-2) === 'arguments' && typeof path_.at(-1) === 'number';
           addRustReferenceRefusal(
             refusals,
-            callArgument
-              ? 'rust-reference-shared-map-call-unrepresented'
-              : 'rust-reference-shared-map-use-unrepresented',
+            getRustReferenceHashCollectionRefusalCode(kind, callArgument ? 'call' : 'use'),
             `${moduleKey(module.module)}:${expression.reference.binding.id}:${JSON.stringify(path_)}`,
             callArgument
-              ? `shared Map binding ${expression.reference.binding.name} is passed to a call without an exact represented mutable Map parameter`
-              : `shared Map binding ${expression.reference.binding.name} is used outside a proven temporary borrow scope`,
+              ? `shared ${collectionName} binding ${expression.reference.binding.name} is passed to a call without an exact represented mutable ${collectionName} parameter`
+              : `shared ${collectionName} binding ${expression.reference.binding.name} is used outside a proven temporary borrow scope`,
           );
         }
         return;
       }
       if (expression.kind === 'call') {
-        addRustSharedMapMemberBorrowConflictRefusal(module, expression, path_, refusals);
-        addRustSharedMapMutatorResultRefusal(module, expression, path_, refusals);
+        addRustSharedHashCollectionMemberBorrowConflictRefusal(module, expression, path_, refusals, kind);
+        addRustSharedHashCollectionMutatorResultRefusal(module, expression, path_, refusals, kind);
       }
     },
   });
 }
 
-function isRustSharedMapIdentifierUseRepresented(
+function isRustSharedHashCollectionIdentifierUseRepresented(
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
   path_: CompilerIrTraversalPath,
+  kind: RustSharedHashCollectionKind,
 ): boolean {
+  const analysis = getRustSharedHashCollectionAnalysis(module, kind);
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
   if (
@@ -1104,12 +1178,12 @@ function isRustSharedMapIdentifierUseRepresented(
     isRecord(parent) &&
     'binding' in parent &&
     isBindingIdentity(parent.binding) &&
-    module.sharedMaps.groupByBindingId.has(parent.binding.id)
+    analysis.groupByBindingId.has(parent.binding.id)
   ) {
     return true;
   }
   if (final === 'object' && isIrExpressionValue(parent) && parent.kind === 'property') {
-    if (parent.optional || parent.member?.receiver !== 'map') return false;
+    if (parent.optional || parent.member?.receiver !== kind) return false;
     if (parent.name === 'size') return true;
     const propertyPath = path_.slice(0, -1);
     const propertyParent =
@@ -1118,7 +1192,7 @@ function isRustSharedMapIdentifierUseRepresented(
       propertyPath.at(-1) === 'callee' &&
       isCallExpression(propertyParent) &&
       !propertyParent.optional &&
-      RUST_SHARED_MAP_METHODS.has(parent.name)
+      getRustSharedHashCollectionMethods(kind).has(parent.name)
     );
   }
   if (path_.at(-2) === 'arguments' && typeof path_.at(-1) === 'number') {
@@ -1126,95 +1200,106 @@ function isRustSharedMapIdentifierUseRepresented(
     if (!isCallExpression(call) || call.optional) return false;
     const position = path_.at(-1) as number;
     const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
-    return target.kind === 'function' && getRustReferenceMapMutationPositions(target.function).has(position);
+    return (
+      target.kind === 'function' && getRustReferenceHashCollectionMutationPositions(target.function, kind).has(position)
+    );
   }
   return false;
 }
 
-function addRustSharedMapMemberBorrowConflictRefusal(
+function addRustSharedHashCollectionMemberBorrowConflictRefusal(
   module: RustReferenceModuleRecord,
   call: IrCallExpression,
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+  kind: RustSharedHashCollectionKind,
 ): void {
   if (
     call.callee.kind !== 'property' ||
-    call.callee.member?.receiver !== 'map' ||
-    !RUST_SHARED_MAP_MUTATING_METHODS.has(call.callee.member.name) ||
+    call.callee.member?.receiver !== kind ||
+    !getRustSharedHashCollectionMutatingMethods(kind).has(call.callee.member.name) ||
     call.callee.object.kind !== 'identifier' ||
     call.callee.object.reference.kind !== 'binding'
   ) {
     return;
   }
   const receiverId = call.callee.object.reference.binding.id;
-  const group = module.sharedMaps.groupByBindingId.get(receiverId);
-  if (!group || !call.arguments.some((argument) => expressionUsesRustSharedMapGroup(argument, group, module))) {
+  const analysis = getRustSharedHashCollectionAnalysis(module, kind);
+  const group = analysis.groupByBindingId.get(receiverId);
+  if (
+    !group ||
+    !call.arguments.some((argument) => expressionUsesRustSharedHashCollectionGroup(argument, group, analysis))
+  ) {
     return;
   }
   addRustReferenceRefusal(
     refusals,
-    'rust-reference-shared-map-borrow-conflict',
+    getRustReferenceHashCollectionRefusalCode(kind, 'borrowConflict'),
     `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
-    `shared Map mutation ${call.callee.member.name} reads the same alias group while its mutable borrow is active`,
+    `shared ${getRustReferenceHashCollectionName(kind)} mutation ${call.callee.member.name} reads the same alias group while its mutable borrow is active`,
   );
 }
 
-function addRustSharedMapMutatorResultRefusal(
+function addRustSharedHashCollectionMutatorResultRefusal(
   module: RustReferenceModuleRecord,
   call: IrCallExpression,
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+  kind: RustSharedHashCollectionKind,
 ): void {
+  const analysis = getRustSharedHashCollectionAnalysis(module, kind);
   if (
     call.callee.kind !== 'property' ||
-    call.callee.member?.receiver !== 'map' ||
-    !RUST_SHARED_MAP_MUTATING_METHODS.has(call.callee.member.name) ||
+    call.callee.member?.receiver !== kind ||
+    !getRustSharedHashCollectionMutatingMethods(kind).has(call.callee.member.name) ||
     call.callee.object.kind !== 'identifier' ||
     call.callee.object.reference.kind !== 'binding' ||
-    !module.sharedMaps.bindingIds.has(call.callee.object.reference.binding.id) ||
+    !analysis.bindingIds.has(call.callee.object.reference.binding.id) ||
     isRustExpressionResultDiscarded(module.module, path_)
   ) {
     return;
   }
   addRustReferenceRefusal(
     refusals,
-    'rust-reference-shared-map-mutator-result-unrepresented',
+    getRustReferenceHashCollectionRefusalCode(kind, 'mutatorResult'),
     `${moduleKey(module.module)}:${call.callee.object.reference.binding.id}:${JSON.stringify(path_)}`,
-    `observed Map.${call.callee.member.name} result is not represented by the Rust HashMap method result`,
+    `observed ${getRustReferenceHashCollectionName(kind)}.${call.callee.member.name} result is not represented by the Rust ${kind === 'map' ? 'HashMap' : 'HashSet'} method result`,
   );
 }
 
-function addRustSharedMapCallBorrowConflictRefusal(
+function addRustSharedHashCollectionCallBorrowConflictRefusal(
   module: RustReferenceModuleRecord,
   call: IrCallExpression,
   borrowedPosition: number,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+  kind: RustSharedHashCollectionKind,
 ): void {
   const argument = call.arguments[borrowedPosition];
   if (argument?.kind !== 'identifier' || argument.reference.kind !== 'binding') return;
   const argumentId = argument.reference.binding.id;
-  const group = module.sharedMaps.groupByBindingId.get(argumentId);
+  const analysis = getRustSharedHashCollectionAnalysis(module, kind);
+  const group = analysis.groupByBindingId.get(argumentId);
   if (
     !group ||
     !call.arguments.some(
       (candidate, position) =>
-        position !== borrowedPosition && expressionUsesRustSharedMapGroup(candidate, group, module),
+        position !== borrowedPosition && expressionUsesRustSharedHashCollectionGroup(candidate, group, analysis),
     )
   ) {
     return;
   }
   addRustReferenceRefusal(
     refusals,
-    'rust-reference-shared-map-borrow-conflict',
+    getRustReferenceHashCollectionRefusalCode(kind, 'borrowConflict'),
     `${moduleKey(module.module)}:${call.callee.kind}:${call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding' ? call.callee.reference.binding.id : 'call'}:${String(borrowedPosition)}`,
-    `call argument ${String(borrowedPosition)} mutably borrows a shared Map while another argument reads the same alias group`,
+    `call argument ${String(borrowedPosition)} mutably borrows a shared ${getRustReferenceHashCollectionName(kind)} while another argument reads the same alias group`,
   );
 }
 
-function expressionUsesRustSharedMapGroup(
+function expressionUsesRustSharedHashCollectionGroup(
   expression: Readonly<IrExpression>,
   group: string,
-  module: RustReferenceModuleRecord,
+  analysis: RustSharedHashCollectionAnalysis,
 ): boolean {
   let found = false;
   analyzeIrExpressionSubtreeTraversal(expression, {
@@ -1222,7 +1307,7 @@ function expressionUsesRustSharedMapGroup(
       if (
         candidate.kind === 'identifier' &&
         candidate.reference.kind === 'binding' &&
-        module.sharedMaps.groupByBindingId.get(candidate.reference.binding.id) === group
+        analysis.groupByBindingId.get(candidate.reference.binding.id) === group
       ) {
         found = true;
         return false;
@@ -1290,18 +1375,24 @@ function getRustReferenceArrayMutationPositions(function_: RustReferenceFunction
   );
 }
 
-function getRustReferenceMapMutationPositions(function_: RustReferenceFunctionRecord): ReadonlySet<number> {
+function getRustReferenceHashCollectionMutationPositions(
+  function_: RustReferenceFunctionRecord,
+  kind: RustSharedHashCollectionKind,
+): ReadonlySet<number> {
   return new Set(
     [...function_.mutatedParameterPositions].filter((position) =>
-      isRustSharedMapTypeSupported(function_.declaration.parameters[position]?.type),
+      isRustSharedHashCollectionTypeSupported(function_.declaration.parameters[position]?.type, kind),
     ),
   );
 }
 
-function getRustReferenceAnyMapMutationPositions(function_: RustReferenceFunctionRecord): ReadonlySet<number> {
+function getRustReferenceAnyHashCollectionMutationPositions(
+  function_: RustReferenceFunctionRecord,
+  kind: RustSharedHashCollectionKind,
+): ReadonlySet<number> {
   return new Set(
     [...function_.mutatedParameterPositions].filter((position) =>
-      isRustAmbientMapType(function_.declaration.parameters[position]?.type),
+      isRustAmbientHashCollectionType(function_.declaration.parameters[position]?.type, kind),
     ),
   );
 }
@@ -1392,43 +1483,49 @@ function isRustReferenceArrayExpression(
   );
 }
 
-function isRustReferenceMapExpression(
+function isRustReferenceHashCollectionExpression(
   expression: Readonly<IrExpression>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  kind: RustSharedHashCollectionKind,
 ): boolean {
-  if (isZeroArgumentAmbientMapConstruction(expression)) return true;
-  if (expression.kind === 'cast') return isRustAmbientMapType(expression.type);
+  if (isZeroArgumentAmbientHashCollectionConstruction(expression, kind)) return true;
+  if (expression.kind === 'cast') return isRustAmbientHashCollectionType(expression.type, kind);
   return (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
-    isRustAmbientMapType(bindingTypes.get(expression.reference.binding.id))
+    isRustAmbientHashCollectionType(bindingTypes.get(expression.reference.binding.id), kind)
   );
 }
 
-function getRustAmbientMapTypeParts(
+function getRustAmbientHashCollectionTypeArguments(
   type: Readonly<IrType> | undefined,
-): Readonly<{ key: Readonly<IrType>; value: Readonly<IrType> }> | undefined {
+  kind: RustSharedHashCollectionKind,
+): readonly Readonly<IrType>[] | undefined {
   if (
     type?.kind !== 'named' ||
     type.reference.kind !== 'ambient' ||
-    type.reference.name !== 'Map' ||
-    type.typeArguments.length !== 2
+    type.reference.name !== getRustReferenceHashCollectionName(kind) ||
+    type.typeArguments.length !== (kind === 'map' ? 2 : 1)
   ) {
     return undefined;
   }
-  return { key: type.typeArguments[0]!, value: type.typeArguments[1]! };
+  return type.typeArguments;
 }
 
-function isRustAmbientMapType(type: Readonly<IrType> | undefined): boolean {
-  return getRustAmbientMapTypeParts(type) !== undefined;
+function isRustAmbientHashCollectionType(
+  type: Readonly<IrType> | undefined,
+  kind: RustSharedHashCollectionKind,
+): boolean {
+  return getRustAmbientHashCollectionTypeArguments(type, kind) !== undefined;
 }
 
-function isRustMapLikeType(
+function isRustHashCollectionLikeType(
   type: Readonly<IrType> | undefined,
   module: Readonly<IrModule>,
+  kind: RustSharedHashCollectionKind,
   resolving: ReadonlySet<string> = new Set(),
 ): boolean {
-  if (isRustAmbientMapType(type)) return true;
+  if (isRustAmbientHashCollectionType(type, kind)) return true;
   if (
     type?.kind !== 'named' ||
     type.reference.kind !== 'binding' ||
@@ -1442,32 +1539,86 @@ function isRustMapLikeType(
     (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
   );
   return declaration?.kind === 'typeAlias'
-    ? isRustMapLikeType(declaration.type, module, new Set(resolving).add(bindingId))
+    ? isRustHashCollectionLikeType(declaration.type, module, kind, new Set(resolving).add(bindingId))
     : false;
 }
 
-function isRustSharedMapTypeSupported(type: Readonly<IrType> | undefined): boolean {
-  const parts = getRustAmbientMapTypeParts(type);
-  return (
-    parts !== undefined &&
-    parts.key.kind === 'primitive' &&
-    parts.key.name === 'string' &&
-    isRustSharedMapPrimitiveValueType(parts.value)
-  );
+function isRustSharedHashCollectionTypeSupported(
+  type: Readonly<IrType> | undefined,
+  kind: RustSharedHashCollectionKind,
+): boolean {
+  const arguments_ = getRustAmbientHashCollectionTypeArguments(type, kind);
+  if (arguments_?.[0]?.kind !== 'primitive' || arguments_[0].name !== 'string') return false;
+  return kind === 'set' || (arguments_[1] !== undefined && isRustSharedMapPrimitiveValueType(arguments_[1]));
 }
 
 function isRustSharedMapPrimitiveValueType(type: Readonly<IrType>): boolean {
   return type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number' || type.name === 'string');
 }
 
-function isZeroArgumentAmbientMapConstruction(expression: Readonly<IrExpression> | undefined): boolean {
+function isZeroArgumentAmbientHashCollectionConstruction(
+  expression: Readonly<IrExpression> | undefined,
+  kind: RustSharedHashCollectionKind,
+): boolean {
   return (
     expression?.kind === 'new' &&
     expression.callee.kind === 'identifier' &&
     expression.callee.reference.kind === 'ambient' &&
-    expression.callee.reference.name === 'Map' &&
+    expression.callee.reference.name === getRustReferenceHashCollectionName(kind) &&
     expression.arguments.length === 0
   );
+}
+
+function getRustSharedHashCollectionAnalysis(
+  module: RustReferenceModuleRecord,
+  kind: RustSharedHashCollectionKind,
+): RustSharedHashCollectionAnalysis {
+  return kind === 'map' ? module.sharedMaps : module.sharedSets;
+}
+
+function getRustReferenceHashCollectionName(kind: RustSharedHashCollectionKind): 'Map' | 'Set' {
+  return kind === 'map' ? 'Map' : 'Set';
+}
+
+function getRustReferenceHashCollectionBorrowedRepresentation(
+  kind: RustSharedHashCollectionKind,
+): CompilerRustReferenceRepresentation {
+  return kind === 'map' ? 'mutable-borrowed-hash-map' : 'mutable-borrowed-hash-set';
+}
+
+type RustSharedHashCollectionRefusalKind =
+  | 'alias'
+  | 'bindingReassignment'
+  | 'borrowConflict'
+  | 'call'
+  | 'closureEscape'
+  | 'mutatorResult'
+  | 'suspension'
+  | 'use';
+
+function getRustReferenceHashCollectionRefusalCode(
+  kind: RustSharedHashCollectionKind,
+  refusal: RustSharedHashCollectionRefusalKind,
+): CompilerRustReferenceRepresentationRefusal['code'] {
+  const suffix = {
+    alias: 'alias-ambiguous',
+    bindingReassignment: 'binding-reassignment-unrepresented',
+    borrowConflict: 'borrow-conflict',
+    call: 'call-unrepresented',
+    closureEscape: 'closure-escape-unrepresented',
+    mutatorResult: 'mutator-result-unrepresented',
+    suspension: 'suspension-unrepresented',
+    use: 'use-unrepresented',
+  } as const;
+  return `rust-reference-shared-${kind}-${suffix[refusal]}`;
+}
+
+function getRustSharedHashCollectionMutatingMethods(kind: RustSharedHashCollectionKind): ReadonlySet<string> {
+  return kind === 'map' ? RUST_SHARED_MAP_MUTATING_METHODS : RUST_SHARED_SET_MUTATING_METHODS;
+}
+
+function getRustSharedHashCollectionMethods(kind: RustSharedHashCollectionKind): ReadonlySet<string> {
+  return kind === 'map' ? RUST_SHARED_MAP_METHODS : RUST_SHARED_SET_METHODS;
 }
 
 function moduleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
@@ -1511,3 +1662,9 @@ const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
 const RUST_SHARED_MAP_MUTATING_METHODS: ReadonlySet<string> = new Set(['clear', 'delete', 'set']);
 
 const RUST_SHARED_MAP_METHODS: ReadonlySet<string> = new Set([...RUST_SHARED_MAP_MUTATING_METHODS, 'get', 'has']);
+
+const RUST_SHARED_SET_MUTATING_METHODS: ReadonlySet<string> = new Set(['add', 'clear', 'delete']);
+
+const RUST_SHARED_SET_METHODS: ReadonlySet<string> = new Set([...RUST_SHARED_SET_MUTATING_METHODS, 'has']);
+
+const RUST_SHARED_HASH_COLLECTION_KINDS: readonly RustSharedHashCollectionKind[] = ['map', 'set'];
