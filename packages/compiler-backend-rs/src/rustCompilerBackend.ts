@@ -104,7 +104,7 @@ import type {
 import { getCompilerRustAmbientMemberBinding } from './rustAmbientMemberBinding.js';
 import {
   convertPackageNameToRustCrateName,
-  convertSourcePathToRustModuleName,
+  createRustCompilerModuleLocator,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
 import {
@@ -8256,7 +8256,8 @@ function getTypeBindingTargetNameRust(
 function getRustQualifiedTypeName(module: Readonly<IrModule>, name: string, context: EmitContext): string {
   const targetName = safeRustTypeName(name);
   if (module.packageName === context.module.packageName) {
-    return `crate::${getRustModuleName(module)}::${targetName}`;
+    const modulePath = getRustModulePathRust(module, context.sourceModules);
+    return modulePath.length === 0 ? `crate::${targetName}` : `crate::${modulePath.join('::')}::${targetName}`;
   }
   return `${convertPackageNameToRustCrateName(module.packageName).replaceAll('-', '_')}::${targetName}`;
 }
@@ -10446,12 +10447,12 @@ function rustImportModule(specifier: string, context: EmitContext): string {
   }
   if (specifier.startsWith('.')) {
     const resolvedModule = resolveImportModuleRust(specifier, undefined, context);
-    if (resolvedModule) return `crate::${getRustModuleName(resolvedModule)}`;
+    if (resolvedModule) return getRustModuleCratePathRust(resolvedModule, context.sourceModules);
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
     const resolved = /\.tsx?$/u.test(target) ? target : `${target}.ts`;
-    return `crate::${convertSourcePathToRustModuleName(resolved) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
+    return getRustModuleCratePathFromSourceRust(resolved, context.module.packageName, context.sourceModules);
   }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
@@ -10537,14 +10538,48 @@ function isRustCompilerModuleIdentityEqual(
   );
 }
 
-function getRustModuleName(module: Readonly<IrModule>): string {
-  return convertSourcePathToRustModuleName(module.source) ?? `_internal_${snakeCase(module.name)}`;
+// The provisional per-module file path and the path the source-tree plan finally assigns are one
+// answer: both read the module locator, so a run that finalizes never has to replace a path the
+// backend guessed differently. A root `index.ts` is the crate root (`lib.rs`), a nested index is
+// `mod.rs`, and a same-basename module in another directory keeps its directory.
+function getRustModuleFilePath(module: Readonly<IrModule>, sourceModules: readonly Readonly<IrModule>[]): string {
+  const source = { packageName: module.packageName, source: module.source };
+  return createRustCompilerModuleLocator(source, { multiPackage: isRustMultiPackageGraphRust(sourceModules) }).filePath;
 }
 
-function getRustModuleFilePath(module: Readonly<IrModule>, sourceModules: readonly Readonly<IrModule>[]): string {
-  const fileName = `${getRustModuleName(module)}.rs`;
-  const packageNames = new Set(sourceModules.map((candidate) => candidate.packageName));
-  return packageNames.size > 1 ? `${convertPackageNameToRustCrateName(module.packageName)}/src/${fileName}` : fileName;
+function getRustModuleCratePathFromSourceRust(
+  source: string,
+  packageName: string,
+  sourceModules: readonly Readonly<IrModule>[],
+): string {
+  return formatRustModuleCratePathRust(
+    createRustCompilerModuleLocator(
+      { packageName, source },
+      { multiPackage: isRustMultiPackageGraphRust(sourceModules) },
+    ).modulePath,
+  );
+}
+
+function getRustModuleCratePathRust(module: Readonly<IrModule>, sourceModules: readonly Readonly<IrModule>[]): string {
+  return formatRustModuleCratePathRust(getRustModulePathRust(module, sourceModules));
+}
+
+function getRustModulePathRust(
+  module: Readonly<IrModule>,
+  sourceModules: readonly Readonly<IrModule>[],
+): readonly string[] {
+  return createRustCompilerModuleLocator(
+    { packageName: module.packageName, source: module.source },
+    { multiPackage: isRustMultiPackageGraphRust(sourceModules) },
+  ).modulePath;
+}
+
+function formatRustModuleCratePathRust(modulePath: readonly string[]): string {
+  return modulePath.length === 0 ? 'crate' : `crate::${modulePath.join('::')}`;
+}
+
+function isRustMultiPackageGraphRust(sourceModules: readonly Readonly<IrModule>[]): boolean {
+  return new Set(sourceModules.map((candidate) => candidate.packageName)).size > 1;
 }
 
 function safeRustTypeName(name: string): string {

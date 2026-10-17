@@ -19,6 +19,7 @@ import type {
   IrStatement,
 } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
+import { createCompilerRustSourceTreePlan, isCompilerRustSourceTreePlanningFailure } from './rustSourceTreePlan.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const rustcAvailable = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0;
@@ -12430,9 +12431,10 @@ describe('emitIrModuleRust relative import', () => {
        export function double(x: number): number { return add(x, x); }`,
     ).module;
     const backend = createRustCompilerBackend();
-    const output = backend.emitModule(subject, { modules: [subject, target], options: {} })[0]!.contents;
+    const output = backend.emitModule(subject, { modules: [subject, target], options: {} })[0]!;
 
-    expect(output).toContain('use crate::_internal_index::add;');
+    expect(backend.emitModule(target, { modules: [subject, target], options: {} })[0]!.path).toBe('support/mod.rs');
+    expect(output.contents).toContain('use crate::support::add;');
   });
 });
 
@@ -20274,6 +20276,153 @@ describe('emitIrModuleRust star-barrel name resolution', () => {
     expect(files.find(({ path: filePath }) => filePath === 'consumer.rs')?.contents).toContain(
       'use crate::barrel::{LIMIT as limit, LIMIT_2 as LIMIT};',
     );
+    expect(() => compileRustSourceTree(files)).not.toThrow();
+  });
+});
+
+describe('createRustCompilerBackend provisional module paths', () => {
+  it('keeps a root index as the crate root and a nested index in its directory', () => {
+    const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
+    const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [rootIndex, nestedIndex],
+      options: {},
+    });
+
+    expect(session.emitModule(rootIndex)[0]!.path).toBe('lib.rs');
+    expect(session.emitModule(nestedIndex)[0]!.path).toBe('nested/mod.rs');
+  });
+
+  it('keeps same-basename modules in different directories distinct', () => {
+    const first = lower('a/util.ts', 'export const aValue = 1;').module;
+    const second = lower('b/util.ts', 'export const bValue = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [first, second],
+      options: {},
+    });
+
+    expect(session.emitModule(first)[0]!.path).toBe('a/util.rs');
+    expect(session.emitModule(second)[0]!.path).toBe('b/util.rs');
+  });
+
+  it('spells a relative import into a nested directory as that directory module path', () => {
+    const importer = lower('nested/index.ts', "import { other } from './other.js';\nexport const value = 1;").module;
+    const target = lower('nested/other.ts', 'export const other = 2;').module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(importer),
+          specifier: './other.js',
+          target: getRustTestModuleIdentity(target),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [importer, target],
+      options: {},
+    });
+    const output = session.emitModule(importer)[0]!;
+
+    expect(output.path).toBe('nested/mod.rs');
+    expect(output.contents).toContain('use crate::nested::other::OTHER as other;');
+  });
+
+  it('refuses two source names that normalize to one module path, deterministically', () => {
+    const dashed = lower('foo-bar.ts', 'export const first = 1;').module;
+    const underscored = lower('foo_bar.ts', 'export const second = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [dashed, underscored],
+      options: {},
+    });
+
+    expect(session.emitModule(dashed)[0]!.path).toBe('foo_bar.rs');
+    expect(session.emitModule(underscored)[0]!.path).toBe('foo_bar.rs');
+
+    const plan = (): unknown =>
+      createCompilerRustSourceTreePlan({
+        facade: createRustSourceTreeFacade([dashed, underscored]),
+        modules: [dashed, underscored],
+      });
+    let failure: unknown;
+    try {
+      plan();
+    } catch (error) {
+      failure = error;
+    }
+    let repeat: unknown;
+    try {
+      plan();
+    } catch (error) {
+      repeat = error;
+    }
+
+    expect(isCompilerRustSourceTreePlanningFailure(failure)).toBe(true);
+    expect(isCompilerRustSourceTreePlanningFailure(repeat)).toBe(true);
+    if (!isCompilerRustSourceTreePlanningFailure(failure) || !isCompilerRustSourceTreePlanningFailure(repeat)) {
+      throw new Error('expected deterministic source-tree planning failures');
+    }
+    expect(failure.code).toBe('rust-source-tree-module-collision');
+    expect(repeat.message).toBe(failure.message);
+  });
+
+  it('agrees provisional and finalized paths for root and nested indexes', () => {
+    const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
+    const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [rootIndex, nestedIndex],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, [rootIndex, nestedIndex], [rootIndex, nestedIndex]),
+    );
+    const provisional = [session.emitModule(rootIndex)[0]!.path, session.emitModule(nestedIndex)[0]!.path];
+
+    expect(finalized.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(provisional);
+    expect(provisional).toEqual(['lib.rs', 'nested/mod.rs']);
+  });
+
+  it.skipIf(!rustcAvailable)('compiles the finalized root-and-nested-index tree', () => {
+    const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
+    const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [rootIndex, nestedIndex],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, [rootIndex, nestedIndex], [rootIndex, nestedIndex]),
+    );
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    expect(() => compileRustSourceTree(files)).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('compiles the finalized same-basename module tree', () => {
+    const first = lower('a/util.ts', 'export const aValue = 1;').module;
+    const second = lower('b/util.ts', 'export const bValue = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [first, second],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, [first, second], [first, second]),
+    );
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    expect(files.map(({ path: filePath }) => filePath).sort()).toEqual([
+      'a/mod.rs',
+      'a/util.rs',
+      'b/mod.rs',
+      'b/util.rs',
+      'lib.rs',
+    ]);
     expect(() => compileRustSourceTree(files)).not.toThrow();
   });
 });
