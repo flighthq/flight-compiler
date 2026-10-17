@@ -897,7 +897,7 @@ function emitIrModuleRustWithContext(
   assertArrayReduceInvocationSemanticsRust(sourceModule);
   assertArrayCallbackInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
-  assertArraySortInvocationSemanticsRust(sourceModule);
+  assertArraySortInvocationSemanticsRust(sourceModule, salvage !== undefined);
   const discriminatedNominalUnionEligibleSwitchOrigins =
     collectRustDiscriminatedNominalUnionEligibleSwitchOriginsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -1404,7 +1404,7 @@ function emitIrModuleRustWithContext(
   assertArrayIsArraySemanticsRust(module, context);
   assertArrayOfSemanticsRust(module, context);
   assertArrayFromSemanticsRust(module, context);
-  assertArrayOperationSemanticsRust(module, context, deferredSharedArrayTupleBindingIds);
+  assertArrayOperationSemanticsRust(module, context, deferredSharedArrayTupleBindingIds, salvage !== undefined);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const strictImports =
     salvage === undefined
@@ -1412,6 +1412,8 @@ function emitIrModuleRustWithContext(
       : undefined;
   const stringRefusalsByDeclaration =
     salvage === undefined ? undefined : collectRustStringMemberRefusalsByDeclarationRust(module);
+  const arraySortDefaultOrderRefusalsByDeclaration =
+    salvage === undefined ? undefined : collectRustArraySortDefaultOrderRefusalsByDeclarationRust(module);
   const moduleConstantDependenciesByDeclaration =
     salvage === undefined
       ? undefined
@@ -1429,6 +1431,7 @@ function emitIrModuleRustWithContext(
             declaration,
             context,
             salvage,
+            arraySortDefaultOrderRefusalsByDeclaration?.get(declaration),
             stringRefusalsByDeclaration?.get(declaration),
             moduleConstantDependenciesByDeclaration?.get(declaration),
             referenceRefusalsByDeclaration?.get(declaration),
@@ -18785,47 +18788,13 @@ function assertArrayCopyWithinInvocationSemanticsRust(module: Readonly<IrModule>
   );
 }
 
-function assertArraySortInvocationSemanticsRust(module: Readonly<IrModule>): void {
+function assertArraySortInvocationSemanticsRust(module: Readonly<IrModule>, deferDefaultOrder = false): void {
   const refusals: RustArrayOperationRefusal[] = [];
   analyzeIrModuleTraversal(module, {
     expression(expression) {
-      if (expression.kind !== 'call' || !isArraySortCallRust(expression)) return;
-      const signature = expression.semantics.signature;
-      if (
-        !expression.optional &&
-        expression.semantics.optionalChain === undefined &&
-        !expression.callee.optional &&
-        expression.callee.optionalChain === undefined &&
-        signature !== undefined &&
-        signature.providedArgumentCount !== 'dynamic' &&
-        signature.providedArgumentCount === 0 &&
-        expression.arguments.length === 0
-      ) {
-        refusals.push({
-          member: 'sort',
-          message: 'array.sort without a comparator requires exact JavaScript default string ordering',
-          rule: 'rust-array-sort-default-order-unrepresented',
-        });
-        return;
-      }
-      if (
-        expression.optional ||
-        expression.semantics.optionalChain !== undefined ||
-        expression.callee.optional ||
-        expression.callee.optionalChain !== undefined ||
-        !signature ||
-        signature.providedArgumentCount === 'dynamic' ||
-        signature.providedArgumentCount !== 1 ||
-        expression.arguments.length !== 1 ||
-        expression.arguments[0]?.kind === 'spread' ||
-        !isRustStableArrayOperationReceiverRust(expression.callee.object)
-      ) {
-        refusals.push({
-          member: 'sort',
-          message: 'array.sort requires a non-optional stable receiver and exactly one fixed comparator argument',
-          rule: 'rust-array-sort-invocation-unrepresented',
-        });
-      }
+      const refusal = getRustArraySortInvocationRefusalRust(expression);
+      if (!refusal || (deferDefaultOrder && refusal.rule === 'rust-array-sort-default-order-unrepresented')) return;
+      refusals.push(refusal);
     },
   });
   const refusal = refusals.sort((left, right) =>
@@ -18837,10 +18806,91 @@ function assertArraySortInvocationSemanticsRust(module: Readonly<IrModule>): voi
   });
 }
 
+function getRustArraySortInvocationRefusalRust(
+  expression: Readonly<IrExpression>,
+): Readonly<RustArrayOperationRefusal> | undefined {
+  if (expression.kind !== 'call' || !isArraySortCallRust(expression)) return undefined;
+  const signature = expression.semantics.signature;
+  if (
+    !expression.optional &&
+    expression.semantics.optionalChain === undefined &&
+    !expression.callee.optional &&
+    expression.callee.optionalChain === undefined &&
+    signature !== undefined &&
+    signature.providedArgumentCount !== 'dynamic' &&
+    signature.providedArgumentCount === 0 &&
+    expression.arguments.length === 0
+  ) {
+    return {
+      member: 'sort',
+      message: 'array.sort without a comparator requires exact JavaScript default string ordering',
+      rule: 'rust-array-sort-default-order-unrepresented',
+    };
+  }
+  if (
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.callee.optional ||
+    expression.callee.optionalChain !== undefined ||
+    !signature ||
+    signature.providedArgumentCount === 'dynamic' ||
+    signature.providedArgumentCount !== 1 ||
+    expression.arguments.length !== 1 ||
+    expression.arguments[0]?.kind === 'spread' ||
+    !isRustStableArrayOperationReceiverRust(expression.callee.object)
+  ) {
+    return {
+      member: 'sort',
+      message: 'array.sort requires a non-optional stable receiver and exactly one fixed comparator argument',
+      rule: 'rust-array-sort-invocation-unrepresented',
+    };
+  }
+  return undefined;
+}
+
+function collectRustArraySortDefaultOrderRefusalsByDeclarationRust(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<IrDeclaration>, Readonly<RustArrayOperationRefusal>> {
+  const namespaceOwners = new Map<string, Readonly<IrDeclaration>>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'enum') continue;
+    for (const namespaceFunction of getIrEnumNamespaceFunctionsRust(declaration, module)) {
+      namespaceOwners.set(namespaceFunction.binding.id, declaration);
+    }
+  }
+  const byDeclaration = new Map<Readonly<IrDeclaration>, Readonly<RustArrayOperationRefusal>>();
+  let unattributable: Readonly<RustArrayOperationRefusal> | undefined;
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path) {
+      const refusal = getRustArraySortInvocationRefusalRust(expression);
+      if (refusal?.rule !== 'rust-array-sort-default-order-unrepresented') return;
+      const owner = getRustTraversalDeclarationRust(module, path);
+      if (owner === undefined) {
+        unattributable = refusal;
+        return;
+      }
+      const emittedOwner =
+        owner.kind === 'function' && owner.namespaceMember ? namespaceOwners.get(owner.binding.id) : owner;
+      if (emittedOwner === undefined) {
+        unattributable = refusal;
+        return;
+      }
+      byDeclaration.set(emittedOwner, refusal);
+    },
+  });
+  if (unattributable) {
+    throw createBackendEmissionFailure('rust', module, unattributable.message, unattributable.rule, {
+      classification: 'target-runtime',
+    });
+  }
+  return byDeclaration;
+}
+
 function assertArrayOperationSemanticsRust(
   module: Readonly<IrModule>,
   context: EmitContext,
   deferredSharedArrayTupleBindingIds: ReadonlySet<string>,
+  deferDefaultSortOrder = false,
 ): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
@@ -19974,6 +20024,12 @@ function assertArrayOperationSemanticsRust(
   }
 
   for (const expression of sortCalls) {
+    if (
+      deferDefaultSortOrder &&
+      getRustArraySortInvocationRefusalRust(expression)?.rule === 'rust-array-sort-default-order-unrepresented'
+    ) {
+      continue;
+    }
     const signature = expression.semantics.signature;
     const comparator = expression.arguments[0];
     if (
@@ -21407,6 +21463,7 @@ function emitSalvagedDeclarationRust(
   declaration: Readonly<IrDeclaration>,
   context: EmitContext,
   salvage: RustSalvageRequest,
+  arraySortDefaultOrderRefusal?: Readonly<RustArrayOperationRefusal> | undefined,
   stringRefusals?: readonly Readonly<RustStringMemberSemanticsRefusal>[] | undefined,
   moduleConstantDependency?: Readonly<RustModuleConstantDependentDeclaration> | undefined,
   referenceRefusalDependency?: Readonly<RustReferenceRefusalDependency> | undefined,
@@ -21445,6 +21502,21 @@ function emitSalvagedDeclarationRust(
             currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
           },
           undefined,
+        ),
+      );
+    }
+    if (arraySortDefaultOrderRefusal) {
+      throw createBackendEmissionFailure(
+        'rust',
+        context.module,
+        arraySortDefaultOrderRefusal.message,
+        arraySortDefaultOrderRefusal.rule,
+        createRustEmissionFailureMetadata(
+          {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+          },
+          'target-runtime',
         ),
       );
     }

@@ -591,12 +591,10 @@ describe('createRustCompilerBackend', () => {
     expect(salvagedKeep.trimEnd()).toBe(controlKeep.trimEnd());
   });
 
-  it('falls back to the comment stub for a module-wide refusal that leaves nothing declaration-local', () => {
-    const module = lower(
-      'array-wide.ts',
-      `export function sortAll(values: number[]): number[] { return values.sort(); }
-       export function keep(value: number): number { return value + 1; }`,
-    ).module;
+  it('salvages a supported sibling around a default-order array.sort refusal', () => {
+    const source = `export function sortAll(values: number[]): number[] { return values.sort(); }
+       export function keep(value: number): number { return value + 1; }`;
+    const module = lower('array-wide.ts', source).module;
     const session = createRustCompilerBackend().createEmissionSession!({
       moduleEvaluation: emptyModuleEvaluation,
       modules: [module],
@@ -621,6 +619,51 @@ describe('createRustCompilerBackend', () => {
       classification: 'compiler-restriction',
       message: 'array.sort without a comparator requires JavaScript default order',
       rule: 'rust-array-sort-default-order-unrepresented',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused declaration');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function sortAll -- source line 1');
+    expect(placeholder.contents).toContain('// refusal: rust-array-sort-default-order-unrepresented [target-runtime]');
+    expect(placeholder.contents).toContain('array.sort without a comparator');
+    expect(placeholder.contents).toContain('requires exact JavaScript default string ordering');
+    expect(placeholder.contents).toContain('// The source it stood for:');
+    expect(placeholder.contents).toContain('return values.sort();');
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).not.toContain('pub fn sort_all');
+    expect(placeholder.contents).not.toContain('BEST-EFFORT PLACEHOLDER');
+  });
+
+  it('keeps an unattributable default-order array.sort refusal module-wide during salvage', () => {
+    const source = `export default [2, 1].sort();
+export function keep(value: number): number { return value + 1; }`;
+    const module = lower('array-wide.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-array-sort-default-order-unrepresented',
+          message: 'array.sort without a comparator requires JavaScript default order',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      classification: 'compiler-restriction',
+      message: 'array.sort without a comparator requires JavaScript default order',
+      rule: 'rust-array-sort-default-order-unrepresented',
+      sourceText: source,
     });
     if (!placeholder) throw new Error('expected a comment stub for the module-wide refusal');
 
