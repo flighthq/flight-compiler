@@ -3157,6 +3157,91 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).not.toContain('task.await');
   });
 
+  it('adapts an exact named native future at a protected terminal bare return', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-native-future-bare-return.ts',
+        `async function load(value: number): Promise<number> { return value; }
+         export async function attempt(): Promise<number> { try { return load(2); } catch { return 0; } }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match FlightTask::from_future(load(2.0)).settle() {');
+    expect(output).toContain('Ok(try_value) => return try_value,');
+    expect(output).not.toContain('return load(2.0).await;');
+  });
+
+  it('adapts an imported exact named native future at a protected terminal bare return', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/protected-bare-provider.ts',
+      'export async function load(): Promise<number> { return 1; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/protected-bare-consumer.ts',
+      `import { load } from './protected-bare-provider.js';
+       export async function run(): Promise<number> { try { return load(); } catch { return 0; } }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Protected-bare-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/protected-bare-consumer.ts',
+          },
+          specifier: './protected-bare-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/protected-bare-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('match FlightTask::from_future(load()).settle() {');
+  });
+
+  it('composes a protected native-future bare return with awaited catch and finalizer settlement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-native-future-bare-return-composition.ts',
+        `async function load(task: Promise<number>): Promise<number> { return await task; }
+         export async function attempt(primary: Promise<number>, recovery: Promise<number>, cleanup: Promise<void>): Promise<number> {
+           try { return load(primary); }
+           catch { return await recovery; }
+           finally { await cleanup; }
+         }`,
+      ).module,
+    ).contents;
+    const protectedSettlement = output.indexOf('match FlightTask::from_future(load(primary)).settle() {');
+    const catchSettlement = output.indexOf('match recovery.settle() {', protectedSettlement);
+    const finalizerSettlement = output.indexOf('match cleanup.settle() {', catchSettlement);
+
+    expect(protectedSettlement).toBeGreaterThan(-1);
+    expect(catchSettlement).toBeGreaterThan(protectedSettlement);
+    expect(finalizerSettlement).toBeGreaterThan(catchSettlement);
+    expect(output.match(/FlightTask::from_future\(load\(primary\)\)/gu)).toHaveLength(1);
+  });
+
   it('accepts only represented terminal expression shapes for protected bare FlightTask adoption', () => {
     const output = emitIrModuleRust(
       lower(
@@ -3221,8 +3306,20 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'compiler-restriction',
     ],
     [
-      'a source async call',
-      'async function inner(): Promise<number> { return 1; } export async function attempt(): Promise<number> { try { return inner(); } catch { return 1; } }',
+      'a generic source async call',
+      'async function inner<T>(value: T): Promise<T> { return value; } export async function attempt(): Promise<number> { try { return inner<number>(1); } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a defaulted source async call',
+      'async function inner(value = 1): Promise<number> { return value; } export async function attempt(): Promise<number> { try { return inner(); } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a conditional source async call',
+      'async function first(): Promise<number> { return 1; } async function second(): Promise<number> { return 2; } export async function attempt(choose: boolean): Promise<number> { try { return choose ? first() : second(); } catch { return 1; } }',
       'rust-async-task-adoption-protected-unrepresented',
       'compiler-restriction',
     ],
@@ -5291,6 +5388,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            function observeError(error: string, task: Promise<void>, log: string[]): Promise<void> { mark(error, log); return task; }
            async function nativeValue(value: number): Promise<number> { return value + 1; }
            async function nativePrimary(task: Promise<number>): Promise<number> { return await task; }
+           async function nativeBarePrimary(task: Promise<number>): Promise<number> { return await task; }
            class AsyncCounter {
              value: number;
              constructor(value: number) { this.value = value; }
@@ -5320,6 +5418,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              const value = await pending;
              mark("local-awaited", log);
              return value;
+           }
+           export async function bareNative(primary: Promise<number>, log: string[]): Promise<number> {
+             try { mark("bare-native-try", log); return nativeBarePrimary(primary); }
+             catch (error) { mark(error, log); return 9; }
+             finally { mark("bare-native-finally", log); }
            }
            export async function bindingless(primary: Promise<number>, recovery: Promise<number>, log: string[]): Promise<number> {
              try { mark("bindingless-try", log); return await primary; }
@@ -5367,6 +5470,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       );
       expect(output).toContain('match AsyncCounter::advance(Rc::clone(&counter), task).settle() {');
       expect(output).toContain('FlightTask::from_future(native_primary(primary)).settle()');
+      expect(output).toContain('FlightTask::from_future(native_bare_primary(primary)).settle()');
       expect(output).toContain('Err(finally_error) => Err(finally_error),');
       expect(output).toContain('Err(finally_first_error) => Err(finally_first_error),');
       expect(output).toContain('Err(finally_second_error) => Err(finally_second_error),');
@@ -5390,6 +5494,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let mut native_log = Vec::new();
            assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
            assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
+           let mut bare_native_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bare_native(flight_runtime::FlightTask::ready(4.0), &mut bare_native_ready_log)), 4.0);
+           assert_eq!(bare_native_ready_log, vec!["bare-native-try".to_owned(), "bare-native-finally".to_owned()]);
+           let mut bare_native_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bare_native(flight_runtime::FlightTask::<f64>::reject("bare-native-error"), &mut bare_native_caught_log)), 9.0);
+           assert_eq!(bare_native_caught_log, vec!["bare-native-try".to_owned(), "bare-native-error".to_owned(), "bare-native-finally".to_owned()]);
            let mut bindingless_ready_log = Vec::new();
            assert_eq!(flight_runtime::block_on(bindingless(flight_runtime::FlightTask::ready(3.0), flight_runtime::FlightTask::ready(7.0), &mut bindingless_ready_log)), 3.0);
            assert_eq!(bindingless_ready_log, vec!["bindingless-try".to_owned(), "bindingless-finally".to_owned()]);

@@ -3558,11 +3558,15 @@ function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, conte
   return carrier === 'flight-task' || carrier === 'mixed-task' || carrier === 'native-future';
 }
 
-function canIrExpressionDenoteProtectedFlightTaskRust(
+function canIrExpressionDenoteProtectedTaskSettlementRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): boolean {
-  return getIrTaskCarrierKindRust(expression, context) === 'flight-task';
+  const carrier = getIrTaskCarrierKindRust(expression, context);
+  return (
+    carrier === 'flight-task' ||
+    (carrier === 'native-future' && isIrProtectedNativeFutureAdapterCallRust(expression, context))
+  );
 }
 
 function getIrProtectedTaskExpressionTypeRust(
@@ -8518,7 +8522,7 @@ function getIrAsyncTryProtectedTaskReturnStepRust(
     tail?.kind !== 'return' ||
     !tail.expression ||
     tail.expression.kind === 'await' ||
-    !canIrExpressionDenoteProtectedFlightTaskRust(tail.expression, context)
+    !canIrExpressionDenoteProtectedTaskSettlementRust(tail.expression, context)
   ) {
     return undefined;
   }
@@ -9375,7 +9379,7 @@ function emitAsyncTryProtectedTaskOperandRust(expression: Readonly<IrExpression>
     const whenFalse = emitAsyncTryProtectedTaskOperandRust(expression.whenFalse, context);
     return `(if ${condition} { ${whenTrue} } else { ${whenFalse} })`;
   }
-  return emitOwnedOperandRust(expression, context);
+  return emitAsyncTrySettlementOperandRust(expression, context);
 }
 
 // A source async free-function call is an opaque, one-shot Rust future while ordinary Promise
