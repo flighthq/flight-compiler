@@ -7849,7 +7849,8 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('use std::rc::Rc;');
     expect(output).toContain('let items: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(vec![1.0]));');
     expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&items);');
-    expect(output).toContain('alias.borrow_mut().push(2.0);');
+    expect(output).toContain('let array_push_argument0 = 2.0;');
+    expect(output).toContain('alias.borrow_mut().push(array_push_argument0);');
     expect(output).toContain('items.borrow().len() as f64');
     expect(output).not.toContain('items.clone()');
   });
@@ -7923,7 +7924,7 @@ describe('emitIrModuleRust', () => {
     ).contents;
 
     expect(output).toContain('let alias = Rc::clone(&alias);');
-    expect(output).toContain('alias.borrow_mut().push(2.0)');
+    expect(output).toContain('alias.borrow_mut().push(array_push_argument0)');
     expect(output).toContain('items.borrow().len() as f64');
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
@@ -12943,6 +12944,141 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('preserves push and unshift arity, order, length results, and argument evaluation', () => {
+    const result = lower(
+      'array-growth.ts',
+      `function record(log: number[], value: number): number { log.push(value); return value; }
+       export function pushZero(items: number[]): number { return items.push(); }
+       export function pushOne(items: number[]): number { return items.push(3); }
+       export function pushMany(items: number[]): number { return items.push(3, 4); }
+       export function unshiftZero(items: number[]): number { return items.unshift(); }
+       export function unshiftOne(items: number[]): number { return items.unshift(3); }
+       export function unshiftMany(items: number[]): number { return items.unshift(3, 4); }
+       export function discardPush(items: number[]): void { items.push(5, 6); }
+       export function discardUnshift(items: number[]): void { items.unshift(5, 6); }
+       export function pushNested(items: number[][]): number { return items.push([3, 4]); }
+       export function evaluated(items: number[], log: number[]): number {
+         const pushed = items.push(record(log, 3), record(log, 4));
+         const prepended = items.unshift(record(log, 1), record(log, 2));
+         return pushed * 100 + prepended;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_push_argument0');
+    expect(output).toContain('.insert(0, array_unshift_argument0');
+    expect(output).toContain('.insert(1, array_unshift_argument1');
+    expect(output).toContain('.len() as f64');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut values = vec![1.0, 2.0];',
+          'assert_eq!(push_zero(&mut values), 2.0);',
+          'assert_eq!(values, vec![1.0, 2.0]);',
+          'assert_eq!(push_one(&mut values), 3.0);',
+          'assert_eq!(values, vec![1.0, 2.0, 3.0]);',
+          'assert_eq!(push_many(&mut values), 5.0);',
+          'assert_eq!(values, vec![1.0, 2.0, 3.0, 3.0, 4.0]);',
+          'let mut front = vec![9.0];',
+          'assert_eq!(unshift_zero(&mut front), 1.0);',
+          'assert_eq!(unshift_one(&mut front), 2.0);',
+          'assert_eq!(unshift_many(&mut front), 4.0);',
+          'assert_eq!(front, vec![3.0, 4.0, 3.0, 9.0]);',
+          'discard_push(&mut front);',
+          'assert_eq!(front, vec![3.0, 4.0, 3.0, 9.0, 5.0, 6.0]);',
+          'discard_unshift(&mut front);',
+          'assert_eq!(front, vec![5.0, 6.0, 3.0, 4.0, 3.0, 9.0, 5.0, 6.0]);',
+          'let mut nested = vec![vec![1.0, 2.0]];',
+          'assert_eq!(push_nested(&mut nested), 2.0);',
+          'assert_eq!(nested, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);',
+          'let mut ordered = vec![9.0];',
+          'let mut log = vec![];',
+          'assert_eq!(evaluated(&mut ordered, &mut log), 305.0);',
+          'assert_eq!(ordered, vec![1.0, 2.0, 9.0, 3.0, 4.0]);',
+          'assert_eq!(log, vec![3.0, 4.0, 1.0, 2.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves push and unshift mutation through shared aliases while returning the new length', () => {
+    const result = lower(
+      'shared-array-growth.ts',
+      `export function pushShared(): number {
+         const values = [1];
+         const alias = values;
+         const length = alias.push(2, 3);
+         return length * 10 + values.length;
+       }
+       export function unshiftShared(): number {
+         const values = [1];
+         const alias = values;
+         const length = alias.unshift(2, 3);
+         return length * 10 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('alias.borrow_mut().push(array_push_argument0)');
+    expect(output).toContain('alias.borrow_mut().insert(0, array_unshift_argument0)');
+    expect(output).toContain('alias.borrow().len() as f64');
+    if (rustcAvailable) {
+      runRustSource(output, 'assert_eq!(push_shared(), 33.0); assert_eq!(unshift_shared(), 33.0);');
+    }
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-push-invocation-unrepresented',
+      source: 'export function append(values: number[], more: number[]): void { values.push(...more); }',
+    },
+    {
+      rule: 'rust-array-unshift-invocation-unrepresented',
+      source: 'export function prepend(values: number[]): void { values.unshift?.(1); }',
+    },
+    {
+      rule: 'rust-array-push-element-carrier-unrepresented',
+      source: 'export function append(values: (number | string)[]): void { values.push(1); }',
+    },
+    {
+      rule: 'rust-array-unshift-element-carrier-unrepresented',
+      source:
+        'interface Base { value: number } interface More { value: number; extra: number } export function prepend(values: Base[], value: More): void { values.unshift(value); }',
+    },
+    {
+      rule: 'rust-array-push-result-observation-unrepresented',
+      source: 'export function append(values: number[]): string { return String(values.push(1)); }',
+    },
+  ])('stably refuses unsupported array growth semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-growth-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses an array growth result without an f64 carrier', () => {
+    const result = lower(
+      'array-growth-result-carrier.ts',
+      'export function append(values: number[]): number { return values.push(1); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'append',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.push call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-push-result-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
   it('keeps an empty-safe shift exact through a represented shared-array alias', () => {
     const result = lower(
       'shared-array-shift-bounds.ts',
@@ -13068,6 +13204,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
+  it('preserves the existing shared-array borrow-conflict refusal for nested unshift mutation', () => {
+    const result = lower(
+      'array-unshift-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1];
+         const alias = values;
+         alias.unshift(values.pop() ?? 0);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('selects array bounds refusal rules independently of declaration order', () => {
     const declarations = [
       'export function take(values: number[]): number { return values.shift()!; }',
@@ -13094,6 +13244,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
 
     expect(capture(first).rule).toBe('rust-array-pop-result-carrier-unrepresented');
     expect(capture(second).rule).toBe('rust-array-pop-result-carrier-unrepresented');
+  });
+
+  it('selects array growth refusal rules independently of declaration order', () => {
+    const declarations = [
+      'export function prepend(values: number[]): string { return String(values.unshift(1)); }',
+      'export function append(values: number[], more: number[]): void { values.push(...more); }',
+    ];
+    const first = lower('array-growth-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-growth-order-b.ts', [...declarations].reverse().join('\n')).module;
+    const capture = (module: Readonly<Parameters<typeof emitIrModuleRust>[0]>) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(capture(first).rule).toBe('rust-array-push-invocation-unrepresented');
+    expect(capture(second).rule).toBe('rust-array-push-invocation-unrepresented');
   });
 });
 

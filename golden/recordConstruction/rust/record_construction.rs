@@ -9,7 +9,7 @@ pub struct Entry {
 
 pub fn appended(entries: Vec<Entry>, key: String, value: f64) -> Vec<Entry> {
   let mut next: Vec<Entry> = entries.clone();
-  next.push(Entry { key: key, value: value, });
+  { let array_push_argument0 = Entry { key: key, value: value, }; next.push(array_push_argument0); next.len() as f64 };
   return next;
 }
 

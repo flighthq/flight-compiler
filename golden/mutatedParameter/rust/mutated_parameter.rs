@@ -16,5 +16,5 @@ pub fn bump_twice(cell: &mut Cell) -> () {
 }
 
 pub fn fill(out: &mut Vec<f64>, value: f64) -> () {
-  out.push(value);
+  { let array_push_argument0 = value; out.push(array_push_argument0); out.len() as f64 };
 }

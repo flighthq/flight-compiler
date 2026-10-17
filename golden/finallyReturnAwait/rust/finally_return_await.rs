@@ -5,7 +5,7 @@ use flight_runtime::FlightTask;
 
 pub async fn attempt(task: FlightTask<f64>, log: &mut Vec<f64>) -> f64 {
   let __try_result = task.settle();
-  log.push(1.0);
+  { let array_push_argument0 = 1.0; log.push(array_push_argument0); log.len() as f64 };
   match __try_result {
     Ok(__value) => return __value,
     Err(__error) => panic!("unhandled task rejection: {}", __error),

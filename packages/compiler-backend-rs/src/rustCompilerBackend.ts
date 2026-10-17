@@ -556,6 +556,7 @@ function emitIrModuleRustWithContext(
     if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
   }
   collectPrimitiveUnionBindingsRust(module, context);
+  assertArrayGrowthSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
   const declarations = module.declarations
@@ -1324,6 +1325,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (getArrayGrowthMemberRust(expression)) return emitArrayGrowthCallRust(expression, context);
       // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
       // one. The separator is the only argument, so the borrow is decided here rather than by a
       // general rule about where an owned string may stand.
@@ -2592,6 +2594,40 @@ function isArrayPopCallRust(
     expression.callee.member?.receiver === 'array' &&
     expression.callee.member.name === 'pop'
   );
+}
+
+function getArrayGrowthMemberRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): 'push' | 'unshift' | undefined {
+  if (
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'array' ||
+    (expression.callee.member.name !== 'push' && expression.callee.member.name !== 'unshift')
+  ) {
+    return undefined;
+  }
+  return expression.callee.member.name;
+}
+
+function emitArrayGrowthCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const member = getArrayGrowthMemberRust(expression);
+  if (!member || expression.callee.kind !== 'property') {
+    return emissionError(context, 'array growth emission requires push or unshift semantics');
+  }
+  const arguments_ = expression.arguments.map((argument, index) => ({
+    emitted: emitOwnedOperandRust(argument, context),
+    name: getGeneratedTargetNameRust(`array_${member}_argument${String(index)}`, context),
+  }));
+  const receiver = emitSharedReferenceReceiverRust(expression.callee.object, true, context);
+  const mutations = arguments_.map(({ name }, index) =>
+    member === 'push' ? `${receiver}.push(${name});` : `${receiver}.insert(${String(index)}, ${name});`,
+  );
+  const lengthReceiver = emitSharedReferenceReceiverRust(expression.callee.object, false, context);
+  const initializers = arguments_.map(({ emitted, name }) => `let ${name} = ${emitted};`);
+  return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
 }
 
 function emitArrayShiftCallRust(
@@ -6096,6 +6132,210 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
     });
   }
   return { elementPlaces, optionElementReads };
+}
+
+type RustArrayGrowthMember = 'push' | 'unshift';
+
+interface RustArrayGrowthRefusal {
+  readonly member: RustArrayGrowthMember;
+  readonly message: string;
+  readonly rule:
+    | 'rust-array-push-element-carrier-unrepresented'
+    | 'rust-array-push-invocation-unrepresented'
+    | 'rust-array-push-result-carrier-unrepresented'
+    | 'rust-array-push-result-observation-unrepresented'
+    | 'rust-array-unshift-element-carrier-unrepresented'
+    | 'rust-array-unshift-invocation-unrepresented'
+    | 'rust-array-unshift-result-carrier-unrepresented'
+    | 'rust-array-unshift-result-observation-unrepresented';
+}
+
+function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+  const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
+  const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
+  const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
+  const calls: Array<
+    Readonly<{
+      callee: Readonly<Extract<IrExpression, { kind: 'property' }>>;
+      expression: Readonly<Extract<IrExpression, { kind: 'call' }>>;
+    }>
+  > = [];
+
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'assignment') {
+        uses.set(expression.left, { expression, kind: 'expression', position: 'left' });
+        uses.set(expression.right, { expression, kind: 'expression', position: 'right' });
+      } else if (expression.kind === 'binary') {
+        uses.set(expression.left, { expression, kind: 'expression', position: 'left' });
+        uses.set(expression.right, { expression, kind: 'expression', position: 'right' });
+      } else if (expression.kind === 'undefinedDefault') {
+        uses.set(expression.value, { expression, kind: 'expression', position: 'value' });
+        uses.set(expression.fallback, { expression, kind: 'expression', position: 'fallback' });
+      } else if (expression.kind === 'function' && expression.expression) {
+        uses.set(expression.expression, { kind: 'return', type: expression.returns });
+      }
+
+      if (expression.kind === 'call' && expression.callee.kind === 'property' && getArrayGrowthMemberRust(expression)) {
+        calls.push({ callee: expression.callee, expression });
+      }
+    },
+    functionSignature(signature, path_) {
+      signatures.push({ path: path_, returns: signature.returns });
+    },
+    statement(statement, path_) {
+      if (statement.kind === 'return' && statement.expression) {
+        pendingReturns.push({ expression: statement.expression, path: path_ });
+      } else if (statement.kind === 'expression') {
+        uses.set(statement.expression, { kind: 'discarded' });
+      }
+    },
+    variable(variable) {
+      if (variable.initializer) {
+        uses.set(variable.initializer, {
+          bindingId: 'binding' in variable ? variable.binding.id : undefined,
+          kind: 'variable',
+          type: variable.type,
+        });
+      }
+    },
+  });
+
+  for (const returned of pendingReturns) {
+    const owner = signatures
+      .filter(({ path: signaturePath }) => isRustTraversalPathPrefix(signaturePath, returned.path))
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    uses.set(returned.expression, { kind: 'return', type: owner?.returns });
+  }
+
+  const refusals: RustArrayGrowthRefusal[] = [];
+  for (const { callee, expression } of calls) {
+    const member = getArrayGrowthMemberRust(expression)!;
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      callee.optional ||
+      callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== expression.arguments.length ||
+      signature.restParameter !== 0 ||
+      expression.arguments.some((argument) => argument.kind === 'spread') ||
+      !isRustStableArrayGrowthReceiverRust(callee.object)
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} requires a non-optional stable receiver and a fixed non-spread argument pack`,
+        rule: `rust-array-${member}-invocation-unrepresented`,
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(callee.object, context);
+    const resolvedReceiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (
+      resolvedReceiver?.kind !== 'array' ||
+      expression.arguments.some(
+        (argument) => !isRustArrayGrowthElementRepresentedRust(argument, resolvedReceiver.element, context),
+      )
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} argument needs an exact Rust element carrier; incompatible or identity-changing adaptation is not represented`,
+        rule: `rust-array-${member}-element-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    if (!isRustArrayGrowthLengthCarrierRust(expression.semantics.resultType, context)) {
+      refusals.push({
+        member,
+        message: `array.${member} result does not have the exact Rust f64 length carrier`,
+        rule: `rust-array-${member}-result-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    if (!isRustArrayGrowthResultRepresentedUseRust(uses.get(expression), context)) {
+      refusals.push({
+        member,
+        message: `array.${member} length result is observed through a context without an exact Rust f64 carrier`,
+        rule: `rust-array-${member}-result-observation-unrepresented`,
+      });
+    }
+  }
+
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  )[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
+}
+
+function isRustStableArrayGrowthReceiverRust(expression: Readonly<IrExpression>): boolean {
+  return expression.kind === 'identifier' && expression.reference.kind === 'binding';
+}
+
+function inferRustArrayGrowthArgumentTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind === 'literal' && expression.value !== null) {
+    return { kind: 'literal', value: expression.value };
+  }
+  if (expression.kind === 'array' && expression.type) return expression.type;
+  if (expression.kind === 'element') {
+    const receiverType = inferIrExpressionTypeRust(expression.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind === 'array') return receiver.element;
+  }
+  if (expression.kind === 'property' && expression.type) return expression.type;
+  return inferIrExpressionTypeRust(expression, context);
+}
+
+function isRustArrayGrowthElementRepresentedRust(
+  expression: Readonly<IrExpression>,
+  elementType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceType = inferRustArrayGrowthArgumentTypeRust(expression, context);
+  if (!sourceType) return false;
+  const source = resolveIrTypeAliasValueRust(sourceType, context, new Set());
+  const target = resolveIrTypeAliasValueRust(elementType, context, new Set());
+  if (analyzeIrTypeStructuralAssignability(source, target).status !== 'compatible') return false;
+  return emitType(source, context) === emitType(target, context);
+}
+
+function isRustArrayGrowthLengthCarrierRust(type: Readonly<IrType> | undefined, context: EmitContext): boolean {
+  if (!type) return false;
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  return resolved.kind === 'primitive' && resolved.name === 'number';
+}
+
+function isRustArrayGrowthResultRepresentedUseRust(
+  use: RustArrayBoundsValueUse | undefined,
+  context: EmitContext,
+): boolean {
+  if (!use) return false;
+  if (use.kind === 'discarded') return true;
+  if (use.kind === 'return' || use.kind === 'variable') {
+    return isRustArrayGrowthLengthCarrierRust(use.type, context);
+  }
+  const parent = use.expression;
+  if (parent.kind === 'binary') {
+    return (use.position === 'left' ? parent.semantics.left.flow : parent.semantics.right.flow) === 'number';
+  }
+  if (parent.kind !== 'assignment' || use.position !== 'right' || parent.operator !== '=') return false;
+  if (parent.left.kind === 'identifier' && parent.left.reference.kind === 'binding') {
+    return isRustArrayGrowthLengthCarrierRust(context.bindingTypes.get(parent.left.reference.binding.id), context);
+  }
+  if (parent.left.kind === 'property') {
+    return isRustArrayGrowthLengthCarrierRust(parent.left.type, context);
+  }
+  return false;
 }
 
 function hasMultipleOrdinaryArrayReceiverAlternativesRust(

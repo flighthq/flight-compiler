@@ -13,6 +13,6 @@ pub async fn attempt(task: FlightTask<f64>, log: &mut Vec<f64>) -> f64 {
       result = 1.0;
     }
   }
-  log.push(result);
+  { let array_push_argument0 = result; log.push(array_push_argument0); log.len() as f64 };
   return result;
 }

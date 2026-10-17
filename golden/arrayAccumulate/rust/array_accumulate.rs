@@ -6,7 +6,7 @@ pub fn running_sum(values: Vec<f64>) -> Vec<f64> {
   let mut sum: f64 = 0.0;
   for value in values {
     sum = sum + value;
-    result.push(sum);
+    { let array_push_argument0 = sum; result.push(array_push_argument0); result.len() as f64 };
   }
   return result;
 }
@@ -15,7 +15,7 @@ pub fn filter_positive(values: Vec<f64>) -> Vec<f64> {
   let mut result: Vec<f64> = vec![];
   for value in values {
     if value > 0.0 {
-      result.push(value);
+      { let array_push_argument0_2 = value; result.push(array_push_argument0_2); result.len() as f64 };
     }
   }
   return result;
