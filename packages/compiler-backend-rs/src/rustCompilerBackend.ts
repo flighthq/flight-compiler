@@ -2711,8 +2711,8 @@ function emitArraySpliceCallRust(
   context: EmitContext,
 ): string {
   const [start, deleteCount, ...inserted] = expression.arguments;
-  if (!start || !deleteCount || expression.arguments.length < 2) {
-    return emissionError(context, 'array.splice emission requires start and deleteCount');
+  if (!start || expression.arguments.length < 1) {
+    return emissionError(context, 'array.splice emission requires start');
   }
   const startName = getGeneratedTargetNameRust('array_splice_start', context);
   const deleteName = getGeneratedTargetNameRust('array_splice_delete_count', context);
@@ -2740,7 +2740,7 @@ function emitArraySpliceCallRust(
       : `&mut ${emitExpression(expression.callee.object, context)}`;
   const initializers = [
     `let ${startName}: f64 = ${emitExpression(start, context)};`,
-    `let ${deleteName}: f64 = ${emitExpression(deleteCount, context)};`,
+    `let ${deleteName}: f64 = ${deleteCount ? emitExpression(deleteCount, context) : 'f64::INFINITY'};`,
     ...insertedItems.map(({ emitted, name }) => `let ${name} = ${emitted};`),
   ];
   // JavaScript evaluates every splice argument before it mutates the array. Materializing them before
@@ -6657,16 +6657,16 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
       expression.callee.optionalChain !== undefined ||
       !signature ||
       signature.providedArgumentCount === 'dynamic' ||
-      signature.providedArgumentCount < 2 ||
+      signature.providedArgumentCount < 1 ||
       signature.providedArgumentCount !== expression.arguments.length ||
-      expression.arguments.length < 2 ||
+      expression.arguments.length < 1 ||
       expression.arguments.some((argument) => argument.kind === 'spread') ||
       !isRustStableArrayMutationReceiverRust(expression.callee.object)
     ) {
       refusals.push({
         member: 'splice',
         message:
-          'array.splice currently requires a non-optional stable receiver and at least two fixed non-spread arguments',
+          'array.splice currently requires a non-optional stable receiver and at least one fixed non-spread argument',
         rule: 'rust-array-splice-invocation-unrepresented',
       });
       continue;
@@ -6675,14 +6675,13 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
     const [start, deleteCount] = expression.arguments;
     if (
       !start ||
-      !deleteCount ||
       !isRustExactNumberExpressionRust(start, context) ||
-      !isRustExactNumberExpressionRust(deleteCount, context)
+      (deleteCount !== undefined && !isRustExactNumberExpressionRust(deleteCount, context))
     ) {
       refusals.push({
         member: 'splice',
         message:
-          'array.splice start and deleteCount require exact numeric values; coercive or dynamic index domains are not represented',
+          'array.splice start and provided deleteCount require exact numeric values; coercive or dynamic index domains are not represented',
         rule: 'rust-array-splice-index-domain-unrepresented',
       });
       continue;

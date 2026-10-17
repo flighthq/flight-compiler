@@ -11,6 +11,10 @@ function drop(values:Array<Float>, start:Float, deleteCount:Float):Void {
   values.splice(Std.int(start), Std.int(deleteCount));
 }
 
+function cutTail(values:Array<Float>, start:Float):Array<Float> {
+  return (function() { final spliceReceiver = values; final splicePosition = Std.int(start); return spliceReceiver.splice(splicePosition, spliceReceiver.length); })();
+}
+
 function replace(values:Array<Float>, start:Float, deleteCount:Float, first:Float, second:Float):Array<Float> {
-  return (function() { final spliceReceiver = values; final splicePosition:Int = Std.int(start); final spliceRemoved = spliceReceiver.splice(splicePosition, Std.int(deleteCount)); spliceReceiver.insert(splicePosition, first); spliceReceiver.insert(splicePosition + 1, second); return spliceRemoved; })();
+  return (function() { final spliceReceiver_2 = values; final splicePosition_2:Int = Std.int(start); final spliceRemoved = spliceReceiver_2.splice(splicePosition_2, Std.int(deleteCount)); spliceReceiver_2.insert(splicePosition_2, first); spliceReceiver_2.insert(splicePosition_2 + 1, second); return spliceRemoved; })();
 }

@@ -13538,6 +13538,82 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     if (rustcAvailable) runRustSource(output, 'assert_eq!(cut_shared(), 22.0);');
   });
 
+  it('preserves one-argument splice deletion-to-end and evaluates start once before borrowing', () => {
+    const result = lower(
+      'array-splice-tail.ts',
+      `function record(log: number[], value: number): number { log.push(value); return value; }
+       export function cutTail(items: number[], start: number): number[] {
+         return items.splice(start);
+       }
+       export function tracked(items: number[], log: number[]): number[] {
+         return items.splice(record(log, -2.8));
+       }
+       export function local(): number {
+         const values = [1, 2, 3];
+         const removed = values.splice(1.9);
+         return removed.length * 10 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_splice_delete_count: f64 = f64::INFINITY;');
+    const trackedStart = output.indexOf('let array_splice_start_2: f64 = record(');
+    const trackedReceiver = output.indexOf('let array_splice_values_2 = &mut *items;');
+    expect(trackedStart).toBeGreaterThan(-1);
+    expect(trackedReceiver).toBeGreaterThan(trackedStart);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut negative = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(cut_tail(&mut negative, -2.8), vec![3.0, 4.0]);',
+          'assert_eq!(negative, vec![1.0, 2.0]);',
+          'let mut fractional = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(cut_tail(&mut fractional, 1.9), vec![2.0, 3.0, 4.0]);',
+          'assert_eq!(fractional, vec![1.0]);',
+          'let mut nan = vec![1.0, 2.0];',
+          'assert_eq!(cut_tail(&mut nan, f64::NAN), vec![1.0, 2.0]);',
+          'assert_eq!(nan, Vec::<f64>::new());',
+          'let mut positive_infinity = vec![1.0, 2.0];',
+          'assert_eq!(cut_tail(&mut positive_infinity, f64::INFINITY), Vec::<f64>::new());',
+          'assert_eq!(positive_infinity, vec![1.0, 2.0]);',
+          'let mut negative_infinity = vec![1.0, 2.0];',
+          'assert_eq!(cut_tail(&mut negative_infinity, f64::NEG_INFINITY), vec![1.0, 2.0]);',
+          'assert_eq!(negative_infinity, Vec::<f64>::new());',
+          'let mut beyond = vec![1.0, 2.0];',
+          'assert_eq!(cut_tail(&mut beyond, 99.0), Vec::<f64>::new());',
+          'assert_eq!(beyond, vec![1.0, 2.0]);',
+          'let mut ordered = vec![1.0, 2.0, 3.0, 4.0];',
+          'let mut log = vec![];',
+          'assert_eq!(tracked(&mut ordered, &mut log), vec![3.0, 4.0]);',
+          'assert_eq!(ordered, vec![1.0, 2.0]);',
+          'assert_eq!(log, vec![-2.8]);',
+          'assert_eq!(local(), 21.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves one-argument splice deletion-to-end through a shared alias', () => {
+    const result = lower(
+      'shared-array-splice-tail.ts',
+      `export function cutSharedTail(): number {
+         const values = [1, 2, 3, 4];
+         const alias = values;
+         const removed = alias.splice(-2.8);
+         return (removed[0] ?? 0) * 1000 + (removed[1] ?? 0) * 100 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_splice_delete_count: f64 = f64::INFINITY;');
+    expect(output).toContain('let mut array_splice_values = alias.borrow_mut()');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(cut_shared_tail(), 3402.0);');
+  });
+
   it('preserves fixed-arity splice insertion, extreme indices, and once-only argument order', () => {
     const result = lower(
       'array-splice-insertion.ts',
@@ -13621,20 +13697,19 @@ describe('emitIrModuleRust array element access with coalescing', () => {
   it.each([
     {
       rule: 'rust-array-splice-invocation-unrepresented',
-      source: 'export function cut(values: number[], start: number): number[] { return values.splice(start); }',
+      source: 'export function cut(values: number[]): number[] { return values.splice(); }',
     },
     {
       rule: 'rust-array-splice-invocation-unrepresented',
-      source:
-        'export function cut(values: number[], range: [number, number]): number[] { return values.splice(...range); }',
+      source: 'export function cut(values: number[], range: [number]): number[] { return values.splice(...range); }',
     },
     {
       rule: 'rust-array-splice-invocation-unrepresented',
-      source: 'export function cut(values: number[]): number[] | undefined { return values.splice?.(0, 1); }',
+      source: 'export function cut(values: number[]): number[] | undefined { return values.splice?.(0); }',
     },
     {
       rule: 'rust-array-splice-index-domain-unrepresented',
-      source: 'export function cut(values: number[], start: any): number[] { return values.splice(start, 1); }',
+      source: 'export function cut(values: number[], start: any): number[] { return values.splice(start); }',
     },
     {
       rule: 'rust-array-splice-element-carrier-unrepresented',
@@ -13653,7 +13728,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     {
       rule: 'rust-array-splice-sparse-unrepresented',
       source:
-        'export function insert(): number[] { const values = [1, , 3]; const alias = values; return alias.splice(0, 0, 2); }',
+        'export function cut(): number[] { const values = [1, , 3]; const alias = values; return alias.splice(0); }',
     },
     {
       rule: 'rust-array-splice-sparse-unrepresented',
@@ -13670,7 +13745,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
   it('stably refuses a splice result without the receiver element carrier', () => {
     const result = lower(
       'array-splice-result-carrier.ts',
-      'export function cut(values: number[]): number[] { return values.splice(0, 1); }',
+      'export function cut(values: number[]): number[] { return values.splice(0); }',
     );
     const declaration = result.module.declarations.find(
       (candidate) => candidate.kind === 'function' && candidate.binding.name === 'cut',
@@ -13835,7 +13910,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       `export function conflict(): number {
          const values = [1, 2, 3];
          const alias = values;
-         alias.splice(values.length, 1);
+         alias.splice(values.length);
          return alias.length;
        }`,
     );
