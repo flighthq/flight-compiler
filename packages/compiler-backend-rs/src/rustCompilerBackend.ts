@@ -249,9 +249,11 @@ type RustAsyncTryDirectAwaitStep =
 
 type RustAsyncTryCatchCompletionPlan =
   | Readonly<{
+      binding?: Readonly<IrBindingIdentity> | undefined;
       kind: 'await';
       postStatements: readonly Readonly<IrStatement>[];
       preStatements: readonly Readonly<IrStatement>[];
+      rethrowBinding?: Readonly<IrBindingIdentity> | undefined;
       step: RustAsyncTryDirectAwaitStep;
     }>
   | Readonly<{
@@ -7332,6 +7334,74 @@ function isIrAsyncTryCatchBindingMutatedRust(statement: Readonly<IrStatement>, b
   return mutated;
 }
 
+function getIrAsyncTryCatchBindingUseFailureRust(
+  statement: Readonly<IrStatement>,
+  binding: Readonly<IrBindingIdentity>,
+): 'alias' | 'capture' | 'mutation' | 'storage' | 'unused' | undefined {
+  if (isIrAsyncTryCatchBindingMutatedRust(statement, binding.id)) return 'mutation';
+
+  let failure: 'alias' | 'capture' | 'storage' | undefined;
+  let used = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.id === binding.id
+      ) {
+        used = true;
+        return undefined;
+      }
+      if (expression.kind === 'function' && doesIrExpressionReferenceBindingRust(expression, binding.id)) {
+        failure ??= 'capture';
+        return undefined;
+      }
+      if (expression.kind === 'assignment' && isIrCatchBindingReferenceRust(expression.right, binding.id)) {
+        failure ??= 'storage';
+        return undefined;
+      }
+      if (
+        expression.kind === 'array' &&
+        expression.elements.some(
+          (element) => element !== undefined && isIrCatchBindingReferenceRust(element, binding.id),
+        )
+      ) {
+        failure ??= 'storage';
+        return undefined;
+      }
+      if (
+        expression.kind === 'tuple' &&
+        expression.elements.some(
+          (element) => element.expression && isIrCatchBindingReferenceRust(element.expression, binding.id),
+        )
+      ) {
+        failure ??= 'storage';
+        return undefined;
+      }
+      if (
+        expression.kind === 'object' &&
+        expression.members.some((member) =>
+          member.kind === 'property' || member.kind === 'computedProperty'
+            ? isIrCatchBindingReferenceRust(member.value, binding.id)
+            : member.kind === 'spread'
+              ? isIrCatchBindingReferenceRust(member.expression, binding.id)
+              : false,
+        )
+      ) {
+        failure ??= 'storage';
+      }
+      return undefined;
+    },
+    variable(variable) {
+      if (variable.initializer && isIrCatchBindingReferenceRust(variable.initializer, binding.id)) {
+        failure ??= 'alias';
+      }
+      return undefined;
+    },
+  });
+  return failure ?? (used ? undefined : 'unused');
+}
+
 function getIrAsyncTryCatchRethrowBindingRust(
   statement: Readonly<IrStatement> | undefined,
   binding: Readonly<IrBindingIdentity> | undefined,
@@ -7375,26 +7445,33 @@ function getAsyncTryCatchCompletionPlanRust(
     const step = getIrAsyncTryDirectAwaitStepRust(candidate);
     return step ? [{ index, step }] : [];
   });
-  const permittedReturn = statements.at(-1)?.kind === 'return' ? statements.at(-1) : undefined;
+  const tail = statements.at(-1);
+  const rethrowBinding = getIrAsyncTryCatchRethrowBindingRust(tail, catchClause.binding, catchClause.body);
+  const permittedCompletion = tail?.kind === 'return' || (tail?.kind === 'throw' && rethrowBinding) ? tail : undefined;
+  const bindingUseFailure = catchClause.binding
+    ? getIrAsyncTryCatchBindingUseFailureRust(catchClause.body, catchClause.binding)
+    : undefined;
   if (
-    catchClause.binding ||
     (catchClause.body.kind === 'block' && catchClause.body.label) ||
     evidence.suspensionCount !== 1 ||
     steps.length !== 1 ||
-    !areIrAsyncTryStraightLineStatementsRust(statements) ||
-    evidence.abruptStatements.some((candidate) => candidate !== permittedReturn)
+    !areIrAsyncTryStraightLineStatementsRust(statements, true) ||
+    evidence.abruptStatements.some((candidate) => candidate !== permittedCompletion) ||
+    bindingUseFailure
   ) {
     emissionRuleError(
       context,
-      'async try/finally awaited catch requires one bindingless flat handler with exactly one direct await and only Normal/Return completion',
+      'async try/finally awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
       'rust-async-try-completion-unrepresented',
     );
   }
   const selected = steps[0]!;
   return {
+    ...(catchClause.binding ? { binding: catchClause.binding } : {}),
     kind: 'await',
     postStatements: statements.slice(selected.index + 1),
     preStatements: statements.slice(0, selected.index),
+    ...(rethrowBinding ? { rethrowBinding } : {}),
     step: selected.step,
   };
 }
@@ -7465,7 +7542,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   const tryTail = tryStatements.at(-1);
   const catchTail = catchStatements?.at(-1);
   const protectedThrowMessage = tryTail ? getIrAsyncTrySourceThrowMessageRust(tryTail, context) : undefined;
-  const catchRethrowBinding = catchPlan?.kind === 'straight' ? catchPlan.rethrowBinding : undefined;
+  const catchRethrowBinding = catchPlan?.rethrowBinding;
   const permittedReturns = new Set(
     [tryTail, catchTail].filter((candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return'),
   );
@@ -7499,7 +7576,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most one direct bindingless catch await, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most one direct catch await with an optional used immutable String binding, and a non-abrupt finally',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -8008,9 +8085,12 @@ function emitAsyncTryFinallyAwaitCatchCompletionRust(
   plan: Readonly<Extract<RustAsyncTryCatchCompletionPlan, { kind: 'await' }>>,
   context: EmitContext,
 ): string[] {
+  const handlerContext = plan.binding
+    ? { ...context, movedBindingIds: new Set([...context.movedBindingIds, plan.binding.id]) }
+    : context;
   const step = plan.step;
-  assertIrAsyncTrySettledStepCarrierRust(step, context);
-  const target = emitOwnedOperandRust(step.awaitTarget, context);
+  assertIrAsyncTrySettledStepCarrierRust(step, handlerContext);
+  const target = emitOwnedOperandRust(step.awaitTarget, handlerContext);
   const error = getGeneratedTargetNameRust('catch_error', context);
   const value = getGeneratedTargetNameRust('catch_value', context);
   const fulfilled =
@@ -8019,13 +8099,13 @@ function emitAsyncTryFinallyAwaitCatchCompletionRust(
       : [
           `Ok(${step.kind === 'expression' ? '_' : value}) => {`,
           ...indentSourceLines([
-            ...emitAsyncTrySettledStepRust(step, context, value),
-            ...emitAsyncTryFinallyCatchCompletionRust(plan.postStatements, undefined, context),
+            ...emitAsyncTrySettledStepRust(step, handlerContext, value),
+            ...emitAsyncTryFinallyCatchCompletionRust(plan.postStatements, plan.rethrowBinding, handlerContext),
           ]),
           '}',
         ];
   return [
-    ...emitStatements(plan.preStatements, context),
+    ...emitStatements(plan.preStatements, handlerContext),
     `match ${target}.settle() {`,
     ...indentSourceLines([...fulfilled, `Err(${error}) => Err(${error}),`]),
     '}',
@@ -8076,10 +8156,9 @@ function emitAsyncTryFinallyCompletionRust(
   if (plan.catchPlan) {
     completion = getGeneratedTargetNameRust('try_completion_value', context);
     const carried = getGeneratedTargetNameRust('try_carried_completion', context);
-    const catchBinding =
-      plan.catchPlan.kind === 'straight' && statement.catchClause?.binding
-        ? getBindingTargetNameRust(statement.catchClause.binding, context)
-        : '_';
+    const catchBinding = statement.catchClause?.binding
+      ? getBindingTargetNameRust(statement.catchClause.binding, context)
+      : '_';
     const catchCompletion =
       plan.catchPlan.kind === 'await'
         ? emitAsyncTryFinallyAwaitCatchCompletionRust(plan.catchPlan, context)
@@ -8112,7 +8191,9 @@ function emitAsyncTryFinallyCompletionRust(
   const catchCanCompleteNormally = plan.catchPlan
     ? plan.catchPlan.kind === 'straight'
       ? plan.catchPlan.statements.at(-1)?.kind !== 'return' && plan.catchPlan.statements.at(-1)?.kind !== 'throw'
-      : plan.catchPlan.step.kind !== 'return' && plan.catchPlan.postStatements.at(-1)?.kind !== 'return'
+      : plan.catchPlan.step.kind !== 'return' &&
+        plan.catchPlan.postStatements.at(-1)?.kind !== 'return' &&
+        plan.catchPlan.postStatements.at(-1)?.kind !== 'throw'
     : false;
   if (plan.catchPlan) {
     const error = getGeneratedTargetNameRust('try_error', context);
