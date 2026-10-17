@@ -3310,25 +3310,44 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
 
   it('refuses required class method parameters outside final direct primitive projection', () => {
     const cases = [
-      `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
-      `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
-      `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
-      `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
-      `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
-      `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
-      `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
-    ];
+      [
+        `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
+        'rust-reference-shared-class-return-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+    ] as const;
 
-    for (const [index, declaration] of cases.entries()) {
+    for (const [index, [declaration, code]] of cases.entries()) {
       const module = lower(
         `required-class-method-refusal-${String(index)}.ts`,
         `${declaration} export function run(): number { const value = new Counter(); return value.value; }`,
       );
       expect(
         getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
-      ).toEqual(
-        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
-      );
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
     }
   });
 
