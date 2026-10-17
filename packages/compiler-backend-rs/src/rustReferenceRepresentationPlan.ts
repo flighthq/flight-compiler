@@ -2069,6 +2069,39 @@ function resolveRustSharedArrayIdentitySource(
   unrepresentedCode: CompilerRustReferenceRepresentationRefusal['code'],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): RustSharedArrayIdentitySource {
+  if (expression.kind === 'cast' && graph.arrayKind === 'readonly') {
+    const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(expression, module);
+    if (assertion?.primitiveName === primitiveName) {
+      const operand = expression.expression;
+      if (
+        operand.kind === 'identifier' &&
+        operand.reference.kind === 'binding' &&
+        module.sharedArrays.bindingIds.has(operand.reference.binding.id)
+      ) {
+        return { kind: 'leaf' };
+      }
+      if (operand.kind === 'call') {
+        const target = resolveRustReferenceCallTarget(operand, module, graph.modules, moduleResolution);
+        if (
+          target.kind === 'function' &&
+          !getRustSharedArrayIdentityCallShapeReason(operand, target.function.declaration) &&
+          target.module.sharedArrayCallables.returnFunctionIds.has(target.function.declaration.binding.id)
+        ) {
+          return { kind: 'leaf' };
+        }
+      }
+    }
+    return {
+      issue: createRustSharedArrayIdentityIssue(
+        module,
+        owner,
+        unrepresentedCode,
+        subject,
+        'readonly array assertion source lacks one already elected compatible shared primitive owner',
+      ),
+      kind: 'unsupported',
+    };
+  }
   if (expression.kind === 'array') {
     const actual = expression.type
       ? getRustSharedArrayIdentityPrimitiveName(expression.type, module.module, graph.arrayKind)
@@ -2226,6 +2259,49 @@ function getRustSharedArrayIdentityPrimitiveName(
   return element?.kind === 'primitive' &&
     (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
     ? element.name
+    : undefined;
+}
+
+interface RustReadonlyPrimitiveArrayIdentityAssertionPlan {
+  readonly primitiveName: RustSharedArrayPrimitiveName;
+}
+
+function getRustReadonlyPrimitiveArrayIdentityAssertionPlan(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  module: RustReferenceModuleRecord,
+): Readonly<RustReadonlyPrimitiveArrayIdentityAssertionPlan> | undefined {
+  const operand = expression.expression;
+  const sourceType =
+    operand.kind === 'identifier' && operand.reference.kind === 'binding'
+      ? module.bindingTypes.get(operand.reference.binding.id)
+      : operand.kind === 'call'
+        ? operand.semantics.resultType
+        : undefined;
+  if (!sourceType) return undefined;
+  const source = getRustReadonlyPrimitiveArrayIdentityShapePlan(sourceType, module.module);
+  const target = getRustReadonlyPrimitiveArrayIdentityShapePlan(expression.type, module.module);
+  if (
+    !source ||
+    !target ||
+    source.arrayReadonly ||
+    !target.arrayReadonly ||
+    source.primitiveName !== target.primitiveName
+  ) {
+    return undefined;
+  }
+  return { primitiveName: source.primitiveName };
+}
+
+function getRustReadonlyPrimitiveArrayIdentityShapePlan(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+): Readonly<{ arrayReadonly: boolean; primitiveName: RustSharedArrayPrimitiveName }> | undefined {
+  const array = resolveRustClosedLocalTypeAliasShape(type, module, new Set());
+  if (array?.kind !== 'array') return undefined;
+  const element = resolveRustClosedLocalTypeAliasShape(array.element, module, new Set());
+  return element?.kind === 'primitive' &&
+    (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
+    ? { arrayReadonly: array.readonly, primitiveName: element.name }
     : undefined;
 }
 
@@ -3184,6 +3260,15 @@ function isRustSharedArrayIdentifierUseRepresented(
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
   if (
+    final === 'expression' &&
+    isIrExpressionValue(parent) &&
+    parent.kind === 'cast' &&
+    getRustReadonlyPrimitiveArrayIdentityAssertionPlan(parent, module) &&
+    isRustSharedReadonlyArrayAssertionUseRepresented(module, modules, moduleResolution, parent, path_.slice(0, -1))
+  ) {
+    return true;
+  }
+  if (
     final === 'initializer' &&
     isRecord(parent) &&
     'binding' in parent &&
@@ -3242,6 +3327,52 @@ function isRustSharedArrayIdentifierUseRepresented(
     );
   }
   return false;
+}
+
+function isRustSharedReadonlyArrayAssertionUseRepresented(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  path_: CompilerIrTraversalPath,
+): boolean {
+  const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(expression, module);
+  if (!assertion) return false;
+  const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
+  const final = path_.at(-1);
+  if (final === 'object' && isIrExpressionValue(parent)) {
+    if (parent.kind === 'element') return !parent.optional;
+    if (parent.kind !== 'property' || parent.optional || parent.member?.receiver !== 'array') return false;
+    if (parent.name === 'length') return true;
+    const propertyPath = path_.slice(0, -1);
+    const call =
+      propertyPath.at(-1) === 'callee'
+        ? getIrModuleTraversalPathValue(module.module, propertyPath.slice(0, -1))
+        : undefined;
+    return (
+      isCallExpression(call) &&
+      RUST_SHARED_ARRAY_METHODS.has(parent.name) &&
+      !RUST_SHARED_ARRAY_MUTATING_METHODS.has(parent.name)
+    );
+  }
+  if (path_.at(-2) !== 'arguments' || typeof final !== 'number') return false;
+  const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
+  if (!isCallExpression(call)) return false;
+  const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
+  if (target.kind !== 'function' || getRustSharedArrayIdentityCallShapeReason(call, target.function.declaration)) {
+    return false;
+  }
+  const parameter = target.function.declaration.parameters[final];
+  const primitiveName = parameter
+    ? getRustSharedArrayIdentityPrimitiveName(parameter.type, target.module.module, 'readonly')
+    : undefined;
+  return (
+    primitiveName === assertion.primitiveName &&
+    (target.module.sharedArrayCallables.parameterPositionsByFunctionId
+      .get(target.function.declaration.binding.id)
+      ?.has(final) ??
+      false)
+  );
 }
 
 function isRustSharedArrayTupleIdentityComponentReference(

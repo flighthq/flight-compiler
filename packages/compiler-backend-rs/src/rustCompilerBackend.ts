@@ -2551,6 +2551,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (unionCast) return unionCast;
       const generalUnionCast = emitGeneralUnionCastRust(expression, context);
       if (generalUnionCast) return generalUnionCast;
+      const readonlyArrayIdentity = emitRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+      if (readonlyArrayIdentity) return readonlyArrayIdentity;
       const assertedSourceType = inferIrExpressionTypeRust(expression.expression, context);
       if (
         expression.type.kind === 'union' ||
@@ -4808,6 +4810,17 @@ function emitOwnedSharedArrayCarrierExpressionRust(
   }
   context.needsRcImport.add('Rc');
   context.needsRefCellImport.add('RefCell');
+  if (expression.kind === 'cast') {
+    const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+    if (!assertion || assertion.optional || assertion.primitiveName !== target.primitiveName) {
+      return emissionRuleError(
+        context,
+        'owned shared array assertion does not preserve one exact nonoptional primitive carrier',
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return emitOwnedSharedArrayCarrierExpressionRust(expression.expression, targetType, context);
+  }
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     const sourceType = context.bindingTypes.get(expression.reference.binding.id);
     const source = sourceType ? getRustOwnedSharedArrayTypeRust(sourceType, context) : undefined;
@@ -10931,6 +10944,29 @@ function emitSharedReferenceReceiverRust(
   mutable: boolean,
   context: EmitContext,
 ): string {
+  if (!mutable && expression.kind === 'cast') {
+    const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+    if (assertion && !assertion.optional) {
+      const operand = expression.expression;
+      if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
+        const sourceType = context.bindingTypes.get(operand.reference.binding.id);
+        const source = sourceType ? getRustOwnedSharedArrayTypeRust(sourceType, context) : undefined;
+        if (
+          context.sharedArrayBindingIds.has(operand.reference.binding.id) &&
+          source?.primitiveName === assertion.primitiveName
+        ) {
+          return `${emitIdentifierReferenceRust(operand.reference, context)}.borrow()`;
+        }
+      }
+      if (operand.kind === 'call') {
+        const callPlan = getIrOwnedSharedArrayCallPlanRust(operand, context);
+        const source = callPlan ? getRustOwnedSharedArrayTypeRust(callPlan.declaration.returns, context) : undefined;
+        if (callPlan?.returnsSharedArray && source?.primitiveName === assertion.primitiveName) {
+          return `${normalizeSourceTextGrouping(emitExpression(operand, context))}.borrow()`;
+        }
+      }
+    }
+  }
   const binding =
     getRustSharedArrayBindingRust(expression, context) ?? getRustSharedHashCollectionBindingRust(expression, context);
   return binding
@@ -23264,6 +23300,186 @@ function resolveIrCastUnionTypeRust(type: Readonly<IrType>, context: EmitContext
   const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
   if (location?.declaration.kind !== 'typeAlias') return type;
   return resolveIrCastUnionTypeRust(location.declaration.type, context, depth + 1);
+}
+
+interface RustReadonlyPrimitiveArrayIdentityAssertion {
+  readonly optional: boolean;
+  readonly primitiveName: RustOwnedSharedArrayPrimitiveName;
+}
+
+interface RustReadonlyPrimitiveArrayIdentityShape extends RustReadonlyPrimitiveArrayIdentityAssertion {
+  readonly arrayReadonly: boolean;
+}
+
+function emitRustReadonlyPrimitiveArrayIdentityAssertionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionRust(expression, context);
+  if (!assertion) return undefined;
+  const operand = expression.expression;
+  if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
+    const bindingId = operand.reference.binding.id;
+    if (
+      context.sharedArrayBindingIds.has(bindingId) ||
+      context.cellWrappedBindingIds.has(bindingId) ||
+      context.refCellWrappedBindingIds.has(bindingId) ||
+      context.moduleStateBindings.has(bindingId)
+    ) {
+      return emissionRuleError(
+        context,
+        `readonly array assertion source ${operand.reference.binding.name} does not have the plain Vec carrier required by this context`,
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    // Cloning either Vec or Option<Vec> would allocate different array storage. The general ownership
+    // guard cannot see through the optional union, so this lane rejects every moved binding directly.
+    if (context.movedBindingIds.has(bindingId)) {
+      return emissionRuleError(
+        context,
+        `binding ${operand.reference.binding.name} requires a deep Rust clone that would split source shared identity`,
+        'rust-shared-identity-deep-clone-unrepresented',
+      );
+    }
+    return emitIdentifierReferenceRust(operand.reference, context);
+  }
+  if (operand.kind === 'call') {
+    if (isIrOwnedSharedArrayReturnCallRust(operand, context)) {
+      return emissionRuleError(
+        context,
+        'readonly array assertion cannot lower a planned shared return into a plain Vec carrier',
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    return emitExpression(operand, context);
+  }
+  return undefined;
+}
+
+function getRustReadonlyPrimitiveArrayIdentityAssertionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): Readonly<RustReadonlyPrimitiveArrayIdentityAssertion> | undefined {
+  if (!isRustReadonlyPrimitiveArrayIdentityOperandRust(expression.expression, context)) return undefined;
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  if (!sourceType) return undefined;
+  const source = getRustReadonlyPrimitiveArrayIdentityShapeRust(sourceType, context);
+  const target = getRustReadonlyPrimitiveArrayIdentityShapeRust(expression.type, context);
+  if (
+    !source ||
+    !target ||
+    source.arrayReadonly ||
+    !target.arrayReadonly ||
+    source.optional !== target.optional ||
+    source.primitiveName !== target.primitiveName
+  ) {
+    return undefined;
+  }
+  return { optional: source.optional, primitiveName: source.primitiveName };
+}
+
+function getRustReadonlyPrimitiveArrayIdentityShapeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<RustReadonlyPrimitiveArrayIdentityShape> | undefined {
+  const resolved = resolveRustReadonlyPrimitiveArrayIdentityTypeRust(type, context, new Set(), 0);
+  if (!resolved) return undefined;
+  let array: Readonly<Extract<IrType, { kind: 'array' }>> | undefined;
+  let optional = false;
+  if (resolved.kind === 'array') {
+    array = resolved;
+  } else if (resolved.kind === 'union' && resolved.types.length === 2) {
+    const members = resolved.types.map((member) =>
+      resolveRustReadonlyPrimitiveArrayIdentityTypeRust(member, context, new Set(), 0),
+    );
+    if (members.some((member) => member === undefined)) return undefined;
+    const defined = members.filter((member): member is Readonly<IrType> => member !== undefined);
+    const sentinels = defined.filter((member) => member.kind === 'undefined');
+    const arrays = defined.filter(
+      (member): member is Readonly<Extract<IrType, { kind: 'array' }>> => member.kind === 'array',
+    );
+    if (sentinels.length !== 1 || arrays.length !== 1) return undefined;
+    array = arrays[0];
+    optional = true;
+  }
+  if (!array) return undefined;
+  const element = resolveRustReadonlyPrimitiveArrayIdentityTypeRust(array.element, context, new Set(), 0);
+  if (
+    element?.kind !== 'primitive' ||
+    (element.name !== 'boolean' && element.name !== 'number' && element.name !== 'string')
+  ) {
+    return undefined;
+  }
+  return { arrayReadonly: array.readonly, optional, primitiveName: element.name };
+}
+
+function isRustReadonlyPrimitiveArrayIdentityOperandRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind === 'identifier') return expression.reference.kind === 'binding';
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.typeArguments.length > 0 ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'binding' ||
+    expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return false;
+  }
+  const declaration = getIrReferencedFunctionRust(expression.callee.reference, context);
+  if (
+    !declaration ||
+    declaration.async ||
+    declaration.typeParameters.length > 0 ||
+    declaration.overloads.length > 0 ||
+    declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+    expression.arguments.length !== declaration.parameters.length ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined
+  ) {
+    return false;
+  }
+  const signature = expression.semantics.signature;
+  return (
+    !signature ||
+    (signature.restParameter === undefined &&
+      signature.providedArgumentCount !== 'dynamic' &&
+      signature.providedArgumentCount === expression.arguments.length &&
+      signature.parameterCount === declaration.parameters.length)
+  );
+}
+
+function resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named') return type;
+  if (
+    depth > 8 ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
+  if (location?.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return undefined;
+  const key = `${location.module.packageName}\0${normalizePathPortable(location.module.source)}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return undefined;
+  return resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
+    location.declaration.type,
+    context,
+    new Set(resolving).add(key),
+    depth + 1,
+  );
 }
 
 // An assertion whose representation the target already has is the value itself. Only exact evidence
