@@ -608,6 +608,7 @@ function emitIrModuleRustWithContext(
   // Invocation shape must be refused before the shared extra-argument pass, whose target ABI cannot
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
   // after erasing extra arguments.
+  assertImmediateArrayConstructorFillInvocationSemanticsRust(sourceModule);
   assertArrayConstructorInvocationSemanticsRust(sourceModule);
   assertArrayIsArrayInvocationSemanticsRust(sourceModule);
   assertArrayOfInvocationSemanticsRust(sourceModule);
@@ -1914,6 +1915,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (isArrayOfCallRust(expression)) return emitArrayOfCallRust(expression, context);
       if (isArrayFromCallRust(expression)) return emitArrayFromCallRust(expression, context);
       if (isArrayCopyWithinCallRust(expression)) return emitArrayCopyWithinCallRust(expression, context);
+      if (isImmediateArrayConstructorFillCallRust(expression)) {
+        return emitImmediateArrayConstructorFillCallRust(expression, context);
+      }
       if (isArrayFillCallRust(expression)) return emitArrayFillCallRust(expression, context);
       if (isArrayFindIndexCallRust(expression)) return emitArrayFindIndexCallRust(expression, context);
       if (isArrayPredicateCallRust(expression)) {
@@ -4670,6 +4674,23 @@ function isArrayFillCallRust(
   );
 }
 
+type RustImmediateArrayConstructorFillCall = Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{
+    callee: Readonly<Extract<IrExpression, { kind: 'property' }>> &
+      Readonly<{ object: Extract<IrExpression, { kind: 'new' }> }>;
+  }>;
+
+function isImmediateArrayConstructorFillCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is RustImmediateArrayConstructorFillCall {
+  return (
+    isArrayFillCallRust(expression) &&
+    expression.callee.name === 'fill' &&
+    expression.callee.object.kind === 'new' &&
+    isArrayConstructorRust(expression.callee.object)
+  );
+}
+
 function isArrayCopyWithinCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -4742,6 +4763,22 @@ function emitArrayConstructorRust(
   const element = expression.typeArguments[0];
   if (!element) return emissionError(context, 'Array construction emission requires one explicit element type');
   return `Vec::<${emitType(element, context)}>::new()`;
+}
+
+function emitImmediateArrayConstructorFillCallRust(
+  expression: RustImmediateArrayConstructorFillCall,
+  context: EmitContext,
+): string {
+  const constructor = expression.callee.object;
+  const element = constructor.typeArguments[0];
+  const length = constructor.arguments[0];
+  const value = expression.arguments[0];
+  if (!element || length?.kind !== 'literal' || typeof length.value !== 'number' || !value || value.kind === 'spread') {
+    return emissionError(context, 'immediate Array constructor fill emission requires exact length and value evidence');
+  }
+  const valueName = getGeneratedTargetNameRust('array_constructor_fill_value', context);
+  const elementType = emitType(element, context);
+  return `{ let ${valueName}: ${elementType} = ${emitOwnedOperandRust(value, context)}; vec![${valueName}; ${String(length.value)}] }`;
 }
 
 function emitArrayOfCallRust(
@@ -12028,9 +12065,67 @@ interface RustArrayConstructorRefusal {
   readonly message: string;
   readonly position: number;
   readonly rule:
+    | 'rust-array-constructor-fill-coverage-unrepresented'
+    | 'rust-array-constructor-fill-element-carrier-unrepresented'
+    | 'rust-array-constructor-fill-length-unrepresented'
+    | 'rust-array-constructor-fill-result-carrier-unrepresented'
+    | 'rust-array-constructor-fill-value-carrier-unrepresented'
     | 'rust-array-constructor-element-carrier-unrepresented'
     | 'rust-array-constructor-element-form-unrepresented'
     | 'rust-array-constructor-sparse-length-unrepresented';
+}
+
+function assertImmediateArrayConstructorFillInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isImmediateArrayConstructorFillCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      const optional = expression.semantics.optionalParameters;
+      const argumentCount = expression.arguments.length;
+      const exactOptionalEvidence =
+        optional !== undefined &&
+        optional.parameterCount === 3 &&
+        optional.providedArgumentCount === argumentCount &&
+        optional.optional.length === 2 &&
+        optional.optional[0] === 1 &&
+        optional.optional[1] === 2 &&
+        optional.omitted.length === Math.max(0, 3 - argumentCount) &&
+        optional.omitted.every((position, index) => position === argumentCount + index) &&
+        optional.provided.length === Math.max(0, argumentCount - 1) &&
+        optional.provided.every(({ position }, index) => position === index + 1);
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        expression.typeArguments.length !== 0 ||
+        expression.semantics.defaultParameters !== undefined ||
+        expression.semantics.overloadImplementation !== undefined ||
+        !signature ||
+        signature.parameterCount !== 3 ||
+        signature.restParameter !== undefined ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== argumentCount ||
+        argumentCount < 1 ||
+        argumentCount > 3 ||
+        expression.arguments.some((argument) => argument.kind === 'spread') ||
+        !exactOptionalEvidence
+      ) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'immediate Array constructor fill requires the exact non-optional ambient fill invocation with one value and at most two fixed bounds',
+    'rust-array-constructor-fill-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
 }
 
 function assertArrayConstructorInvocationSemanticsRust(module: Readonly<IrModule>): void {
@@ -12098,6 +12193,17 @@ function assertArrayConstructorInvocationSemanticsRust(module: Readonly<IrModule
 
 function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const refusals: RustArrayConstructorRefusal[] = [];
+  const immediateFills = new Map<
+    Readonly<Extract<IrExpression, { kind: 'new' }>>,
+    RustImmediateArrayConstructorFillCall
+  >();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'call' && isImmediateArrayConstructorFillCallRust(expression)) {
+        immediateFills.set(expression.callee.object, expression);
+      }
+    },
+  });
   let call = 0;
   analyzeIrModuleTraversal(module, {
     expression(expression) {
@@ -12106,6 +12212,74 @@ function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context
       call += 1;
       const elementType = expression.typeArguments[0];
       if (!elementType) return;
+      const immediateFill = immediateFills.get(expression);
+      const argument = expression.arguments[0];
+      const argumentType = argument ? inferRustArrayGrowthArgumentTypeRust(argument, context) : undefined;
+      const argumentCarrier = argumentType ? getRustExactScalarCarrierRust(argumentType, context) : undefined;
+      if (immediateFill && (!argument || argumentCarrier?.domain === 'number')) {
+        const lengthRepresented =
+          argument?.kind === 'literal' &&
+          typeof argument.value === 'number' &&
+          Number.isInteger(argument.value) &&
+          argument.value >= 0 &&
+          argument.value <= 0xffff_ffff;
+        if (!lengthRepresented) {
+          refusals.push({
+            call: currentCall,
+            message:
+              'immediate Array constructor fill requires one direct JavaScript-valid integer literal length from 0 through 0xffffffff',
+            position: 0,
+            rule: 'rust-array-constructor-fill-length-unrepresented',
+          });
+        }
+        if (immediateFill.arguments.length !== 1) {
+          refusals.push({
+            call: currentCall,
+            message: 'immediate Array constructor fill requires one unbounded value with no start or end bounds',
+            position: 1,
+            rule: 'rust-array-constructor-fill-coverage-unrepresented',
+          });
+        }
+        const targetType = resolveIrTypeAliasValueRust(elementType, context, new Set());
+        const target = getRustExactScalarCarrierRust(targetType, context);
+        if (!target) {
+          refusals.push({
+            call: currentCall,
+            message:
+              'immediate Array constructor fill requires an exact bool, f64, or String element carrier; identity-bearing carriers are not represented',
+            position: -1,
+            rule: 'rust-array-constructor-fill-element-carrier-unrepresented',
+          });
+        }
+        const value = immediateFill.arguments[0];
+        const valueType = value ? inferRustArrayGrowthArgumentTypeRust(value, context) : undefined;
+        const source = valueType ? resolveIrTypeAliasValueRust(valueType, context, new Set()) : undefined;
+        const sourceCarrier = source ? getRustExactScalarCarrierRust(source, context) : undefined;
+        if (
+          target &&
+          (!source ||
+            !sourceCarrier ||
+            sourceCarrier.domain !== target.domain ||
+            sourceCarrier.emitted !== target.emitted ||
+            analyzeIrTypeStructuralAssignability(source, targetType).status !== 'compatible')
+        ) {
+          refusals.push({
+            call: currentCall,
+            message: `immediate Array constructor fill value does not have the exact ${target.emitted} element carrier`,
+            position: 0,
+            rule: 'rust-array-constructor-fill-value-carrier-unrepresented',
+          });
+        }
+        if (!isRustArrayConstructorFillResultCarrierRust(elementType, immediateFill.semantics.resultType, context)) {
+          refusals.push({
+            call: currentCall,
+            message: 'immediate Array constructor fill result requires the exact fresh mutable Rust Vec carrier',
+            position: -1,
+            rule: 'rust-array-constructor-fill-result-carrier-unrepresented',
+          });
+        }
+        return;
+      }
       if (!getRustExactScalarCarrierRust(elementType, context)) {
         refusals.push({
           call: currentCall,
@@ -12114,12 +12288,9 @@ function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context
           rule: 'rust-array-constructor-element-carrier-unrepresented',
         });
       }
-      const argument = expression.arguments[0];
       if (!argument || (argument.kind === 'literal' && typeof argument.value === 'number' && argument.value === 0)) {
         return;
       }
-      const argumentType = inferRustArrayGrowthArgumentTypeRust(argument, context);
-      const argumentCarrier = argumentType ? getRustExactScalarCarrierRust(argumentType, context) : undefined;
       if (argumentCarrier?.domain === 'number') {
         refusals.push({
           call: currentCall,
@@ -12142,8 +12313,21 @@ function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context
   const refusal = refusals.sort((left, right) => {
     const rank = (candidate: RustArrayConstructorRefusal): number => {
       if (candidate.rule === 'rust-array-constructor-element-form-unrepresented') return 0;
-      if (candidate.rule === 'rust-array-constructor-sparse-length-unrepresented') return 1;
-      return 2;
+      if (
+        candidate.rule === 'rust-array-constructor-fill-length-unrepresented' ||
+        candidate.rule === 'rust-array-constructor-sparse-length-unrepresented'
+      ) {
+        return 1;
+      }
+      if (candidate.rule === 'rust-array-constructor-fill-coverage-unrepresented') return 2;
+      if (
+        candidate.rule === 'rust-array-constructor-element-carrier-unrepresented' ||
+        candidate.rule === 'rust-array-constructor-fill-element-carrier-unrepresented'
+      ) {
+        return 3;
+      }
+      if (candidate.rule === 'rust-array-constructor-fill-value-carrier-unrepresented') return 4;
+      return 5;
     };
     return (
       rank(left) - rank(right) ||
@@ -12779,6 +12963,7 @@ function assertArrayFillInvocationSemanticsRust(module: Readonly<IrModule>): voi
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind !== 'call' || !isArrayFillCallRust(expression)) return;
+      if (isImmediateArrayConstructorFillCallRust(expression)) return;
       const signature = expression.semantics.signature;
       if (
         expression.optional ||
@@ -12997,7 +13182,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           growthCalls.push({ callee: expression.callee, expression });
         } else if (isArrayCopyWithinCallRust(expression)) {
           copyWithinCalls.push(expression);
-        } else if (isArrayFillCallRust(expression)) {
+        } else if (isArrayFillCallRust(expression) && !isImmediateArrayConstructorFillCallRust(expression)) {
           fillCalls.push(expression);
         } else if (isArrayFindIndexCallRust(expression)) {
           findIndexCalls.push(expression);
@@ -14770,6 +14955,27 @@ function isRustArrayIdentityResultCarrierRust(
   if (analyzeIrTypeStructuralAssignability(receiver.element, result.element).status !== 'compatible') return false;
   if (analyzeIrTypeStructuralAssignability(result.element, receiver.element).status !== 'compatible') return false;
   return emitType(receiver.element, context) === emitType(result.element, context);
+}
+
+function isRustArrayConstructorFillResultCarrierRust(
+  elementType: Readonly<IrType>,
+  resultType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const result = resolveIrTypeAliasValueRust(resultType, context, new Set());
+  if (result.kind !== 'array' || result.readonly) return false;
+  const resolvedElement = resolveIrTypeAliasValueRust(elementType, context, new Set());
+  const resolvedResultElement = resolveIrTypeAliasValueRust(result.element, context, new Set());
+  const element = getRustExactScalarCarrierRust(resolvedElement, context);
+  const resultElement = getRustExactScalarCarrierRust(resolvedResultElement, context);
+  return (
+    element !== undefined &&
+    resultElement !== undefined &&
+    element.domain === resultElement.domain &&
+    element.emitted === resultElement.emitted &&
+    analyzeIrTypeStructuralAssignability(resolvedElement, resolvedResultElement).status === 'compatible' &&
+    analyzeIrTypeStructuralAssignability(resolvedResultElement, resolvedElement).status === 'compatible'
+  );
 }
 
 function isRustArrayConcatArgumentCarrierRust(

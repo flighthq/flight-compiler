@@ -26785,6 +26785,278 @@ describe('emitIrModuleRust exact Array construction', () => {
   });
 });
 
+describe('emitIrModuleRust exact immediate Array constructor fill', () => {
+  it('constructs exact scalar vectors from direct JavaScript-valid integer literal lengths', () => {
+    const result = lower(
+      'array-constructor-fill-scalars.ts',
+      `type Count = number;
+       type Label = "a" | "b";
+       export function numbers(): number[] { return new Array<number>(3).fill(2); }
+       export function counts(): Count[] { return new Array<Count>(0).fill(4); }
+       export function flags(): boolean[] { return new Array<boolean>(2).fill(true); }
+       export function labels(): Label[] { return new Array<Label>(1).fill("a"); }
+       export function maximum(): number[] { return new Array<number>(0xffffffff).fill(1); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_constructor_fill_value: f64 = 2.0; vec![array_constructor_fill_value; 3]');
+    expect(output).toContain(
+      'let array_constructor_fill_value_2: Count = 4.0; vec![array_constructor_fill_value_2; 0]',
+    );
+    expect(output).toContain(
+      'let array_constructor_fill_value_3: bool = true; vec![array_constructor_fill_value_3; 2]',
+    );
+    expect(output).toContain(
+      'let array_constructor_fill_value_4: Label = "a".to_owned(); vec![array_constructor_fill_value_4; 1]',
+    );
+    expect(output).toContain('vec![array_constructor_fill_value_5; 4294967295]');
+    expect(output).not.toContain('array_fill_index');
+  });
+
+  it('stages the fill value once even for zero length and lets ordinary sharing wrap the fresh result', () => {
+    const result = lower(
+      'array-constructor-fill-evaluation.ts',
+      `function mark(log: number[]): number { log.push(7); return 9; }
+       export function empty(log: number[]): number[] { return new Array<number>(0).fill(mark(log)); }
+       export function reusable(value: string): number {
+         const values = new Array<string>(2).fill(value);
+         return values.length + (value === "" ? 1 : 0);
+       }
+       export function shared(): number {
+         const values = new Array<number>(2).fill(3);
+         const alias = values;
+         values.push(4);
+         return alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      'let array_constructor_fill_value: f64 = mark(log); vec![array_constructor_fill_value; 0]',
+    );
+    expect(output.match(/mark\(/gu)).toHaveLength(2);
+    expect(output).toContain('let array_constructor_fill_value_2: String = value.clone();');
+    expect(output).toContain('Rc::new(RefCell::new({ let array_constructor_fill_value_3: f64 = 3.0;');
+    expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);');
+  });
+
+  it.each([
+    'export function values(): number[] { return new Array<number>(1).fill(); }',
+    'export function values(input: [number]): number[] { return new Array<number>(1).fill(...input); }',
+    'export function values(): number[] { return new Array<number>(1).fill?.(2) ?? []; }',
+  ])('refuses a non-exact immediate fill invocation before lowering', (source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-fill-invocation.ts', source).module))).toBe(
+      'rust-array-constructor-fill-invocation-unrepresented',
+    );
+  });
+
+  it('requires exact optional-parameter evidence from the ambient fill member', () => {
+    const result = lower(
+      'array-constructor-fill-optional-evidence.ts',
+      'export function values(): number[] { return new Array<number>(1).fill(2); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the immediate Array constructor fill return');
+    }
+    (returned.expression.semantics as { optionalParameters?: unknown }).optionalParameters = undefined;
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-constructor-fill-invocation-unrepresented',
+    );
+  });
+
+  it.each([
+    'export function values(): number[] { return new Array<number>(2).fill(1, 0); }',
+    'export function values(): number[] { return new Array<number>(2).fill(1, 0, 2); }',
+  ])('refuses partial fill coverage instead of routing through general fill lowering', (source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-fill-coverage.ts', source).module))).toBe(
+      'rust-array-constructor-fill-coverage-unrepresented',
+    );
+  });
+
+  it.each([
+    ['an omitted length', 'export function values(): number[] { return new Array<number>().fill(1); }'],
+    [
+      'a numeric parameter',
+      'export function values(length: number): number[] { return new Array<number>(length).fill(1); }',
+    ],
+    ['an indirect zero', 'export function values(): number[] { const n = 0; return new Array<number>(n).fill(1); }'],
+    ['an arithmetic length', 'export function values(): number[] { return new Array<number>(1 + 1).fill(1); }'],
+    ['negative zero', 'export function values(): number[] { return new Array<number>(-0).fill(1); }'],
+    ['a negative literal', 'export function values(): number[] { return new Array<number>(-1).fill(1); }'],
+    ['a fractional literal', 'export function values(): number[] { return new Array<number>(0.5).fill(1); }'],
+    ['an excessive literal', 'export function values(): number[] { return new Array<number>(4294967296).fill(1); }'],
+  ])('refuses the dedicated length contract for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-fill-length.ts', source).module))).toBe(
+      'rust-array-constructor-fill-length-unrepresented',
+    );
+  });
+
+  it('preserves the existing constructor element-form refusal for a nonnumeric constructor argument', () => {
+    const module = lower(
+      'array-constructor-fill-element-form.ts',
+      'export function values(): string[] { return new Array<string>("x").fill("y"); }',
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-constructor-element-form-unrepresented');
+  });
+
+  it.each([
+    ['nested arrays', 'export function values(): number[][] { return new Array<number[]>(2).fill([1]); }'],
+    [
+      'objects',
+      'interface Row { value: number } export function values(): Row[] { return new Array<Row>(2).fill({ value: 1 }); }',
+    ],
+    [
+      'mixed scalar unions',
+      'export function values(value: number | string): (number | string)[] { return new Array<number | string>(2).fill(value); }',
+    ],
+    [
+      'nullable scalars',
+      'export function values(): (number | undefined)[] { return new Array<number | undefined>(2).fill(undefined); }',
+    ],
+  ])('refuses the dedicated element carrier for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-constructor-fill-element.ts', source).module))).toBe(
+      'rust-array-constructor-fill-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a fill value without the exact scalar element carrier', () => {
+    const module = lower(
+      'array-constructor-fill-value.ts',
+      'export function values(): number[] { return new Array<number>(2).fill("x"); }',
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-array-constructor-fill-value-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a mutated result carrier after the length, coverage, element, and value contracts', () => {
+    const result = lower(
+      'array-constructor-fill-result.ts',
+      'export function values(): number[] { return new Array<number>(2).fill(1); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the immediate Array constructor fill return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: true,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-constructor-fill-result-carrier-unrepresented',
+    );
+  });
+
+  it('orders element form, length, coverage, element, value, and result refusals independently of call order', () => {
+    const lengthBeforeCoverage = lower(
+      'array-constructor-fill-priority.ts',
+      `export function coverage(): number[] { return new Array<number>(2).fill(1, 0); }
+       export function length(n: number): number[] { return new Array<number>(n).fill(1); }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(lengthBeforeCoverage.module))).toBe(
+      'rust-array-constructor-fill-length-unrepresented',
+    );
+
+    const elementFormAfterLength = lower(
+      'array-constructor-fill-element-priority.ts',
+      `export function length(n: number): number[] { return new Array<number>(n).fill(1); }
+       export function element(): string[] { return new Array<string>("x").fill("y"); }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(elementFormAfterLength.module))).toBe(
+      'rust-array-constructor-element-form-unrepresented',
+    );
+
+    const coverageAfterElement = lower(
+      'array-constructor-fill-coverage-priority.ts',
+      `interface Row { value: number }
+       export function element(): Row[] { return new Array<Row>(2).fill({ value: 1 }); }
+       export function coverage(): number[] { return new Array<number>(2).fill(1, 0); }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(coverageAfterElement.module))).toBe(
+      'rust-array-constructor-fill-coverage-unrepresented',
+    );
+
+    const elementAfterValue = lower(
+      'array-constructor-fill-carrier-priority.ts',
+      `export function value(): number[] { return new Array<number>(2).fill("x"); }
+       export function element(): number[][] { return new Array<number[]>(2).fill([1]); }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(elementAfterValue.module))).toBe(
+      'rust-array-constructor-fill-element-carrier-unrepresented',
+    );
+
+    const resultBeforeValue = lower(
+      'array-constructor-fill-result-priority.ts',
+      `export function result(): number[] { return new Array<number>(2).fill(1); }
+       export function value(): number[] { return new Array<number>(2).fill("x"); }`,
+    );
+    const resultDeclaration = resultBeforeValue.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'result',
+    );
+    const resultReturn = resultDeclaration?.kind === 'function' ? resultDeclaration.body[0] : undefined;
+    if (resultReturn?.kind !== 'return' || resultReturn.expression?.kind !== 'call') {
+      throw new Error('expected the immediate Array constructor fill result return');
+    }
+    (resultReturn.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: true,
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(resultBeforeValue.module))).toBe(
+      'rust-array-constructor-fill-value-carrier-unrepresented',
+    );
+  });
+
+  it('leaves standalone sparse construction, stable-receiver fill, and typed-array fill untouched', () => {
+    const sparse = lower(
+      'array-constructor-fill-neighbor-sparse.ts',
+      'export function values(): number[] { return new Array<number>(3); }',
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(sparse))).toBe('rust-array-constructor-sparse-length-unrepresented');
+
+    const output = emitIrModuleRust(
+      lower(
+        'array-constructor-fill-neighbor-ordinary.ts',
+        'export function ordinary(values: number[]): void { values.fill(1); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('array_fill_index');
+    expect(output).not.toContain('array_constructor_fill_value');
+
+    const typed = lower(
+      'array-constructor-fill-neighbor-typed.ts',
+      'export function bytes(): Uint8Array { return new Uint8Array(2).fill(1); }',
+    ).module;
+    expect(() => emitIrModuleRust(typed)).toThrow('typedArray member fill has no Rust binding');
+  });
+
+  it('does not intercept a local constructor and fill method with the same spelling', () => {
+    const module = lower(
+      'array-constructor-fill-local.ts',
+      `class Array<T> {
+         value: T;
+         constructor(value: T) { this.value = value; }
+         fill(value: T): T { return value; }
+       }
+       export function local(): number { return new Array<number>(1).fill(2); }`,
+    ).module;
+
+    expect(() => emitIrModuleRust(module)).toThrow(
+      'class Array constructor class parameter requires exact readonly primitive projections',
+    );
+  });
+});
+
 describe('emitIrModuleRust static Array.of', () => {
   it('constructs empty and populated exact scalar vectors', () => {
     const result = lower(
@@ -27022,9 +27294,13 @@ describe('emitIrModuleRust static Array.of', () => {
          const constructedAlias = constructed;
          const zeroWords: string[] = new Array<string>(0);
          const constructedFlags: boolean[] = new Array<boolean>();
+         const filled = new Array<number>(3).fill(mark(4));
+         const filledAlias = filled;
+         const emptyFilled = new Array<number>(0).fill(mark(2));
          constructed.push(4);
          zeroWords.push("z");
          constructedFlags.push(true);
+         filled.push(5);
          const values = Array.of(mark(1), mark(2));
          const alias = values;
          const independent = Array.of(9);
@@ -27041,7 +27317,8 @@ describe('emitIrModuleRust static Array.of', () => {
          const flags = Array.from([true, false]);
          const fromEmpty = Array.from<number>([]);
          return empty.length === 0 && constructedAlias.length === 1 && zeroWords.join("") === "z" &&
-           constructedFlags.length === 1 && alias.length === 3 && independent.length === 1 && calls === 123 &&
+           constructedFlags.length === 1 && filledAlias.reduce((total, value) => total * 10 + value, 0) === 4445 &&
+           emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 42123 &&
            words.join("") === "abc" && source.reduce((total, value) => total * 10 + value, 0) === 123 &&
            copyAlias.reduce((total, value) => total * 10 + value, 0) === 129 && flags.length === 2 &&
            fromEmpty.length === 0;
