@@ -14025,6 +14025,21 @@ describe('emitIrModuleRust F0 containment witnesses', () => {
 });
 
 describe('emitIrModuleRust assertion recovery', () => {
+  it('preserves null-only absence and refuses a dual-sentinel carrier conversion', () => {
+    const declarations = 'interface A { a: number } interface B { b: number } interface C { c: number }';
+    const nullable = lower(
+      'null-union-cast.ts',
+      `${declarations} export function narrow(value: A | B | C | null): A | B | null { return value as A | B | null; }`,
+    ).module;
+    const dual = lower(
+      'dual-union-cast.ts',
+      `${declarations} export function narrow(value: A | B | C | null | undefined): A | B | null | undefined { return value as A | B | null | undefined; }`,
+    ).module;
+
+    expect(emitIrModuleRust(nullable).contents).toContain('Some(value) => Some(match value {');
+    expect(getEmissionRule(() => emitIrModuleRust(dual))).toBe('rust-union-cast-unsupported');
+  });
+
   it('converts one union carrier to a closed subset of its alternatives', () => {
     const output = emitIrModuleRust(
       lower(

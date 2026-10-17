@@ -5941,7 +5941,7 @@ function emitGeneralUnionCastRust(
   if (narrowsPresence) {
     return `match ${operand} { Some(value) => ${match('value')}, None => panic!("asserted union alternative is not present in the value"), }`;
   }
-  if (source.absence === 'undefined') {
+  if (source.absence !== 'none') {
     return `match ${operand} { Some(value) => Some(${match('value')}), None => None, }`;
   }
   return match(operand);
@@ -5961,6 +5961,12 @@ function getIrCastUnionCarrierRust(type: Readonly<IrType>, context: EmitContext)
   // A parenthesized group in an assertion is a nested union node, and `(A | B) | undefined` is the same
   // carrier as `A | B | undefined`; flatten before asking which alternatives it holds.
   const unionTypes = flattenIrUnionTypesRust(resolved.types);
+  if (
+    unionTypes.some((member) => member.kind === 'null') &&
+    unionTypes.some((member) => member.kind === 'undefined')
+  ) {
+    return undefined;
+  }
   const absence = unionTypes.some((member) => member.kind === 'null')
     ? 'null'
     : unionTypes.some((member) => member.kind === 'undefined')
