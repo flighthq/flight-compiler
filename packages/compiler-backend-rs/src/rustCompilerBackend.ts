@@ -273,6 +273,14 @@ interface RustSinglePayloadOptionShape {
   readonly payloadType: Readonly<IrType>;
 }
 
+interface RustExactAnonymousSingleSentinelGeneralUnionPlan {
+  readonly absence: 'null' | 'undefined';
+  readonly orderedPayload: readonly Readonly<{
+    canonical: string;
+    identityKey: string;
+  }>[];
+}
+
 interface RustCallableObjectRecord {
   readonly callable: Readonly<{ parameters: readonly string[]; returns: string }>;
   readonly fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
@@ -9574,6 +9582,13 @@ function emitExactContextualGeneralUnionConstructionRust(
     emitOperand(expression, context);
     refuseRustContextualGeneralUnionConstructionRust(context);
   }
+  const anonymousSingleSentinel = emitExactAnonymousSingleSentinelGeneralUnionIdentityRust(
+    expression,
+    targetType,
+    context,
+    ownership,
+  );
+  if (anonymousSingleSentinel) return anonymousSingleSentinel;
   const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
   const candidate = hasIrTypeContextualGeneralUnionCandidateRust(targetType, plan, context);
   if (plan.kind !== 'nominalEnum') {
@@ -9641,6 +9656,112 @@ function emitExactContextualGeneralUnionConstructionRust(
     ? `${emitRustOptionalGeneratedEnumOwnerRust(optionalGeneratedEnum.payloadOwner, context)}::${match.name}(${payload})`
     : `${emitType(dualSentinelNominalEnum?.owner ?? plan.owner, context)}::${match.name}(${payload})`;
   return optionalGeneratedEnum ? `Some(${constructed})` : constructed;
+}
+
+// A flat inline union with one absence state is already stored as Option<AnonymousUnion>. This lane
+// only preserves that exact carrier: it can write the carrier's sentinel, pass the whole carrier, or
+// rewrap the payload projected by an explicit presence guard. It never chooses or rebuilds an enum arm.
+function emitExactAnonymousSingleSentinelGeneralUnionIdentityRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+  ownership: 'direct' | 'owned',
+): string | undefined {
+  const target = createRustExactAnonymousSingleSentinelGeneralUnionPlanRust(targetType, context);
+  if (!target || context.nativeAsyncFunction) return undefined;
+  const sentinel = getIrSharedClassSentinelExpressionRust(expression);
+  if (sentinel) return sentinel === target.absence ? 'None' : undefined;
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    context.moduleStateBindings.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  if (
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  const source = sourceType
+    ? createRustExactAnonymousSingleSentinelGeneralUnionPlanRust(sourceType, context)
+    : undefined;
+  if (!source || !areRustExactAnonymousSingleSentinelGeneralUnionPlansEqualRust(source, target)) {
+    return undefined;
+  }
+  const emitOperand = ownership === 'owned' ? emitOwnedOperandRust : emitExpression;
+  const operand = emitOperand(expression, context);
+  return expression.presence === 'narrowedPresent' ? `Some(${operand})` : operand;
+}
+
+function createRustExactAnonymousSingleSentinelGeneralUnionPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactAnonymousSingleSentinelGeneralUnionPlan | undefined {
+  if (type.kind !== 'union' || type.types.some((member) => member.kind === 'union' || member.kind === 'never')) {
+    return undefined;
+  }
+  const sentinels = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const payload = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (sentinels.length !== 1 || payload.length < 2) return undefined;
+  const orderedPayload = payload.map((member) => {
+    const identity = getIrExactNominalRecordIdentityRust(member, context);
+    return identity
+      ? {
+          canonical: normalizeCompilerStructuralValueCanonical(member),
+          identityKey: identity.key,
+        }
+      : undefined;
+  });
+  if (orderedPayload.some((member) => member === undefined)) return undefined;
+  const exactPayload = orderedPayload as RustExactAnonymousSingleSentinelGeneralUnionPlan['orderedPayload'];
+  if (
+    new Set(exactPayload.map((member) => member.canonical)).size !== exactPayload.length ||
+    new Set(exactPayload.map((member) => member.identityKey)).size !== exactPayload.length
+  ) {
+    return undefined;
+  }
+  return { absence: sentinels[0]!.kind, orderedPayload: exactPayload };
+}
+
+function areRustExactAnonymousSingleSentinelGeneralUnionPlansEqualRust(
+  left: Readonly<RustExactAnonymousSingleSentinelGeneralUnionPlan>,
+  right: Readonly<RustExactAnonymousSingleSentinelGeneralUnionPlan>,
+): boolean {
+  return (
+    left.absence === right.absence &&
+    left.orderedPayload.length === right.orderedPayload.length &&
+    left.orderedPayload.every(
+      (member, index) =>
+        member.canonical === right.orderedPayload[index]?.canonical &&
+        member.identityKey === right.orderedPayload[index]?.identityKey,
+    )
+  );
+}
+
+function hasRustExactAnonymousSingleSentinelGeneralUnionFullCarrierRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return false;
+  }
+  const target = createRustExactAnonymousSingleSentinelGeneralUnionPlanRust(targetType, context);
+  const sourceType = inferIrExpressionTypeRust(expression, context);
+  const source = sourceType
+    ? createRustExactAnonymousSingleSentinelGeneralUnionPlanRust(sourceType, context)
+    : undefined;
+  return Boolean(target && source && areRustExactAnonymousSingleSentinelGeneralUnionPlansEqualRust(source, target));
 }
 
 function emitExactNominalGeneralUnionPayloadRust(
@@ -15219,7 +15340,16 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${wrapped};`;
       }
     }
-    const nominalUnion = emitExactContextualGeneralUnionConstructionRust(variable.initializer, variable.type, context);
+    // An initializer call that already returns the complete exact carrier is ordinary inferred local
+    // preservation, not contextual construction. Leave it to the generic initializer path so the
+    // anonymous identity lane remains restricted to stable identifiers and never evaluates a call.
+    const nominalUnion = hasRustExactAnonymousSingleSentinelGeneralUnionFullCarrierRust(
+      variable.initializer,
+      variable.type,
+      context,
+    )
+      ? undefined
+      : emitExactContextualGeneralUnionConstructionRust(variable.initializer, variable.type, context);
     if (nominalUnion) {
       const mutable =
         variable.mutable ||

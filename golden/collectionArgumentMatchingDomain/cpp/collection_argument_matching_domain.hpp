@@ -24,11 +24,7 @@ inline std::optional<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> pick()
   return std::nullopt;
 }
 
-inline flight::Set<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> target = flight::Set<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>>();
-
-inline flight::Map<flight::String, std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> lookup = flight::Map<flight::String, std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>>();
-
-inline void add() {
+inline void add(flight::Set<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> target) {
   std::optional<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> found = pick();
   if (!found.has_value()) {
     return;
@@ -36,7 +32,7 @@ inline void add() {
   target.add(found.value());
 }
 
-inline void put(flight::String key) {
+inline void put(flight::Map<flight::String, std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> lookup, flight::String key) {
   std::optional<std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>> value = pick();
   if (!value.has_value()) {
     return;

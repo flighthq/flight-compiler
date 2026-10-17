@@ -11,11 +11,7 @@ function pick():Dynamic {
   return js.Syntax.code("undefined");
 }
 
-final target:flighthq._internal._Set<Dynamic> = new flighthq._internal._Set();
-
-final lookup:flighthq._internal._Map<String, Dynamic> = new flighthq._internal._Map();
-
-function add():Void {
+function add(target:flighthq._internal._Set<Dynamic>):Void {
   final found:Dynamic = pick();
   if (js.Syntax.strictEq(found, js.Syntax.code("undefined"))) {
     return;
@@ -23,7 +19,7 @@ function add():Void {
   target.add(found);
 }
 
-function put(key:String):Void {
+function put(lookup:flighthq._internal._Map<String, Dynamic>, key:String):Void {
   final value:Dynamic = pick();
   if (js.Syntax.strictEq(value, js.Syntax.code("undefined"))) {
     return;
