@@ -1188,7 +1188,7 @@ export function keep(value: number): number { return value + 1; }`;
   });
 });
 
-describe('emitIrModuleRust owned shared-array tuple ABI stage three', () => {
+describe('emitIrModuleRust owned shared-array tuple ABI stages three and four', () => {
   const resolve = (
     specifier: string,
     provider: Readonly<IrModule>,
@@ -1304,7 +1304,7 @@ export function keep(value: number): number { return value + 1; }`;
     expect(placeholder.contents).not.toContain('pub fn keep');
   });
 
-  it('emits an exact owned shared-array provider signature and fails closed at the consumer tuple', () => {
+  it('emits exact provider and contextual consumer tuple carriers', () => {
     const provider = lower(
       'owned-array-provider.ts',
       'export function identity(values: number[]): number[] { return values; }',
@@ -1325,14 +1325,20 @@ export function keep(value: number): number { return value + 1; }`;
       options: {},
     });
     const providerOutput = session.emitModule(provider)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
 
     expect(providerOutput).toContain('use std::cell::RefCell;');
     expect(providerOutput).toContain('use std::rc::Rc;');
     expect(providerOutput).toContain('pub fn identity(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
     expect(providerOutput).toContain('return Rc::clone(&values);');
-    expect(getEmissionRule(() => session.emitModule(consumer))).toBe(
-      'rust-reference-shared-array-tuple-abi-unrepresented',
+    expect(consumerOutput).toContain(
+      'let pack: (Rc<RefCell<Vec<f64>>>, Rc<RefCell<Vec<f64>>>) = { let shared_array_tuple_component0: Rc<RefCell<Vec<f64>>> = identity(Rc::clone(&values)); let shared_array_tuple_component1: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(vec![2.0]));',
     );
+    expect(consumerOutput).toContain('let array_concat_receiver = Rc::clone(&values);');
+    expect(consumerOutput).toContain('let array_concat_argument0 = Rc::clone(&pack.0);');
+    expect(consumerOutput).toContain('let array_concat_argument1 = Rc::clone(&pack.1);');
+    expect(consumerOutput).toContain('let mut array_concat_values = array_concat_receiver.borrow().clone();');
+    expect(consumerOutput).not.toContain('RefCell::new(identity(');
   });
 
   it('agrees across a named-import bridge and forwards planned return calls without double wrapping', () => {
@@ -1373,6 +1379,7 @@ export function keep(value: number): number { return value + 1; }`;
     });
     const providerOutput = session.emitModule(provider)[0]!.contents;
     const bridgeOutput = session.emitModule(bridge)[0]!.contents;
+    const sinkOutput = session.emitModule(sink)[0]!.contents;
 
     expect(providerOutput).toContain('pub fn identity(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
     expect(bridgeOutput).toContain('fn relay(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
@@ -1382,6 +1389,11 @@ export function keep(value: number): number { return value + 1; }`;
     expect(bridgeOutput).toContain('return Rc::clone(&returned);');
     expect(bridgeOutput).not.toContain('RefCell::new(identity(');
     expect(bridgeOutput).not.toContain('RefCell::new(relay(');
+    expect(sinkOutput).toContain(
+      'let shared_array_tuple_component0: Rc<RefCell<Vec<f64>>> = bridge(Rc::clone(&values));',
+    );
+    expect(sinkOutput).toContain('let array_concat_argument0 = Rc::clone(&pack.0);');
+    expect(sinkOutput).not.toContain('RefCell::new(bridge(');
   });
 
   it('wraps one fresh literal once and preserves shared mutation borrowing', () => {
@@ -1407,6 +1419,7 @@ export function keep(value: number): number { return value + 1; }`;
       options: {},
     });
     const output = session.emitModule(provider)[0]!.contents;
+    const sinkOutput = session.emitModule(sink)[0]!.contents;
 
     expect(output).toContain('fn mutate(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>>');
     expect(output).toContain('values.borrow_mut().push(array_push_argument0);');
@@ -1414,6 +1427,144 @@ export function keep(value: number): number { return value + 1; }`;
     expect(output).toContain('return mutate(Rc::new(RefCell::new(vec![1.0])));');
     expect(output.match(/Rc::new\(RefCell::new\(vec!\[1\.0\]\)\)/gu)).toHaveLength(1);
     expect(output).not.toContain('&mut Vec<f64>');
+    expect(sinkOutput).toContain('let shared_array_tuple_component0: Rc<RefCell<Vec<f64>>> = make();');
+    expect(sinkOutput.match(/Rc::new\(RefCell::new\(vec!\[3\.0\]\)\)/gu)).toHaveLength(1);
+    expect(sinkOutput).not.toContain('RefCell::new(make(');
+  });
+
+  it('captures the receiver and every tuple handle before borrowing shared aliases', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'owned-array-tuple-aliases.ts',
+        `type Pack = readonly [number[], number[]];
+         export function merge(): number[] {
+           const values = [1];
+           const alias = values;
+           const pack: Pack = [alias, values];
+           values.push(2);
+           return values.concat(...pack);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'let pack: (Rc<RefCell<Vec<f64>>>, Rc<RefCell<Vec<f64>>>) = { let shared_array_tuple_component0: Rc<RefCell<Vec<f64>>> = Rc::clone(&alias); let shared_array_tuple_component1: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);',
+    );
+    const receiverHandle = output.indexOf('let array_concat_receiver = Rc::clone(&values);');
+    const firstHandle = output.indexOf('let array_concat_argument0 = Rc::clone(&pack.0);');
+    const secondHandle = output.indexOf('let array_concat_argument1 = Rc::clone(&pack.1);');
+    const firstBorrow = output.indexOf('let mut array_concat_values = array_concat_receiver.borrow().clone();');
+    const firstExtension = output.indexOf(
+      'array_concat_values.extend(array_concat_argument0.borrow().iter().cloned());',
+    );
+    const secondExtension = output.indexOf(
+      'array_concat_values.extend(array_concat_argument1.borrow().iter().cloned());',
+    );
+    expect(receiverHandle).toBeGreaterThanOrEqual(0);
+    expect(receiverHandle).toBeLessThan(firstHandle);
+    expect(firstHandle).toBeLessThan(secondHandle);
+    expect(secondHandle).toBeLessThan(firstBorrow);
+    expect(firstBorrow).toBeLessThan(firstExtension);
+    expect(firstExtension).toBeLessThan(secondExtension);
+    expect(output).toContain('values.borrow_mut().push(array_push_argument0);');
+  });
+
+  it('does not copy an earlier component before a later component mutates its referent', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'owned-array-tuple-component-order.ts',
+        `type Pack = readonly [number[], number[]];
+         function mutate(values: number[]): number[] { values.push(2); return values; }
+         export function merge(): number[] {
+           const values = [1];
+           const pack: Pack = [values, mutate(values)];
+           return values.concat(...pack);
+         }`,
+      ).module,
+    ).contents;
+
+    const firstComponent = output.indexOf(
+      'let shared_array_tuple_component0: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);',
+    );
+    const mutatingComponent = output.indexOf(
+      'let shared_array_tuple_component1: Rc<RefCell<Vec<f64>>> = mutate(Rc::clone(&values));',
+    );
+    const concatBorrow = output.indexOf('let mut array_concat_values = array_concat_receiver.borrow().clone();');
+    expect(firstComponent).toBeGreaterThanOrEqual(0);
+    expect(firstComponent).toBeLessThan(mutatingComponent);
+    expect(mutatingComponent).toBeLessThan(concatBorrow);
+    expect(output.slice(firstComponent, mutatingComponent)).not.toContain('.borrow()');
+  });
+
+  it('supports the exact boolean and String tuple component domains', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'owned-array-tuple-domains.ts',
+        `type BooleanPack = readonly [boolean[], boolean[]];
+         type StringPack = readonly [string[], string[]];
+         export function mergeBooleans(values: boolean[]): boolean[] {
+           const pack: BooleanPack = [[true], [false]];
+           return values.concat(...pack);
+         }
+         export function mergeStrings(values: string[]): string[] {
+           const pack: StringPack = [['left'], ['right']];
+           return values.concat(...pack);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let pack: (Rc<RefCell<Vec<bool>>>, Rc<RefCell<Vec<bool>>>)');
+    expect(output).toContain('let pack: (Rc<RefCell<Vec<String>>>, Rc<RefCell<Vec<String>>>)');
+    expect(output.match(/Rc::new\(RefCell::new\(vec!/gu)).toHaveLength(4);
+  });
+
+  it('forwards a planned owned receiver call before capturing tuple handles', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'owned-array-tuple-return-receiver.ts',
+        `type Pack = readonly [number[], number[]];
+         function identity(values: number[]): number[] { return values; }
+         export function merge(values: number[]): number[] {
+           const pack: Pack = [identity(values), [2]];
+           return identity(values).concat(...pack);
+         }`,
+      ).module,
+    ).contents;
+
+    const receiver = output.indexOf('let array_concat_receiver = identity(Rc::clone(&values));');
+    const firstHandle = output.indexOf('let array_concat_argument0 = Rc::clone(&pack.0);');
+    const borrow = output.indexOf('let mut array_concat_values = array_concat_receiver.borrow().clone();');
+    expect(receiver).toBeGreaterThanOrEqual(0);
+    expect(receiver).toBeLessThan(firstHandle);
+    expect(firstHandle).toBeLessThan(borrow);
+    expect(output).not.toContain('RefCell::new(identity(');
+  });
+
+  it('returns a fresh Vec and lets an outer shared local wrap it exactly once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'owned-array-tuple-fresh-result.ts',
+        `type Pack = readonly [number[], number[]];
+         export function merge(): number {
+           const values = [1];
+           const pack: Pack = [values, [2]];
+           const merged = values.concat(...pack);
+           const alias = merged;
+           alias.push(3);
+           return merged.length + alias.length;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'let merged: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new({ let array_concat_receiver = Rc::clone(&values);',
+    );
+    expect(output).not.toContain('Rc::new(RefCell::new(Rc::new');
+    const concatBlock = output.slice(
+      output.indexOf('let array_concat_receiver = Rc::clone(&values);'),
+      output.indexOf('let alias: Rc<RefCell<Vec<f64>>>'),
+    );
+    expect(concatBlock).not.toContain('borrow_mut()');
   });
 
   it('retains legacy mutable Vec borrowing outside the owned ABI', () => {
@@ -1472,7 +1623,199 @@ export function keep(value: number): number { return value + 1; }`;
     expect(getEmissionRule(() => session.emitModule(provider))).toBe('rust-reference-shared-array-use-unrepresented');
   });
 
-  it('rolls tuple-guard imports back while salvaging the owning declaration', () => {
+  it('fails closed when selected tuple invocation and result evidence changes after planning', () => {
+    const makeSubject = (source: string) => {
+      const module = lower('owned-array-tuple-stale-call.ts', source).module;
+      const session = createRustCompilerBackend().createEmissionSession!({
+        moduleEvaluation: emptyModuleEvaluation,
+        modules: [module],
+        options: {},
+      });
+      const merge = module.declarations.find(
+        (declaration): declaration is IrFunctionDeclaration =>
+          declaration.kind === 'function' && declaration.binding.name === 'merge',
+      );
+      const returned = merge?.body.find((statement) => statement.kind === 'return');
+      if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected tuple concat return');
+      }
+      return { call: returned.expression, module, session };
+    };
+    const source = `type Pack = readonly [number[], number[]];
+export function merge(values: number[]): number[] {
+  const pack: Pack = [[1], [2]];
+  return values.concat(...pack);
+}`;
+
+    const staleInvocation = makeSubject(source);
+    const staleSignature = staleInvocation.call.semantics.signature as { restParameter?: number } | undefined;
+    if (!staleSignature) throw new Error('expected tuple concat signature');
+    delete staleSignature.restParameter;
+    const invocationFailure = captureBackendEmissionFailure(() =>
+      staleInvocation.session.emitModule(staleInvocation.module),
+    );
+    expect(invocationFailure.rule).toBe('rust-array-concat-invocation-unrepresented');
+    expect(invocationFailure.classification).toBe('target-runtime');
+
+    const staleResult = makeSubject(source);
+    Object.assign(staleResult.call.semantics, {
+      resultType: { element: { kind: 'primitive', name: 'string' }, kind: 'array', readonly: false },
+    });
+    const resultFailure = captureBackendEmissionFailure(() => staleResult.session.emitModule(staleResult.module));
+    expect(resultFailure.rule).toBe('rust-array-concat-result-carrier-unrepresented');
+    expect(resultFailure.classification).toBe('target-runtime');
+
+    const staleReceiver = makeSubject(source);
+    const merge = staleReceiver.module.declarations.find(
+      (declaration): declaration is IrFunctionDeclaration =>
+        declaration.kind === 'function' && declaration.binding.name === 'merge',
+    );
+    if (!merge?.parameters[0]) throw new Error('expected concat receiver parameter');
+    Object.assign(merge.parameters[0], { type: { kind: 'primitive', name: 'number' } });
+    const receiverFailure = captureBackendEmissionFailure(() => staleReceiver.session.emitModule(staleReceiver.module));
+    expect(receiverFailure.rule).toBe('rust-array-concat-argument-carrier-unrepresented');
+    expect(receiverFailure.classification).toBe('target-runtime');
+  });
+
+  it('fails closed when a selected tuple type or use changes after planning', () => {
+    const typed = lower(
+      'owned-array-tuple-stale-type.ts',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const typedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [typed],
+      options: {},
+    });
+    const alias = typed.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Pack',
+    );
+    if (alias?.kind !== 'typeAlias' || alias.type.kind !== 'tuple' || alias.type.elements[1]?.type.kind !== 'array') {
+      throw new Error('expected tuple type alias');
+    }
+    Object.assign(alias.type.elements[1].type, { element: { kind: 'primitive', name: 'string' } });
+    expect(getEmissionRule(() => typedSession.emitModule(typed))).toBe(
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+
+    const initialized = lower(
+      'owned-array-tuple-stale-initializer.ts',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const initializedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [initialized],
+      options: {},
+    });
+    const initializedMerge = initialized.declarations.find(
+      (declaration): declaration is IrFunctionDeclaration =>
+        declaration.kind === 'function' && declaration.binding.name === 'merge',
+    );
+    const initializedStatement = initializedMerge?.body.find((statement) => statement.kind === 'variable');
+    const initializedPack =
+      initializedStatement?.kind === 'variable' ? initializedStatement.declarations[0] : undefined;
+    if (!initializedPack || !('binding' in initializedPack) || initializedPack.initializer?.kind !== 'tuple') {
+      throw new Error('expected initialized tuple pack');
+    }
+    Object.assign(initializedPack.initializer, { elements: initializedPack.initializer.elements.slice(0, 1) });
+    expect(getEmissionRule(() => initializedSession.emitModule(initialized))).toBe(
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+
+    const used = lower(
+      'owned-array-tuple-stale-use.ts',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         const marker = 1;
+         void marker;
+         return values.concat(...pack);
+       }`,
+    ).module;
+    const usedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [used],
+      options: {},
+    });
+    const usedMerge = used.declarations.find(
+      (declaration): declaration is IrFunctionDeclaration =>
+        declaration.kind === 'function' && declaration.binding.name === 'merge',
+    );
+    const variableStatements = usedMerge?.body.filter((statement) => statement.kind === 'variable') ?? [];
+    const pack = variableStatements[0]?.kind === 'variable' ? variableStatements[0].declarations[0] : undefined;
+    const marker = variableStatements[1]?.kind === 'variable' ? variableStatements[1].declarations[0] : undefined;
+    const returned = usedMerge?.body.find((statement) => statement.kind === 'return');
+    const spread =
+      returned?.kind === 'return' && returned.expression?.kind === 'call'
+        ? returned.expression.arguments[0]
+        : undefined;
+    if (
+      !pack ||
+      !('binding' in pack) ||
+      pack.binding.name !== 'pack' ||
+      !marker ||
+      !('binding' in marker) ||
+      marker.binding.name !== 'marker' ||
+      spread?.kind !== 'spread'
+    ) {
+      throw new Error('expected tuple pack, marker, and concat spread');
+    }
+    Object.assign(marker, { initializer: spread.expression });
+    expect(getEmissionRule(() => usedSession.emitModule(used))).toBe(
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'alias',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         const alias = pack;
+         return alias.length === 2 ? values.concat(...pack) : values;
+       }`,
+    ],
+    [
+      'projection',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         const first = pack[0];
+         return first.length > 0 ? values.concat(...pack) : values;
+       }`,
+    ],
+  ])('keeps tuple-pack %s uses on the existing flow refusal', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('owned-array-tuple-flow.ts', source).module))).toBe(
+      'rust-reference-shared-array-tuple-flow-unrepresented',
+    );
+  });
+
+  it('leaves ordinary tuple ABI and non-spread concat bytes outside contextual lowering', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'ordinary-tuple-and-concat.ts',
+        `export function pair(): readonly [number, string] { return [1, 'right']; }
+         export function merge(values: number[], other: number[]): number[] { return values.concat(other); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn pair() -> (f64, String)');
+    expect(output).toContain('let array_concat_receiver = &values;');
+    expect(output).toContain('let array_concat_argument = &other;');
+    expect(output).not.toContain('Rc<RefCell');
+    expect(output).not.toContain('Rc::clone');
+  });
+
+  it('rolls contextual tuple imports back while salvaging a stale owning declaration', () => {
     const provider = lower(
       'owned-array-guard-provider.ts',
       'export function identity(values: number[]): number[] { return values; }',
@@ -1491,6 +1834,14 @@ export function keep(value: number): number { return value + 1; }`;
       modules: [provider, consumer],
       options: {},
     });
+    const merge = consumer.declarations.find(
+      (declaration): declaration is IrFunctionDeclaration =>
+        declaration.kind === 'function' && declaration.binding.name === 'merge',
+    );
+    const packStatement = merge?.body.find((statement) => statement.kind === 'variable');
+    const pack = packStatement?.kind === 'variable' ? packStatement.declarations[0] : undefined;
+    if (!pack || !('binding' in pack) || pack.binding.name !== 'pack') throw new Error('expected tuple pack local');
+    Object.assign(pack, { mutable: true });
     session.finalizePackageGraph!({
       moduleEvaluation: emptyModuleEvaluation,
       facade: createRustSourceTreeFacade([provider]),
@@ -1504,15 +1855,21 @@ export function keep(value: number): number { return value + 1; }`;
       refusals: [
         {
           code: 'rust-reference-shared-array-tuple-abi-unrepresented',
-          message: 'tuple values remain disabled',
+          message: 'tuple plan became stale',
           module: getRustTestModuleIdentity(consumer),
         },
       ],
     });
     const emitPlaceholder = session.emitRefusalPlaceholder;
     if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
-    const placeholder = emitPlaceholder(consumer, { message: 'tuple values remain disabled', sourceText: source });
-    if (!placeholder) throw new Error('expected tuple guard partial output');
+    const refusal = { message: 'tuple plan became stale', sourceText: source };
+    const placeholder = emitPlaceholder(consumer, refusal);
+    if (!placeholder) throw new Error('expected contextual tuple partial output');
+    const repeated = emitPlaceholder(consumer, refusal);
+    const clean = emitIrModuleRust(
+      lower('owned-array-guard-consumer.ts', 'export function keep(value: number): number { return value + 1; }')
+        .module,
+    ).contents;
 
     expect(placeholder.contents).toContain('// PARTIAL:');
     expect(placeholder.contents).toContain('// NOT GENERATED: function merge -- source line 3');
@@ -1521,6 +1878,10 @@ export function keep(value: number): number { return value + 1; }`;
     expect(placeholder.contents).not.toContain('use std::cell::RefCell;');
     expect(placeholder.contents).not.toContain('use std::rc::Rc;');
     expect(placeholder.contents).not.toContain('use crate::owned_array_guard_provider::identity;');
+    expect(repeated).toEqual(placeholder);
+    expect(placeholder.contents.slice(placeholder.contents.indexOf('pub fn keep')).trimEnd()).toBe(
+      clean.slice(clean.indexOf('pub fn keep')).trimEnd(),
+    );
   });
 });
 

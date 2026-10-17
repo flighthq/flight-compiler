@@ -77,6 +77,7 @@ import type {
   CompilerRustReferenceRepresentation,
   CompilerRustReferenceRepresentationRefusal,
   CompilerRustReferenceRepresentationPlan,
+  CompilerRustSharedArrayTupleBindingPlan,
   CompilerRustSourceTreeFilePlan,
   CompilerRustSourceTreeFinalizationFailure,
   CompilerRustSourceTreePlanningFailure,
@@ -504,7 +505,7 @@ interface EmitContext {
   retainedClassParameterRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedArrayBindingIds: ReadonlySet<string>;
   sharedArrayReturnBindingIds: ReadonlySet<string>;
-  sharedArrayTupleBindingIds: ReadonlySet<string>;
+  sharedArrayTupleBindings: ReadonlyMap<string, Readonly<CompilerRustSharedArrayTupleBindingPlan>>;
   sharedClassBindingIds: ReadonlySet<string>;
   sharedClassBindingRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedClassReturnBindingIds: ReadonlySet<string>;
@@ -943,8 +944,8 @@ function emitIrModuleRustWithContext(
       callable.returns === 'shared-ref-cell-vec' ? [callable.binding.id] : [],
     ) ?? [],
   );
-  const sharedArrayTupleBindingIds = new Set(
-    referenceModulePlan?.sharedArrayTupleBindings.map(({ binding }) => binding.id) ?? [],
+  const sharedArrayTupleBindings = new Map(
+    referenceModulePlan?.sharedArrayTupleBindings.map((plan) => [plan.binding.id, plan] as const) ?? [],
   );
   const sharedClassBindingRepresentations = new Map(
     referenceModulePlan?.sharedClassBindings.map(({ binding, representation }) => [binding.id, representation]) ?? [],
@@ -1124,7 +1125,7 @@ function emitIrModuleRustWithContext(
     retainedClassParameterRepresentations,
     sharedArrayBindingIds,
     sharedArrayReturnBindingIds,
-    sharedArrayTupleBindingIds,
+    sharedArrayTupleBindings,
     sharedClassBindingIds,
     sharedClassBindingRepresentations,
     sharedClassReturnBindingIds,
@@ -2267,6 +2268,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call':
+      {
+        const tupleConcat = getRustOwnedSharedArrayTupleConcatPlanRust(expression, context);
+        if (tupleConcat) return emitOwnedSharedArrayTupleConcatCallRust(expression, tupleConcat, context);
+      }
       if (isRustCallableOverloadCallRust(expression, context)) {
         return emitRustCallableOverloadCallRust(expression, context);
       }
@@ -4699,6 +4704,174 @@ function emitOwnedSharedArrayCarrierExpressionRust(
   );
 }
 
+interface RustOwnedSharedArrayTupleCarrierPlan {
+  readonly binding: Readonly<IrBindingIdentity>;
+  readonly componentTypes: readonly Readonly<IrType>[];
+  readonly plan: Readonly<CompilerRustSharedArrayTupleBindingPlan>;
+  readonly primitiveName: RustOwnedSharedArrayPrimitiveName;
+}
+
+function resolveRustOwnedSharedArrayTupleLocalTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named') return type;
+  const reference = type.reference;
+  if (
+    reference.kind !== 'binding' ||
+    reference.path.length > 0 ||
+    reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0 ||
+    resolving.has(reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === reference.binding.id,
+  );
+  if (declaration?.kind !== 'typeAlias' || declaration.typeParameters.length > 0) return undefined;
+  return resolveRustOwnedSharedArrayTupleLocalTypeRust(
+    declaration.type,
+    context,
+    new Set(resolving).add(reference.binding.id),
+  );
+}
+
+function assertRustOwnedSharedArrayTupleCarrierPlanRust(
+  binding: Readonly<IrBindingIdentity>,
+  plan: Readonly<CompilerRustSharedArrayTupleBindingPlan>,
+  context: EmitContext,
+): Readonly<RustOwnedSharedArrayTupleCarrierPlan> {
+  const type = context.bindingTypes.get(binding.id);
+  const tuple = type ? resolveRustOwnedSharedArrayTupleLocalTypeRust(type, context, new Set()) : undefined;
+  const components =
+    tuple?.kind === 'tuple'
+      ? tuple.elements.map((element) => {
+          const array = resolveRustOwnedSharedArrayTupleLocalTypeRust(element.type, context, new Set());
+          const primitive =
+            array?.kind === 'array'
+              ? resolveRustOwnedSharedArrayTupleLocalTypeRust(array.element, context, new Set())
+              : undefined;
+          return array?.kind === 'array' &&
+            !array.readonly &&
+            primitive?.kind === 'primitive' &&
+            (primitive.name === 'boolean' || primitive.name === 'number' || primitive.name === 'string')
+            ? {
+                array: { ...array, element: primitive },
+                primitiveName: primitive.name,
+              }
+            : undefined;
+        })
+      : [];
+  const componentTypes = components.flatMap((component) => (component ? [component.array] : []));
+  const primitiveName = components[0]?.primitiveName;
+  if (
+    plan.binding.id !== binding.id ||
+    tuple?.kind !== 'tuple' ||
+    tuple.elements.length === 0 ||
+    tuple.elements.some((element) => element.optional || element.rest) ||
+    plan.components.length !== tuple.elements.length ||
+    plan.components.some(
+      (component, position) => component.position !== position || component.representation !== 'shared-ref-cell-vec',
+    ) ||
+    componentTypes.length !== tuple.elements.length ||
+    !primitiveName ||
+    components.some((component) => component?.primitiveName !== primitiveName)
+  ) {
+    return emissionRuleError(
+      context,
+      `shared array tuple binding ${binding.name} lost its exact fixed homogeneous carrier plan`,
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  }
+  return { binding, componentTypes, plan, primitiveName };
+}
+
+function assertRustOwnedSharedArrayTupleVariablePlanRust(
+  variable: Readonly<Extract<IrVariable, { binding: IrBindingIdentity }>>,
+  plan: Readonly<CompilerRustSharedArrayTupleBindingPlan>,
+  context: EmitContext,
+): Readonly<
+  RustOwnedSharedArrayTupleCarrierPlan & {
+    initializer: Readonly<Extract<IrExpression, { kind: 'tuple' }>>;
+  }
+> {
+  const carrier = assertRustOwnedSharedArrayTupleCarrierPlanRust(variable.binding, plan, context);
+  const initializer = variable.initializer;
+  if (
+    context.nativeAsyncFunction ||
+    variable.mutable ||
+    initializer?.kind !== 'tuple' ||
+    initializer.elements.length !== carrier.componentTypes.length ||
+    initializer.elements.some((element) => element.optional || !element.expression)
+  ) {
+    return emissionRuleError(
+      context,
+      `shared array tuple binding ${variable.binding.name} lost its exact immutable local initializer`,
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  }
+
+  let bindingReads = 0;
+  let concatSpreadReads = 0;
+  analyzeIrModuleTraversal(context.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.id === variable.binding.id
+      ) {
+        bindingReads += 1;
+      }
+      if (getRustArrayConcatTuplePackBindingIdRust(expression) === variable.binding.id) concatSpreadReads += 1;
+      return undefined;
+    },
+  });
+  if (bindingReads === 0 || bindingReads !== concatSpreadReads) {
+    return emissionRuleError(
+      context,
+      `shared array tuple binding ${variable.binding.name} escaped its exact concat-spread use`,
+      'rust-reference-shared-array-tuple-abi-unrepresented',
+    );
+  }
+  return { ...carrier, initializer };
+}
+
+function emitOwnedSharedArrayTupleCarrierTypeRust(
+  carrier: Readonly<RustOwnedSharedArrayTupleCarrierPlan>,
+  context: EmitContext,
+): string {
+  const components = carrier.componentTypes.map((type) => emitOwnedSharedArrayCarrierTypeRust(type, context));
+  return `(${components.join(', ')}${components.length === 1 ? ',' : ''})`;
+}
+
+function emitOwnedSharedArrayTupleInitializerRust(
+  carrier: Readonly<
+    RustOwnedSharedArrayTupleCarrierPlan & {
+      initializer: Readonly<Extract<IrExpression, { kind: 'tuple' }>>;
+    }
+  >,
+  context: EmitContext,
+): string {
+  const names: string[] = [];
+  const declarations = carrier.componentTypes.map((type, position) => {
+    const expression = carrier.initializer.elements[position]?.expression;
+    if (!expression) {
+      return emissionRuleError(
+        context,
+        `shared array tuple binding ${carrier.binding.name} component ${String(position)} lost its initializer`,
+        'rust-reference-shared-array-tuple-abi-unrepresented',
+      );
+    }
+    const name = getGeneratedTargetNameRust(`shared_array_tuple_component${String(position)}`, context);
+    names.push(name);
+    return `let ${name}: ${emitOwnedSharedArrayCarrierTypeRust(type, context)} = ${emitOwnedSharedArrayCarrierExpressionRust(expression, type, context)};`;
+  });
+  const tuple = `(${names.join(', ')}${names.length === 1 ? ',' : ''})`;
+  return `{ ${declarations.join(' ')} ${tuple} }`;
+}
+
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   if (declaration.namespaceMember) {
     emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
@@ -6549,6 +6722,153 @@ function emitArrayConcatCallRust(
   // receiver-first, argument-left-to-right call evaluation. Each immutable RefCell borrow ends at
   // its clone or extend statement, so self and repeated shared aliases never overlap borrows.
   return `{ ${[...initializers, ...extensions, resultName].join(' ')} }`;
+}
+
+interface RustOwnedSharedArrayTupleConcatPlan {
+  readonly binding: Readonly<IrBindingIdentity>;
+  readonly carrier: Readonly<RustOwnedSharedArrayTupleCarrierPlan>;
+}
+
+function getRustOwnedSharedArrayTupleConcatPlanRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<RustOwnedSharedArrayTupleConcatPlan> | undefined {
+  const bindingId = getRustArrayConcatTuplePackBindingIdRust(expression);
+  if (!bindingId) return undefined;
+  const tuplePlan = context.sharedArrayTupleBindings.get(bindingId);
+  const argument = expression.arguments[0];
+  if (
+    !tuplePlan ||
+    argument?.kind !== 'spread' ||
+    argument.expression.kind !== 'identifier' ||
+    argument.expression.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const binding = argument.expression.reference.binding;
+  return {
+    binding,
+    carrier: assertRustOwnedSharedArrayTupleCarrierPlanRust(binding, tuplePlan, context),
+  };
+}
+
+function emitOwnedSharedArrayTupleConcatCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  selected: Readonly<RustOwnedSharedArrayTupleConcatPlan>,
+  context: EmitContext,
+): string {
+  if (!isArrayConcatCallRust(expression)) {
+    return emissionError(
+      context,
+      'owned shared array tuple spread lost its direct array.concat target',
+      'rust-array-concat-invocation-unrepresented',
+      'target-runtime',
+    );
+  }
+  const signature = expression.semantics.signature;
+  if (
+    context.nativeAsyncFunction ||
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.callee.optional ||
+    expression.callee.optionalChain !== undefined ||
+    expression.typeArguments.length !== 0 ||
+    expression.arguments.length !== 1 ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined ||
+    !signature ||
+    signature.parameterCount !== 1 ||
+    signature.restParameter !== 0 ||
+    signature.providedArgumentCount !== 'dynamic'
+  ) {
+    return emissionError(
+      context,
+      'array.concat tuple pack requires a direct non-optional fixed tuple-spread invocation',
+      'rust-array-concat-invocation-unrepresented',
+      'target-runtime',
+    );
+  }
+
+  const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+  const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+  if (receiver?.kind !== 'array') {
+    return emissionError(
+      context,
+      'array.concat tuple pack receiver requires an exact dense array carrier',
+      'rust-array-concat-argument-carrier-unrepresented',
+      'target-runtime',
+    );
+  }
+  if (!isRustArrayConcatElementCarrierRust(receiver.element, context)) {
+    return emissionError(
+      context,
+      'array.concat tuple pack elements require primitive boolean, number, or string value carriers',
+      'rust-array-concat-element-carrier-unrepresented',
+      'target-runtime',
+    );
+  }
+  for (const [position, componentType] of selected.carrier.componentTypes.entries()) {
+    const component = resolveIrTypeAliasValueRust(componentType, context, new Set());
+    if (component.kind !== 'array') {
+      return emissionError(
+        context,
+        `array.concat tuple pack component ${String(position)} requires an exact dense array carrier`,
+        'rust-array-concat-argument-carrier-unrepresented',
+        'target-runtime',
+      );
+    }
+    if (!isRustArrayConcatElementCarrierRust(component.element, context)) {
+      return emissionError(
+        context,
+        `array.concat tuple pack component ${String(position)} elements require primitive boolean, number, or string value carriers`,
+        'rust-array-concat-element-carrier-unrepresented',
+        'target-runtime',
+      );
+    }
+    if (!isRustArrayConcatArgumentCarrierRust(receiver.element, component.element, context)) {
+      return emissionError(
+        context,
+        `array.concat tuple pack component ${String(position)} does not have the exact Rust element carrier of the receiver`,
+        'rust-array-concat-argument-carrier-unrepresented',
+        'target-runtime',
+      );
+    }
+  }
+  if (!receiverType || !isRustArrayConcatResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
+    return emissionError(
+      context,
+      'array.concat tuple pack result does not have the exact mutable Rust Vec element carrier of the receiver',
+      'rust-array-concat-result-carrier-unrepresented',
+      'target-runtime',
+    );
+  }
+
+  context.needsRcImport.add('Rc');
+  const receiverName = getGeneratedTargetNameRust('array_concat_receiver', context);
+  const resultName = getGeneratedTargetNameRust('array_concat_values', context);
+  const tupleName = getBindingTargetNameRust(selected.binding, context);
+  const receiverShared = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const receiverOwnedReturn = isIrOwnedSharedArrayReturnCallRust(expression.callee.object, context);
+  const receiverInitializer = receiverShared
+    ? `Rc::clone(&${getBindingTargetNameRust(receiverShared, context)})`
+    : receiverOwnedReturn
+      ? emitExpression(expression.callee.object, context)
+      : `&${emitExpression(expression.callee.object, context)}`;
+  const componentNames = selected.carrier.componentTypes.map((_component, position) =>
+    getGeneratedTargetNameRust(`array_concat_argument${String(position)}`, context),
+  );
+  const handleInitializers = [
+    `let ${receiverName} = ${receiverInitializer};`,
+    ...componentNames.map((name, position) => `let ${name} = Rc::clone(&${tupleName}.${String(position)});`),
+  ];
+  const clonedReceiver =
+    receiverShared || receiverOwnedReturn ? `${receiverName}.borrow().clone()` : `(*${receiverName}).clone()`;
+  const resultInitializer = `let mut ${resultName} = ${clonedReceiver};`;
+  const extensions = componentNames.map((name) => `${resultName}.extend(${name}.borrow().iter().cloned());`);
+  // Capture every Rc handle in source order before opening any RefCell borrow. The receiver clone and
+  // sequential extensions then observe mutations through every alias while still producing a fresh Vec.
+  return `{ ${[...handleInitializers, resultInitializer, ...extensions, resultName].join(' ')} }`;
 }
 
 function emitArrayReverseCallRust(
@@ -13675,12 +13995,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       'binding patterns require destructuring lowering before Rust emission',
       'rust-binding-pattern-lowering-required',
     );
-  if (context.sharedArrayTupleBindingIds.has(variable.binding.id)) {
-    emissionRuleError(
-      context,
-      `shared array tuple binding ${variable.binding.name} requires tuple-pack value and concat emission`,
-      'rust-reference-shared-array-tuple-abi-unrepresented',
-    );
+  const sharedArrayTuplePlan = context.sharedArrayTupleBindings.get(variable.binding.id);
+  if (sharedArrayTuplePlan) {
+    const carrier = assertRustOwnedSharedArrayTupleVariablePlanRust(variable, sharedArrayTuplePlan, context);
+    const name = getBindingTargetNameRust(variable.binding, context);
+    return `let ${name}: ${emitOwnedSharedArrayTupleCarrierTypeRust(carrier, context)} = ${emitOwnedSharedArrayTupleInitializerRust(carrier, context)};`;
   }
   if (context.adaptedNativeFutureLocalBindingIds.has(variable.binding.id)) {
     const awaitedType = getIrAdaptedNativeFutureLocalAwaitedTypeRust(variable, context);
