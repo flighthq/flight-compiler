@@ -3923,7 +3923,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ],
     [
       'a receiver alias',
-      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } const alias = forward; export function broken(): Promise<number> { return alias(load()); }',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { const alias = forward; return alias(load()); }',
     ],
     [
       'an async receiver',
