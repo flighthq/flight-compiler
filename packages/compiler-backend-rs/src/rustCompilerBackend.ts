@@ -496,6 +496,7 @@ function emitIrModuleRustWithContext(
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
   // after erasing extra arguments.
   assertArrayIsArrayInvocationSemanticsRust(sourceModule);
+  assertArrayOfInvocationSemanticsRust(sourceModule);
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
@@ -872,6 +873,7 @@ function emitIrModuleRustWithContext(
   }
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayIsArraySemanticsRust(module, context);
+  assertArrayOfSemanticsRust(module, context);
   assertArrayOperationSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
@@ -1723,6 +1725,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (sharedClassMethod) return sharedClassMethod;
       }
       if (isArrayIsArrayCallRust(expression)) return emitArrayIsArrayCallRust(expression, context);
+      if (isArrayOfCallRust(expression)) return emitArrayOfCallRust(expression, context);
       if (isArrayCopyWithinCallRust(expression)) return emitArrayCopyWithinCallRust(expression, context);
       if (isArrayFillCallRust(expression)) return emitArrayFillCallRust(expression, context);
       if (isArrayFindIndexCallRust(expression)) return emitArrayFindIndexCallRust(expression, context);
@@ -3877,6 +3880,19 @@ function isArrayIsArrayCallRust(
   );
 }
 
+function isArrayOfCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.name === 'of' &&
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'ambient' &&
+    expression.callee.object.reference.name === 'Array'
+  );
+}
+
 function isArrayShiftCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -4162,6 +4178,24 @@ function emitArrayIsArrayCallRust(
         ? emitIdentifierReferenceRust(argument.reference, context)
         : emitExpression(argument, context);
   return `{ let ${valueName} = &${value}; let _ = ${valueName}; ${domain === 'array' ? 'true' : 'false'} }`;
+}
+
+function emitArrayOfCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+  if (result.kind !== 'array') {
+    return emissionError(context, 'Array.of emission requires a mutable array result carrier');
+  }
+  const elementType = emitType(result.element, context);
+  if (expression.arguments.length === 0) return `Vec::<${elementType}>::new()`;
+  const arguments_ = expression.arguments.map((argument, index) => ({
+    emitted: emitOwnedOperandRust(argument, context),
+    name: getGeneratedTargetNameRust(`array_of_value${String(index)}`, context),
+  }));
+  const initializers = arguments_.map(({ emitted, name }) => `let ${name}: ${elementType} = ${emitted};`);
+  return `{ ${[...initializers, `vec![${arguments_.map(({ name }) => name).join(', ')}]`].join(' ')} }`;
 }
 
 function emitArrayGrowthCallRust(
@@ -11291,6 +11325,137 @@ function assertArrayIsArraySemanticsRust(module: Readonly<IrModule>, context: Em
   throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
     classification: 'target-runtime',
   });
+}
+
+interface RustArrayOfRefusal {
+  readonly call: number;
+  readonly message: string;
+  readonly position: number;
+  readonly rule: 'rust-array-of-element-carrier-unrepresented' | 'rust-array-of-result-carrier-unrepresented';
+}
+
+interface RustArrayOfScalarCarrier {
+  readonly domain: 'boolean' | 'number' | 'string';
+  readonly emitted: 'String' | 'bool' | 'f64';
+}
+
+function assertArrayOfInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayOfCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        expression.typeArguments.length > 1 ||
+        expression.semantics.defaultParameters !== undefined ||
+        expression.semantics.optionalParameters !== undefined ||
+        expression.semantics.overloadImplementation !== undefined ||
+        !signature ||
+        signature.parameterCount !== 1 ||
+        signature.restParameter !== 0 ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== expression.arguments.length ||
+        expression.arguments.some((argument) => argument.kind === 'spread')
+      ) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'Array.of requires the exact non-optional ambient generic rest call with fixed non-spread arguments',
+    'rust-array-of-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
+}
+
+function assertArrayOfSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+  const refusals: RustArrayOfRefusal[] = [];
+  let call = 0;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayOfCallRust(expression)) return;
+      const currentCall = call;
+      call += 1;
+      const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+      if (result.kind !== 'array' || result.readonly) {
+        refusals.push({
+          call: currentCall,
+          message: 'Array.of requires one fresh mutable Rust Vec result carrier',
+          position: -1,
+          rule: 'rust-array-of-result-carrier-unrepresented',
+        });
+        return;
+      }
+      const targetType = resolveIrTypeAliasValueRust(result.element, context, new Set());
+      const target = getRustArrayOfScalarCarrierRust(targetType, context);
+      if (!target) {
+        refusals.push({
+          call: currentCall,
+          message: 'Array.of requires an exact bool, f64, or String element carrier',
+          position: -1,
+          rule: 'rust-array-of-element-carrier-unrepresented',
+        });
+        return;
+      }
+      for (const [position, argument] of expression.arguments.entries()) {
+        const sourceType = inferRustArrayGrowthArgumentTypeRust(argument, context);
+        const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
+        const carrier = source ? getRustArrayOfScalarCarrierRust(source, context) : undefined;
+        if (
+          !source ||
+          !carrier ||
+          carrier.domain !== target.domain ||
+          carrier.emitted !== target.emitted ||
+          analyzeIrTypeStructuralAssignability(source, targetType).status !== 'compatible'
+        ) {
+          refusals.push({
+            call: currentCall,
+            message: `Array.of argument ${String(position)} does not have the exact ${target.emitted} element carrier`,
+            position,
+            rule: 'rust-array-of-element-carrier-unrepresented',
+          });
+        }
+      }
+    },
+  });
+  const refusal = refusals.sort((left, right) => {
+    const rank = (candidate: RustArrayOfRefusal): number =>
+      candidate.rule === 'rust-array-of-result-carrier-unrepresented' ? 0 : 1;
+    return (
+      rank(left) - rank(right) ||
+      left.call - right.call ||
+      left.position - right.position ||
+      compareTextCodeUnits(left.message, right.message)
+    );
+  })[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
+}
+
+function getRustArrayOfScalarCarrierRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustArrayOfScalarCarrier | undefined {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  const domain =
+    resolved.kind === 'union'
+      ? getIrUnionPrimitiveDomainRust(resolved.types, context)
+      : getIrTypePrimitiveDomainRust(resolved, context);
+  if (!domain) return undefined;
+  const emitted: RustArrayOfScalarCarrier['emitted'] =
+    domain === 'boolean' ? 'bool' : domain === 'number' ? 'f64' : 'String';
+  return emitType(resolved, context) === emitted ? { domain, emitted } : undefined;
 }
 
 function getRustArrayIsArrayExpressionDomainRust(

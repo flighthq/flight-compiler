@@ -1767,6 +1767,7 @@ function isRustSharedArrayIdentifierUseRepresented(
     if (!isCallExpression(call)) return false;
     const position = path_.at(-1) as number;
     if (position === 0 && isRustReferenceArrayIsArrayCall(call)) return true;
+    if (isRustReferenceArrayOfCall(call)) return true;
     if (
       position === 0 &&
       call.callee.kind === 'property' &&
@@ -2502,6 +2503,7 @@ function isRustSharedClassIdentifierUseRepresented(
     const position = path_.at(-1) as number;
     if (isCallExpression(invocation)) {
       if (position === 0 && isRustReferenceArrayIsArrayCall(invocation)) return true;
+      if (isRustReferenceArrayOfCall(invocation)) return true;
       if (invocation.optional) return false;
       const method = getRustSimpleClassMethodCall(invocation, module, modules, moduleResolution);
       const methodCarrier = method?.plan.optionalClassParameters.get(position);
@@ -3071,6 +3073,7 @@ function isRustSharedHashCollectionIdentifierUseRepresented(
     const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
     if (!isCallExpression(call) || call.optional) return false;
     const position = path_.at(-1) as number;
+    if (isRustReferenceArrayOfCall(call)) return true;
     const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
     return (
       target.kind === 'function' && getRustReferenceHashCollectionMutationPositions(target.function, kind).has(position)
@@ -3219,6 +3222,18 @@ function isRustReferenceArrayIsArrayCall(call: IrCallExpression): boolean {
     call.callee.kind === 'property' &&
     !call.callee.optional &&
     call.callee.name === 'isArray' &&
+    call.callee.object.kind === 'identifier' &&
+    call.callee.object.reference.kind === 'ambient' &&
+    call.callee.object.reference.name === 'Array'
+  );
+}
+
+function isRustReferenceArrayOfCall(call: IrCallExpression): boolean {
+  return (
+    !call.optional &&
+    call.callee.kind === 'property' &&
+    !call.callee.optional &&
+    call.callee.name === 'of' &&
     call.callee.object.kind === 'identifier' &&
     call.callee.object.reference.kind === 'ambient' &&
     call.callee.object.reference.name === 'Array'

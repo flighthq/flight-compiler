@@ -25555,6 +25555,259 @@ describe('emitIrModuleRust static Array.isArray', () => {
   });
 });
 
+describe('emitIrModuleRust static Array.of', () => {
+  it('constructs empty and populated exact scalar vectors', () => {
+    const result = lower(
+      'array-of-scalars.ts',
+      `type Count = number;
+       export function empty(): Count[] { return Array.of<Count>(); }
+       export function numbers(): number[] { return Array.of(1, 2); }
+       export function flags(): boolean[] { return Array.of(true, false); }
+       export function labels(): string[] { return Array.of("a", "b"); }
+       export function counts(): Count[] { return Array.of<Count>(3); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Vec::<f64>::new();');
+    expect(output).toContain('let array_of_value0: f64 = 1.0;');
+    expect(output).toContain('let array_of_value1: f64 = 2.0;');
+    expect(output).toContain('let array_of_value0_2: bool = true;');
+    expect(output).toContain('let array_of_value0_3: String = "a".to_owned();');
+    expect(output).toContain('let array_of_value0_4: f64 = 3.0;');
+    expect(output).not.toContain('Vec::of');
+  });
+
+  it('stages effectful arguments left to right exactly once', () => {
+    const result = lower(
+      'array-of-evaluation.ts',
+      `function mark(log: number[], value: number): number {
+         log.push(value);
+         return value;
+       }
+       export function ordered(log: number[]): number[] {
+         return Array.of(mark(log, 1), mark(log, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const first = output.indexOf('let array_of_value0: f64 = mark(');
+    const second = output.indexOf('let array_of_value1: f64 = mark(', first);
+    const vector = output.indexOf('vec![array_of_value0, array_of_value1]', second);
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+    expect(vector).toBeGreaterThan(second);
+    expect(output.match(/mark\(/gu)).toHaveLength(3);
+  });
+
+  it('preserves reusable String values and already-scalar literal unions', () => {
+    const result = lower(
+      'array-of-owned-scalars.ts',
+      `type Label = "a" | "b";
+       export function reusable(value: string): number {
+         const values = Array.of(value);
+         return (value === "" ? 1 : 0) + values.length;
+       }
+       export function label(value: Label): Label[] { return Array.of(value); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_of_value0: String = value.clone();');
+    expect(output).toContain('type Label = String;');
+    expect(output).toContain('let array_of_value0_2: String = value;');
+  });
+
+  it('lets ordinary shared-array planning wrap a fresh result', () => {
+    const result = lower(
+      'array-of-shared-result.ts',
+      `export function lengths(): number {
+         const values = Array.of(1);
+         const alias = values;
+         const other = Array.of(9);
+         values.push(2);
+         return alias.length * 10 + other.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Rc::new(RefCell::new({ let array_of_value0: f64 = 1.0;');
+    expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);');
+    expect(output).toContain('let other: Vec<f64> = { let array_of_value0_2: f64 = 9.0;');
+  });
+
+  it.each([
+    'export function values(input: number[]): number[] { return Array.of(...input); }',
+    'export function values(input: number): number[] { return Array.of?.(input) ?? []; }',
+  ])('refuses a non-exact invocation before lowering', (source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-of-invocation.ts', source).module))).toBe(
+      'rust-array-of-invocation-unrepresented',
+    );
+  });
+
+  it('refuses mutated non-rest invocation evidence', () => {
+    const result = lower('array-of-signature.ts', 'export function values(): number[] { return Array.of(1); }');
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Array.of return');
+    }
+    (returned.expression.semantics as { signature: unknown }).signature = {
+      parameterCount: 1,
+      providedArgumentCount: 1,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-of-invocation-unrepresented');
+  });
+
+  it.each([
+    ['an unbound empty element', 'export function values() { return Array.of(); }'],
+    ['nested arrays', 'export function values(): number[][] { return Array.of([1]); }'],
+    ['objects', 'export function values(): { value: number }[] { return Array.of({ value: 1 }); }'],
+    [
+      'classes',
+      'class Box { value: number; constructor(value: number) { this.value = value; } } export function values(): Box[] { return Array.of(new Box(1)); }',
+    ],
+    [
+      'mixed scalar unions',
+      'export function values(value: number | string): (number | string)[] { return Array.of(value); }',
+    ],
+    [
+      'shared array identities',
+      'export function values(): number { const value = [1]; const alias = value; return Array.of(alias).length; }',
+    ],
+    [
+      'shared class identities',
+      'class Box { value: number; constructor(value: number) { this.value = value; } } export function values(): number { const value = new Box(1); const alias = value; return Array.of(alias).length; }',
+    ],
+    [
+      'shared map identities',
+      'export function values(): number { const value = new Map<string, number>(); const alias = value; return Array.of(alias).length; }',
+    ],
+  ])('refuses the dedicated element carrier for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-of-element.ts', source).module))).toBe(
+      'rust-array-of-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a mutated result carrier before an unsupported element carrier', () => {
+    const result = lower('array-of-result.ts', 'export function values(): number[][] { return Array.of([1]); }');
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Array.of return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-of-result-carrier-unrepresented');
+  });
+
+  it('refuses a readonly result carrier', () => {
+    const result = lower('array-of-readonly-result.ts', 'export function values(): number[] { return Array.of(1); }');
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Array.of return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: true,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-of-result-carrier-unrepresented');
+  });
+
+  it('does not intercept local, imported, neighbouring, or constructor spellings', () => {
+    const localOutput = emitIrModuleRust(
+      lower(
+        'array-of-local.ts',
+        `class Array { static of(value: number): number[] { return [value]; } }
+         export function local(value: number): number[] { return Array.of(value); }
+         export function task(): Promise<number> { return Promise.resolve(1); }`,
+      ).module,
+    ).contents;
+    expect(localOutput).toContain('Array::of(value)');
+    expect(localOutput).toContain('FlightTask::ready(1.0)');
+    expect(localOutput).not.toContain('array_of_value');
+
+    expect(() =>
+      emitIrModuleRust(
+        lower('array-of-constructor.ts', 'export function empty(): number[] { return new Array<number>(); }').module,
+      ),
+    ).toThrow('missing required constructor argument at position 0');
+
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-of-namespace.ts',
+      'export function of(value: number): number[] { return [value]; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-of-imported.ts',
+      `import * as Array from './array-of-namespace.js';
+       export function imported(value: number): number[] { return Array.of(value); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Array-of-imported',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/array-of-imported.ts',
+          },
+          specifier: './array-of-namespace.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/array-of-namespace.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+    expect(importedOutput).toContain('use crate::array_of_namespace as Array;');
+    expect(importedOutput).toContain('Array::of(value)');
+    expect(importedOutput).not.toContain('array_of_value');
+  });
+
+  it.skipIf(!rustcAvailable)('runs the exact scalar Array.of checkpoint', () => {
+    const result = lower(
+      'array-of-checkpoint.ts',
+      `export function arrayOfCheckpoint(): boolean {
+         let calls = 0;
+         const mark = (digit: number): number => { calls = calls * 10 + digit; return digit; };
+         const empty = Array.of<number>();
+         const values = Array.of(mark(1), mark(2));
+         const alias = values;
+         const independent = Array.of(9);
+         values.push(3);
+         return empty.length === 0 && alias.length === 3 && independent.length === 1 && calls === 12;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(() => runRustSource(output, 'assert!(array_of_checkpoint());')).not.toThrow();
+  });
+});
+
 describe('emitIrModuleRust array join', () => {
   it('keeps exact String join emission, adds the default comma, and accepts readonly receivers', () => {
     const result = lower(
