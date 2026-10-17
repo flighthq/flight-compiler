@@ -15846,24 +15846,49 @@ export function broken(value: unknown): { value: number } { return value as { va
   });
 
   it('refuses required class method parameters outside final direct primitive projection', () => {
-    const cases = [
-      `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
-      `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
-      `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
-      `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
-      `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
-      `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
-      `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
+    const cases: readonly [string, string, string?][] = [
+      [
+        `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(first: Counter, second: Counter): number { return first.value + second.value; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { const captured = (): number => other.value; return captured(); } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { return other === this ? 1 : 0; } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; current(): number { return this.value; } read(other: Counter): number { return other.current(); } }`,
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): Counter { return other; } }`,
+        'rust-reference-shared-class-return-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; read(other: Counter): number { const escaped = other; return escaped.value; } }`,
+        'rust-reference-shared-class-use-unrepresented',
+        'shared class binding escaped is used outside a proven temporary field borrow',
+      ],
     ];
 
-    for (const [index, declaration] of cases.entries()) {
+    for (const [index, [declaration, expectedRule, expectedMessage]] of cases.entries()) {
       const module = lower(
         `required-class-method-refusal-${String(index)}.ts`,
         `${declaration} export function run(): number { const value = new Counter(); return value.value; }`,
       ).module;
-      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(
-        'rust-reference-shared-class-member-unrepresented',
-      );
+      const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+      expect(failure.rule).toBe(expectedRule);
+      if (expectedMessage) {
+        expect(failure.message).toContain(expectedMessage);
+        expect(failure.classification).toBe('compiler-restriction');
+      }
     }
   });
 
@@ -16834,9 +16859,20 @@ export function broken(value: unknown): { value: number } { return value as { va
          return value.value;
        }`,
     ).module;
-    expect(getEmissionRule(() => emitIrModuleRust(methodMutation))).toBe(
-      'rust-reference-shared-class-member-unrepresented',
+    const methodMutationOutput = emitIrModuleRust(methodMutation).contents;
+    expect(methodMutationOutput).toContain('pub fn mutate(&self, mut other: Option<Rc<RefCell<Counter>>>) -> () {');
+    expect(methodMutationOutput).toContain(
+      '{ let class_field_current = other.as_ref().unwrap().borrow().value; let class_field_right = 1.0; let class_field_updated = class_field_current + class_field_right; other.as_ref().unwrap().borrow_mut().value = class_field_updated; };',
     );
+    expect([...methodMutationOutput.matchAll(/other\.as_ref\(\)\.unwrap\(\)\.borrow_mut\(\)\.value =/gu)]).toHaveLength(
+      1,
+    );
+    expect(methodMutationOutput).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&value);');
+    expect(methodMutationOutput).toContain(
+      '{ let class_field_current_2 = alias.borrow().value; let class_field_right_2 = 1.0; let class_field_updated_2 = class_field_current_2 + class_field_right_2; alias.borrow_mut().value = class_field_updated_2; };',
+    );
+    expect([...methodMutationOutput.matchAll(/alias\.borrow_mut\(\)\.value =/gu)]).toHaveLength(1);
+    expect(methodMutationOutput).toContain('return value.borrow().value;');
   });
 
   it('keeps unsupported and overlapping shared-class method calls as stable refusals', () => {
@@ -16861,7 +16897,7 @@ export function broken(value: unknown): { value: number } { return value as { va
 
     const unsupportedFailure = captureBackendEmissionFailure(() => emitIrModuleRust(unsupported));
     const overlapFailure = captureBackendEmissionFailure(() => emitIrModuleRust(overlapping));
-    expect(unsupportedFailure.rule).toBe('rust-async-method-body-unrepresented');
+    expect(unsupportedFailure.rule).toBe('rust-reference-shared-class-use-unrepresented');
     expect(unsupportedFailure.classification).toBe('compiler-restriction');
     expect(overlapFailure.rule).toBe('rust-reference-shared-class-borrow-conflict');
     expect(overlapFailure.classification).toBe('compiler-restriction');
