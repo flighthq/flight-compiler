@@ -24731,8 +24731,10 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
       expect(output).toContain('array_flat_map_');
       expect(output).toContain('array_reduce_result');
       expect(output).toContain('array_reduce_initial');
-      expect(output).toContain('drop(array_flat_map_values);');
-      expect(output).toContain('drop(array_reduce_values);');
+      // Only the shared cases release a borrow, and their generated names carry the allocation
+      // suffix left by the earlier non-shared calls, so pin the drop sites by their base and count.
+      expect(output.match(/drop\(array_flat_map_values_\d+\);/gu)).toHaveLength(1);
+      expect(output.match(/drop\(array_reduce_values_\d+\);/gu)).toHaveLength(1);
       runRustSource(
         output,
         [
