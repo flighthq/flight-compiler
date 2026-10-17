@@ -5753,15 +5753,26 @@ function emitCallArgumentsRust(
       const parameterType = parameter.rest && parameter.type.kind === 'array' ? parameter.type.element : parameter.type;
       const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
       const singlePayloadOption = getIrSinglePayloadOptionShapeRust(parameterType, context);
-      if (
-        !optionalSharedClass &&
-        (singlePayloadOption || hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context))
-      ) {
+      const generalUnionCandidate = hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context);
+      if (!optionalSharedClass && singlePayloadOption && representation === undefined) {
         if (
           (referencedFunction?.typeParameters.length ?? 0) > 0 ||
           parameter.rest ||
-          ((singlePayloadOption ||
-            (parameterPlan.kind === 'nominalEnum' && parameterPlan.sentinels.kind === 'optional')) &&
+          parameter.optional ||
+          parameter.initializer !== undefined ||
+          argument.kind === 'spread'
+        ) {
+          refuseRustContextualGeneralUnionConstructionRust(context);
+        }
+        const constructed = emitExactContextualGeneralUnionConstructionRust(argument, parameterType, context);
+        if (constructed) return constructed;
+      }
+      if (!optionalSharedClass && generalUnionCandidate) {
+        if (
+          (referencedFunction?.typeParameters.length ?? 0) > 0 ||
+          parameter.rest ||
+          (parameterPlan.kind === 'nominalEnum' &&
+            parameterPlan.sentinels.kind === 'optional' &&
             (parameter.optional || parameter.initializer !== undefined)) ||
           argument.kind === 'spread' ||
           representation !== undefined
@@ -5776,13 +5787,12 @@ function emitCallArgumentsRust(
     const methodSinglePayloadOption = methodParameter
       ? getIrSinglePayloadOptionShapeRust(methodParameter.type, context)
       : undefined;
-    if (!optionalSharedClass && methodParameter && methodSinglePayloadOption) {
+    if (!optionalSharedClass && methodParameter && methodSinglePayloadOption && representation === undefined) {
       if (
         methodParameter.rest ||
         methodParameter.optional ||
         methodParameter.initializer !== undefined ||
-        argument.kind === 'spread' ||
-        representation !== undefined
+        argument.kind === 'spread'
       ) {
         refuseRustContextualGeneralUnionConstructionRust(context);
       }
@@ -9438,7 +9448,23 @@ function emitExactContextualGeneralUnionConstructionRust(
   ownership: 'direct' | 'owned' = 'owned',
 ): string | undefined {
   const singlePayloadOption = getIrSinglePayloadOptionShapeRust(targetType, context);
+  if (expression.kind === 'cast') {
+    const assertedSource = inferIrExpressionTypeRust(expression.expression, context);
+    // Cast emission already owns the checked carrier conversion. Contextual construction is invoked
+    // again there with the cast operand, so claiming the outer cast would either double-construct it
+    // or replace its narrower refusal.
+    if (
+      singlePayloadOption ||
+      (assertedSource && resolveIrCastUnionTypeRust(assertedSource, context).kind === 'union')
+    ) {
+      return undefined;
+    }
+  }
   if (singlePayloadOption) {
+    // Reference planning has already selected an Rc/RefCell/borrowed carrier for this expression.
+    // Its dedicated return, local, store, or argument lane must emit or refuse that carrier before
+    // ordinary value-to-Option construction is considered.
+    if (isIrExpressionReferencePlannedRust(expression, context)) return undefined;
     const emitOperand = ownership === 'owned' ? emitOwnedOperandRust : emitExpression;
     const sourceType = getIrExpressionExactContextualConstructionTypeRust(expression, context);
     const hasTargetRepresentation =
@@ -9461,12 +9487,6 @@ function emitExactContextualGeneralUnionConstructionRust(
     }
     emitOperand(expression, context);
     refuseRustContextualGeneralUnionConstructionRust(context);
-  }
-  if (expression.kind === 'cast') {
-    const assertedSource = inferIrExpressionTypeRust(expression.expression, context);
-    // Union-source assertions belong to checked carrier recovery even when that carrier is itself
-    // refused. Claiming them here would replace the cast family's result or stable refusal ownership.
-    if (assertedSource && resolveIrCastUnionTypeRust(assertedSource, context).kind === 'union') return undefined;
   }
   const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
   const candidate = hasIrTypeContextualGeneralUnionCandidateRust(targetType, plan, context);
