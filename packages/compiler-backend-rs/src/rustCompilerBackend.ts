@@ -223,6 +223,7 @@ interface EmitContext {
   arrayElementBindingIds: ReadonlySet<string>;
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  arrayReverseObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   asyncTryStatements: ReadonlySet<object>;
   insideProtectedTry: boolean;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
@@ -503,6 +504,7 @@ function emitIrModuleRustWithContext(
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
+    arrayReverseObservedCalls: new Set(),
     asyncTryStatements,
     insideProtectedTry: false,
     cellWrappedBindingIds,
@@ -1405,6 +1407,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
       if (isArraySliceCallRust(expression)) return emitArraySliceCallRust(expression, context);
       if (isArraySpliceCallRust(expression)) return emitArraySpliceCallRust(expression, context);
       if (getArrayGrowthMemberRust(expression)) return emitArrayGrowthCallRust(expression, context);
@@ -2780,6 +2783,17 @@ function getArrayGrowthMemberRust(
   return expression.callee.member.name;
 }
 
+function isArrayReverseCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'reverse'
+  );
+}
+
 function isArraySliceCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -2821,6 +2835,26 @@ function emitArrayGrowthCallRust(
   const lengthReceiver = emitSharedReferenceReceiverRust(expression.callee.object, false, context);
   const initializers = arguments_.map(({ emitted, name }) => `let ${name} = ${emitted};`);
   return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
+}
+
+function emitArrayReverseCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const observed = context.arrayReverseObservedCalls.has(expression);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  if (sharedBinding) {
+    const receiver = getBindingTargetNameRust(sharedBinding, context);
+    if (!observed) return `${receiver}.borrow_mut().reverse()`;
+    context.needsRcImport.add('Rc');
+    const receiverName = getGeneratedTargetNameRust('array_reverse_values', context);
+    return `{ let ${receiverName} = Rc::clone(&${receiver}); ${receiverName}.borrow_mut().reverse(); ${receiverName} }`;
+  }
+  const receiver = emitExpression(expression.callee.object, context);
+  if (!observed) return `${receiver}.reverse()`;
+  const receiverName = getGeneratedTargetNameRust('array_reverse_values', context);
+  return `{ let mut ${receiverName} = ${receiver}; ${receiverName}.reverse(); ${receiverName} }`;
 }
 
 function emitArraySliceCallRust(
@@ -4533,6 +4567,14 @@ function getRustSharedArrayBindingRust(
     context.sharedArrayBindingIds.has(expression.reference.binding.id)
     ? expression.reference.binding
     : undefined;
+}
+
+function isIrSharedArrayReverseCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  return (
+    expression.kind === 'call' &&
+    isArrayReverseCallRust(expression) &&
+    getRustSharedArrayBindingRust(expression.callee.object, context) !== undefined
+  );
 }
 
 function getRustSharedClassBindingRust(
@@ -6352,7 +6394,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       variable.initializer.reference.kind === 'binding' &&
       context.sharedArrayBindingIds.has(variable.initializer.reference.binding.id)
         ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
-        : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
+        : isIrSharedArrayReverseCallRust(variable.initializer, context)
+          ? emitExpression(variable.initializer, context)
+          : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
   if (context.sharedClassBindingIds.has(variable.binding.id)) {
@@ -7012,7 +7056,7 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
 }
 
 type RustArrayGrowthMember = 'push' | 'unshift';
-type RustArrayOperationMember = RustArrayGrowthMember | 'slice' | 'splice';
+type RustArrayOperationMember = RustArrayGrowthMember | 'reverse' | 'slice' | 'splice';
 
 interface RustArrayOperationRefusal {
   readonly member: RustArrayOperationMember;
@@ -7026,6 +7070,11 @@ interface RustArrayOperationRefusal {
     | 'rust-array-unshift-invocation-unrepresented'
     | 'rust-array-unshift-result-carrier-unrepresented'
     | 'rust-array-unshift-result-observation-unrepresented'
+    | 'rust-array-reverse-element-carrier-unrepresented'
+    | 'rust-array-reverse-identity-carrier-unrepresented'
+    | 'rust-array-reverse-invocation-unrepresented'
+    | 'rust-array-reverse-result-carrier-unrepresented'
+    | 'rust-array-reverse-sparse-unrepresented'
     | 'rust-array-splice-element-carrier-unrepresented'
     | 'rust-array-splice-index-domain-unrepresented'
     | 'rust-array-splice-invocation-unrepresented'
@@ -7048,6 +7097,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       callee: Readonly<Extract<IrExpression, { kind: 'property' }>>;
       expression: Readonly<Extract<IrExpression, { kind: 'call' }>>;
     }>
+  > = [];
+  const reverseCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
   const spliceCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -7075,6 +7128,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
 
       if (expression.kind === 'call' && expression.callee.kind === 'property' && getArrayGrowthMemberRust(expression)) {
         growthCalls.push({ callee: expression.callee, expression });
+      } else if (expression.kind === 'call' && isArrayReverseCallRust(expression)) {
+        reverseCalls.push(expression);
       } else if (expression.kind === 'call' && isArraySliceCallRust(expression)) {
         sliceCalls.push(expression);
       } else if (expression.kind === 'call' && isArraySpliceCallRust(expression)) {
@@ -7166,6 +7221,80 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         rule: `rust-array-${member}-result-observation-unrepresented`,
       });
     }
+  }
+
+  for (const expression of reverseCalls) {
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 0 ||
+      expression.arguments.length !== 0 ||
+      !isRustStableArrayOperationReceiverRust(expression.callee.object)
+    ) {
+      refusals.push({
+        member: 'reverse',
+        message: 'array.reverse requires a non-optional stable receiver and no dynamic or provided arguments',
+        rule: 'rust-array-reverse-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    if (isRustSparseArrayValueRust(expression.callee.object, variableInitializers, new Set())) {
+      refusals.push({
+        member: 'reverse',
+        message: 'array.reverse cannot preserve sparse array holes in the dense Rust Vec carrier',
+        rule: 'rust-array-reverse-sparse-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind !== 'array' || !isRustArrayReverseElementCarrierRust(receiver.element, context)) {
+      refusals.push({
+        member: 'reverse',
+        message:
+          'array.reverse elements need an exact movable Rust carrier; union, class, or unresolved carriers are not represented',
+        rule: 'rust-array-reverse-element-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!receiverType || !isRustArrayReverseResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
+      refusals.push({
+        member: 'reverse',
+        message: 'array.reverse result does not have the exact mutable Rust Vec element carrier of the receiver',
+        rule: 'rust-array-reverse-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const use = uses.get(expression);
+    if (use?.kind === 'discarded') continue;
+    const receiverObject = expression.callee.object;
+    if (receiverObject.kind !== 'identifier' || receiverObject.reference.kind !== 'binding') continue;
+    const receiverId = receiverObject.reference.binding.id;
+    const receiverShared = context.sharedArrayBindingIds.has(receiverId);
+    const receiverBorrowed = context.referentMutatedParameterIds.has(receiverId);
+    const representedVariableAlias =
+      use?.kind === 'variable' &&
+      use.bindingId !== undefined &&
+      context.sharedArrayBindingIds.has(use.bindingId) === receiverShared;
+    const representedOwnedReturn = use?.kind === 'return' && !receiverShared && !receiverBorrowed;
+    if (!representedVariableAlias && !representedOwnedReturn) {
+      refusals.push({
+        member: 'reverse',
+        message:
+          'observed array.reverse identity requires a represented local move or shared local alias carrier; borrowed, returned-shared, or nested identity is not represented',
+        rule: 'rust-array-reverse-identity-carrier-unrepresented',
+      });
+      continue;
+    }
+    context.arrayReverseObservedCalls.add(expression);
   }
 
   for (const expression of sliceCalls) {
@@ -7383,6 +7512,71 @@ function isRustExactNumberExpressionRust(expression: Readonly<IrExpression>, con
     (source.kind === 'primitive' && source.name === 'number') ||
     (source.kind === 'literal' && typeof source.value === 'number')
   );
+}
+
+function isRustArrayReverseElementCarrierRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, resolving);
+  switch (resolved.kind) {
+    case 'array':
+      return isRustArrayReverseElementCarrierRust(resolved.element, context, resolving);
+    case 'function':
+      return true;
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'undefined':
+      return true;
+    case 'primitive':
+      return resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string';
+    case 'object':
+      return resolved.properties.every((property) =>
+        isRustArrayReverseElementCarrierRust(property.type, context, resolving),
+      );
+    case 'tuple':
+      return resolved.elements.every((element) =>
+        isRustArrayReverseElementCarrierRust(element.type, context, resolving),
+      );
+    case 'intersection': {
+      const properties = getIrObjectTypePropertiesRust(resolved, context);
+      return (
+        properties !== undefined &&
+        properties.every((property) => isRustArrayReverseElementCarrierRust(property.type, context, resolving))
+      );
+    }
+    case 'named': {
+      if (resolved.reference.kind !== 'binding' || resolving.has(resolved.reference.binding.id)) return false;
+      const properties = getIrObjectTypePropertiesRust(resolved, context);
+      const next = new Set(resolving).add(resolved.reference.binding.id);
+      return (
+        properties !== undefined &&
+        properties.every((property) => isRustArrayReverseElementCarrierRust(property.type, context, next))
+      );
+    }
+    case 'conditionalFacet':
+    case 'indexedAccess':
+    case 'keyof':
+    case 'typeOf':
+    case 'union':
+    case 'unknown':
+      return false;
+  }
+}
+
+function isRustArrayReverseResultCarrierRust(
+  receiverType: Readonly<IrType>,
+  resultType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const receiver = resolveIrTypeAliasValueRust(receiverType, context, new Set());
+  const result = resolveIrTypeAliasValueRust(resultType, context, new Set());
+  if (receiver.kind !== 'array' || receiver.readonly || result.kind !== 'array' || result.readonly) return false;
+  if (analyzeIrTypeStructuralAssignability(receiver.element, result.element).status !== 'compatible') return false;
+  if (analyzeIrTypeStructuralAssignability(result.element, receiver.element).status !== 'compatible') return false;
+  return emitType(receiver.element, context) === emitType(result.element, context);
 }
 
 function isRustArraySliceElementCarrierRust(type: Readonly<IrType>, context: EmitContext): boolean {

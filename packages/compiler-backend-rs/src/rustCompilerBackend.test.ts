@@ -14072,6 +14072,137 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('preserves efficient discarded reverse mutation and forwards an owned returned carrier', () => {
+    const result = lower(
+      'array-reverse-exact.ts',
+      `export function mutate(items: number[]): void { items.reverse(); }
+       export function owned(): number[] {
+         const values = [1, 2, 3];
+         return values.reverse();
+       }
+       export function moved(): number {
+         const values = [1, 2, 3];
+         const returned = values.reverse();
+         returned.push(4);
+         return (returned[0] ?? 0) * 1000 + (returned[1] ?? 0) * 100 + (returned[2] ?? 0) * 10 + returned.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn mutate(items: &mut Vec<f64>) -> () {\n  items.reverse();');
+    expect(output).toContain(
+      'let mut array_reverse_values = values; array_reverse_values.reverse(); array_reverse_values',
+    );
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut empty = Vec::<f64>::new(); mutate(&mut empty); assert_eq!(empty, Vec::<f64>::new());',
+          'let mut single = vec![1.0]; mutate(&mut single); assert_eq!(single, vec![1.0]);',
+          'let mut values = vec![1.0, 2.0, 3.0]; mutate(&mut values); assert_eq!(values, vec![3.0, 2.0, 1.0]);',
+          'assert_eq!(owned(), vec![3.0, 2.0, 1.0]);',
+          'assert_eq!(moved(), 3214.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves reverse mutation and result identity through shared aliases and follow-up mutation', () => {
+    const result = lower(
+      'shared-array-reverse-exact.ts',
+      `export function sharedReverse(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const returned = alias.reverse();
+         returned.push(4);
+         return (values[0] ?? 0) * 1000 + (values[1] ?? 0) * 100 + (values[2] ?? 0) * 10 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      'let array_reverse_values = Rc::clone(&alias); array_reverse_values.borrow_mut().reverse(); array_reverse_values',
+    );
+    expect(output).toContain('returned.borrow_mut().push(array_push_argument0)');
+    expect(output).toContain('values.borrow()');
+    expect(output).toContain('alias.borrow().len() as f64');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_reverse(), 3214.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-reverse-invocation-unrepresented',
+      source: 'export function flip(values: number[]): number[] | undefined { return values.reverse?.(); }',
+    },
+    {
+      rule: 'rust-array-reverse-invocation-unrepresented',
+      source:
+        'export function flip(left: number[], right: number[], pick: boolean): void { (pick ? left : right).reverse(); }',
+    },
+    {
+      rule: 'rust-array-reverse-element-carrier-unrepresented',
+      source: 'export function flip(values: (number | string)[]): void { values.reverse(); }',
+    },
+    {
+      rule: 'rust-array-reverse-element-carrier-unrepresented',
+      source: 'export function flip(values: any[]): void { values.reverse(); }',
+    },
+    {
+      rule: 'rust-array-reverse-sparse-unrepresented',
+      source: 'export function flip(): void { const values = [1, , 3]; values.reverse(); }',
+    },
+    {
+      rule: 'rust-array-reverse-identity-carrier-unrepresented',
+      source: 'export function flip(values: number[]): number[] { return values.reverse(); }',
+    },
+  ])('stably refuses unsupported reverse semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-reverse-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses a reverse result without the receiver element carrier', () => {
+    const result = lower(
+      'array-reverse-result-carrier.ts',
+      'export function flip(): number[] { const values = [1, 2, 3]; return values.reverse(); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'flip',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.reverse call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-reverse-result-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('uses the shared-array borrow-conflict plan after a reverse result aliases the receiver', () => {
+    const result = lower(
+      'array-reverse-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const returned = alias.reverse();
+         returned.push(values.length);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('preserves zero-, one-, and two-argument slice bounds, source state, and evaluation order', () => {
     const result = lower(
       'array-slice-exact.ts',

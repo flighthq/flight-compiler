@@ -655,6 +655,8 @@ function createRustSharedArrayAnalysis(
 ): RustSharedArrayAnalysis {
   const parents = new Map<string, string>();
   const aliasEdges: Array<readonly [string, string]> = [];
+  const ordinaryAliasBindingIds = new Set<string>();
+  const reverseAliasEdges: Array<readonly [string, string]> = [];
   const ambiguousBindingIds = new Set<string>();
   const find = (id: string): string => {
     const parent = parents.get(id);
@@ -689,20 +691,44 @@ function createRustSharedArrayAnalysis(
         );
         if (alternatives.size > 1) ambiguousBindingIds.add(variable.binding.id);
       }
+      if (!('binding' in variable) || bindingTypes.get(variable.binding.id)?.kind !== 'array') return;
       if (
-        !('binding' in variable) ||
-        bindingTypes.get(variable.binding.id)?.kind !== 'array' ||
-        variable.initializer?.kind !== 'identifier' ||
-        variable.initializer.reference.kind !== 'binding' ||
-        bindingTypes.get(variable.initializer.reference.binding.id)?.kind !== 'array'
+        variable.initializer?.kind === 'identifier' &&
+        variable.initializer.reference.kind === 'binding' &&
+        bindingTypes.get(variable.initializer.reference.binding.id)?.kind === 'array'
       ) {
+        const edge = [variable.binding.id, variable.initializer.reference.binding.id] as const;
+        aliasEdges.push(edge);
+        ordinaryAliasBindingIds.add(edge[0]);
+        ordinaryAliasBindingIds.add(edge[1]);
+        union(...edge);
         return;
       }
-      const edge = [variable.binding.id, variable.initializer.reference.binding.id] as const;
-      aliasEdges.push(edge);
-      union(...edge);
+      if (
+        variable.initializer?.kind === 'call' &&
+        variable.initializer.optional === false &&
+        variable.initializer.arguments.length === 0 &&
+        variable.initializer.callee.kind === 'property' &&
+        variable.initializer.callee.optional === false &&
+        variable.initializer.callee.member?.receiver === 'array' &&
+        variable.initializer.callee.member.name === 'reverse' &&
+        variable.initializer.callee.object.kind === 'identifier' &&
+        variable.initializer.callee.object.reference.kind === 'binding' &&
+        bindingTypes.get(variable.initializer.callee.object.reference.binding.id)?.kind === 'array'
+      ) {
+        reverseAliasEdges.push([variable.binding.id, variable.initializer.callee.object.reference.binding.id]);
+      }
     },
   });
+
+  const evidenceById = new Map(ownership.bindings.map((evidence) => [evidence.binding.id, evidence]));
+  for (const edge of reverseAliasEdges) {
+    const receiverId = edge[1];
+    if (ordinaryAliasBindingIds.has(receiverId) || evidenceById.get(receiverId)?.reuse === 'multiple') {
+      aliasEdges.push(edge);
+      union(...edge);
+    }
+  }
 
   const groups = new Map<string, Set<string>>();
   for (const [left, right] of aliasEdges) {
@@ -712,7 +738,6 @@ function createRustSharedArrayAnalysis(
     group.add(right);
     groups.set(root, group);
   }
-  const evidenceById = new Map(ownership.bindings.map((evidence) => [evidence.binding.id, evidence]));
   const bindingIds = new Set<string>();
   const groupByBindingId = new Map<string, string>();
   const groupsByKey = new Map<string, ReadonlySet<string>>();
