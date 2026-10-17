@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import {
   compileTypeScriptModules,
   compileTypeScriptPackageGraph,
@@ -6,6 +11,32 @@ import {
   createRustCompilerBackend,
   parseTypeScriptSource,
 } from './index.js';
+import type { CompilerRustPublicBindingPlan, EmittedFile } from './index.js';
+
+const rustcAvailable = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0;
+
+function compileFinalizedRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-public-linking-'));
+  try {
+    for (const file of files) writeFileSync(path.join(directory, file.path), file.contents);
+    const build = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-type=lib',
+        '--emit=metadata',
+        '-o',
+        path.join(directory, 'subject.rmeta'),
+        path.join(directory, 'lib.rs'),
+      ],
+      { encoding: 'utf8' },
+    );
+    if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
 
 const sourceText = `
 export type Range = { min: number; max: number };
@@ -170,6 +201,124 @@ describe('@flighthq/tool-compiler', () => {
       schema: 'flight-rust-public-binding-plan/2',
     });
   });
+
+  it.skipIf(!rustcAvailable)(
+    'links indirect locals, allocated import reexports, and grounded explicit chains in one finalized Rust crate',
+    () => {
+      const packageName = '@checkpoint/public-linking';
+      const packageRoot = '/flight/packages/public-linking';
+      const module = (file: string, source: string) => ({
+        packageName,
+        packageRoot,
+        sourceFile: parseTypeScriptSource(`${packageRoot}/src/${file}`, source),
+        upstreamDirectory: '/flight',
+      });
+      const identity = (name: string) => ({
+        name: name[0]!.toUpperCase() + name.slice(1),
+        packageName,
+        source: `packages/public-linking/src/${name}.ts`,
+      });
+      const declarations = identity('declarations');
+      const provider = identity('provider');
+      const barrel = identity('barrel');
+      const origin = identity('origin');
+      const middle = identity('middle');
+      const facade = identity('facade');
+      const consumer = identity('consumer');
+      let rustcInvocations = 0;
+      const result = compileTypeScriptPackageGraph({
+        backend: createRustCompilerBackend(),
+        backendOptions: {},
+        graph: {
+          entries: [declarations, barrel, facade, consumer],
+          moduleDependencies: [
+            { importer: barrel, specifier: './provider.js', target: provider },
+            { importer: middle, specifier: './origin.js', target: origin },
+            { importer: facade, specifier: './middle.js', target: middle },
+            { importer: consumer, specifier: './declarations.js', target: declarations },
+            { importer: consumer, specifier: './barrel.js', target: barrel },
+            { importer: consumer, specifier: './facade.js', target: facade },
+          ],
+          packages: [{ dependencies: [], name: packageName, root: packageRoot }],
+          schema: 'flight-compiler-package-graph/1',
+        },
+        sources: [
+          module(
+            'declarations.ts',
+            'function hiddenLocal(): number { return 1; }\nexport { hiddenLocal as publishedLocal };',
+          ),
+          module('provider.ts', 'export class F0 { value: number = 2; }'),
+          module(
+            'barrel.ts',
+            "import { F0 } from './provider.js';\nexport const f0 = 2;\nexport { F0 as PublicF0 };",
+          ),
+          module('origin.ts', 'export const root = 3;'),
+          module('middle.ts', "export { root as bridge } from './origin.js';"),
+          module('facade.ts', "export { bridge as publicValue } from './middle.js';"),
+          module(
+            'consumer.ts',
+            `import { publishedLocal } from './declarations.js';
+             import type { PublicF0 } from './barrel.js';
+             import { publicValue } from './facade.js';
+             export function linked(_value: PublicF0): number { return publishedLocal() + publicValue; }`,
+          ),
+        ],
+        targetCompilationSmoke: {
+          compileEmittedSources(files) {
+            rustcInvocations += 1;
+            compileFinalizedRustSourceTree(files);
+            return [];
+          },
+          name: 'rustc-public-linking-checkpoint',
+          supportsEmittedSource: ({ path: filePath }) => filePath.endsWith('.rs'),
+        },
+      });
+      const files = new Map(result.compilation.files.map((file) => [file.path, file.contents]));
+      const publicBindings = result.report.publicBindings as CompilerRustPublicBindingPlan;
+      const availableLocators = publicBindings.bindings.flatMap(({ binding }) =>
+        binding.availability === 'available' && binding.locator.carrier !== 'module' ? [binding.locator] : [],
+      );
+      const missingOrPrivate = availableLocators.flatMap((locator) => {
+        const filePath = `${locator.module.modulePath.join('/')}.rs`;
+        const contents = files.get(filePath);
+        const spelling = locator.spelling.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        const declaration = new RegExp(
+          `(?:^|\\n)pub (?:const|enum|fn|static|struct|trait|type) ${spelling}\\b`,
+          'u',
+        );
+        const reexport = new RegExp(`(?:^|\\n)pub use [^;]+(?:\\bas ${spelling}|::${spelling});`, 'u');
+        return contents !== undefined && (declaration.test(contents) || reexport.test(contents))
+          ? []
+          : [`${filePath}::${locator.spelling}`];
+      });
+
+      expect(rustcInvocations).toBe(1);
+      expect(files.get('declarations.rs')).toContain('pub fn hidden_local()');
+      expect(files.get('barrel.rs')).toContain('pub use crate::provider::F0 as F0_2;');
+      expect(files.get('middle.rs')).toContain('pub use crate::origin::ROOT as BRIDGE;');
+      expect(files.get('facade.rs')).toContain('pub use crate::middle::BRIDGE as PUBLIC_VALUE;');
+      expect(availableLocators).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            carrier: 'function',
+            module: expect.objectContaining({ modulePath: ['declarations'] }),
+            spelling: 'hidden_local',
+          }),
+          expect.objectContaining({
+            carrier: 'class',
+            module: expect.objectContaining({ modulePath: ['barrel'] }),
+            spelling: 'F0_2',
+          }),
+          expect.objectContaining({
+            carrier: 'value',
+            module: expect.objectContaining({ modulePath: ['facade'] }),
+            spelling: 'PUBLIC_VALUE',
+          }),
+        ]),
+      );
+      expect(missingOrPrivate).toEqual([]);
+    },
+  );
 
   it('compiles the neighboring declarations and closed Tray exclusions through a C++ session', () => {
     const sourceFile = parseTypeScriptSource(
