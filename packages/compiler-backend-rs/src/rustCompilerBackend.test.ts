@@ -4774,26 +4774,26 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.collect::<Vec<_>>()');
   });
 
-  it('emits array every as into_iter().all()', () => {
+  it('emits array every through the staged all iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'array-every.ts',
         'export function allPositive(items: number[]): boolean { return items.every((x: number): boolean => x > 0.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.all(');
+    expect(output).toContain('.iter().enumerate().all(');
+    expect(output).not.toContain('into_iter().all');
   });
 
-  it('emits array some as into_iter().any()', () => {
+  it('emits array some through the staged any iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'array-some.ts',
         'export function hasNeg(items: number[]): boolean { return items.some((x: number): boolean => x < 0.0); }',
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('.any(');
+    expect(output).toContain('.iter().enumerate().any(');
+    expect(output).not.toContain('into_iter().any');
   });
 
   it('emits array includes as contains with borrowed argument', () => {
@@ -6874,22 +6874,22 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('find');
   });
 
-  it('emits array some as into_iter().any()', () => {
+  it('emits array some through the staged any iterator', () => {
     const output = emitIrModuleRust(
       lower('arr-some.ts', 'export function hasPositive(items: number[]): boolean { return items.some((x) => x > 0); }')
         .module,
     ).contents;
-    expect(output).toContain('any');
+    expect(output).toContain('.iter().enumerate().any(');
   });
 
-  it('emits array every as into_iter().all()', () => {
+  it('emits array every through the staged all iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'arr-every.ts',
         'export function allPositive(items: number[]): boolean { return items.every((x) => x > 0); }',
       ).module,
     ).contents;
-    expect(output).toContain('all');
+    expect(output).toContain('.iter().enumerate().all(');
   });
 
   it('refuses array forEach as unbound Rust member', () => {
@@ -9309,7 +9309,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('100');
   });
 
-  it('emits array some with any iterator', () => {
+  it('emits array some with the staged any iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'some.ts',
@@ -9318,10 +9318,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('any(');
+    expect(output).toContain('.iter().enumerate().any(');
   });
 
-  it('emits array every with all iterator', () => {
+  it('emits array every with the staged all iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'every.ts',
@@ -9330,7 +9330,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('all(');
+    expect(output).toContain('.iter().enumerate().all(');
   });
 
   it('emits array find with find iterator', () => {
@@ -14683,7 +14683,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('find');
   });
 
-  it('emits array.every as into_iter().all()', () => {
+  it('emits array.every through the staged all iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'every.ts',
@@ -14692,11 +14692,10 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('all');
+    expect(output).toContain('.iter().enumerate().all(');
   });
 
-  it('emits array.some as into_iter().any()', () => {
+  it('emits array.some through the staged any iterator', () => {
     const output = emitIrModuleRust(
       lower(
         'some.ts',
@@ -14705,8 +14704,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('into_iter()');
-    expect(output).toContain('any');
+    expect(output).toContain('.iter().enumerate().any(');
   });
 
   it('emits array.map as into_iter().map().collect()', () => {
@@ -22570,5 +22568,170 @@ export { exportedFn, exportedConst, ExportedClass, ExportedEnum, Shape, Impl, Na
 
     expect(session.emitModule(provider)[0]!.contents).toContain('pub fn f()');
     expect(session.emitModule(consumer)[0]!.contents).toContain('pub use crate::provider::f as g;');
+  });
+});
+
+describe('emitIrModuleRust array some and every', () => {
+  it('stages dense boolean, number, string, and readonly receivers with exact callbacks', () => {
+    const result = lower(
+      'array-predicate-exact.ts',
+      `export function someZero(flags: readonly boolean[]): boolean {
+         return flags.some((): boolean => true);
+       }
+       export function someOne(values: string[]): boolean {
+         return values.some((value: string): boolean => value === "match");
+       }
+       export function everyTwo(values: readonly number[]): boolean {
+         return values.every((value: number, index: number): boolean => value === index + 2);
+       }
+       export function someParameter(values: number[], predicate: (value: number) => boolean): boolean {
+         return values.some(predicate);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().any(');
+    expect(output).toContain('.iter().enumerate().all(');
+    expect(output).toContain('(array_some_callback)()');
+    expect(output).toContain('(array_some_callback_2)(array_some_element_2.clone())');
+    expect(output).toContain('(array_every_callback)(array_every_element.clone(), array_every_index as f64)');
+    expect(output).toContain('(array_some_callback_3)(array_some_element_3.clone())');
+    // The exact path never consumes a reusable source.
+    expect(output).not.toContain('into_iter().any');
+    expect(output).not.toContain('into_iter().all');
+  });
+
+  it('stages the receiver, then the callback, then the borrow', () => {
+    const result = lower(
+      'array-predicate-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(log: number[], marker: number): (value: number) => boolean {
+         log.push(marker);
+         return (value: number): boolean => value === 2;
+       }
+       export function evaluated(log: number[]): boolean {
+         return recordReceiver(log, 1, [1, 2, 3]).some(recordCallback(log, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_some_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_some_callback = &record_callback(', receiver);
+    const values = output.indexOf('let array_some_values = array_some_receiver;', callback);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(callback);
+  });
+
+  it('releases a shared predicate borrow before either alias is reused', () => {
+    const result = lower(
+      'array-predicate-shared.ts',
+      `export function shared(): boolean {
+         const values = [1, 2, 3];
+         const alias = values;
+         const found = alias.some((value: number): boolean => value === 2);
+         values.push(4);
+         return found && alias.length === 4;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_some_receiver = &alias;');
+    expect(output).toContain('let array_some_values = array_some_receiver.borrow();');
+    expect(output).toContain('drop(array_some_values);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-some-invocation-unrepresented',
+      source: 'export function pick(values: number[]): boolean { return values.some(); }',
+    },
+    {
+      rule: 'rust-array-some-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): boolean { return values.some((value: number): boolean => value > 0, undefined); }',
+    },
+    {
+      rule: 'rust-array-every-invocation-unrepresented',
+      source:
+        'export function pick(values: number[], callbacks: [(value: number) => boolean]): boolean { return values.every(...callbacks); }',
+    },
+    {
+      rule: 'rust-array-every-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): boolean { return values.every?.((value: number): boolean => value > 0) ?? false; }',
+    },
+    {
+      rule: 'rust-array-some-element-carrier-unrepresented',
+      source:
+        'export function pick(values: (number | string)[]): boolean { return values.some((value: number | string): boolean => typeof value === "number"); }',
+    },
+    {
+      rule: 'rust-array-every-sparse-receiver-unrepresented',
+      source:
+        'export function pick(values: (number | undefined)[]): boolean { return values.every((value: number | undefined): boolean => value !== undefined); }',
+    },
+    {
+      rule: 'rust-array-some-predicate-result-carrier-unrepresented',
+      source: 'export function pick(values: number[]): boolean { return values.some((value: number) => value); }',
+    },
+    {
+      rule: 'rust-array-some-callback-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): boolean { return values.some((value: number, index: number, all: number[]): boolean => value > index && all.length > 0); }',
+    },
+    {
+      rule: 'rust-array-every-callback-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): boolean { return values.every((value: string): boolean => value === "x"); }',
+    },
+    {
+      rule: 'rust-array-some-alias-borrow-conflict',
+      source:
+        'export function pick(values: number[]): boolean { return values.some((value: number): boolean => values.length > 0 && value > 0); }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-predicate-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a mutated non-boolean result carrier for a predicate call', () => {
+    const result = lower(
+      'array-predicate-result.ts',
+      'export function pick(values: number[]): boolean { return values.some((value: number): boolean => value > 0); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the predicate call');
+    call.expression.semantics.resultType = { kind: 'primitive', name: 'number' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-some-result-carrier-unrepresented');
+  });
+
+  it('leaves find, filter, map, forEach, and reduce outside the exact predicate path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-predicate-neighbors.ts',
+        `export function findOne(values: number[]): number | undefined {
+           return values.find((value: number): boolean => value === 1);
+         }
+         export function doubled(values: number[]): number[] {
+           return values.map((value: number): number => value * 2);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('into_iter().find(');
+    expect(output).toContain('into_iter().map(');
+    expect(output).not.toContain('array_some_');
+    expect(output).not.toContain('array_every_');
   });
 });

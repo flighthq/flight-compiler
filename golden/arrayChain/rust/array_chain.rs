@@ -10,7 +10,7 @@ pub fn double_evens(values: Vec<f64>) -> Vec<f64> {
 }
 
 pub fn has_large_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().filter(|&v| v > 0.0).collect::<Vec<_>>().into_iter().any(|v| v > 100.0);
+  return { let array_some_receiver = &values.into_iter().filter(|&v| v > 0.0).collect::<Vec<_>>(); let mut array_some_callback = |v| v > 100.0; let array_some_values = array_some_receiver; let array_some_result = array_some_values.iter().enumerate().any(|(array_some_index, array_some_element)| (array_some_callback)(array_some_element.clone())); array_some_result };
 }
 
 pub fn count_matching(values: Vec<f64>, threshold: f64) -> f64 {

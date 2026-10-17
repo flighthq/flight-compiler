@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 pub fn has_value(values: Vec<f64>, value: f64) -> bool {
-  return values.contains(&value);
+  return { let array_includes_receiver = &values; let array_includes_candidate = &value; array_includes_receiver.iter().any(|array_includes_value| (*array_includes_value == *array_includes_candidate || (array_includes_value.is_nan() && array_includes_candidate.is_nan()))) };
 }
 
 pub fn any_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().any(|value| value > 0.0);
+  return { let array_some_receiver = &values; let mut array_some_callback = |value| value > 0.0; let array_some_values = array_some_receiver; let array_some_result = array_some_values.iter().enumerate().any(|(array_some_index, array_some_element)| (array_some_callback)(array_some_element.clone())); array_some_result };
 }
 
 pub fn all_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().all(|value| value > 0.0);
+  return { let array_every_receiver = &values; let mut array_every_callback = |value| value > 0.0; let array_every_values = array_every_receiver; let array_every_result = array_every_values.iter().enumerate().all(|(array_every_index, array_every_element)| (array_every_callback)(array_every_element.clone())); array_every_result };
 }

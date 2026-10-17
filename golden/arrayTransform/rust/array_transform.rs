@@ -14,9 +14,9 @@ pub fn sum_all(values: Vec<f64>) -> f64 {
 }
 
 pub fn all_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().all(|v| v > 0.0);
+  return { let array_every_receiver = &values; let mut array_every_callback = |v| v > 0.0; let array_every_values = array_every_receiver; let array_every_result = array_every_values.iter().enumerate().all(|(array_every_index, array_every_element)| (array_every_callback)(array_every_element.clone())); array_every_result };
 }
 
 pub fn has_negative(values: Vec<f64>) -> bool {
-  return values.into_iter().any(|v| v < 0.0);
+  return { let array_some_receiver = &values; let mut array_some_callback = |v| v < 0.0; let array_some_values = array_some_receiver; let array_some_result = array_some_values.iter().enumerate().any(|(array_some_index, array_some_element)| (array_some_callback)(array_some_element.clone())); array_some_result };
 }

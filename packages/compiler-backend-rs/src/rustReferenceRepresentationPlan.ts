@@ -5231,22 +5231,26 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
 const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
   'concat',
+  'every',
   'findIndex',
   'includes',
   'indexOf',
   'lastIndexOf',
   'slice',
+  'some',
 ]);
 
 const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
   'concat',
+  'every',
   'findIndex',
   'includes',
   'indexOf',
   'join',
   'lastIndexOf',
   'slice',
+  'some',
 ]);
 
 const RUST_SHARED_MAP_MUTATING_METHODS: ReadonlySet<string> = new Set(['clear', 'delete', 'set']);
