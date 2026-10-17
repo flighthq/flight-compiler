@@ -26470,6 +26470,203 @@ describe('emitIrModuleRust overloaded callable carrier', () => {
   });
 });
 
+describe('emitIrModuleRust dense literal array construction', () => {
+  it.each([
+    [
+      'f64',
+      'const values = new Array<number>(3); values[0] = 1; values[1] = 2; values[2] = 3; return values;',
+      'number[]',
+      'let mut values: Vec<f64> = vec![0.0; 3];',
+    ],
+    [
+      'bool',
+      'const values = new Array<boolean>(2); values[0] = true; values[1] = false; return values;',
+      'boolean[]',
+      'let mut values: Vec<bool> = vec![false; 2];',
+    ],
+    [
+      'String',
+      'const values = new Array<string>(2); values[0] = "a"; values[1] = "b"; return values;',
+      'string[]',
+      'let mut values: Vec<String> = vec![String::new(); 2];',
+    ],
+  ] as const)('emits a default-filled vec for the proved %s carrier', (_name, body, returns, expected) => {
+    const result = lower('dense-literal-construction.ts', `export function build(): ${returns} { ${body} }`);
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(expected);
+    expect(output).toContain('values[0] = ');
+    expect(output).toContain('values[1] = ');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it.each([
+    {
+      name: 'a missing write',
+      source:
+        'export function build(): number[] { const values = new Array<number>(3); values[0] = 1; values[1] = 2; return values; }',
+    },
+    {
+      name: 'a gap',
+      source:
+        'export function build(): number[] { const values = new Array<number>(3); values[0] = 1; values[2] = 3; return values; }',
+    },
+    {
+      name: 'out-of-order writes',
+      source:
+        'export function build(): number[] { const values = new Array<number>(3); values[1] = 1; values[0] = 0; values[2] = 2; return values; }',
+    },
+    {
+      name: 'a duplicate write',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[0] = 2; values[1] = 1; return values; }',
+    },
+    {
+      name: 'an out-of-bounds write after completion',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[1] = 2; values[2] = 3; return values; }',
+    },
+    {
+      name: 'a read before completion',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); const first: number | undefined = values[0]; values[0] = 1; values[1] = 2; return values; }',
+    },
+    {
+      name: 'a length read before completion',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); const size = values.length; values[0] = 1; values[1] = 2; return values; }',
+    },
+    {
+      name: 'an alias before completion',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); const alias = values; values[0] = 1; values[1] = 2; return values; }',
+    },
+    {
+      name: 'a call before completion',
+      source:
+        'function consume(values: number[]): void {} export function build(): number[] { const values = new Array<number>(2); consume(values); values[0] = 1; values[1] = 2; return values; }',
+    },
+    {
+      name: 'a return before completion',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); values[0] = 1; return values; }',
+    },
+    {
+      name: 'writes inside a nested statement list',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); if (true) { values[0] = 1; values[1] = 2; } return values; }',
+    },
+    {
+      name: 'writes inside a loop',
+      source:
+        'export function build(): number[] { const values = new Array<number>(2); for (let index = 0; index < 2; index++) { values[index] = index; } return values; }',
+    },
+    {
+      name: 'a dynamic length',
+      source:
+        'export function build(size: number): number[] { const values = new Array<number>(size); values[0] = 1; return values; }',
+    },
+    {
+      name: 'an identity-bearing element carrier',
+      source:
+        'interface Row { value: number } export function build(): Row[] { const values = new Array<Row>(2); values[0] = { value: 1 }; values[1] = { value: 2 }; return values; }',
+    },
+  ] as const)('keeps the sparse-length refusal for $name', ({ source }) => {
+    const result = lower('dense-literal-refusal.ts', source);
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-constructor-sparse-length-unrepresented',
+    );
+  });
+
+  it('keeps the zero-length and immediate-fill controls unchanged', () => {
+    const zero = lower(
+      'dense-literal-zero.ts',
+      'export function build(): number[] { const values = new Array<number>(0); return values; }',
+    ).module;
+    expect(emitIrModuleRust(zero).contents).toContain('Vec::<f64>::new()');
+
+    const filled = lower(
+      'dense-literal-fill.ts',
+      'export function build(): number[] { return new Array<number>(3).fill(2); }',
+    ).module;
+    expect(() => emitIrModuleRust(filled)).not.toThrow();
+  });
+
+  it('remains a module-level refusal for salvage when any constructor is unproven', () => {
+    const module = lower(
+      'dense-literal-salvage-refused.ts',
+      `export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[1] = 2; return values; }
+       export function unproven(): number[] { return new Array<number>(3); }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-array-constructor-sparse-length-unrepresented',
+          message: 'sparse length refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      classification: 'target-runtime',
+      message: 'sparse length refused',
+      rule: 'rust-array-constructor-sparse-length-unrepresented',
+    });
+    if (!placeholder) throw new Error('expected the comment stub for the module-level refusal');
+
+    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder.contents).not.toContain('// PARTIAL:');
+  });
+
+  it('salvages an unrelated declaration while keeping the proved construction', () => {
+    const module = lower(
+      'dense-literal-salvage.ts',
+      `export function build(): number[] { const values = new Array<number>(2); values[0] = 1; values[1] = 2; return values; }
+       export function broken(value: unknown): { value: number } { return value as { value: number }; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'declaration refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'declaration refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('let mut values: Vec<f64> = vec![0.0; 2];');
+    expect(placeholder.contents).toContain('pub fn build');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 2');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a proved literal-length construction', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'dense-literal-native.ts',
+        'export function build(): number[] { const values = new Array<number>(3); values[0] = 1; values[1] = 2; values[2] = 3; return values; }',
+      ).module,
+    ).contents;
+    runRustSource(output, 'assert_eq!(build(), vec![1.0, 2.0, 3.0]);');
+  });
+});
+
 describe('emitIrModuleRust explicit reexport grounding', () => {
   function createResolutionSession(
     modules: readonly Readonly<IrModule>[],

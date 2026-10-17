@@ -426,6 +426,10 @@ interface EmitContext {
     Readonly<CompilerClosureEvidence>
   >;
   deferredBindingIds: ReadonlySet<string>;
+  denseArrayConstructorInitializers: ReadonlyMap<
+    Readonly<IrExpression>,
+    Readonly<{ length: number; element: Readonly<RustExactScalarCarrier> }>
+  >;
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
   primitiveUnionBindingIds: Map<string, string>;
@@ -909,6 +913,7 @@ function emitIrModuleRustWithContext(
   const adaptedNativeFutureArgumentPositions = new Map<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>();
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
+  const denseArrayConstructorInitializers = collectRustDenseArrayConstructorInitializersRust(module);
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
@@ -942,6 +947,7 @@ function emitIrModuleRustWithContext(
         evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
       ),
     ),
+    denseArrayConstructorInitializers,
     deepCloneUnsafeBindingIds: new Set(
       ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.storage === 'sharedIdentity' &&
@@ -5290,8 +5296,23 @@ function emitArrayConstructorRust(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
 ): string {
+  const dense = context.denseArrayConstructorInitializers.get(expression);
+  if (dense) {
+    const initial =
+      dense.element.emitted === 'String' ? 'String::new()' : dense.element.emitted === 'bool' ? 'false' : '0.0';
+    return `vec![${initial}; ${String(dense.length)}]`;
+  }
   const element = expression.typeArguments[0];
   if (!element) return emissionError(context, 'Array construction emission requires one explicit element type');
+  const argument = expression.arguments[0];
+  if (argument && !(argument.kind === 'literal' && typeof argument.value === 'number' && argument.value === 0)) {
+    return emissionError(
+      context,
+      'Array construction with a length other than a direct numeric literal zero needs provably complete contiguous element writes before any observation, or JavaScript sparse holes and length validation that Rust Vec does not represent',
+      'rust-array-constructor-sparse-length-unrepresented',
+      'target-runtime',
+    );
+  }
   return `Vec::<${emitType(element, context)}>::new()`;
 }
 
@@ -13450,6 +13471,176 @@ function assertArrayConstructorInvocationSemanticsRust(module: Readonly<IrModule
   }
 }
 
+interface RustDenseArrayConstructorShape {
+  readonly element: Readonly<RustExactScalarCarrier>;
+  readonly length: number;
+}
+
+// The bounded dense-construction proof: a local `new Array<T>(n)` with a direct non-negative integer
+// literal length whose every index 0..n-1 is assigned exactly once, in increasing order, before any
+// read, alias, call, length access, or escape of the binding. Only then are the Vec defaults
+// provably unobservable. The proof deliberately stays inside one statement list; loop and dynamic
+// forms keep refusing.
+function collectRustDenseArrayConstructorInitializersRust(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<IrExpression>, Readonly<RustDenseArrayConstructorShape>> {
+  const result = new Map<Readonly<IrExpression>, Readonly<RustDenseArrayConstructorShape>>();
+  const inspectStatements = (statements: readonly Readonly<IrStatement>[]): void => {
+    statements.forEach((statement, index) => {
+      if (statement.kind === 'variable') {
+        for (const variable of statement.declarations) {
+          if (!('binding' in variable) || !variable.initializer) continue;
+          const shape = getRustDenseArrayConstructorShapeRust(variable.initializer);
+          if (
+            shape &&
+            hasRustDenseArrayCompleteWritesRust(variable.binding.id, shape.length, statements.slice(index + 1))
+          ) {
+            result.set(variable.initializer, shape);
+          }
+        }
+      }
+      switch (statement.kind) {
+        case 'block':
+          inspectStatements(statement.statements);
+          break;
+        case 'do':
+        case 'for':
+        case 'forIn':
+        case 'forOf':
+        case 'while':
+          inspectStatements(statement.body.kind === 'block' ? statement.body.statements : [statement.body]);
+          break;
+        case 'if':
+          inspectStatements(
+            statement.consequent.kind === 'block' ? statement.consequent.statements : [statement.consequent],
+          );
+          if (statement.otherwise) {
+            inspectStatements(
+              statement.otherwise.kind === 'block' ? statement.otherwise.statements : [statement.otherwise],
+            );
+          }
+          break;
+        case 'switch':
+          for (const switchCase of statement.cases) inspectStatements(switchCase.statements);
+          break;
+        case 'try':
+          inspectStatements(statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody]);
+          if (statement.catchClause) {
+            inspectStatements(
+              statement.catchClause.body.kind === 'block'
+                ? statement.catchClause.body.statements
+                : [statement.catchClause.body],
+            );
+          }
+          if (statement.finallyBody) {
+            inspectStatements(
+              statement.finallyBody.kind === 'block' ? statement.finallyBody.statements : [statement.finallyBody],
+            );
+          }
+          break;
+        default:
+          break;
+      }
+    });
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') inspectStatements(declaration.body);
+    if (declaration.kind === 'class') {
+      if (declaration.classConstructor) inspectStatements(declaration.classConstructor.body);
+      for (const method of declaration.methods) inspectStatements(method.body);
+    }
+  }
+  return result;
+}
+
+function getRustDenseArrayConstructorShapeRust(
+  expression: Readonly<IrExpression>,
+): Readonly<RustDenseArrayConstructorShape> | undefined {
+  if (expression.kind !== 'new' || !isArrayConstructorRust(expression)) return undefined;
+  const argument = expression.arguments[0];
+  if (
+    expression.arguments.length !== 1 ||
+    !argument ||
+    argument.kind !== 'literal' ||
+    typeof argument.value !== 'number' ||
+    !Number.isInteger(argument.value) ||
+    argument.value <= 0 ||
+    argument.value > 0xffff_ffff
+  ) {
+    return undefined;
+  }
+  const element = expression.typeArguments[0];
+  if (!element || element.kind !== 'primitive') return undefined;
+  if (element.name === 'number') return { element: { domain: 'number', emitted: 'f64' }, length: argument.value };
+  if (element.name === 'boolean') return { element: { domain: 'boolean', emitted: 'bool' }, length: argument.value };
+  if (element.name === 'string') return { element: { domain: 'string', emitted: 'String' }, length: argument.value };
+  return undefined;
+}
+
+function hasRustDenseArrayCompleteWritesRust(
+  bindingId: string,
+  length: number,
+  statements: readonly Readonly<IrStatement>[],
+): boolean {
+  let nextIndex = 0;
+  let complete = false;
+  for (const statement of statements) {
+    const writeIndex = getRustDenseArrayWriteIndexRust(statement, bindingId);
+    if (writeIndex !== undefined) {
+      // Any literal write outside the constructed bounds is a growth the target cannot represent,
+      // whether it happens before or after the array is complete.
+      if (writeIndex < 0 || writeIndex >= length) return false;
+      if (!complete) {
+        if (writeIndex !== nextIndex) return false;
+        nextIndex += 1;
+        if (nextIndex === length) complete = true;
+      }
+      continue;
+    }
+    // Before completion the array must not be observed at all. Afterwards ordinary use is the source's.
+    if (!complete && doesIrStatementReferenceBindingRust(statement, bindingId)) return false;
+  }
+  return complete;
+}
+
+function getRustDenseArrayWriteIndexRust(statement: Readonly<IrStatement>, bindingId: string): number | undefined {
+  if (statement.kind !== 'expression') return undefined;
+  const expression = statement.expression;
+  if (expression.kind !== 'assignment' || expression.operator !== '=') return undefined;
+  const left = expression.left;
+  if (left.kind !== 'element' || left.optional) return undefined;
+  if (
+    left.object.kind !== 'identifier' ||
+    left.object.reference.kind !== 'binding' ||
+    left.object.reference.binding.id !== bindingId
+  ) {
+    return undefined;
+  }
+  if (left.index.kind !== 'literal' || typeof left.index.value !== 'number') return undefined;
+  if (!Number.isInteger(left.index.value) || left.index.value < 0) return undefined;
+  // Reading the array to compute a stored value would observe the defaults before completion.
+  if (doesIrExpressionReferenceBindingRust(expression.right, bindingId)) return undefined;
+  return left.index.value;
+}
+
+function doesIrStatementReferenceBindingRust(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  let references = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.id === bindingId
+      ) {
+        references = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return references;
+}
+
 function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const refusals: RustArrayConstructorRefusal[] = [];
   const immediateFills = new Map<
@@ -13551,10 +13742,13 @@ function assertArrayConstructorSemanticsRust(module: Readonly<IrModule>, context
         return;
       }
       if (argumentCarrier?.domain === 'number') {
+        // A constructor the write proof has already decided is exact emits a default-filled Vec whose
+        // defaults are never observable; every other numeric length still needs sparse holes.
+        if (context.denseArrayConstructorInitializers.has(expression)) return;
         refusals.push({
           call: currentCall,
           message:
-            'Array construction with a length other than a direct numeric literal zero needs JavaScript sparse holes and length validation that Rust Vec does not represent',
+            'Array construction with a length other than a direct numeric literal zero needs provably complete contiguous element writes before any observation, or JavaScript sparse holes and length validation that Rust Vec does not represent',
           position: 0,
           rule: 'rust-array-constructor-sparse-length-unrepresented',
         });
