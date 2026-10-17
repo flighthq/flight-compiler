@@ -52,11 +52,14 @@ import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index
 import type {
   CompilerAsyncStateMachineAnalysis,
   CompilerBackend,
+  CompilerBackendPackageGraphFinalization,
   CompilerIrTraversalPath,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CompilerRuntimeExternalConstructorInvocation,
   CompilerRustReferenceRepresentationPlan,
+  CompilerRustSourceTreeFilePlan,
+  CompilerRustSourceTreeReferencePlan,
   EmittedFile,
   RustCompilerBackendOptions,
 } from '../../compiler-types/src/index.js';
@@ -117,6 +120,7 @@ import {
   getCompilerRuntimeExternalSymbolTargetRust,
   isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
+import { createCompilerRustSourceTreeFinalization } from './rustSourceTreeFinalization.js';
 
 interface PrimitiveUnionEnum {
   readonly name: string;
@@ -198,6 +202,7 @@ interface EmitContext {
   module: Readonly<IrModule>;
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   sourceModules: readonly Readonly<IrModule>[];
+  sourceTreeReferences: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
   needsCellImport: Set<'Cell'>;
   needsRcImport: Set<'Rc'>;
   needsRefCellImport: Set<'RefCell'>;
@@ -207,6 +212,11 @@ interface EmitContext {
   options: Readonly<RustCompilerBackendOptions>;
   returnsAbsent: boolean;
   targetNames: ReadonlyMap<string, string>;
+}
+
+interface RustSourceTreeEmissionContext {
+  readonly references: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
+  readonly sourceFile: Readonly<CompilerRustSourceTreeFilePlan>;
 }
 
 type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refusal: string }>;
@@ -221,6 +231,18 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
+        },
+        finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
+          return createCompilerRustSourceTreeFinalization({
+            finalization,
+            ...(moduleResolution ? { moduleResolution } : {}),
+            reemitModule: ({ module, references, sourceFile }) =>
+              emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan, {
+                references,
+                sourceFile,
+              }),
+            semanticModules: modules,
+          });
         },
       });
     },
@@ -267,6 +289,7 @@ function emitIrModuleRustWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<RustCompilerBackendOptions>,
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
+  sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
@@ -445,6 +468,7 @@ function emitIrModuleRustWithContext(
     module,
     moduleResolution,
     sourceModules: replaceIrModuleBackendContext(sourceModules, module),
+    sourceTreeReferences: sourceTree?.references ?? [],
     needsCellImport: new Set(),
     needsRcImport: new Set(),
     needsRefCellImport: new Set(),
@@ -533,7 +557,7 @@ function emitIrModuleRustWithContext(
   declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
     contents: lines.join('\n'),
-    path: getRustModuleFilePath(module, context.sourceModules),
+    path: sourceTree?.sourceFile.filePath ?? getRustModuleFilePath(module, context.sourceModules),
   };
 }
 
@@ -5584,6 +5608,17 @@ function opaqueHostType(context: EmitContext): string {
 }
 
 function rustImportModule(specifier: string, context: EmitContext): string {
+  const plannedPaths = [
+    ...new Set(
+      context.sourceTreeReferences
+        .filter((reference) => reference.specifier === specifier)
+        .map((reference) => reference.rustPath),
+    ),
+  ];
+  if (plannedPaths.length === 1) return plannedPaths[0]!;
+  if (plannedPaths.length > 1) {
+    emissionError(context, `source-tree import ${specifier} resolves to multiple canonical Rust paths`);
+  }
   if (specifier.startsWith('.')) {
     const resolvedModule = resolveImportModuleRust(specifier, undefined, context);
     if (resolvedModule) return `crate::${getRustModuleName(resolvedModule)}`;

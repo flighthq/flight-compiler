@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,16 @@ import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrStatement } from '../../compiler-types/src/index.js';
+import type {
+  CompilerBackendEmissionSession,
+  CompilerBackendPackageGraphFinalization,
+  CompilerModuleFacadePlan,
+  CompilerModuleIdentity,
+  CompilerModuleResolutionPlan,
+  EmittedFile,
+  IrModule,
+  IrStatement,
+} from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -142,6 +151,34 @@ function compileRustModulePair(
   }
 }
 
+function compileRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-source-tree-'));
+  try {
+    for (const file of files) {
+      const target = path.join(directory, file.path);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, file.contents);
+    }
+    const crateRoot = path.join(directory, 'lib.rs');
+    const build = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-type=lib',
+        '--emit=metadata',
+        '-o',
+        path.join(directory, 'subject.rmeta'),
+        crateRoot,
+      ],
+      { encoding: 'utf8' },
+    );
+    if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
@@ -170,6 +207,38 @@ function lowerPackage(packageName: string, file: string, source: string) {
   });
 }
 
+function createRustSourceTreeFacade(modules: readonly Readonly<IrModule>[]): CompilerModuleFacadePlan {
+  return {
+    modules: modules.map((module) => ({ module: getRustTestModuleIdentity(module), slots: [] })),
+    schema: 'flight-compiler-module-facade/1',
+    semantics: {
+      bindingAccess: 'live',
+      explicitPrecedence: 'named-over-star',
+      starAmbiguity: 'refuse-distinct-resolutions',
+      starDefault: 'excluded',
+      typeValueLanes: 'independent',
+    },
+  };
+}
+
+function createRustSourceTreeFinalization(
+  session: Readonly<CompilerBackendEmissionSession>,
+  retainedModules: readonly Readonly<IrModule>[],
+  facadeModules: readonly Readonly<IrModule>[],
+): CompilerBackendPackageGraphFinalization {
+  return {
+    facade: createRustSourceTreeFacade(facadeModules),
+    moduleFiles: retainedModules.map((module) => ({
+      file: session.emitModule(module)[0]!,
+      module: getRustTestModuleIdentity(module),
+    })),
+  };
+}
+
+function getRustTestModuleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
+  return { name: module.name, packageName: module.packageName, source: module.source };
+}
+
 describe('createRustCompilerBackend', () => {
   it('creates independent stateless backend records with Rust identity', () => {
     const first = createRustCompilerBackend();
@@ -179,6 +248,122 @@ describe('createRustCompilerBackend', () => {
     expect(first).not.toBe(second);
     expect(first.name).toBe('rust');
     expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleRust(module)]);
+    expect(first.createEmissionSession!({ modules: [module], options: {} }).emitModule(module)).toEqual([
+      emitIrModuleRust(module),
+    ]);
+  });
+
+  it('finalizes retained modules into deterministic canonical same- and cross-crate source trees', () => {
+    const root = lowerPackage(
+      '@alpha/math',
+      'index.ts',
+      `import { point } from './geometry/shapes/point.js';
+       import type { Value } from '@beta/types/value';
+       export function measure(_value: Value): number { return point; }`,
+    ).module;
+    const point = lowerPackage('@alpha/math', 'geometry/shapes/point.ts', 'export const point = 1;').module;
+    const secret = lowerPackage('@alpha/math', 'internal/secret.ts', 'export const secret = 2;').module;
+    const value = lowerPackage('@beta/types', 'deep/value.ts', 'export interface Value { size: number }').module;
+    const filtered = lowerPackage('@alpha/math', 'filtered.ts', 'export const filtered = 3;').module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(root),
+          specifier: './geometry/shapes/point.js',
+          target: getRustTestModuleIdentity(point),
+        },
+        {
+          importer: getRustTestModuleIdentity(root),
+          specifier: '@beta/types/value',
+          target: getRustTestModuleIdentity(value),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = [filtered, value, secret, point, root];
+    const retainedModules = [secret, root, value, point];
+    const facadeModules = [point, root, value];
+    const session = createRustCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const first = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, retainedModules, facadeModules),
+    );
+    const reversedSession = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: { ...moduleResolution, edges: [...moduleResolution.edges].reverse() },
+      modules: [...modules].reverse(),
+      options: {},
+    });
+    const second = reversedSession.finalizePackageGraph!(
+      createRustSourceTreeFinalization(reversedSession, [...retainedModules].reverse(), [...facadeModules].reverse()),
+    );
+
+    expect(second).toEqual(first);
+    expect(first.moduleFileReplacements?.map(({ file }) => file.path)).toEqual([
+      'alpha-math/src/geometry/shapes/point.rs',
+      'alpha-math/src/lib.rs',
+      'alpha-math/src/internal/secret.rs',
+      'beta-types/src/deep/value.rs',
+    ]);
+    const rootFile = first.moduleFileReplacements?.find((replacement) => replacement.module.name === root.name)?.file;
+    expect(rootFile?.contents).toContain('use crate::geometry::shapes::point::POINT as point;');
+    expect(rootFile?.contents).toContain('use beta_types::deep::value::Value;');
+    expect(rootFile?.contents).toContain('pub mod geometry;\nmod internal;');
+    expect(rootFile?.contents).not.toContain('mod filtered;');
+    expect(first.moduleFileReplacements?.some((replacement) => replacement.module.name === filtered.name)).toBe(false);
+    expect(first.packageFiles.map(({ file }) => file.path)).toEqual([
+      'alpha-math/src/geometry/mod.rs',
+      'alpha-math/src/geometry/shapes/mod.rs',
+      'alpha-math/src/internal/mod.rs',
+      'beta-types/src/deep/mod.rs',
+      'beta-types/src/lib.rs',
+    ]);
+    expect(first.packageFiles).toContainEqual({
+      file: { contents: 'mod secret;\n', path: 'alpha-math/src/internal/mod.rs' },
+      owner: { kind: 'package', packageName: '@alpha/math' },
+      provenance: [getRustTestModuleIdentity(secret)],
+    });
+    expect(first.packageFiles).toContainEqual({
+      file: { contents: 'pub mod deep;\n', path: 'beta-types/src/lib.rs' },
+      owner: { kind: 'package', packageName: '@beta/types' },
+      provenance: [getRustTestModuleIdentity(value)],
+    });
+  });
+
+  it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {
+    const root = lower(
+      'index.ts',
+      "import { point } from './geometry/shapes/point.js'; export function measure(): number { return point; }",
+    ).module;
+    const point = lower('geometry/shapes/point.ts', 'export const point = 1;').module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(root),
+          specifier: './geometry/shapes/point.js',
+          target: getRustTestModuleIdentity(point),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [point, root],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, [root, point], [point, root]),
+    );
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    expect(files.map(({ path: filePath }) => filePath).sort()).toEqual([
+      'geometry/mod.rs',
+      'geometry/shapes/mod.rs',
+      'geometry/shapes/point.rs',
+      'lib.rs',
+    ]);
+    expect(() => compileRustSourceTree(files)).not.toThrow();
   });
 
   it('uses explicit package-export resolution from the complete backend module context', () => {
