@@ -1792,6 +1792,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.member);
         if (!binding) {
+          // A task-instance member is the task runtime's own evidence and keeps its own identity;
+          // every other ambient member miss is the external member binding contract.
           if (expression.member.receiver === 'task') {
             emissionError(
               context,
@@ -1800,7 +1802,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               'target-runtime',
             );
           }
-          emissionError(context, `${expression.member.receiver} member ${expression.member.name} has no Rust binding`);
+          emissionError(
+            context,
+            `${expression.member.receiver} member ${expression.member.name} has no Rust binding`,
+            'rust-runtime-external-member-binding-incomplete',
+            'target-runtime',
+          );
         }
         if (binding.kind === 'countingMethod') {
           const countingReceiver =
@@ -1875,7 +1882,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               'value',
               context.options.hostBindings,
             );
-            if (!targetName) emissionError(context, `external value ${sourceName} has no Rust binding`);
+            if (!targetName)
+              emissionError(
+                context,
+                `external value ${sourceName} has no Rust binding`,
+                'rust-runtime-external-symbol-binding-incomplete',
+                'target-runtime',
+              );
             recordRuntimeTypeRust(targetName, context);
           }
           return member;
@@ -2606,7 +2619,13 @@ function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>
     emissionError(context, 'this cannot be used as a Rust constructor', 'rust-constructor-value-unsupported');
   if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
   const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value', context.options.hostBindings);
-  if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
+  if (!targetName)
+    emissionError(
+      context,
+      `external constructor ${reference.name} has no Rust binding`,
+      'rust-runtime-external-symbol-binding-incomplete',
+      'target-runtime',
+    );
   return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value', context.options.hostBindings)
     ? recordRuntimeTypeRust(targetName, context)
     : targetName;
@@ -2675,7 +2694,13 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
       'value',
       context.options.hostBindings,
     );
-    if (!targetName) emissionError(context, `external value ${reference.name} has no Rust binding`);
+    if (!targetName)
+      emissionError(
+        context,
+        `external value ${reference.name} has no Rust binding`,
+        'rust-runtime-external-symbol-binding-incomplete',
+        'target-runtime',
+      );
     return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value', context.options.hostBindings)
       ? recordRuntimeTypeRust(targetName, context)
       : targetName;
@@ -6798,7 +6823,13 @@ function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context
       'type',
       context.options.hostBindings,
     );
-    if (!targetName) emissionError(context, `external type ${type.reference.name} has no Rust binding`);
+    if (!targetName)
+      emissionError(
+        context,
+        `external type ${type.reference.name} has no Rust binding`,
+        'rust-runtime-external-symbol-binding-incomplete',
+        'target-runtime',
+      );
     return isCompilerRuntimeExternalSymbolProvidedRust(type.reference.name, 'type', context.options.hostBindings)
       ? recordRuntimeTypeRust(targetName, context)
       : targetName;

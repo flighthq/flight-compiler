@@ -17774,3 +17774,80 @@ describe('emitIrModuleRust class and interface refusal diagnostics', () => {
     expect(output).not.toContain('no Rust trait');
   });
 });
+
+describe('emitIrModuleRust runtime binding diagnostics', () => {
+  it('classifies a missing ambient member as target-runtime under the task member identity', () => {
+    const module = lower(
+      'binding-member.ts',
+      'export function f(): Promise<number> { return Promise.all([Promise.resolve(1)]).then(() => 1); }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    // A task-instance member keeps the task runtime's own identity (the async lane's split); the
+    // general member contract is pinned by the source-count test below.
+    expect(failure.rule).toBe('rust-runtime-task-instance-member-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('member then has no Rust binding');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+  });
+
+  it('reuses the canonical symbol identity for every missing-binding site', () => {
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    const count = (needle: string): number => source.split(needle).length - 1;
+
+    // One plan-level refusal plus the four per-symbol sites (value, type, constructor, runtime-provided
+    // value target); two member sites (ambient member table and the runtime external member table).
+    expect(count("'rust-runtime-external-symbol-binding-incomplete'")).toBe(5);
+    expect(count("'rust-runtime-external-member-binding-incomplete'")).toBe(2);
+    expect(count("'rust-runtime-task-instance-member-binding-incomplete'")).toBe(1);
+  });
+
+  it('keeps neighbouring refusals on their own identities and classifications', () => {
+    const missingType = lower('binding-type.ts', 'export function f(x: Blob): Blob { return x; }').module;
+    const typeFailure = captureBackendEmissionFailure(() => emitIrModuleRust(missingType));
+    expect(typeFailure.rule).toBe('rust-runtime-external-symbol-binding-incomplete');
+    expect(typeFailure.classification).toBe('target-runtime');
+    expect(typeFailure.message).toContain('missing: Blob[type]');
+
+    const typedError = lower(
+      'binding-error.ts',
+      'export function f(err: Error): string { return err.stack ?? ""; }',
+    ).module;
+    const errorFailure = captureBackendEmissionFailure(() => emitIrModuleRust(typedError));
+    expect(errorFailure.rule).toBe('rust-runtime-error-carrier-incomplete');
+    expect(errorFailure.rule).not.toBe('rust-runtime-external-symbol-binding-incomplete');
+
+    const lowering = lower(
+      'binding-lowering.ts',
+      'export function f(): number { let x = 1; x ??= 2; return x; }',
+    ).module;
+    const loweringFailure = captureBackendEmissionFailure(() => emitIrModuleRust(lowering));
+    expect(loweringFailure.classification).toBe('compiler-restriction');
+    expect(loweringFailure.rule).toBe('rust-nullish-assignment-target-unsupported');
+  });
+
+  it('emits when the host provides the missing bindings', () => {
+    const module = lower('binding-bound.ts', 'export function f(x: Blob): Blob { return x; }').module;
+    const output = createRustCompilerBackend().emitModule(module, {
+      modules: [module],
+      options: {
+        hostBindings: {
+          bindings: [
+            {
+              nullability: 'non-null' as const,
+              ownership: 'value' as const,
+              sourceName: 'Blob',
+              space: 'type' as const,
+              targetName: 'flight_host::Blob',
+            },
+          ],
+          schema: 'flight-rust-external-bindings/1',
+        },
+      },
+    })[0]!.contents;
+
+    expect(output).toContain('flight_host::Blob');
+    expect(output).not.toContain('has no Rust binding');
+  });
+});
