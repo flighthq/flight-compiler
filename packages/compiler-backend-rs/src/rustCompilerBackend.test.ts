@@ -19821,6 +19821,122 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('snapshots fixed required scalar tuple spread segments before one push mutation', () => {
+    const result = lower(
+      'array-push-fixed-spread.ts',
+      `type Pair = readonly [number, number];
+       function pair(log: number[], digit: number): Pair { log.push(digit); return [digit, digit + 1]; }
+       export function numbers(values: number[], log: number[]): number {
+         return values.push(0, ...pair(log, 1), 2, ...pair(log, 3));
+       }
+       export function flags(values: boolean[], pair: readonly [boolean, boolean]): number {
+         return values.push(...pair);
+       }
+       export function words(values: string[], pair: [string, string]): number {
+         return values.push("a", ...pair);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_push_receiver = &mut *values;');
+    const first = output.indexOf('let array_push_argument0_2 = 0.0;', receiver);
+    const spread = output.indexOf('let array_push_spread1 = &(pair(log, 1.0));', first);
+    const second = output.indexOf('let array_push_argument2 = 2.0;', spread);
+    const finalSpread = output.indexOf('let array_push_spread3 = &(pair(log, 3.0));', second);
+    const borrow = output.indexOf('let mut array_push_values = array_push_receiver;', finalSpread);
+    const mutation = output.indexOf('array_push_values.push(array_push_argument0_2);', borrow);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(first).toBeGreaterThan(receiver);
+    expect(spread).toBeGreaterThan(first);
+    expect(second).toBeGreaterThan(spread);
+    expect(finalSpread).toBeGreaterThan(second);
+    expect(borrow).toBeGreaterThan(finalSpread);
+    expect(mutation).toBeGreaterThan(borrow);
+    expect(output).toContain('let array_push_spread1_element0 = array_push_spread1.0.clone();');
+    expect(output).toContain('let array_push_spread1_element1 = array_push_spread1.1.clone();');
+    expect(output).toContain('array_push_values.push(array_push_spread1_element0);');
+    expect(output).toContain('let array_push_length = array_push_values.len() as f64;');
+    expect(output).toContain('let array_push_spread0 = &(pair);');
+    expect(output).toContain('.0.clone();');
+  });
+
+  it('stages fixed tuple spread self and shared-alias reads before borrowing the receiver mutably', () => {
+    const result = lower(
+      'array-push-fixed-spread-shared.ts',
+      `function snapshot(first: number, second: number): readonly [number, number] { return [first, second]; }
+       export function append(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.push(...snapshot(values.length, alias[0] ?? 0));
+         values.push(9);
+         return length * 100 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_push_receiver = Rc::clone(&alias);');
+    const snapshot = output.indexOf('let array_push_spread0 = &(snapshot(', receiver);
+    const borrow = output.indexOf('let mut array_push_values = array_push_receiver.borrow_mut();', snapshot);
+    const release = output.indexOf('drop(array_push_values);', borrow);
+    const laterMutation = output.indexOf('values.borrow_mut().push(array_push_argument0)', release);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(snapshot).toBeGreaterThan(receiver);
+    expect(borrow).toBeGreaterThan(snapshot);
+    expect(release).toBeGreaterThan(borrow);
+    expect(laterMutation).toBeGreaterThan(release);
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-push-invocation-unrepresented',
+      source: 'export function append(values: number[], more: readonly number[]): void { values.push(...more); }',
+    },
+    {
+      rule: 'rust-array-push-invocation-unrepresented',
+      source:
+        'export function append(values: (number | undefined)[], more: readonly [number, number?]): void { values.push(...more); }',
+    },
+    {
+      rule: 'rust-array-push-invocation-unrepresented',
+      source:
+        'export function append(values: number[], more: readonly [number, ...number[]]): void { values.push(...more); }',
+    },
+    {
+      rule: 'rust-array-unshift-invocation-unrepresented',
+      source:
+        'export function prepend(values: number[], more: readonly [number, number]): void { values.unshift(...more); }',
+    },
+    {
+      rule: 'rust-array-push-element-carrier-unrepresented',
+      source:
+        'interface Item { value: number } export function append(values: Item[], more: readonly [Item]): void { values.push(...more); }',
+    },
+    {
+      rule: 'rust-array-push-result-observation-unrepresented',
+      source:
+        'export function append(values: number[], more: readonly [number, number]): string { return String(values.push(...more)); }',
+    },
+  ])('refuses unsupported fixed tuple spread growth with $rule', ({ rule, source }) => {
+    const result = lower('array-push-fixed-spread-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(rule);
+  });
+
+  it('selects fixed tuple spread push refusals independently of declaration order', () => {
+    const declarations = [
+      'export function observed(values: number[], pair: readonly [number]): string { return String(values.push(...pair)); }',
+      'export function dynamic(values: number[], more: readonly number[]): void { values.push(...more); }',
+      'interface Item { value: number } export function identity(values: Item[], pair: readonly [Item]): void { values.push(...pair); }',
+    ];
+    const first = lower('array-push-fixed-spread-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-push-fixed-spread-order-b.ts', [...declarations].reverse().join('\n')).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(first))).toBe('rust-array-push-invocation-unrepresented');
+    expect(getEmissionRule(() => emitIrModuleRust(second))).toBe('rust-array-push-invocation-unrepresented');
+  });
+
   it.each([
     {
       rule: 'rust-array-push-invocation-unrepresented',
@@ -19868,6 +19984,24 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
     expect(failure.rule).toBe('rust-array-push-result-carrier-unrepresented');
     expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses a fixed tuple spread push result without an f64 carrier', () => {
+    const result = lower(
+      'array-push-fixed-spread-result-carrier.ts',
+      'export function append(values: number[], pair: readonly [number, number]): number { return values.push(...pair); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'append',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned fixed tuple spread array.push call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-push-result-carrier-unrepresented');
   });
 
   it('emits zero and multiple fixed concat arguments after receiver-first left-to-right staging', () => {
@@ -28476,6 +28610,22 @@ describe('emitIrModuleRust static Array.of', () => {
          const concatCopy = concatAlias.concat();
          const merged = group(5).concat(group(6), concatAlias, concatAlias);
          concatSource.push(9);
+         let spreadOrder = 0;
+         const spreadScalar = (digit: number): number => { spreadOrder = spreadOrder * 10 + digit; return digit; };
+         const spreadPair = (digit: number): readonly [number, number] => {
+           spreadOrder = spreadOrder * 10 + digit;
+           return [digit, digit + 1];
+         };
+         const spreadSnapshot = (first: number, second: number): readonly [number, number] => [first, second];
+         const spreadValues = [0];
+         const spreadAlias = spreadValues;
+         const spreadLength = spreadAlias.push(
+           spreadScalar(1),
+           ...spreadPair(2),
+           spreadScalar(3),
+           ...spreadSnapshot(spreadValues.length, 4),
+         );
+         spreadValues.push(9);
          return empty.length === 0 && constructedAlias.length === 1 && zeroWords.join("") === "z" &&
            constructedFlags.length === 1 && filledAlias.reduce((total, value) => total * 10 + value, 0) === 4445 &&
            emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 4212356 &&
@@ -28486,7 +28636,9 @@ describe('emitIrModuleRust static Array.of', () => {
            mapped.reduce((total, value) => total * 10 + value, 0) === 139 &&
            concatCopy.reduce((total, value) => total * 10 + value, 0) === 8 &&
            merged.reduce((total, value) => total * 10 + value, 0) === 5688 &&
-           concatAlias.reduce((total, value) => total * 10 + value, 0) === 89;
+           concatAlias.reduce((total, value) => total * 10 + value, 0) === 89 && spreadOrder === 123 &&
+           spreadLength === 7 && spreadAlias.length === 8 &&
+           spreadValues.reduce((total, value) => total * 10 + value, 0) === 1233149;
        }`,
     );
 

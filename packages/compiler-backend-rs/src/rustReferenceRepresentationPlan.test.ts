@@ -276,6 +276,40 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
   });
 
+  it('permits direct receiver-group reads in staged fixed tuple spread push segments', () => {
+    const direct = lower(
+      'alias-fixed-spread-push.ts',
+      `function snapshot(first: number, second: number): readonly [number, number] { return [first, second]; }
+       export function append(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.push(...snapshot(values.length, alias[0] ?? 0));
+         values.push(9);
+         return length + alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [direct] }), direct).refusals,
+    ).toEqual([]);
+  });
+
+  it('defers an unbounded shared self spread to the backend push invocation refusal', () => {
+    const module = lower(
+      'alias-unbounded-spread-push.ts',
+      `export function append(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.push(...values);
+         return length + alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([]);
+  });
+
   it('refuses a shared-array slice bound that reads the receiver alias group', () => {
     const module = lower(
       'alias-slice-conflict.ts',

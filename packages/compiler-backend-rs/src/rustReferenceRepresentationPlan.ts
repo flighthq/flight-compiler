@@ -1815,6 +1815,20 @@ function isRustSharedArrayIdentifierUseRepresented(
   ) {
     return true;
   }
+  if (final === 'expression' && isIrExpressionValue(parent) && parent.kind === 'spread') {
+    const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -3));
+    if (
+      isCallExpression(call) &&
+      call.callee.kind === 'property' &&
+      call.callee.member?.receiver === 'array' &&
+      call.callee.member.name === 'push'
+    ) {
+      // The backend owns the exact fixed-tuple proof. Let a direct shared-array spread reach that
+      // gate so an unbounded self spread receives the push invocation refusal instead of a generic
+      // reference-use refusal; represented tuple spreads snapshot every field before mutation.
+      return true;
+    }
+  }
   if (final === 'object' && isIrExpressionValue(parent) && (parent.kind === 'property' || parent.kind === 'element')) {
     if (parent.kind === 'element') return parent.optional === false;
     if (parent.optional || parent.member?.receiver !== 'array') return false;
@@ -1852,6 +1866,17 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
+  if (
+    call.callee.kind === 'property' &&
+    call.callee.member?.receiver === 'array' &&
+    call.callee.member.name === 'push' &&
+    call.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    // The fixed-tuple spread lane materializes the complete argument pack before taking its one
+    // mutable borrow. Invalid dynamic spreads are rejected by that backend gate, while valid same-
+    // group reads cannot overlap the delayed borrow.
+    return;
+  }
   if (isRustReferenceArrayFromCall(call) && call.arguments.length === 2) {
     const source = call.arguments[0];
     const callback = call.arguments[1];
