@@ -251,6 +251,7 @@ interface EmitContext {
   arrayCopyWithinObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayFillObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayReverseObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
+  arraySortObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   asyncTryStatements: ReadonlySet<object>;
   insideProtectedTry: boolean;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
@@ -385,10 +386,12 @@ function emitIrModuleRustWithContext(
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
 ): EmittedFile {
   // Method arity must be refused before the shared extra-argument pass, whose target ABI cannot
-  // preserve copyWithin/fill bounds or search fromIndex semantics after erasing extra arguments.
+  // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
+  // after erasing extra arguments.
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
+  assertArraySortInvocationSemanticsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
@@ -563,6 +566,7 @@ function emitIrModuleRustWithContext(
     arrayCopyWithinObservedCalls: new Set(),
     arrayFillObservedCalls: new Set(),
     arrayReverseObservedCalls: new Set(),
+    arraySortObservedCalls: new Set(),
     asyncTryStatements,
     insideProtectedTry: false,
     cellWrappedBindingIds,
@@ -1530,6 +1534,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
       if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
+      if (isArraySortCallRust(expression)) return emitArraySortCallRust(expression, context);
       if (isArraySliceCallRust(expression)) return emitArraySliceCallRust(expression, context);
       if (isArraySpliceCallRust(expression)) return emitArraySpliceCallRust(expression, context);
       if (getArrayGrowthMemberRust(expression)) return emitArrayGrowthCallRust(expression, context);
@@ -3358,6 +3363,17 @@ function isArrayReverseCallRust(
   );
 }
 
+function isArraySortCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'sort'
+  );
+}
+
 function isArrayFillCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3637,6 +3653,47 @@ function emitArrayReverseCallRust(
   if (!observed) return `${receiver}.reverse()`;
   const receiverName = getGeneratedTargetNameRust('array_reverse_values', context);
   return `{ let mut ${receiverName} = ${receiver}; ${receiverName}.reverse(); ${receiverName} }`;
+}
+
+function emitArraySortCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const comparator = expression.arguments[0];
+  if (!comparator || expression.arguments.length !== 1) {
+    return emissionError(context, 'array.sort emission requires exactly one comparator');
+  }
+  const observed = context.arraySortObservedCalls.has(expression);
+  const receiverName = getGeneratedTargetNameRust('array_sort_receiver', context);
+  const comparatorName = getGeneratedTargetNameRust('array_sort_comparator', context);
+  const valuesName = getGeneratedTargetNameRust('array_sort_values', context);
+  const leftName = getGeneratedTargetNameRust('array_sort_left', context);
+  const rightName = getGeneratedTargetNameRust('array_sort_right', context);
+  const comparisonName = getGeneratedTargetNameRust('array_sort_comparison', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const receiver = emitExpression(expression.callee.object, context);
+  if (sharedBinding) context.needsRcImport.add('Rc');
+  const receiverInitializer = sharedBinding
+    ? `Rc::clone(&${getBindingTargetNameRust(sharedBinding, context)})`
+    : observed
+      ? receiver
+      : emitLentOperandRust(expression.callee.object, context);
+  const valuesInitializer = sharedBinding
+    ? `${receiverName}.borrow_mut()`
+    : observed
+      ? `&mut ${receiverName}`
+      : receiverName;
+  const ordering = `let ${comparisonName}: f64 = (${comparatorName})((*${leftName}).clone(), (*${rightName}).clone()); if ${comparisonName}.is_nan() || ${comparisonName} == 0.0 { std::cmp::Ordering::Equal } else if ${comparisonName} < 0.0 { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }`;
+  const initializers = [
+    `let ${observed && !sharedBinding ? 'mut ' : ''}${receiverName} = ${receiverInitializer};`,
+    `let ${comparatorName} = &${normalizeSourceTextGrouping(emitExpression(comparator, context))};`,
+    `let ${sharedBinding ? 'mut ' : ''}${valuesName} = ${valuesInitializer};`,
+  ];
+  const mutation = `${valuesName}.sort_by(|${leftName}, ${rightName}| { ${ordering} });`;
+  const releaseSharedBorrow = sharedBinding && observed ? [`drop(${valuesName});`] : [];
+  const result = observed ? receiverName : '()';
+  return `{ ${[...initializers, mutation, ...releaseSharedBorrow, result].join(' ')} }`;
 }
 
 function emitArraySliceCallRust(
@@ -5471,7 +5528,10 @@ function getRustSharedArrayBindingRust(
 function isIrSharedArrayIdentityMethodCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   return (
     expression.kind === 'call' &&
-    (isArrayReverseCallRust(expression) || isArrayCopyWithinCallRust(expression) || isArrayFillCallRust(expression)) &&
+    (isArrayReverseCallRust(expression) ||
+      isArrayCopyWithinCallRust(expression) ||
+      isArrayFillCallRust(expression) ||
+      isArraySortCallRust(expression)) &&
     getRustSharedArrayBindingRust(expression.callee.object, context) !== undefined
   );
 }
@@ -8643,6 +8703,7 @@ type RustArrayOperationMember =
   | 'fill'
   | 'reverse'
   | 'slice'
+  | 'sort'
   | 'splice';
 
 interface RustArrayOperationRefusal {
@@ -8693,7 +8754,14 @@ interface RustArrayOperationRefusal {
     | 'rust-array-slice-element-carrier-unrepresented'
     | 'rust-array-slice-index-domain-unrepresented'
     | 'rust-array-slice-invocation-unrepresented'
-    | 'rust-array-slice-result-carrier-unrepresented';
+    | 'rust-array-slice-result-carrier-unrepresented'
+    | 'rust-array-sort-alias-borrow-conflict'
+    | 'rust-array-sort-comparator-carrier-unrepresented'
+    | 'rust-array-sort-default-order-unrepresented'
+    | 'rust-array-sort-element-carrier-unrepresented'
+    | 'rust-array-sort-identity-carrier-unrepresented'
+    | 'rust-array-sort-invocation-unrepresented'
+    | 'rust-array-sort-result-carrier-unrepresented';
 }
 
 function assertArraySearchInvocationSemanticsRust(module: Readonly<IrModule>): void {
@@ -8793,6 +8861,58 @@ function assertArrayCopyWithinInvocationSemanticsRust(module: Readonly<IrModule>
   );
 }
 
+function assertArraySortInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  const refusals: RustArrayOperationRefusal[] = [];
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArraySortCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        !expression.optional &&
+        expression.semantics.optionalChain === undefined &&
+        !expression.callee.optional &&
+        expression.callee.optionalChain === undefined &&
+        signature !== undefined &&
+        signature.providedArgumentCount !== 'dynamic' &&
+        signature.providedArgumentCount === 0 &&
+        expression.arguments.length === 0
+      ) {
+        refusals.push({
+          member: 'sort',
+          message: 'array.sort without a comparator requires exact JavaScript default string ordering',
+          rule: 'rust-array-sort-default-order-unrepresented',
+        });
+        return;
+      }
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        !signature ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== 1 ||
+        expression.arguments.length !== 1 ||
+        expression.arguments[0]?.kind === 'spread' ||
+        !isRustStableArrayOperationReceiverRust(expression.callee.object)
+      ) {
+        refusals.push({
+          member: 'sort',
+          message: 'array.sort requires a non-optional stable receiver and exactly one fixed comparator argument',
+          rule: 'rust-array-sort-invocation-unrepresented',
+        });
+      }
+    },
+  });
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  )[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
+}
+
 function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
@@ -8812,6 +8932,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
   const fillCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
+  const sortCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
@@ -8859,6 +8983,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           copyWithinCalls.push(expression);
         } else if (isArrayFillCallRust(expression)) {
           fillCalls.push(expression);
+        } else if (isArraySortCallRust(expression)) {
+          sortCalls.push(expression);
         } else if (searchMember) {
           searchCalls.push({ callee: expression.callee, expression, member: searchMember });
         } else if (isArrayConcatCallRust(expression)) {
@@ -9110,6 +9236,102 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       continue;
     }
     context.arrayFillObservedCalls.add(expression);
+  }
+
+  for (const expression of sortCalls) {
+    const signature = expression.semantics.signature;
+    const comparator = expression.arguments[0];
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 1 ||
+      expression.arguments.length !== 1 ||
+      !comparator ||
+      comparator.kind === 'spread' ||
+      !isRustStableArrayOperationReceiverRust(expression.callee.object)
+    ) {
+      refusals.push({
+        member: 'sort',
+        message: 'array.sort requires a non-optional stable receiver and exactly one fixed comparator argument',
+        rule: 'rust-array-sort-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || receiver.readonly || !receiverDomain) {
+      refusals.push({
+        member: 'sort',
+        message:
+          'array.sort elements require an exact mutable boolean, number, or string value carrier; union and identity-bearing carriers are not represented',
+        rule: 'rust-array-sort-element-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustArraySortComparatorRepresentedRust(comparator, receiver.element, receiverDomain, context)) {
+      refusals.push({
+        member: 'sort',
+        message:
+          'array.sort comparator requires a statically known synchronous two-parameter function over the exact element carrier returning an exact number',
+        rule: 'rust-array-sort-comparator-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (
+      !receiverType ||
+      !isRustArrayIdentityResultCarrierRust(receiverType, expression.semantics.resultType, context)
+    ) {
+      refusals.push({
+        member: 'sort',
+        message: 'array.sort result does not have the exact mutable Rust Vec element carrier of the receiver',
+        rule: 'rust-array-sort-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverObject = expression.callee.object;
+    const receiverBindingId =
+      receiverObject.kind === 'identifier' && receiverObject.reference.kind === 'binding'
+        ? receiverObject.reference.binding.id
+        : undefined;
+    if (receiverBindingId && irExpressionUsesBindingRust(comparator, receiverBindingId)) {
+      refusals.push({
+        member: 'sort',
+        message: 'array.sort comparator captures the receiver while its mutable borrow is active',
+        rule: 'rust-array-sort-alias-borrow-conflict',
+      });
+      continue;
+    }
+
+    const use = uses.get(expression);
+    if (use?.kind === 'discarded') continue;
+    if (receiverObject.kind !== 'identifier' || receiverObject.reference.kind !== 'binding') continue;
+    const receiverId = receiverObject.reference.binding.id;
+    const receiverShared = context.sharedArrayBindingIds.has(receiverId);
+    const receiverBorrowed = context.referentMutatedParameterIds.has(receiverId);
+    const representedVariableAlias =
+      !receiverBorrowed &&
+      use?.kind === 'variable' &&
+      use.bindingId !== undefined &&
+      context.sharedArrayBindingIds.has(use.bindingId) === receiverShared;
+    const representedOwnedReturn = use?.kind === 'return' && !receiverShared && !receiverBorrowed;
+    if (!representedVariableAlias && !representedOwnedReturn) {
+      refusals.push({
+        member: 'sort',
+        message:
+          'observed array.sort identity requires a represented local move or shared local alias carrier; borrowed, returned-shared, or nested identity is not represented',
+        rule: 'rust-array-sort-identity-carrier-unrepresented',
+      });
+      continue;
+    }
+    context.arraySortObservedCalls.add(expression);
   }
 
   for (const { callee, expression, member } of searchCalls) {
@@ -9547,6 +9769,38 @@ function isRustExactNumberExpressionRust(expression: Readonly<IrExpression>, con
   return (
     (source.kind === 'primitive' && source.name === 'number') ||
     (source.kind === 'literal' && typeof source.value === 'number')
+  );
+}
+
+function isRustArraySortComparatorRepresentedRust(
+  expression: Readonly<IrExpression>,
+  elementType: Readonly<IrType>,
+  elementDomain: 'boolean' | 'number' | 'string',
+  context: EmitContext,
+): boolean {
+  const comparator =
+    expression.kind === 'function'
+      ? expression
+      : expression.kind === 'identifier'
+        ? getIrReferencedFunctionRust(expression.reference, context)
+        : undefined;
+  if (!comparator || comparator.async || comparator.typeParameters.length > 0 || comparator.parameters.length !== 2) {
+    return false;
+  }
+  if (
+    comparator.parameters.some((parameter) => {
+      if (parameter.optional || parameter.rest) return true;
+      return (
+        getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== elementDomain ||
+        emitType(parameter.type, context) !== emitType(elementType, context)
+      );
+    })
+  ) {
+    return false;
+  }
+  return (
+    getRustDensePrimitiveArrayCarrierDomainRust(comparator.returns, context) === 'number' &&
+    emitType(comparator.returns, context) === 'f64'
   );
 }
 
@@ -11579,6 +11833,7 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
   'push',
   'reverse',
   'shift',
+  'sort',
   'splice',
   'unshift',
 ]);

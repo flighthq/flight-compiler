@@ -230,6 +230,35 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([]);
   });
 
+  it('promotes an observed sort result only when the original array identity remains live', () => {
+    const shared = lower(
+      'sort-result-shared.ts',
+      `export function sharedSort(): number {
+         const values = [3, 1, 2];
+         const returned = values.sort((left, right) => left - right);
+         returned.push(4);
+         return values.length;
+       }`,
+    );
+    const moved = lower(
+      'sort-result-moved.ts',
+      `export function movedSort(): number {
+         const values = [3, 1, 2];
+         const returned = values.sort((left, right) => left - right);
+         return returned.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [shared] }), shared)
+        .sharedArrayBindings.map(({ binding }) => binding.name)
+        .sort(),
+    ).toEqual(['returned', 'values']);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [moved] }), moved).sharedArrayBindings,
+    ).toEqual([]);
+  });
+
   it('refuses overlapping shared-array borrows before emitting RefCell runtime failure', () => {
     const module = lower(
       'alias-conflict.ts',

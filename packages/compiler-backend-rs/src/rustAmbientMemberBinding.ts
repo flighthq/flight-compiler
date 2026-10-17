@@ -59,6 +59,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   // indexing, and the source's optional bounds decide which range it is.
   'array.slice': { kind: 'method', targetName: 'slice' },
   'array.some': { collect: false, kind: 'iterator', targetName: 'any' },
+  'array.sort': { kind: 'method', targetName: 'sort_by' },
   'array.unshift': { kind: 'method', leadingArguments: ['0'], targetName: 'insert' },
   'dataView.buffer': { kind: 'propertyMethod', targetName: 'buffer' },
   'dataView.byteLength': { kind: 'countingMethod', targetName: 'byte_length' },

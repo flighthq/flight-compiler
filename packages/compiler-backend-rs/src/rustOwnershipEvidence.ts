@@ -459,6 +459,7 @@ const RUST_REFERENT_MUTATING_METHODS: ReadonlySet<string> = new Set([
   'array.pop',
   'array.reverse',
   'array.shift',
+  'array.sort',
   'array.splice',
   'array.unshift',
   'map.clear',

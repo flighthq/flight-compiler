@@ -803,7 +803,8 @@ function createRustSharedArrayAnalysis(
             variable.initializer.arguments.length <= 3) ||
           (variable.initializer.callee.member.name === 'fill' &&
             variable.initializer.arguments.length >= 1 &&
-            variable.initializer.arguments.length <= 3)) &&
+            variable.initializer.arguments.length <= 3) ||
+          (variable.initializer.callee.member.name === 'sort' && variable.initializer.arguments.length === 1)) &&
         variable.initializer.callee.object.kind === 'identifier' &&
         variable.initializer.callee.object.reference.kind === 'binding' &&
         bindingTypes.get(variable.initializer.callee.object.reference.binding.id)?.kind === 'array'
@@ -4982,6 +4983,7 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
   'push',
   'reverse',
   'shift',
+  'sort',
   'splice',
   'unshift',
 ]);

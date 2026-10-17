@@ -219,6 +219,13 @@ describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
     expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['values']);
   });
 
+  it('detects array sort as referent mutation', () => {
+    const module = lower(`
+      export function order(values: number[]): void { values.sort((left, right) => left - right); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['values']);
+  });
+
   it('elects a parameter assigned into, one grown, and one handed to a function that mutates it', () => {
     const module = lower(`
       export function bump(cell: { value: number }, next: number): void { cell.value = next; }

@@ -17,7 +17,7 @@ describe('createCompilerRustAmbientMemberBindingPlan', () => {
     expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(83);
+    expect(second.bindings).toHaveLength(84);
   });
 });
 
@@ -139,6 +139,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('records array sort as a method with dedicated comparator semantics', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toEqual({
+      kind: 'method',
+      targetName: 'sort_by',
+    });
+  });
+
   it('maps typed-array reads, copies, and shared views onto their runtime representation', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'byteLength', receiver: 'arrayBuffer' })).toEqual({
       kind: 'countingMethod',
@@ -190,7 +197,6 @@ describe('getCompilerRustAmbientMemberBinding', () => {
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
-    expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
   });
 

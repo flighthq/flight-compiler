@@ -16038,6 +16038,233 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
+  it('stably sorts exact number, boolean, and String carriers with one comparator result per comparison', () => {
+    const result = lower(
+      'array-sort-exact.ts',
+      `function compareNumbers(left: number, right: number): number { return left - right; }
+       export function numbers(values: number[]): void { values.sort(compareNumbers); }
+       export function descending(values: number[]): void { values.sort((left, right) => right - left); }
+       export function booleans(values: boolean[]): void {
+         values.sort((left, right) => left === right ? 0 : left ? 1 : -1);
+       }
+       export function strings(values: string[]): void {
+         values.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+       }
+       export function stableZeros(values: number[]): void { values.sort((_left, _right) => 0 / 0); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.sort_by(');
+    expect(output).toContain('array_sort_comparison.is_nan() || array_sort_comparison == 0.0');
+    expect(output).toContain('(*array_sort_left).clone(), (*array_sort_right).clone()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut number_values = vec![3.0, 1.0, 2.0];',
+          'numbers(&mut number_values);',
+          'assert_eq!(number_values, vec![1.0, 2.0, 3.0]);',
+          'let mut empty_values = Vec::<f64>::new();',
+          'numbers(&mut empty_values);',
+          'assert!(empty_values.is_empty());',
+          'let mut singleton_values = vec![1.0];',
+          'numbers(&mut singleton_values);',
+          'assert_eq!(singleton_values, vec![1.0]);',
+          'descending(&mut number_values);',
+          'assert_eq!(number_values, vec![3.0, 2.0, 1.0]);',
+          'let mut boolean_values = vec![true, false, true, false];',
+          'booleans(&mut boolean_values);',
+          'assert_eq!(boolean_values, vec![false, false, true, true]);',
+          'let mut string_values = vec!["b".to_owned(), "a".to_owned(), "c".to_owned()];',
+          'strings(&mut string_values);',
+          'assert_eq!(string_values, vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);',
+          'let mut zero_values = vec![-0.0, 0.0, -0.0, 0.0];',
+          'stable_zeros(&mut zero_values);',
+          'assert!(zero_values[0].is_sign_negative());',
+          'assert!(zero_values[1].is_sign_positive());',
+          'assert!(zero_values[2].is_sign_negative());',
+          'assert!(zero_values[3].is_sign_positive());',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves observed sort identity through a moved local and a represented shared alias', () => {
+    const result = lower(
+      'array-sort-identity.ts',
+      `export function moved(): number[] {
+         const values = [3, 1, 2];
+         const returned = values.sort((left, right) => left - right);
+         returned.push(4);
+         return returned;
+       }
+       export function shared(): number {
+         const values = [3, 1, 2];
+         const alias = values;
+         const returned = alias.sort((left, right) => left - right);
+         returned.push(4);
+         return (values[0] ?? 0) * 100 + alias.length * 10 + returned.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Rc::clone(&alias)');
+    expect(output).toContain('drop(array_sort_values');
+    if (rustcAvailable) {
+      runRustSource(output, 'assert_eq!(moved(), vec![1.0, 2.0, 3.0, 4.0]); assert_eq!(shared(), 144.0);');
+    }
+  });
+
+  it('evaluates the sort receiver and comparator before borrowing and keeps element values owned', () => {
+    const result = lower(
+      'array-sort-evaluation.ts',
+      `export function order(values: number[]): void {
+         values.sort((left, right) => left - right);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_sort_receiver = values;');
+    const comparator = output.indexOf('let array_sort_comparator = &', receiver);
+    const values = output.indexOf('let array_sort_values = array_sort_receiver;', comparator);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(comparator).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(comparator);
+    expect(output.match(/let array_sort_comparison: f64 =/gu)).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-sort-default-order-unrepresented',
+      source: 'export function order(values: number[]): number[] { return values.sort(); }',
+    },
+    {
+      rule: 'rust-array-sort-invocation-unrepresented',
+      source: 'export function order(): number[] { return [2, 1].sort((left, right) => left - right); }',
+    },
+    {
+      rule: 'rust-array-sort-invocation-unrepresented',
+      source:
+        'export function order(values: number[]): void { values.sort((left, right) => left - right, (left, right) => right - left); }',
+    },
+    {
+      rule: 'rust-array-sort-element-carrier-unrepresented',
+      source:
+        'export function order(values: (number | string)[]): void { values.sort((left, right) => String(left).length - String(right).length); }',
+    },
+    {
+      rule: 'rust-array-sort-element-carrier-unrepresented',
+      source: 'export function order(values: any[]): void { values.sort((left, right) => 0); }',
+    },
+    {
+      rule: 'rust-array-sort-element-carrier-unrepresented',
+      source:
+        'class Point { x: number = 0; } export function order(values: Point[]): void { values.sort((left, right) => left.x - right.x); }',
+    },
+    {
+      rule: 'rust-array-sort-comparator-carrier-unrepresented',
+      source: 'export function order(values: number[]): void { values.sort((value) => value); }',
+    },
+    {
+      rule: 'rust-array-sort-comparator-carrier-unrepresented',
+      source: 'export function order(values: number[]): void { values.sort(async (left, right) => left - right); }',
+    },
+    {
+      rule: 'rust-array-sort-comparator-carrier-unrepresented',
+      source: 'export function order(values: number[]): void { values.sort((left, right) => left < right); }',
+    },
+    {
+      rule: 'rust-array-sort-identity-carrier-unrepresented',
+      source:
+        'export function order(values: number[]): number[] { return values.sort((left, right) => left - right); }',
+    },
+    {
+      rule: 'rust-array-sort-identity-carrier-unrepresented',
+      source:
+        'export function order(): number { const values = [2, 1]; return values.sort((left, right) => left - right).length; }',
+    },
+    {
+      rule: 'rust-array-sort-identity-carrier-unrepresented',
+      source:
+        'export function order(): number[] { const values = [2, 1]; const alias = values; return alias.sort((left, right) => left - right); }',
+    },
+  ])('stably refuses unsupported exact array sort semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-sort-refused.ts', source);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses incompatible and readonly sort result carriers', () => {
+    const getSortCall = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'order',
+      );
+      const statement =
+        declaration?.kind === 'function'
+          ? declaration.body.find((candidate) => candidate.kind === 'return')
+          : undefined;
+      const call = statement?.kind === 'return' ? statement.expression : undefined;
+      if (declaration?.kind !== 'function' || call?.kind !== 'call')
+        throw new Error('expected returned array.sort call');
+      return { call, declaration };
+    };
+    const source =
+      'export function order(): number[] { const values = [2, 1]; return values.sort((left, right) => left - right); }';
+
+    const mismatchedResult = lower('array-sort-result-carrier.ts', source);
+    const result = getSortCall(mismatchedResult.module).call;
+    (result.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedResult.module)).rule).toBe(
+      'rust-array-sort-result-carrier-unrepresented',
+    );
+
+    const readonlyReceiver = lower(
+      'array-sort-readonly-carrier.ts',
+      'export function order(values: number[]): number[] { return values.sort((left, right) => left - right); }',
+    );
+    const receiver = getSortCall(readonlyReceiver.module).declaration.parameters[0];
+    if (!receiver || receiver.type.kind !== 'array') throw new Error('expected array sort receiver parameter');
+    (receiver.type as { readonly: boolean }).readonly = true;
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(readonlyReceiver.module)).rule).toBe(
+      'rust-array-sort-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a comparator that captures its non-shared sort receiver', () => {
+    const result = lower(
+      'array-sort-direct-borrow-conflict.ts',
+      `export function conflict(): void {
+         const values = [3, 1, 2];
+         values.sort((left, right) => values.length + left - right);
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-sort-alias-borrow-conflict');
+  });
+
+  it('uses the shared-array borrow-conflict rule for a comparator that captures a receiver alias', () => {
+    const result = lower(
+      'array-sort-shared-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [3, 1, 2];
+         const alias = values;
+         alias.sort((left, right) => values.length + left - right);
+         values.push(4);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('preserves exact fill bounds across number, boolean, and string carriers', () => {
     const result = lower(
       'array-fill-exact.ts',

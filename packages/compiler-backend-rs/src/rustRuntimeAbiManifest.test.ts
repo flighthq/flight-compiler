@@ -294,9 +294,11 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     expect(unboundSymbol.rule).toBe('rust-runtime-external-symbol-binding-incomplete');
     expect(unboundSymbol.classification).toBe('target-runtime');
 
-    expect(() =>
+    const defaultSort = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('export function order(values: number[]): number[] { return values.sort(); }')),
-    ).toThrow('array member sort has no Rust binding');
+    );
+    expect(defaultSort.rule).toBe('rust-array-sort-default-order-unrepresented');
+    expect(defaultSort.classification).toBe('target-runtime');
   });
 
   it.each(['Error', 'RangeError', 'TypeError'])('keeps typed ambient %s an explicit unsupported capability', (name) => {
