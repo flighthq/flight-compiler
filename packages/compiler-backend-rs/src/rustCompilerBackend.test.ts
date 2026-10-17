@@ -2363,21 +2363,133 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.column).toBe(column);
   });
 
-  it('stably refuses implicit bare task adoption inside a protected try region', () => {
+  it('settles terminal protected bare FlightTask adoption through a synchronous catch', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-async-task-adoption.ts',
+        'export async function protectedReturn(task: Promise<number>): Promise<number> { try { return task; } catch { return 0; } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match task.settle() {');
+    expect(output).toContain('Ok(try_value) => return try_value,');
+    expect(output).toContain('Err(_) => {');
+    expect(output).not.toContain('task.await');
+  });
+
+  it('accepts only represented terminal expression shapes for protected bare FlightTask adoption', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-async-task-adoption-shapes.ts',
+        `function forwarded(task: Promise<number>): Promise<number> { return task; }
+         export async function fromParameter(task: Promise<number>): Promise<number> { try { return task; } catch { return 0; } }
+         export async function fromReady(): Promise<number> { try { return Promise.resolve(1); } catch { return 0; } }
+         export async function fromCall(task: Promise<number>): Promise<number> { try { return forwarded(task); } catch { return 0; } }
+         export async function fromCast(task: Promise<number>): Promise<number> { try { return task as Promise<number>; } catch { return 0; } }
+         export async function fromConditional(first: Promise<number>, second: Promise<number>, chooseFirst: boolean): Promise<number> { try { return chooseFirst ? first : second; } catch { return 0; } }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/\.settle\(\)/gu)).toHaveLength(5);
+    expect(output).toContain('match FlightTask::ready(1.0).settle() {');
+    expect(output).toContain('match forwarded(task).settle() {');
+    expect(output).toMatch(/match \(if choose_first \{ first \} else \{ second \}\)\.settle\(\) \{/u);
+    expect(output).not.toContain('as FlightTask');
+  });
+
+  it('owns each represented branch before protected bare FlightTask settlement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-async-task-adoption-ownership.ts',
+        'export async function choose(first: Promise<number>, second: Promise<number>, useFirst: boolean): Promise<number> { try { return useFirst ? first : second; } finally { first; second; } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(if use_first { first.clone() } else { second.clone() }).settle()');
+    expect(output.indexOf('.settle()')).toBeLessThan(output.indexOf('first;'));
+  });
+
+  it.each([
+    [
+      'a nested return',
+      'export async function attempt(task: Promise<number>, enabled: boolean): Promise<number> { try { if (enabled) return task; return 0; } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a nonterminal task return',
+      'export async function attempt(task: Promise<number>): Promise<number> { try { return task; 0; } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a property task',
+      'interface Tasks { current: Promise<number>; } export async function attempt(tasks: Tasks): Promise<number> { try { return tasks.current; } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an element task',
+      'export async function attempt(tasks: Promise<number>[]): Promise<number> { try { return tasks[0]; } catch { return 1; } }',
+      'rust-array-index-result-absence-unrepresented',
+      'target-runtime',
+    ],
+    [
+      'mixed conditional arms',
+      'export async function attempt(task: Promise<number>, useTask: boolean): Promise<number> { try { return useTask ? task : 0; } catch { return 1; } }',
+      'rust-async-task-carrier-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a source async call',
+      'async function inner(): Promise<number> { return 1; } export async function attempt(): Promise<number> { try { return inner(); } catch { return 1; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+  ])(
+    'keeps protected bare FlightTask adoption with %s on its stable refusal',
+    (_name, source, rule, classification) => {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower('protected-async-task-adoption-refusal.ts', source).module),
+      );
+
+      expect(failure.classification).toBe(classification);
+      expect(failure.rule).toBe(rule);
+    },
+  );
+
+  it.each([
+    [
+      'an awaited no-finally catch',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return primary; } catch { return await recovery; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a caught-value member',
+      'export async function attempt(primary: Promise<number>): Promise<number> { try { return primary; } catch (error) { return error.message.length; } }',
+      'rust-runtime-error-carrier-incomplete',
+      'target-runtime',
+    ],
+    [
+      'a mismatched fulfilled carrier',
+      'export async function attempt(primary: Promise<string>): Promise<number> { try { return primary; } catch { return 0; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a task-returning catch',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return primary; } catch { return recovery; } finally {} }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+  ])('preserves protected bare FlightTask adoption refusal for %s', (_name, source, rule, classification) => {
     const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(
-        lower(
-          'protected-async-task-adoption.ts',
-          'export async function protectedReturn(task: Promise<number>): Promise<number> { try { return task; } catch { return 0; } }',
-        ).module,
-      ),
+      emitIrModuleRust(lower('protected-async-task-adoption-carrier-refusal.ts', source).module),
     );
 
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.rule).toBe('rust-async-task-adoption-protected-unrepresented');
-    expect(failure.message).toContain('bare task adoption inside a protected try region');
-    expect(failure.line).toBe(1);
-    expect(failure.column).toBe(1);
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe(classification);
   });
 
   it('refuses an async function whose declared return is not a task type', () => {
@@ -3902,18 +4014,23 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.message).toContain('one direct Flight task settlement');
   });
 
-  it('keeps terminal protected bare FlightTask adoption outside one-await finalizer', () => {
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(
-        lower(
-          'try-one-await-finalizer-bare-task-refusal.ts',
-          'export async function attempt(primary: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return primary; } finally { await cleanup; } }',
-        ).module,
-      ),
-    );
+  it('composes protected bare FlightTask adoption with awaited catch and finalizer settlement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-one-await-finalizer-bare-task.ts',
+        'export async function attempt(primary: Promise<number>, recovery: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return primary; } catch { return await recovery; } finally { await cleanup; } }',
+      ).module,
+    ).contents;
+    const protectedSettlement = output.indexOf('match primary.settle() {');
+    const catchSettlement = output.indexOf('match recovery.settle() {', protectedSettlement);
+    const finalizerSettlement = output.indexOf('match cleanup.settle() {', catchSettlement);
 
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.rule).toBe('rust-async-task-adoption-protected-unrepresented');
+    expect(output.match(/Result<Option<f64>, String>/g)).toHaveLength(3);
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(3);
+    expect(protectedSettlement).toBeGreaterThan(-1);
+    expect(catchSettlement).toBeGreaterThan(protectedSettlement);
+    expect(finalizerSettlement).toBeGreaterThan(catchSettlement);
+    expect(output).toContain('Err(finally_error) => Err(finally_error),');
   });
 
   it.skipIf(!rustcAvailable)('runs fulfilled and caught deferred returns through finally exactly once', () => {

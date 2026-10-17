@@ -267,10 +267,21 @@ type RustAsyncTryFinalizerCompletionPlan =
       statements: readonly Readonly<IrStatement>[];
     }>;
 
+interface RustAsyncTryProtectedTaskReturnStep {
+  readonly expression: Readonly<IrExpression>;
+  readonly statement: Readonly<Extract<IrStatement, { kind: 'return' }>>;
+}
+
 interface RustAsyncTryFinallyCompletionPlan {
   readonly catchPlan?: RustAsyncTryCatchCompletionPlan | undefined;
   readonly finalizerPlan: RustAsyncTryFinalizerCompletionPlan;
+  readonly protectedTaskReturn?: RustAsyncTryProtectedTaskReturnStep | undefined;
   readonly tryStatements: readonly Readonly<IrStatement>[];
+}
+
+interface RustAsyncTryProtectedTaskCatchPlan {
+  readonly preStatements: readonly Readonly<IrStatement>[];
+  readonly step: RustAsyncTryProtectedTaskReturnStep;
 }
 
 interface RustAsyncTryTwoAwaitPlan {
@@ -2834,6 +2845,46 @@ function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, conte
   }
 }
 
+function canIrExpressionDenoteProtectedFlightTaskRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  switch (expression.kind) {
+    case 'identifier':
+      return isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context));
+    case 'call':
+      return (
+        !isIrNativeAsyncFunctionCallRust(expression, context) &&
+        isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context))
+      );
+    case 'cast':
+      return (
+        isIrTaskTypeRust(expression.type) &&
+        canIrExpressionDenoteProtectedFlightTaskRust(expression.expression, context)
+      );
+    case 'conditional':
+      return (
+        canIrExpressionDenoteProtectedFlightTaskRust(expression.whenTrue, context) &&
+        canIrExpressionDenoteProtectedFlightTaskRust(expression.whenFalse, context)
+      );
+    default:
+      return false;
+  }
+}
+
+function getIrProtectedTaskExpressionTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind === 'property') return expression.type;
+  if (expression.kind === 'element') {
+    const receiverType = inferIrExpressionTypeRust(expression.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind === 'array') return receiver.element;
+  }
+  return inferIrExpressionTypeRust(expression, context);
+}
+
 function getIrConditionalTaskDenotationRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2876,7 +2927,17 @@ function assertIrAsyncReturnedExpressionCarrierRust(expression: Readonly<IrExpre
 }
 
 function emitAsyncTaskAdoptionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
-  if (!context.nativeAsyncFunction || !canIrExpressionDenoteTaskRust(expression, context)) return undefined;
+  if (!context.nativeAsyncFunction) return undefined;
+  if (!canIrExpressionDenoteTaskRust(expression, context)) {
+    if (context.insideProtectedTry && isIrTaskTypeRust(getIrProtectedTaskExpressionTypeRust(expression, context))) {
+      emissionRuleError(
+        context,
+        'bare task adoption inside a protected try region requires completion-aware Rust lowering',
+        'rust-async-task-adoption-protected-unrepresented',
+      );
+    }
+    return undefined;
+  }
   if (context.insideProtectedTry) {
     emissionRuleError(
       context,
@@ -6828,6 +6889,23 @@ function getIrDirectStatementsRust(statement: Readonly<IrStatement>): readonly R
   return statement.kind === 'block' ? statement.statements : [statement];
 }
 
+function getIrAsyncTryProtectedTaskReturnStepRust(
+  body: Readonly<IrStatement>,
+  context: EmitContext,
+): RustAsyncTryProtectedTaskReturnStep | undefined {
+  if (body.kind === 'block' && body.label) return undefined;
+  const tail = getIrDirectStatementsRust(body).at(-1);
+  if (
+    tail?.kind !== 'return' ||
+    !tail.expression ||
+    tail.expression.kind === 'await' ||
+    !canIrExpressionDenoteProtectedFlightTaskRust(tail.expression, context)
+  ) {
+    return undefined;
+  }
+  return { expression: tail.expression, statement: tail };
+}
+
 function getIrAsyncTryDirectAwaitStepRust(statement: Readonly<IrStatement>): RustAsyncTryDirectAwaitStep | undefined {
   if (statement.kind === 'return' && statement.expression?.kind === 'await') {
     return { awaitTarget: statement.expression.expression, kind: 'return' };
@@ -6880,6 +6958,40 @@ function getAsyncTryTwoAwaitPlanRust(
     preStatements: tryStatements.slice(0, first.index),
     second: second.step,
   };
+}
+
+function getAsyncTryProtectedTaskCatchPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryProtectedTaskCatchPlan | undefined {
+  if (!statement.catchClause || statement.finallyBody) return undefined;
+  const step = getIrAsyncTryProtectedTaskReturnStepRust(statement.tryBody, context);
+  if (!step) return undefined;
+
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const catchStatements = getIrDirectStatementsRust(statement.catchClause.body);
+  const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
+  const catchEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body);
+  const catchTail = catchStatements.at(-1);
+  const permittedCatchReturn = catchTail?.kind === 'return' ? catchTail : undefined;
+  if (
+    (statement.catchClause.body.kind === 'block' && statement.catchClause.body.label) ||
+    tryEvidence.suspensionCount !== 0 ||
+    catchEvidence.suspensionCount !== 0 ||
+    !tryStatements
+      .slice(0, -1)
+      .every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable') ||
+    !areIrAsyncTryStraightLineStatementsRust(catchStatements) ||
+    tryEvidence.abruptStatements.some((candidate) => candidate !== step.statement) ||
+    catchEvidence.abruptStatements.some((candidate) => candidate !== permittedCatchReturn)
+  ) {
+    emissionRuleError(
+      context,
+      'protected bare FlightTask return without finally requires flat synchronous try/catch arms and one exact terminal task return',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  return { preStatements: tryStatements.slice(0, -1), step };
 }
 
 function getIrAsyncTrySourceThrowMessageRust(
@@ -7063,6 +7175,8 @@ function getAsyncTryFinallyCompletionPlanRust(
   context: EmitContext,
 ): RustAsyncTryFinallyCompletionPlan | undefined {
   if (!statement.finallyBody) return undefined;
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const protectedTaskReturn = getIrAsyncTryProtectedTaskReturnStepRust(statement.tryBody, context);
   const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
   const catchEvidence = statement.catchClause
     ? collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body)
@@ -7070,9 +7184,8 @@ function getAsyncTryFinallyCompletionPlanRust(
   const finallyEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.finallyBody);
   const suspensionCount =
     tryEvidence.suspensionCount + (catchEvidence?.suspensionCount ?? 0) + finallyEvidence.suspensionCount;
-  if (suspensionCount === 0) return undefined;
+  if (suspensionCount === 0 && !protectedTaskReturn) return undefined;
 
-  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
   const catchStatements = statement.catchClause ? getIrDirectStatementsRust(statement.catchClause.body) : undefined;
   const finallyStatements = getIrDirectStatementsRust(statement.finallyBody);
   const catchPlan = statement.catchClause
@@ -7110,7 +7223,10 @@ function getAsyncTryFinallyCompletionPlanRust(
     (catchEvidence?.abruptStatements.every((candidate) => permittedCatchCompletions.has(candidate)) ?? true) &&
     finallyEvidence.abruptStatements.length === 0;
   const exactSuspensions =
-    (trySteps.length > 0 || catchPlan?.kind === 'await' || finalizerPlan.kind === 'await') &&
+    (trySteps.length > 0 ||
+      protectedTaskReturn !== undefined ||
+      catchPlan?.kind === 'await' ||
+      finalizerPlan.kind === 'await') &&
     tryEvidence.suspensionCount === trySteps.length &&
     (catchEvidence?.suspensionCount ?? 0) === (catchPlan?.kind === 'await' ? 1 : 0) &&
     finallyEvidence.suspensionCount === (finalizerPlan.kind === 'await' ? 1 : 0);
@@ -7124,6 +7240,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   return {
     ...(catchPlan ? { catchPlan } : {}),
     finalizerPlan,
+    ...(protectedTaskReturn ? { protectedTaskReturn } : {}),
     tryStatements,
   };
 }
@@ -7286,6 +7403,18 @@ function getIrAsyncTrySettledValueTypeRust(
   return isIrTaskTypeRust(type) ? type.typeArguments[0] : undefined;
 }
 
+function getIrAsyncTryProtectedTaskSettledValueTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind === 'conditional') {
+    const whenTrue = getIrAsyncTryProtectedTaskSettledValueTypeRust(expression.whenTrue, context);
+    const whenFalse = getIrAsyncTryProtectedTaskSettledValueTypeRust(expression.whenFalse, context);
+    return whenTrue && whenFalse && emitType(whenTrue, context) === emitType(whenFalse, context) ? whenTrue : undefined;
+  }
+  return getIrAsyncTrySettledValueTypeRust(expression, context);
+}
+
 function getIrSingleAbsentValueTypeRust(type: Readonly<IrType>): Readonly<IrType> | undefined {
   if (type.kind !== 'union' || (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type))) {
     return undefined;
@@ -7404,6 +7533,24 @@ function assertIrAsyncTryReturnAwaitCarrierRust(step: RustAsyncTryDirectAwaitSte
   }
 }
 
+function assertIrAsyncTryProtectedTaskReturnCarrierRust(
+  step: Readonly<RustAsyncTryProtectedTaskReturnStep>,
+  context: EmitContext,
+): void {
+  const valueType = getIrAsyncTryProtectedTaskSettledValueTypeRust(step.expression, context);
+  if (
+    !valueType ||
+    context.returnsSharedClass ||
+    emitType(valueType, context) !== emitAsyncTryCompletionReturnTypeRust(context)
+  ) {
+    emissionRuleError(
+      context,
+      'protected bare FlightTask return requires an exact owned Rust function return carrier',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+}
+
 function assertIrAsyncTrySettledStepCarrierRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): void {
   if (step.kind === 'return') {
     assertIrAsyncTryReturnAwaitCarrierRust(step, context);
@@ -7430,6 +7577,40 @@ function assertIrAsyncTrySettledStepCarrierRust(step: RustAsyncTryDirectAwaitSte
   }
 }
 
+function emitAsyncTryProtectedTaskOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind === 'cast') return emitAsyncTryProtectedTaskOperandRust(expression.expression, context);
+  if (expression.kind === 'conditional') {
+    const condition = emitExpression(expression.condition, context);
+    const whenTrue = emitAsyncTryProtectedTaskOperandRust(expression.whenTrue, context);
+    const whenFalse = emitAsyncTryProtectedTaskOperandRust(expression.whenFalse, context);
+    return `(if ${condition} { ${whenTrue} } else { ${whenFalse} })`;
+  }
+  return emitOwnedOperandRust(expression, context);
+}
+
+function emitAsyncTryProtectedTaskCatchRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  plan: Readonly<RustAsyncTryProtectedTaskCatchPlan>,
+  context: EmitContext,
+): string[] {
+  assertIrAsyncTryProtectedTaskReturnCarrierRust(plan.step, context);
+  const catchClause = statement.catchClause!;
+  const catchBinding = catchClause.binding ? getBindingTargetNameRust(catchClause.binding, context) : '_';
+  const target = emitAsyncTryProtectedTaskOperandRust(plan.step.expression, context);
+  const value = getGeneratedTargetNameRust('try_value', context);
+  return [
+    ...emitStatements(plan.preStatements, context),
+    `match ${target}.settle() {`,
+    ...indentSourceLines([
+      `Ok(${value}) => return ${value},`,
+      `Err(${catchBinding}) => {`,
+      ...indentSourceLines(emitStatementBody(catchClause.body, context)),
+      '}',
+    ]),
+    '}',
+  ];
+}
+
 function emitAsyncTryFinallyTryCompletionRust(
   plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
   label: string,
@@ -7437,6 +7618,21 @@ function emitAsyncTryFinallyTryCompletionRust(
 ): string[] {
   const lines: string[] = [];
   for (const statement of plan.tryStatements) {
+    if (statement === plan.protectedTaskReturn?.statement) {
+      assertIrAsyncTryProtectedTaskReturnCarrierRust(plan.protectedTaskReturn, context);
+      const target = emitAsyncTryProtectedTaskOperandRust(plan.protectedTaskReturn.expression, context);
+      const value = getGeneratedTargetNameRust('try_value', context);
+      const error = getGeneratedTargetNameRust('try_error', context);
+      lines.push(
+        `match ${target}.settle() {`,
+        ...indentSourceLines([
+          `Ok(${value}) => break '${label} Ok(Some(${value})),`,
+          `Err(${error}) => break '${label} Err(${error}),`,
+        ]),
+        '}',
+      );
+      return lines;
+    }
     const step = getIrAsyncTryDirectAwaitStepRust(statement);
     if (step) {
       assertIrAsyncTrySettledStepCarrierRust(step, context);
@@ -7725,6 +7921,11 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
   if (finallyCompletion) {
     assertIrAsyncTaskCatchBindingUsesRust(statement, context);
     return emitAsyncTryFinallyCompletionRust(statement, finallyCompletion, context);
+  }
+  const protectedTaskCatch = getAsyncTryProtectedTaskCatchPlanRust(statement, context);
+  if (protectedTaskCatch) {
+    assertIrAsyncTaskCatchBindingUsesRust(statement, context);
+    return emitAsyncTryProtectedTaskCatchRust(statement, protectedTaskCatch, context);
   }
   const twoAwait = getAsyncTryTwoAwaitPlanRust(statement);
   assertIrAsyncTryProtectedEvidenceRust(statement, context, twoAwait !== undefined);
@@ -8133,7 +8334,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       const protectedContext: EmitContext = { ...context, insideProtectedTry: true };
       if (
         context.asyncTryStatements.has(statement) ||
-        getIrTryProtectedCompletionEvidenceRust(statement).suspensionCount > 0
+        getIrTryProtectedCompletionEvidenceRust(statement).suspensionCount > 0 ||
+        getIrAsyncTryProtectedTaskReturnStepRust(statement.tryBody, protectedContext) !== undefined
       ) {
         return emitAsyncTryCatchRust(statement, protectedContext);
       }
