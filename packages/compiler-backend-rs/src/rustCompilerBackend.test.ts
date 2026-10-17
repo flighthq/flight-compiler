@@ -38623,3 +38623,442 @@ export function keep(value: Alpha): Choice { return value; }`;
     expect(() => compileRustSourceAgainstRuntime(emitIrModuleRust(result.module).contents)).not.toThrow();
   });
 });
+
+describe('emitIrModuleRust exact alias-transparent record-array union construction', () => {
+  it('constructs one exact array arm in every supported contextual position through closed alias chains', () => {
+    const result = lower(
+      'record-array-union-contexts.ts',
+      `interface Point { value: number }
+       type PointAlias = Point;
+       type TargetElement = PointAlias;
+       type SourceElement = PointAlias;
+       type SourceArray = readonly SourceElement[];
+       type SourceValues = SourceArray;
+       type ArraySlot = readonly TargetElement[] | number;
+       interface Holder { slot: ArraySlot }
+       function consume(_slot: ArraySlot): number { return 1; }
+
+       export function returned(values: SourceValues): ArraySlot { return values; }
+       export function passed(values: SourceValues): number { return consume(values); }
+       export function initialized(values: SourceValues): ArraySlot {
+         const slot: ArraySlot = values;
+         return slot;
+       }
+       export function assigned(initial: SourceValues, values: SourceValues): ArraySlot {
+         let slot: ArraySlot = initial;
+         slot = values;
+         return slot;
+       }
+       export function stored(holder: Holder, values: SourceValues): number {
+         holder.slot = values;
+         return 1;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return ArraySlot::Array(values);');
+    expect(output).toContain('consume(ArraySlot::Array(values))');
+    expect(output).toContain('let slot: ArraySlot = ArraySlot::Array(values);');
+    expect(output).toContain('let mut slot: ArraySlot = ArraySlot::Array(initial);');
+    expect(output).toContain('slot = ArraySlot::Array(values)');
+    expect(output).toContain('holder.slot = ArraySlot::Array(values)');
+    expect(output.match(/ArraySlot::Array\(values\)/gu)).toHaveLength(5);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('preserves record identity through imported aliases and a type reexport', () => {
+    const recordsSource = ts.createSourceFile(
+      '/flight/packages/math/src/record-array-records.ts',
+      `export interface Point { value: number }
+       export type PointAlias = Point;
+       export type ArraySlot = readonly PointAlias[] | number;
+       export function consume(_slot: ArraySlot): number { return 1; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/record-array-facade.ts',
+      `export type { PointAlias, ArraySlot } from './record-array-records.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/record-array-consumer.ts',
+      `import type { PointAlias, ArraySlot } from './record-array-facade.js';
+       import { consume } from './record-array-records.js';
+       type SourceElement = PointAlias;
+       type SourceArray = readonly SourceElement[];
+       type SourceValues = SourceArray;
+       export function returned(values: SourceValues): ArraySlot { return values; }
+       export function passed(values: SourceValues): number { return consume(values); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Record-array-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/record-array-facade.ts',
+          },
+          specifier: './record-array-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/record-array-records.ts' },
+        },
+        {
+          importer: {
+            name: 'Record-array-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/record-array-consumer.ts',
+          },
+          specifier: './record-array-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/record-array-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Record-array-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/record-array-consumer.ts',
+          },
+          specifier: './record-array-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/record-array-records.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [recordsResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: recordsSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(recordsResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const records = recordsResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = emitRustModuleInGraph([consumer, facade, records], consumer, [...moduleResolution.edges]);
+
+    expect(output).toContain('return ArraySlot::Array(values);');
+    expect(output).toContain('consume(crate::record_array_records::ArraySlot::Array(values))');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it('resolves a closed alias chain at the target array position', () => {
+    const result = lower(
+      'record-array-target-alias.ts',
+      `type Point = { value: number };
+       type PointAlias = Point;
+       type TargetArray = readonly PointAlias[];
+       type TargetValues = TargetArray;
+       type Slot = TargetValues | number;
+       export function returned(values: readonly Point[]): Slot { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::TargetValues(values);');
+  });
+
+  it('uses exact element declaration identity when array variant names collide and remains repeatable', () => {
+    const result = lower(
+      'record-array-union-collision.ts',
+      `interface A_B { value: number }
+       interface AB { value: number }
+       type Choice = readonly A_B[] | readonly AB[] | number;
+       export function first(values: readonly A_B[]): Choice { return values; }
+       export function second(values: readonly AB[]): Choice { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Array(Vec<AB>)');
+    expect(output).toContain('Array2(Vec<AB_2>)');
+    expect(output).toContain('return Choice::Array(values);');
+    expect(output).toContain('return Choice::Array2(values);');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it.each([
+    [
+      'a same-shaped distinct record element',
+      `interface Point { value: number }
+       interface Other { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly Other[]): Slot { return values; }`,
+    ],
+    [
+      'a derived record element',
+      `interface Point { value: number }
+       interface Derived extends Point { label: string }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly Derived[]): Slot { return values; }`,
+    ],
+    [
+      'an anonymous record element',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly { value: number }[]): Slot { return values; }`,
+    ],
+    [
+      'a class element',
+      `class Point { value = 0 }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly Point[]): Slot { return values; }`,
+    ],
+    [
+      'a primitive element',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly number[]): Slot { return values; }`,
+    ],
+    [
+      'a nested array',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly (readonly Point[])[]): Slot { return values; }`,
+    ],
+    [
+      'a tuple source',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly [Point]): Slot { return values; }`,
+    ],
+    [
+      'a Map arm',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | Map<string, Point>;
+       export function wrong(values: Map<string, Point>): Slot { return values; }`,
+    ],
+    [
+      'a callable arm',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | (() => Point);
+       export function wrong(values: () => Point): Slot { return values; }`,
+    ],
+    [
+      'a generic record arm',
+      `interface Point { value: number }
+       interface Box<T> { value: T }
+       type Slot = readonly Point[] | Box<Point>;
+       export function wrong(values: Box<Point>): Slot { return values; }`,
+    ],
+    [
+      'a generic source context',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong<T extends Point>(values: readonly T[]): Slot { return values; }`,
+    ],
+    [
+      'a parameterized array alias',
+      `interface Point { value: number }
+       type Values<T> = readonly T[];
+       type Slot = readonly Point[] | number;
+       export function wrong(values: Values<Point>): Slot { return values; }`,
+    ],
+    [
+      'a union element',
+      `interface Point { value: number }
+       interface Other { label: string }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly (Point | Other)[]): Slot { return values; }`,
+    ],
+    [
+      'an optional element',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly (Point | undefined)[]): Slot { return values; }`,
+    ],
+    [
+      'a union source',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly Point[] | number): Slot { return values; }`,
+    ],
+    [
+      'a narrowed optional source',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       export function wrong(values: readonly Point[] | undefined): Slot {
+         if (values !== undefined) return values;
+         return 0;
+       }`,
+    ],
+    [
+      'an optional owner',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number | undefined;
+       export function wrong(values: readonly Point[]): Slot { return values; }`,
+    ],
+    [
+      'a generic owner',
+      `interface Point { value: number }
+       type Slot<T> = readonly T[] | number;
+       export function wrong(values: readonly Point[]): Slot<Point> { return values; }`,
+    ],
+    [
+      'an anonymous owner',
+      `interface Point { value: number }
+       export function wrong(values: readonly Point[]): readonly Point[] | number { return values; }`,
+    ],
+  ])('keeps %s outside the exact record-array lane', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('record-array-type-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a call',
+      `function make(values: readonly Point[]): readonly Point[] { return values; }
+       export function wrong(values: readonly Point[]): Slot { return make(values); }`,
+    ],
+    [
+      'a property read',
+      `interface Holder { values: readonly Point[] }
+       export function wrong(holder: Holder): Slot { return holder.values; }`,
+    ],
+    ['a cast', `export function wrong(values: readonly Point[]): Slot { return values as readonly Point[]; }`],
+    [
+      'a conditional',
+      `export function wrong(left: readonly Point[], right: readonly Point[], flag: boolean): Slot {
+         return flag ? left : right;
+       }`,
+    ],
+    ['an array literal', `export function wrong(point: Point): Slot { return [point]; }`],
+    [
+      'an assignment expression',
+      `export function wrong(values: readonly Point[], replacement: readonly Point[]): Slot {
+         return (values = replacement);
+       }`,
+    ],
+  ])('rejects %s rather than evaluating it to select an array arm', (_name, body) => {
+    const source = `interface Point { value: number }
+type Slot = readonly Point[] | number;
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('record-array-operand-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('rejects a spread argument before an array arm can be selected', () => {
+    const module = lower(
+      'record-array-spread-refusal.ts',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       function consume(_slot: Slot): number { return 1; }
+       export function wrong(values: readonly Point[]): number { return consume(...[values]); }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'module state',
+      `const values: readonly Point[] = [];
+       export function wrong(): Slot { return values; }`,
+      'rust-module-array-value-unrepresented',
+    ],
+    [
+      'a shared array binding',
+      `export function wrong(values: readonly Point[]): Slot {
+         const alias = values;
+         void alias.length;
+         return values;
+       }`,
+      'rust-shared-identity-deep-clone-unrepresented',
+    ],
+    [
+      'a closure-captured array binding',
+      `export function wrong(values: readonly Point[]): Slot {
+         const read = () => values.length;
+         read();
+         return values;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('rejects %s as an array-arm source', (_name, body, rule) => {
+    const source = `interface Point { value: number }
+type Slot = readonly Point[] | number;
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('record-array-binding-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('preserves the existing clone refusal for a repeated array operand', () => {
+    const module = lower(
+      'record-array-repeated-refusal.ts',
+      `interface Point { value: number }
+       type Slot = readonly Point[] | number;
+       function count(values: readonly Point[]): number { return values.length; }
+       export function wrong(values: readonly Point[]): Slot {
+         count(values);
+         return values;
+       }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-shared-identity-deep-clone-unrepresented');
+  });
+
+  it('requires one and only one exact array-arm identity match', () => {
+    const module = structuredClone(
+      lower(
+        'record-array-duplicate-arm-refusal.ts',
+        `interface Point { value: number }
+         type Slot = readonly Point[] | number;
+         export function wrong(values: readonly Point[]): Slot { return values; }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const array = slot.type.types.find((member) => member.kind === 'array');
+    if (!array) throw new Error('expected record-array arm');
+    (slot.type.types as unknown as IrType[]).splice(1, 0, structuredClone(array));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('rejects cyclic and over-depth source alias chains deterministically', () => {
+    const source = `interface Point { value: number }
+type Source0 = readonly Point[];
+type Source1 = Source0;
+type Source2 = Source1;
+type Source3 = Source2;
+type Source4 = Source3;
+type Source5 = Source4;
+type Source6 = Source5;
+type Source7 = Source6;
+type Source8 = Source7;
+type Source9 = Source8;
+type Slot = readonly Point[] | number;
+export function wrong(values: Source9): Slot { return values; }`;
+    const overDepth = lower('record-array-depth-refusal.ts', source).module;
+    expect(getEmissionRule(() => emitIrModuleRust(overDepth))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+
+    const cyclic = structuredClone(lower('record-array-cycle-refusal.ts', source).module);
+    const source0 = cyclic.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Source0',
+    );
+    if (source0?.kind !== 'typeAlias') throw new Error('expected Source0 alias');
+    (source0 as { type: IrType }).type = {
+      kind: 'named',
+      reference: { binding: source0.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+});

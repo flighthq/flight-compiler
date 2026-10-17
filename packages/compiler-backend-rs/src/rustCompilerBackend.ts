@@ -9009,6 +9009,8 @@ function emitContextualReturnValueRust(
       expression,
       context.enclosingReturnType,
       context,
+      'owned',
+      true,
     );
     if (nominalUnion) return nominalUnion;
     if (
@@ -9605,6 +9607,11 @@ interface RustExactNominalTypeIdentity {
   readonly location: RustNamedTypeDeclarationLocation;
 }
 
+interface RustExactAliasTransparentRecordArrayIdentity {
+  readonly elementDeclarationKey: string;
+  readonly kind: 'arrayRecord';
+}
+
 // Contextual unions get one construction boundary for returns, stores, calls, and assertions. A
 // single payload plus one sentinel is the Option carrier Rust already uses, and must be claimed
 // before nominal-enum construction. Both paths require exact representation evidence; evaluating an
@@ -9615,6 +9622,7 @@ function emitExactContextualGeneralUnionConstructionRust(
   targetType: Readonly<IrType>,
   context: EmitContext,
   ownership: 'direct' | 'owned' = 'owned',
+  deferUnsupportedCompositeRefusal = false,
 ): string | undefined {
   const singlePayloadOption = getIrSinglePayloadOptionShapeRust(targetType, context);
   if (expression.kind === 'cast') {
@@ -9670,6 +9678,19 @@ function emitExactContextualGeneralUnionConstructionRust(
     return undefined;
   }
   if (!candidate) return undefined;
+  // A returned union whose arms are all outside this constructor remains owned by the established
+  // return-level refusal. In particular, accepting an earlier record-array function must not change
+  // the diagnostic at the next unsupported Map/callable/generic alternative in the same module.
+  if (
+    deferUnsupportedCompositeRefusal &&
+    !plan.valueVariants.some(
+      (variant) =>
+        getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context) !== undefined ||
+        getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context) !== undefined,
+    )
+  ) {
+    return undefined;
+  }
   const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
   const dualSentinelNominalEnum =
     plan.sentinels.kind === 'distinct' ? createRustDualSentinelNominalEnumPlanRust(targetType, context) : undefined;
@@ -9714,6 +9735,9 @@ function emitExactContextualGeneralUnionConstructionRust(
     refuseRustContextualGeneralUnionConstructionRust(context);
   }
 
+  const recordArray = emitExactAliasTransparentRecordArrayUnionConstructionRust(expression, plan, context);
+  if (recordArray) return recordArray;
+
   const sourceType = getIrExpressionExactNominalRecordTypeRust(expression, context);
   const sourceIdentity = sourceType ? getIrExactNominalRecordIdentityRust(sourceType, context) : undefined;
   if (!sourceIdentity || isIrExpressionReferencePlannedRust(expression, context)) {
@@ -9730,6 +9754,49 @@ function emitExactContextualGeneralUnionConstructionRust(
     ? `${emitRustOptionalGeneratedEnumOwnerRust(optionalGeneratedEnum.payloadOwner, context)}::${match.name}(${payload})`
     : `${emitType(dualSentinelNominalEnum?.owner ?? plan.owner, context)}::${match.name}(${payload})`;
   return optionalGeneratedEnum ? `Some(${constructed})` : constructed;
+}
+
+// A Vec payload may select a nominal union arm only from the canonical declaration identity of its
+// record element. Alias spelling and import/reexport spelling are observational details: following a
+// closed alias chain never renders either side and therefore cannot make two declarations equal just
+// because Rust happens to emit the same carrier for them.
+function emitExactAliasTransparentRecordArrayUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    expression.presence === 'narrowedPresent' ||
+    context.moduleStateBindings.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!sourceType || sourceType.kind === 'union') return undefined;
+  const sourceIdentity = getRustExactAliasTransparentRecordArrayIdentityRust(sourceType, context);
+  if (!sourceIdentity) return undefined;
+  const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  if (
+    context.activeTypeParameters.length > 0 ||
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    ownerIdentity?.location.declaration.kind !== 'typeAlias' ||
+    ownerIdentity.location.declaration.typeParameters.length > 0 ||
+    ownerIdentity.location.declaration.type.kind !== 'union' ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const matches = plan.valueVariants.filter((variant) => {
+    const identity = getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context);
+    return identity?.elementDeclarationKey === sourceIdentity.elementDeclarationKey;
+  });
+  if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
+  const operand = emitOwnedOperandRust(expression, context);
+  return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
 }
 
 // A direct flat anonymous union has its own generated enum identity. Widening such a carrier is
@@ -10042,13 +10109,79 @@ function getIrNamedTypeIdentityRust(
   };
 }
 
+function getRustExactAliasTransparentRecordArrayIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactAliasTransparentRecordArrayIdentity | undefined {
+  const elementDeclarationKey = resolveRustExactAliasTransparentRecordArrayIdentityRust(
+    type,
+    'array',
+    context,
+    new Set(),
+    0,
+  );
+  return elementDeclarationKey ? { elementDeclarationKey, kind: 'arrayRecord' } : undefined;
+}
+
+function resolveRustExactAliasTransparentRecordArrayIdentityRust(
+  type: Readonly<IrType>,
+  position: 'array' | 'record',
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): string | undefined {
+  if (depth > 8) return undefined;
+  if (position === 'array' && type.kind === 'array') {
+    return resolveRustExactAliasTransparentRecordArrayIdentityRust(
+      type.element,
+      'record',
+      context,
+      resolving,
+      depth + 1,
+    );
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(
+    type.reference.binding as Readonly<IrTypeBindingIdentity>,
+    context,
+    context.module,
+    new Set(),
+  );
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+  if (resolving.has(declarationKey) || declaration.typeParameters.length > 0) return undefined;
+  if (declaration.kind === 'interface') return position === 'record' ? declarationKey : undefined;
+  if (position === 'record' && declaration.type.kind === 'object') return declarationKey;
+  return resolveRustExactAliasTransparentRecordArrayIdentityRust(
+    declaration.type,
+    position,
+    context,
+    new Set(resolving).add(declarationKey),
+    depth + 1,
+  );
+}
+
 function hasIrTypeContextualGeneralUnionCandidateRust(
   type: Readonly<IrType>,
   plan: ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>,
   context: EmitContext,
 ): boolean {
   if (plan.kind === 'nominalEnum') {
-    return plan.valueVariants.some((variant) => variant.sourceAlternative.kind === 'named');
+    return plan.valueVariants.some(
+      (variant) =>
+        variant.sourceAlternative.kind === 'named' ||
+        getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context) !== undefined,
+    );
   }
   if (type.kind === 'union') {
     const values = flattenIrUnionTypesRust(type.types).filter(
