@@ -64,6 +64,9 @@ import type {
   CompilerRefusalClassification,
   CompilerRefusalPlaceholderRequest,
   CompilerRuntimeExternalConstructorInvocation,
+  CompilerRustModuleConstantBindingPlan,
+  CompilerRustModuleConstantPlan,
+  CompilerRustModuleConstantRefusal,
   CompilerRustModuleStateBindingPlan,
   CompilerRustModuleStatePlan,
   CompilerRustReferenceRepresentation,
@@ -125,6 +128,7 @@ import {
 // Emission's spelling rules. The public-binding plan reads the same record, so a name that is later
 // collision-suffixed cannot be allocated differently by the plan than by the emitted source.
 const { safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
+import { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
 import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
@@ -414,6 +418,8 @@ interface EmitContext {
   // Declarations this module exports through `export { name }`: the IR records the local export
   // entry rather than a second exported flag on the declaration.
   moduleExportBindingIds: ReadonlySet<string>;
+  moduleConstantBindings: ReadonlyMap<string, Readonly<CompilerRustModuleConstantBindingPlan>>;
+  moduleConstantRefusals: ReadonlyMap<string, Readonly<CompilerRustModuleConstantRefusal>>;
   moduleStateBindings: ReadonlyMap<string, RustModuleStateEmission>;
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
@@ -496,6 +502,10 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
       });
+      const moduleConstantPlan = createCompilerRustModuleConstantPlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
       const moduleStatePlan = createCompilerRustModuleStatePlan({
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
@@ -528,6 +538,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
               moduleResolution,
               options,
               referenceRepresentationPlan,
+              moduleConstantPlan,
               moduleStatePlan,
             ),
           ];
@@ -560,6 +571,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                 moduleResolution,
                 options,
                 referenceRepresentationPlan,
+                moduleConstantPlan,
                 moduleStatePlan,
                 { references: planned.references, sourceFile: planned.sourceFile },
                 salvage,
@@ -613,6 +625,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                   moduleResolution,
                   options,
                   referenceRepresentationPlan,
+                  moduleConstantPlan,
                   moduleStatePlan,
                   {
                     references,
@@ -637,6 +650,10 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
       });
+      const moduleConstantPlan = createCompilerRustModuleConstantPlan({
+        ...(moduleResolution ? { moduleResolution } : {}),
+        modules,
+      });
       const moduleStatePlan = createCompilerRustModuleStatePlan({
         ...(moduleResolution ? { moduleResolution } : {}),
         modules,
@@ -648,6 +665,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
           moduleResolution,
           options,
           referenceRepresentationPlan,
+          moduleConstantPlan,
           moduleStatePlan,
         ),
       ];
@@ -667,6 +685,7 @@ export function emitIrModuleRust(
     undefined,
     options,
     createCompilerRustReferenceRepresentationPlan({ modules: [sourceModule] }),
+    createCompilerRustModuleConstantPlan({ modules: [sourceModule] }),
     createCompilerRustModuleStatePlan({ modules: [sourceModule] }),
   );
 }
@@ -689,6 +708,7 @@ function emitIrModuleRustWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<RustCompilerBackendOptions>,
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
+  moduleConstantPlan: Readonly<CompilerRustModuleConstantPlan>,
   moduleStatePlan: Readonly<CompilerRustModuleStatePlan>,
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
   salvage?: RustSalvageRequest | undefined,
@@ -720,12 +740,15 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassSwitchSuspension(),
   ]);
   assertSparseArrayLiteralRepresentationRust(module);
-  assertModuleArrayValueRepresentationRust(
+  assertImportedModuleArrayValueRepresentationRust(
     module,
     replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
   );
   const referenceModulePlan = referenceRepresentationPlan.modules.find((candidate) =>
+    isRustCompilerModuleIdentityEqual(candidate.module, module),
+  );
+  const moduleConstantModulePlan = moduleConstantPlan.modules.find((candidate) =>
     isRustCompilerModuleIdentityEqual(candidate.module, module),
   );
   const moduleStateModulePlan = moduleStatePlan.modules.find((candidate) =>
@@ -911,6 +934,12 @@ function emitIrModuleRustWithContext(
     ),
   );
   const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
+  const moduleConstantBindings = new Map(
+    moduleConstantModulePlan?.bindings.map((binding) => [binding.bindingId, binding]) ?? [],
+  );
+  const moduleConstantRefusals = new Map(
+    moduleConstantModulePlan?.refusals.map((refusal) => [refusal.bindingId, refusal]) ?? [],
+  );
   const moduleStateBindings = new Map<string, RustModuleStateEmission>();
   const adaptedNativeFutureArgumentPositions = new Map<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>();
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
@@ -926,6 +955,8 @@ function emitIrModuleRustWithContext(
     anonymousUnionEnums: new Map(),
     apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module, moduleExportBindingIds),
     moduleExportBindingIds,
+    moduleConstantBindings,
+    moduleConstantRefusals,
     moduleStateBindings,
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
@@ -1144,21 +1175,38 @@ function emitIrModuleRustWithContext(
   assertArrayFromSemanticsRust(module, context);
   assertArrayOperationSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
-  const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
+  const strictImports =
+    salvage === undefined
+      ? [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)]
+      : undefined;
   const stringRefusalsByDeclaration =
     salvage === undefined ? undefined : collectRustStringMemberRefusalsByDeclarationRust(module);
+  const moduleConstantDependenciesByDeclaration =
+    salvage === undefined
+      ? undefined
+      : collectRustModuleConstantDependentDeclarationsRust(module, context.moduleConstantRefusals);
   const declarations = module.declarations
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) =>
       salvage === undefined
         ? emitDeclaration(declaration, context)
-        : emitSalvagedDeclarationRust(declaration, context, salvage, stringRefusalsByDeclaration?.get(declaration)),
+        : emitSalvagedDeclarationRust(
+            declaration,
+            context,
+            salvage,
+            stringRefusalsByDeclaration?.get(declaration),
+            moduleConstantDependenciesByDeclaration?.get(declaration),
+          ),
     );
   if (salvage !== undefined && salvage.failures.length > 0) {
     // The banner follows the generated header and the crate's inner attribute, before anything that
     // could compile. A partial file must announce itself before a reader trusts it.
     lines.splice(2, 0, '', ...renderRustSalvageBannerRust(salvage.failures));
   }
+  const imports = strictImports ?? [
+    ...emitImports(filterRustSalvageImportsRust(module, salvage?.failures ?? []), context),
+    ...emitReexportsRust(module.exports, context),
+  ];
   // The runtime contract's types are named bare in emitted source, so the module has to bring them
   // into scope. Which ones it needs is only known once everything is emitted, which is why the use
   // line is assembled here rather than beside the source's own imports.
@@ -12890,6 +12938,25 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   if (declaration.mutable) {
     refuseRustModuleVariableSynchronization(declaration.binding, context);
   }
+  const refusal = context.moduleConstantRefusals.get(declaration.binding.id);
+  if (refusal) emissionRuleError(context, refusal.message, refusal.code);
+  const plan = context.moduleConstantBindings.get(declaration.binding.id);
+  const declarationIndex = context.module.declarations.indexOf(declaration);
+  if (
+    !plan ||
+    plan.capability !== 'primitive-const-expression' ||
+    plan.declarationPath.length !== 2 ||
+    plan.declarationPath[0] !== 'declarations' ||
+    plan.declarationPath[1] !== declarationIndex ||
+    declaration.type.kind !== 'primitive' ||
+    declaration.type.name !== plan.scalar
+  ) {
+    emissionRuleError(
+      context,
+      `module constant ${declaration.binding.name} has no matching primitive Rust const-expression proof`,
+      'rust-module-constant-initializer-unsupported',
+    );
+  }
   return [
     `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
@@ -13367,24 +13434,11 @@ function assertSparseArrayLiteralRepresentationRust(module: Readonly<IrModule>):
   );
 }
 
-function assertModuleArrayValueRepresentationRust(
+function assertImportedModuleArrayValueRepresentationRust(
   module: Readonly<IrModule>,
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
 ): void {
-  const declaration = module.declarations.find(
-    (candidate): candidate is RustNamedVariableDeclaration =>
-      candidate.kind === 'variable' && 'binding' in candidate && isModuleArrayValueDeclarationRust(candidate),
-  );
-  if (declaration) {
-    throw createBackendEmissionFailure(
-      'rust',
-      module,
-      `module array value ${declaration.binding.name} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
-      'rust-module-array-value-unrepresented',
-    );
-  }
-
   for (const imported of module.imports) {
     for (const binding of imported.bindings) {
       if (binding.typeOnly || binding.imported === '*' || binding.imported === 'default') continue;
@@ -17643,6 +17697,11 @@ interface RustSalvageRequest {
   readonly sourceText?: string | undefined;
 }
 
+interface RustModuleConstantDependentDeclaration {
+  readonly bindingId: string;
+  readonly bindingName: string;
+}
+
 // Every collection declaration emission can mutate. A failed declaration must leave no record,
 // enum, import need, or generated name behind: the surviving declarations then emit exactly the
 // bytes they would have emitted without the failure, and no helper is published for an omitted item.
@@ -17676,6 +17735,7 @@ function emitSalvagedDeclarationRust(
   context: EmitContext,
   salvage: RustSalvageRequest,
   stringRefusals?: readonly Readonly<RustStringMemberSemanticsRefusal>[] | undefined,
+  moduleConstantDependency?: Readonly<RustModuleConstantDependentDeclaration> | undefined,
 ): string[] {
   const snapshot = createRustSalvageContextSnapshotRust(context);
   try {
@@ -17698,6 +17758,25 @@ function emitSalvagedDeclarationRust(
         ),
       );
     }
+    const ownsModuleConstantRefusal =
+      declaration.kind === 'variable' &&
+      'binding' in declaration &&
+      context.moduleConstantRefusals.has(declaration.binding.id);
+    if (moduleConstantDependency && !ownsModuleConstantRefusal) {
+      throw createBackendEmissionFailure(
+        'rust',
+        context.module,
+        `declaration depends on unsupported module constant ${moduleConstantDependency.bindingName}`,
+        'rust-module-constant-initializer-unsupported',
+        createRustEmissionFailureMetadata(
+          {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+          },
+          undefined,
+        ),
+      );
+    }
     return emitDeclaration(declaration, context);
   } catch (error) {
     // Only a declared refusal is salvage policy. Anything else -- an invariant, a contract
@@ -17716,6 +17795,82 @@ function emitSalvagedDeclarationRust(
     restoreRustSalvageContextRust(context, snapshot);
     return renderRustSalvagedDeclarationRust(failure);
   }
+}
+
+function collectRustModuleConstantDependentDeclarationsRust(
+  module: Readonly<IrModule>,
+  refusals: ReadonlyMap<string, Readonly<CompilerRustModuleConstantRefusal>>,
+): ReadonlyMap<Readonly<IrDeclaration>, Readonly<RustModuleConstantDependentDeclaration>> {
+  const result = new Map<Readonly<IrDeclaration>, Readonly<RustModuleConstantDependentDeclaration>>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression, traversalPath) {
+      const binding =
+        expression.kind === 'identifier' && expression.reference.kind === 'binding'
+          ? expression.reference.binding
+          : expression.kind === 'property' && expression.namespaceMember?.kind === 'binding'
+            ? expression.namespaceMember.binding
+            : undefined;
+      if (!binding || !refusals.has(binding.id)) return;
+      const declaration = getRustTraversalDeclarationRust(module, traversalPath);
+      if (declaration && !result.has(declaration)) {
+        result.set(declaration, { bindingId: binding.id, bindingName: binding.name });
+      }
+    },
+    type(type, traversalPath) {
+      const binding = 'reference' in type && type.reference.kind === 'binding' ? type.reference.binding : undefined;
+      if (!binding || !refusals.has(binding.id)) return;
+      const declaration = getRustTraversalDeclarationRust(module, traversalPath);
+      if (declaration && !result.has(declaration)) {
+        result.set(declaration, { bindingId: binding.id, bindingName: binding.name });
+      }
+    },
+  });
+  return result;
+}
+
+function getRustTraversalDeclarationRust(
+  module: Readonly<IrModule>,
+  traversalPath: CompilerIrTraversalPath,
+): Readonly<IrDeclaration> | undefined {
+  return traversalPath[0] === 'declarations' && typeof traversalPath[1] === 'number'
+    ? module.declarations[traversalPath[1]]
+    : undefined;
+}
+
+function filterRustSalvageImportsRust(
+  module: Readonly<IrModule>,
+  failures: readonly Readonly<RustSalvageFailure>[],
+): readonly Readonly<IrImport>[] {
+  if (failures.length === 0) return module.imports;
+  const failedDeclarations = new Set(failures.map((failure) => failure.declaration));
+  const usedBindingIds = new Set(
+    module.exports.flatMap((exported) => (exported.kind === 'local' ? [exported.binding.id] : [])),
+  );
+  const isRetainedPath = (traversalPath: CompilerIrTraversalPath): boolean => {
+    const declaration = getRustTraversalDeclarationRust(module, traversalPath);
+    return declaration === undefined || !failedDeclarations.has(declaration);
+  };
+  analyzeIrModuleTraversal(module, {
+    expression(expression, traversalPath) {
+      if (!isRetainedPath(traversalPath)) return;
+      if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+        usedBindingIds.add(expression.reference.binding.id);
+      }
+      if (expression.kind === 'property' && expression.namespaceMember?.kind === 'binding') {
+        usedBindingIds.add(expression.namespaceMember.binding.id);
+      }
+    },
+    type(type, traversalPath) {
+      if (isRetainedPath(traversalPath) && 'reference' in type && type.reference.kind === 'binding') {
+        usedBindingIds.add(type.reference.binding.id);
+      }
+    },
+  });
+  return module.imports.flatMap((imported) => {
+    if (imported.bindings.length === 0) return [imported];
+    const bindings = imported.bindings.filter((binding) => usedBindingIds.has(binding.binding.id));
+    return bindings.length === 0 ? [] : [{ ...imported, bindings }];
+  });
 }
 
 // The IR records where a declaration STARTS and nothing about where it ends, so the end is the line

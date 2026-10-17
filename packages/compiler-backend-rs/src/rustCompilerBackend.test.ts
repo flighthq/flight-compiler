@@ -881,7 +881,7 @@ export function keep(value: number): number { return value + 1; }`;
     const subject = lowerPackage(
       '@flighthq/core',
       'use.ts',
-      "import type { Box } from '@flighthq/types/public'; export const box: Box = {};",
+      "import type { Box } from '@flighthq/types/public'; export function box(): Box { return {}; }",
     ).module;
     const backend = createRustCompilerBackend();
 
@@ -6914,9 +6914,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('42.0');
   });
 
-  it('emits string literal with to_owned()', () => {
-    const output = emitIrModuleRust(lower('str-lit.ts', 'export const GREETING: string = "hello";').module).contents;
-    expect(output).toContain('"hello".to_owned()');
+  it('refuses a module string literal that would allocate inside a Rust const item', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('str-lit.ts', 'export const GREETING: string = "hello";').module),
+    );
+    expect(failure.rule).toBe('rust-module-constant-initializer-unsupported');
+    expect(failure.message).toContain('module constant GREETING');
   });
 
   it('emits array map through the staged map and collect chain', () => {
@@ -9451,9 +9454,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const output = emitIrModuleRust(
       lower(
         'scalar-intersections.ts',
-        `export const BuiltIn = 'built-in';
+        `export type BuiltIn = 'built-in';
          export type Handle = number & { readonly __brand: 'Handle' };
-         export type OpenName = typeof BuiltIn | (string & Record<never, never>);`,
+         export type OpenName = BuiltIn | (string & Record<never, never>);`,
       ).module,
     ).contents;
 
@@ -26481,12 +26484,12 @@ describe('emitIrModuleRust module-variable refusal diagnostics', () => {
     expect(moduleArray.rule).toBe('rust-module-array-value-unrepresented');
     expect(externalImport.rule).toBe('rust-external-import-unsupported');
 
-    // The two module-variable rules are the only ones these sites may report, and the defensive
-    // source-tree and binding-allocation sites stay message-only by construction.
+    // The established module-variable rules keep their own sites, and the defensive source-tree,
+    // module-state-plan, and binding-allocation sites stay message-only by construction.
     const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
     expect(source.split("'rust-module-variable-initializer-and-type-required'").length - 1).toBe(1);
     expect(source.split("'rust-module-variable-synchronization-unsupported'").length - 1).toBe(1);
-    expect(source.split('has no Rust target name allocation').length - 1).toBe(1);
+    expect(source.split('has no Rust target name allocation').length - 1).toBe(2);
     expect(source.split('has no Rust type target resolution').length - 1).toBe(1);
   });
 });
