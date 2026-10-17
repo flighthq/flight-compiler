@@ -24848,6 +24848,22 @@ describe('emitIrModuleRust array flatMap', () => {
     expect(output).toContain('(array_flat_map_callback)(array_flat_map_element.clone(), array_flat_map_index as f64)');
     expect(output).toContain('.collect::<Vec<_>>()');
     expect(output).not.toContain('into_iter().flat_map');
+    // The staged inline closure precedes the iterator call that would otherwise constrain its
+    // parameters, so each parameter is annotated from the proven callback carriers.
+    expect(output).toContain('|value: f64, index: f64|');
+    expect(output).toContain('|value: String|');
+    expect(output).toContain('|| vec![1.0, 0.0]');
+  });
+
+  it('annotates a flatMap inline closure whose body only clones the element', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-flat-map-clone.ts',
+        'export function doubled(values: string[]): string[] { return values.flatMap((value: string): string[] => [value, value]); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let mut array_flat_map_callback = |value: String| vec![value.clone(), value.clone()];');
   });
 
   it('stages the receiver, then the callback, then the borrow', () => {
@@ -24986,6 +25002,7 @@ describe('emitIrModuleRust array flatMap', () => {
 
     expect(output).toContain('array_map_');
     expect(output).toContain('array_for_each_');
-    expect(output).toContain('.into_iter().fold(');
+    expect(output).toContain('array_reduce_');
+    expect(output).toContain('.fold(');
   });
 });

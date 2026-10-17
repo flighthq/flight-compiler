@@ -4330,9 +4330,15 @@ function emitArrayTransformCallRust(
     ...(signature.parameters.length >= 1 ? [`${elementName}.clone()`] : []),
     ...(signature.parameters.length === 2 ? [`${indexName} as f64`] : []),
   ];
+  // flatMap's staged closure is bound before the iterator call that constrains it, so an inline
+  // callback body that only clones its parameter (a String identity flatten) leaves the parameter type
+  // unconstrained (E0282). Annotate the inline closure's parameters from the proven callback carriers,
+  // the same way the sort comparator is annotated. Referenced callbacks already carry their own types.
   const callbackInitializer =
     callback.kind === 'function'
-      ? `let mut ${callbackName} = ${emitExpression(callback, context)};`
+      ? `let mut ${callbackName} = ${
+          member === 'flatMap' ? emitFunctionExpressionRust(callback, context, true) : emitExpression(callback, context)
+        };`
       : `let ${callbackName} = &${emitExpression(callback, context)};`;
   const transformed =
     member === 'map'
