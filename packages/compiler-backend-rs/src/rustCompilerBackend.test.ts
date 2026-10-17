@@ -17221,7 +17221,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('let mut array_splice_values = alias.borrow_mut()');
     expect(output).toContain('.splice(array_splice_start_index..array_splice_end, vec![');
-    expect(output).toContain('values.borrow().iter().position');
+    expect(output).toContain('array_index_of_receiver.borrow().iter().position');
     if (rustcAvailable) runRustSource(output, 'assert_eq!(replace_shared(), 3523.0);');
   });
 
