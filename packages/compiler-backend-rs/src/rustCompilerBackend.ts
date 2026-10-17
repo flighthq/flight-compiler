@@ -2890,9 +2890,17 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       // spelled screaming snake there, a type pascal, a value snake. Name shape is not evidence of which
       // of those a module wrote, so only the allocation can answer.
       const targetModule = resolveImportModuleRust(imported.specifier, binding.imported, context);
-      const declaredName = targetModule
-        ? getRustDeclaredExportNameRust(targetModule, binding.imported, binding.binding.space, context)
-        : undefined;
+      let declaredName: string | undefined;
+      if (targetModule) {
+        const resolution = resolveRustDeclaredExportRust(
+          targetModule,
+          binding.imported,
+          binding.binding.space,
+          context,
+        );
+        assertRustDeclaredExportResolutionRust(resolution, targetModule, binding.imported, context);
+        declaredName = resolution.kind === 'resolved' ? resolution.name : undefined;
+      }
       const importedName = declaredName ?? getRustNameShapeFallback(binding.imported, binding.binding.space === 'type');
       const localName = getBindingTargetNameRust(binding.binding, context);
       names.push(importedName === localName ? importedName : `${importedName} as ${localName}`);
@@ -2936,12 +2944,14 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
     const module = rustImportModule(exported.specifier, context);
     const targetModule = resolveImportModuleRust(exported.specifier, exported.imported, context);
     const preferredSpace = exported.typeOnly ? 'type' : 'value';
-    const declaredName = targetModule
-      ? getRustDeclaredExportNameRust(targetModule, exported.imported, preferredSpace, context)
-      : undefined;
-    const declaredSpace = targetModule
-      ? getRustDeclaredExportSpaceRust(targetModule, exported.imported, preferredSpace, context)
-      : preferredSpace;
+    let declaredName: string | undefined;
+    let declaredSpace: 'type' | 'value' = preferredSpace;
+    if (targetModule) {
+      const resolution = resolveRustDeclaredExportRust(targetModule, exported.imported, preferredSpace, context);
+      assertRustDeclaredExportResolutionRust(resolution, targetModule, exported.imported, context);
+      declaredName = resolution.kind === 'resolved' ? resolution.name : undefined;
+      if (resolution.kind === 'resolved') declaredSpace = resolution.space;
+    }
     // Without the declaring module in the graph there is no allocation to read. That is the single-module
     // emission the fixtures exercise, and it keeps the name rule it always had; the module graph is what
     // makes the canonical answer available.
@@ -7964,25 +7974,50 @@ function getRustModuleIdentityKey(module: Readonly<IrModule>): string {
   return `${module.packageName}\0${path.posix.normalize(module.source)}\0${module.name}`;
 }
 
+// The same identity a person reads in a diagnostic. The key above separates its fields with NUL so a
+// package, path, or name cannot forge a boundary, which is exactly what a message must not print.
+function formatRustModuleSubjectRust(module: Readonly<IrModule>): string {
+  return `${module.packageName}/${module.source}#${module.name}`;
+}
+
 // What a facade names a re-export. The alias is this module's own public name, so it follows the same
 // space rule a declaration of that space would.
 function getRustExportAliasName(space: 'type' | 'value', exported: string): string {
   return space === 'type' ? safeRustTypeName(exported) : safeRustValueName(exported);
 }
 
+type RustExportedTargetNameResolution =
+  | Readonly<{ kind: 'absent'; starExports: boolean }>
+  | Readonly<{ kind: 'ambiguous'; owners: readonly string[] }>
+  | Readonly<{ kind: 'resolved'; name: string }>
+  | Readonly<{ kind: 'undetermined' }>;
+
+type RustDeclaredExportResolution =
+  | Readonly<{ kind: 'absent'; starExports: boolean }>
+  | Readonly<{ kind: 'ambiguous'; owners: readonly string[] }>
+  | Readonly<{ kind: 'resolved'; name: string; space: 'type' | 'value' }>
+  | Readonly<{ kind: 'undetermined' }>;
+
 /**
  * The spelling a module's own allocation gave one of the names it exports.
  *
  * A direct exported declaration answers from that module's allocation; a facade entry answers with the
  * alias its `pub use` spells, which is the same helper the re-export emission uses, so an import and the
- * re-export it names cannot disagree.
+ * re-export it names cannot disagree. An `export *` entry carries no exported name of its own, so the
+ * only evidence for one is the module it stars, followed transitively; the visited set ends a cycle and
+ * the owners decide whether the name is reachable exactly once or through competing barrels.
  */
-function getRustExportedTargetNameRust(
+function resolveRustExportedTargetNameRust(
   module: Readonly<IrModule>,
   exportedName: string,
   space: 'type' | 'value',
   context: EmitContext,
-): string | undefined {
+  visited: ReadonlySet<string>,
+): RustExportedTargetNameResolution {
+  const visitKey = `${getRustModuleIdentityKey(module)}\0${exportedName}\0${space}`;
+  // A re-export cycle returns to a module it already asked, so it can answer for nothing on its own.
+  if (visited.has(visitKey)) return { kind: 'absent', starExports: false };
+  const nextVisited = new Set(visited).add(visitKey);
   const allocation = context.targetNameMaps.get(getRustModuleIdentityKey(module));
   const isTypeDeclaration = (kind: string): boolean =>
     kind === 'class' || kind === 'enum' || kind === 'interface' || kind === 'typeAlias';
@@ -7996,7 +8031,8 @@ function getRustExportedTargetNameRust(
       (space === 'type' ? isTypeDeclaration(candidate.kind) : isValueDeclaration(candidate.kind)),
   );
   if (declaration && 'binding' in declaration) {
-    return allocation?.get(declaration.binding.id);
+    const name = allocation?.get(declaration.binding.id);
+    return name === undefined ? { kind: 'absent', starExports: false } : { kind: 'resolved', name };
   }
   const exported = module.exports.find(
     (entry) =>
@@ -8004,41 +8040,120 @@ function getRustExportedTargetNameRust(
       entry.exported === exportedName &&
       (space === 'type' ? entry.typeOnly === true : entry.typeOnly !== true || entry.kind !== 'local'),
   );
-  if (!exported || !('exported' in exported)) return undefined;
-  if (exported.kind === 'local') return allocation?.get(exported.binding.id);
-  if (exported.kind === 'namespace') return safeRustValueName(exported.exported);
-  const inner = resolveImportModuleRust(exported.specifier, exported.imported, context, module);
-  return inner
-    ? getRustExportAliasName(
-        getRustDeclaredExportSpaceRust(inner, exported.imported, exported.typeOnly ? 'type' : 'value', context),
-        exported.exported,
-      )
-    : getRustNameShapeFallback(exported.exported, exported.typeOnly);
+  if (exported && 'exported' in exported) {
+    if (exported.kind === 'local') {
+      const name = allocation?.get(exported.binding.id);
+      return name === undefined ? { kind: 'absent', starExports: false } : { kind: 'resolved', name };
+    }
+    if (exported.kind === 'namespace') return { kind: 'resolved', name: safeRustValueName(exported.exported) };
+    const inner = resolveImportModuleRust(exported.specifier, exported.imported, context, module);
+    if (!inner) return { kind: 'resolved', name: getRustNameShapeFallback(exported.exported, exported.typeOnly) };
+    const innerSpace = resolveRustExportedTargetSpaceRust(
+      inner,
+      exported.imported,
+      exported.typeOnly ? 'type' : 'value',
+      context,
+      nextVisited,
+    );
+    return { kind: 'resolved', name: getRustExportAliasName(innerSpace, exported.exported) };
+  }
+  // The entries left are `export *` (and default, which has no exported name). A star re-exports the
+  // names its target publishes verbatim, so the target's allocation is the answer; a type-only star
+  // publishes no values.
+  const owners = new Map<string, string>();
+  let starExports = false;
+  let undetermined = false;
+  for (const entry of module.exports) {
+    if (entry.kind !== 'all') continue;
+    if (space === 'value' && entry.typeOnly) continue;
+    const target = resolveImportModuleRust(entry.specifier, exportedName, context, module);
+    if (!target) {
+      undetermined = true;
+      continue;
+    }
+    starExports = true;
+    const ownerLabel = formatRustModuleSubjectRust(target);
+    const answer = resolveRustExportedTargetNameRust(target, exportedName, space, context, nextVisited);
+    if (answer.kind === 'resolved') {
+      owners.set(ownerLabel, answer.name);
+      continue;
+    }
+    if (answer.kind === 'ambiguous') {
+      for (const owner of answer.owners) owners.set(owner, '');
+      continue;
+    }
+    if (answer.kind === 'undetermined') undetermined = true;
+    else if (answer.starExports) starExports = true;
+  }
+  if (owners.size > 1) return { kind: 'ambiguous', owners: [...owners.keys()].sort(compareTextCodeUnits) };
+  if (owners.size === 1) return { kind: 'resolved', name: [...owners.values()][0]! };
+  return undetermined ? { kind: 'undetermined' } : { kind: 'absent', starExports };
+}
+
+// The space a re-export's target lives in decides the alias case convention, so ask in the preferred
+// space and then in the other one.
+function resolveRustExportedTargetSpaceRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  preferredSpace: 'type' | 'value',
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): 'type' | 'value' {
+  if (resolveRustExportedTargetNameRust(module, exportedName, preferredSpace, context, visited).kind === 'resolved') {
+    return preferredSpace;
+  }
+  const other = preferredSpace === 'type' ? 'value' : 'type';
+  return resolveRustExportedTargetNameRust(module, exportedName, other, context, visited).kind === 'resolved'
+    ? other
+    : preferredSpace;
 }
 
 // TypeScript lets a name change space between the declaration and the use: `export interface X` is a
 // type while `import { X }` is written in value space, and `export { X }` does not say which it means.
 // The declaring module is the only authority, so ask it in the preferred space and then in the other one.
-function getRustDeclaredExportNameRust(
+function resolveRustDeclaredExportRust(
   module: Readonly<IrModule>,
   exportedName: string,
   preferredSpace: 'type' | 'value',
   context: EmitContext,
-): string | undefined {
-  const preferred = getRustExportedTargetNameRust(module, exportedName, preferredSpace, context);
-  if (preferred !== undefined) return preferred;
-  return getRustExportedTargetNameRust(module, exportedName, preferredSpace === 'type' ? 'value' : 'type', context);
+): RustDeclaredExportResolution {
+  const preferred = resolveRustExportedTargetNameRust(module, exportedName, preferredSpace, context, new Set());
+  if (preferred.kind === 'resolved') return { kind: 'resolved', name: preferred.name, space: preferredSpace };
+  const other = preferredSpace === 'type' ? 'value' : 'type';
+  const secondary = resolveRustExportedTargetNameRust(module, exportedName, other, context, new Set());
+  if (secondary.kind === 'resolved') return { kind: 'resolved', name: secondary.name, space: other };
+  if (preferred.kind === 'ambiguous') {
+    const owners = new Set([...preferred.owners, ...(secondary.kind === 'ambiguous' ? secondary.owners : [])]);
+    return { kind: 'ambiguous', owners: [...owners].sort(compareTextCodeUnits) };
+  }
+  if (secondary.kind === 'ambiguous') return secondary;
+  if (preferred.kind === 'undetermined' || secondary.kind === 'undetermined') return { kind: 'undetermined' };
+  return { kind: 'absent', starExports: preferred.starExports || secondary.starExports };
 }
 
-function getRustDeclaredExportSpaceRust(
+// A name no barrel publishes and a name every one of several barrels publishes are both facts a caller
+// can branch on, and both would otherwise become a guessed spelling that only rustc rejects.
+function assertRustDeclaredExportResolutionRust(
+  resolution: RustDeclaredExportResolution,
   module: Readonly<IrModule>,
   exportedName: string,
-  preferredSpace: 'type' | 'value',
   context: EmitContext,
-): 'type' | 'value' {
-  if (getRustExportedTargetNameRust(module, exportedName, preferredSpace, context) !== undefined) return preferredSpace;
-  const other = preferredSpace === 'type' ? 'value' : 'type';
-  return getRustExportedTargetNameRust(module, exportedName, other, context) !== undefined ? other : preferredSpace;
+): void {
+  const subject = formatRustModuleSubjectRust(module);
+  if (resolution.kind === 'ambiguous') {
+    emissionRuleError(
+      context,
+      `exported name ${exportedName} of ${subject} is reached through multiple star re-exports (${resolution.owners.join(', ')})`,
+      'rust-export-name-ambiguous',
+    );
+  }
+  if (resolution.kind === 'absent' && resolution.starExports) {
+    emissionRuleError(
+      context,
+      `exported name ${exportedName} of ${subject} is unreachable through its star re-exports`,
+      'rust-export-name-unresolved',
+    );
+  }
 }
 
 // A namespace import is a module alias in Rust, so a member read off it is a path, not a field. The
@@ -8055,8 +8170,12 @@ function getRustNamespaceImportMemberRust(
   );
   if (!imported) return undefined;
   const targetModule = resolveImportModuleRust(imported.specifier, member, context);
-  const memberName =
-    targetModule === undefined ? undefined : getRustDeclaredExportNameRust(targetModule, member, 'value', context);
+  let memberName: string | undefined;
+  if (targetModule) {
+    const resolution = resolveRustDeclaredExportRust(targetModule, member, 'value', context);
+    assertRustDeclaredExportResolutionRust(resolution, targetModule, member, context);
+    memberName = resolution.kind === 'resolved' ? resolution.name : undefined;
+  }
   return `${getBindingTargetNameRust(object.reference.binding, context)}::${memberName ?? safeRustValueName(member)}`;
 }
 

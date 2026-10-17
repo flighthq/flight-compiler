@@ -20084,3 +20084,196 @@ describe('emitIrModuleRust module-variable refusal diagnostics', () => {
     expect(source.split('has no Rust type target resolution').length - 1).toBe(1);
   });
 });
+
+describe('emitIrModuleRust star-barrel name resolution', () => {
+  function createStarSession(modules: readonly Readonly<IrModule>[], edges: CompilerModuleResolutionPlan['edges']) {
+    return createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
+      modules,
+      options: {},
+    });
+  }
+
+  it('resolves a name through a star barrel to the declaring allocation spelling', () => {
+    const origin = lower('origin.ts', 'export const limit = 4;').module;
+    const barrel = lower('barrel.ts', "export * from './origin.js';").module;
+    const consumer = lower('consumer.ts', "import { limit } from './barrel.js';\nexport { limit };").module;
+    const session = createStarSession(
+      [origin, barrel, consumer],
+      [
+        {
+          importer: getRustTestModuleIdentity(barrel),
+          specifier: './origin.js',
+          target: getRustTestModuleIdentity(origin),
+        },
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          importedNames: ['limit'],
+          specifier: './barrel.js',
+          target: getRustTestModuleIdentity(barrel),
+        },
+      ],
+    );
+
+    expect(session.emitModule(barrel)[0]!.contents).toContain('pub use crate::origin::*;');
+    expect(session.emitModule(consumer)[0]!.contents).toContain('use crate::barrel::LIMIT as limit;');
+  });
+
+  it('resolves through a chain of star barrels', () => {
+    const origin = lower('origin.ts', 'export const limit = 4;').module;
+    const inner = lower('inner.ts', "export * from './origin.js';").module;
+    const outer = lower('outer.ts', "export * from './inner.js';").module;
+    const consumer = lower('consumer.ts', "import { limit } from './outer.js';\nexport { limit };").module;
+    const session = createStarSession(
+      [origin, inner, outer, consumer],
+      [
+        {
+          importer: getRustTestModuleIdentity(inner),
+          specifier: './origin.js',
+          target: getRustTestModuleIdentity(origin),
+        },
+        {
+          importer: getRustTestModuleIdentity(outer),
+          specifier: './inner.js',
+          target: getRustTestModuleIdentity(inner),
+        },
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          importedNames: ['limit'],
+          specifier: './outer.js',
+          target: getRustTestModuleIdentity(outer),
+        },
+      ],
+    );
+
+    expect(session.emitModule(consumer)[0]!.contents).toContain('use crate::outer::LIMIT as limit;');
+  });
+
+  it('spells a collision-renamed declaration through the star barrel', () => {
+    const origin = lower('origin.ts', 'export const limit = 4;\nexport const LIMIT = 5;').module;
+    const barrel = lower('barrel.ts', "export * from './origin.js';").module;
+    const consumer = lower('consumer.ts', "import { LIMIT } from './barrel.js';\nexport { LIMIT };").module;
+    const session = createStarSession(
+      [origin, barrel, consumer],
+      [
+        {
+          importer: getRustTestModuleIdentity(barrel),
+          specifier: './origin.js',
+          target: getRustTestModuleIdentity(origin),
+        },
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          importedNames: ['LIMIT'],
+          specifier: './barrel.js',
+          target: getRustTestModuleIdentity(barrel),
+        },
+      ],
+    );
+
+    expect(session.emitModule(origin)[0]!.contents).toContain('pub const LIMIT_2: f64 = 5.0;');
+    expect(session.emitModule(consumer)[0]!.contents).toContain('use crate::barrel::LIMIT_2 as LIMIT;');
+  });
+
+  it('refuses a name published by more than one star barrel, deterministically', () => {
+    const first = lower('a.ts', 'export const limit = 1;').module;
+    const second = lower('b.ts', 'export const limit = 2;').module;
+    const barrel = lower('barrel.ts', "export * from './a.js';\nexport * from './b.js';").module;
+    const consumer = lower('consumer.ts', "import { limit } from './barrel.js';\nexport { limit };").module;
+    const edges: CompilerModuleResolutionPlan['edges'] = [
+      { importer: getRustTestModuleIdentity(barrel), specifier: './a.js', target: getRustTestModuleIdentity(first) },
+      { importer: getRustTestModuleIdentity(barrel), specifier: './b.js', target: getRustTestModuleIdentity(second) },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        importedNames: ['limit'],
+        specifier: './barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      },
+    ];
+
+    const failure = captureBackendEmissionFailure(() =>
+      createStarSession([first, second, barrel, consumer], edges).emitModule(consumer),
+    );
+    const repeat = captureBackendEmissionFailure(() =>
+      createStarSession([first, second, barrel, consumer], edges).emitModule(consumer),
+    );
+
+    expect(failure.rule).toBe('rust-export-name-ambiguous');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('multiple star re-exports');
+    expect(failure.message).toContain('src/a.ts#A');
+    expect(failure.message).toContain('src/b.ts#B');
+    expect(repeat.message).toBe(failure.message);
+  });
+
+  it('refuses a name no star chain reaches and terminates on a cyclic barrel', () => {
+    const first = lower('a.ts', "export * from './b.js';").module;
+    const second = lower('b.ts', "export * from './a.js';").module;
+    const consumer = lower('consumer.ts', "import { missing } from './a.js';\nexport { missing };").module;
+    const edges: CompilerModuleResolutionPlan['edges'] = [
+      { importer: getRustTestModuleIdentity(first), specifier: './b.js', target: getRustTestModuleIdentity(second) },
+      { importer: getRustTestModuleIdentity(second), specifier: './a.js', target: getRustTestModuleIdentity(first) },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        importedNames: ['missing'],
+        specifier: './a.js',
+        target: getRustTestModuleIdentity(first),
+      },
+    ];
+
+    const failure = captureBackendEmissionFailure(() =>
+      createStarSession([first, second, consumer], edges).emitModule(consumer),
+    );
+
+    expect(failure.rule).toBe('rust-export-name-unresolved');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('unreachable through its star re-exports');
+  });
+
+  it.skipIf(!rustcAvailable)('assembles a star-barrel package rustc accepts', () => {
+    const origin = lower('origin.ts', 'export const limit = 4;\nexport const LIMIT = 5;').module;
+    const barrel = lower('barrel.ts', "export * from './origin.js';").module;
+    const consumer = lower(
+      'consumer.ts',
+      "import { limit, LIMIT } from './barrel.js';\nexport { limit, LIMIT };",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(barrel),
+          specifier: './origin.js',
+          target: getRustTestModuleIdentity(origin),
+        },
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          importedNames: ['limit', 'LIMIT'],
+          specifier: './barrel.js',
+          target: getRustTestModuleIdentity(barrel),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [origin, barrel, consumer],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!(
+      createRustSourceTreeFinalization(session, [origin, barrel, consumer], [origin, barrel, consumer]),
+    );
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    expect(files.map(({ path: filePath }) => filePath).sort()).toEqual([
+      'barrel.rs',
+      'consumer.rs',
+      'lib.rs',
+      'origin.rs',
+    ]);
+    expect(files.find(({ path: filePath }) => filePath === 'consumer.rs')?.contents).toContain(
+      'use crate::barrel::{LIMIT as limit, LIMIT_2 as LIMIT};',
+    );
+    expect(() => compileRustSourceTree(files)).not.toThrow();
+  });
+});
