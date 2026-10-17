@@ -348,7 +348,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          const first = new Counter();
          const alias = first;
          const second = new Counter();
-         return first === alias && first !== second;
+         return first === alias && first !== second && first == alias && first != second;
        }`,
     );
     const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
@@ -409,11 +409,6 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          export function compare(left: Counter, right: object): boolean { return left === right; }`,
       ),
       lower(
-        'identity-loose.ts',
-        `class Counter { value = 0; }
-         export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left == right; }`,
-      ),
-      lower(
         'identity-ordering.ts',
         `class Counter { value = 0; }
          export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left < right; }`,
@@ -422,6 +417,76 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         'identity-borrowed.ts',
         `class Counter { value = 0; }
          export function compare(left: Counter, right: Counter): boolean { return left === right; }`,
+      ),
+    ];
+
+    for (const module of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'rust-reference-shared-class-identity-unrepresented' }),
+        ]),
+      );
+    }
+  });
+
+  it('refuses coercive or unsupported loose class equality comparisons', () => {
+    const cases = [
+      lower(
+        'loose-identity-cross-owner.ts',
+        `class Counter { value = 0; } class Other { value = 0; }
+         export function compare(): boolean { const left = new Counter(); const right = new Other(); return left == right; }`,
+      ),
+      lower(
+        'loose-identity-inheritance.ts',
+        `class Base { value = 0; } class Counter extends Base {}
+         export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left != right; }`,
+      ),
+      lower(
+        'loose-identity-accessor.ts',
+        `class Counter { stored = 0; get value(): number { return this.stored; } }
+         export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left == right; }`,
+      ),
+      lower(
+        'loose-identity-field.ts',
+        `class Child { value = 0; } class Counter { child = new Child(); }
+         export function compare(): boolean { const left = new Counter(); const right = new Counter(); return left != right; }`,
+      ),
+      lower(
+        'loose-identity-dynamic.ts',
+        `class Counter { value = 0; }
+         export function compare(left: Counter, right: any): boolean { return left == right; }`,
+      ),
+      lower(
+        'loose-identity-union.ts',
+        `class Counter { value = 0; } class Other { value = 0; }
+         export function compare(left: Counter | Other, right: Counter): boolean { return left != right; }`,
+      ),
+      lower(
+        'loose-identity-optional.ts',
+        `class Counter { value = 0; }
+         export function compare(left: Counter | undefined, right: Counter): boolean { return left == right; }`,
+      ),
+      lower(
+        'loose-identity-nullish.ts',
+        `class Counter { value = 0; }
+         export function compare(left: Counter): boolean { return left == null; }`,
+      ),
+      lower(
+        'loose-identity-object.ts',
+        `class Counter { value = 0; }
+         export function compare(left: Counter, right: object): boolean { return left != right; }`,
+      ),
+      lower(
+        'loose-identity-primitive.ts',
+        `class Counter { value = 0; }
+         export function compare(): boolean { const left = new Counter(); return left == 0; }`,
+      ),
+      lower(
+        'loose-identity-borrowed.ts',
+        `class Counter { value = 0; }
+         export function compare(left: Counter, right: Counter): boolean { return left == right; }`,
       ),
     ];
 

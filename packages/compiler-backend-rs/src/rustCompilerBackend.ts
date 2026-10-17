@@ -3787,7 +3787,14 @@ function emitSharedClassIdentityComparisonRust(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
   context: EmitContext,
 ): string | undefined {
-  if (expression.operator !== '===' && expression.operator !== '!==') return undefined;
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return undefined;
+  }
   const leftType = getIrSharedClassIdentityExpressionTypeRust(expression.left, context);
   const rightType = getIrSharedClassIdentityExpressionTypeRust(expression.right, context);
   const leftOwner = leftType ? getIrClassTypeIdentityRust(leftType, context) : undefined;
@@ -3800,7 +3807,7 @@ function emitSharedClassIdentityComparisonRust(
   const leftName = getGeneratedTargetNameRust('identity_left', context);
   const rightName = getGeneratedTargetNameRust('identity_right', context);
   const comparison = `Rc::ptr_eq(${leftName}, ${rightName})`;
-  return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${expression.operator === '!==' ? `!${comparison}` : comparison} }`;
+  return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${expression.operator === '!=' || expression.operator === '!==' ? `!${comparison}` : comparison} }`;
 }
 
 function emitSharedClassIdentityCarrierReferenceRust(

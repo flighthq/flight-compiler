@@ -2320,7 +2320,14 @@ function isRustReferenceClassIdentityComparisonSupported(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): boolean {
-  if (expression.operator !== '===' && expression.operator !== '!==') return false;
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return false;
+  }
   const leftType = getRustReferenceClassIdentityExpressionType(expression.left, module);
   const rightType = getRustReferenceClassIdentityExpressionType(expression.right, module);
   return (
@@ -2441,7 +2448,14 @@ function isRustReferenceIdentityDomainType(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): boolean {
   if (!type) return false;
-  if (type.kind === 'unknown' || type.kind === 'object' || type.kind === 'null' || type.kind === 'undefined') {
+  if (
+    type.kind === 'unknown' ||
+    type.kind === 'object' ||
+    type.kind === 'literal' ||
+    type.kind === 'primitive' ||
+    type.kind === 'null' ||
+    type.kind === 'undefined'
+  ) {
     return true;
   }
   if (getRustReferenceClassDeclaration(type, module, modules, moduleResolution)) return true;
@@ -2454,6 +2468,8 @@ function getRustReferenceClassIdentityExpressionType(
   expression: Readonly<IrExpression>,
   module: RustReferenceModuleRecord,
 ): Readonly<IrType> | undefined {
+  const primitive = getRustSimpleClassPrimitiveExpressionType(expression, module);
+  if (primitive) return primitive;
   if (expression.kind === 'identifier') {
     if (expression.reference.kind === 'binding') return module.bindingTypes.get(expression.reference.binding.id);
     if (expression.reference.kind === 'ambient' && expression.reference.name === 'undefined') {
