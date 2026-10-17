@@ -23,6 +23,7 @@ export interface CompilerRustReferenceCallablePlan {
   /** The binding visible in this module: a declaration for local calls or an import for external calls. */
   readonly binding: IrBindingIdentity;
   readonly parameters: readonly CompilerRustReferenceParameterPlan[];
+  readonly returns?: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-class'> | undefined;
 }
 
 export type CompilerRustReferenceRepresentationRefusalCode =
@@ -45,6 +46,7 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-shared-class-field-unrepresented'
   | 'rust-reference-shared-class-member-unrepresented'
   | 'rust-reference-shared-class-mutator-result-unrepresented'
+  | 'rust-reference-shared-class-return-unrepresented'
   | 'rust-reference-shared-class-suspension-unrepresented'
   | 'rust-reference-shared-class-type-unrepresented'
   | 'rust-reference-shared-class-use-unrepresented'

@@ -120,13 +120,14 @@ function runRustSourceAgainstRuntime(contents: string, main: string): void {
 }
 
 // A crate with two generated modules: the shape a namespace import needs, since a module alias only
-// resolves inside a crate that declares both modules. Type-checks the crate, which is the proof that the
-// alias and its member paths are real Rust.
+// resolves inside a crate that declares both modules. Type-checks by default, or executes when a main
+// assertion is supplied, which proves that the alias and its member paths are real Rust.
 function compileRustModulePair(
   providerModuleName: string,
   providerContents: string,
   consumerModuleName: string,
   consumerContents: string,
+  main?: string,
 ): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-module-pair-'));
   try {
@@ -151,24 +152,31 @@ function compileRustModulePair(
     writeFileSync(path.join(directory, `${providerModuleName}.rs`), providerContents);
     writeFileSync(path.join(directory, `${consumerModuleName}.rs`), consumerContents);
     const crateRoot = path.join(directory, 'lib.rs');
-    writeFileSync(crateRoot, `pub mod ${providerModuleName};\npub mod ${consumerModuleName};\n`);
+    writeFileSync(
+      crateRoot,
+      `pub mod ${providerModuleName};\npub mod ${consumerModuleName};\n${main ? `fn main() { ${main} }\n` : ''}`,
+    );
+    const output = path.join(directory, main ? 'subject' : 'subject.rmeta');
     const build = spawnSync(
       'rustc',
       [
         '--edition',
         '2021',
-        '--crate-type=lib',
-        '--emit=metadata',
+        ...(main ? [] : ['--crate-type=lib', '--emit=metadata']),
         '--extern',
         `flight_runtime=${runtime}`,
         '-o',
-        path.join(directory, 'subject.rmeta'),
+        output,
         crateRoot,
       ],
       { encoding: 'utf8' },
     );
     if (build.status !== 0) {
       throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+    }
+    if (main) {
+      const run = spawnSync(output, [], { encoding: 'utf8' });
+      if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
     }
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -8417,6 +8425,135 @@ describe('emitIrModuleRust', () => {
     if (rustcAvailable) {
       expect(() =>
         compileRustModulePair('parameter_counter_provider', providerOutput, 'imported_counter_parameters', output),
+      ).not.toThrow();
+    }
+  });
+
+  it('returns one shared local class identity for caller alias mutation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'local-counter-return.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         function makeCounter(): Counter {
+           const value = new Counter(1);
+           const alias = value;
+           alias.value = 2;
+           return value;
+         }
+         export function localCounterReturn(): number {
+           const returned = makeCounter();
+           const alias = returned;
+           alias.value = 3;
+           return returned.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn make_counter() -> Rc<RefCell<Counter>>');
+    expect(output).toContain('return Rc::clone(&value);');
+    expect(output).toContain('let returned: Rc<RefCell<Counter>> = make_counter();');
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&returned);');
+    expect(output).toContain('alias.borrow_mut().value = 3.0;');
+    expect(output).toContain('returned.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(local_counter_return(), 3.0);')).not.toThrow();
+    }
+  });
+
+  it('evaluates only the selected constructed class return once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'selected-counter-return.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         function chooseCounter(flag: boolean): Counter {
+           let state = 0;
+           const next = (value: number): number => { state = state * 10 + value; return state; };
+           return flag ? new Counter(next(1)) : new Counter(next(2));
+         }
+         export function selectedCounterReturn(flag: boolean): number {
+           const result = chooseCounter(flag);
+           return result.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn choose_counter(flag: bool) -> Rc<RefCell<Counter>>');
+    expect(output.match(/next\(1\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/next\(2\.0\)/gu)).toHaveLength(1);
+    expect(output).toContain('if flag { Rc::new(RefCell::new(Counter::new(next(1.0)))) } else');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          'assert_eq!(selected_counter_return(true), 1.0); assert_eq!(selected_counter_return(false), 2.0);',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('returns an imported shared class identity for caller mutation', () => {
+    const provider = lower(
+      'return-counter-provider.ts',
+      `export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+       }
+       export function makeCounter(): Counter {
+         const value = new Counter(1);
+         const alias = value;
+         alias.value = 2;
+         return value;
+       }`,
+    ).module;
+    const consumer = lower(
+      'imported-counter-return.ts',
+      `import { Counter, makeCounter } from './return-counter-provider.js';
+       export function importedCounterReturn(): number {
+         const returned: Counter = makeCounter();
+         const alias: Counter = returned;
+         alias.value = 4;
+         return returned.value;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './return-counter-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn make_counter() -> Rc<RefCell<Counter>>');
+    expect(providerOutput).toContain('return Rc::clone(&value);');
+    expect(output).toContain('let returned: Rc<RefCell<Counter>> = make_counter();');
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&returned);');
+    expect(output).toContain('alias.borrow_mut().value = 4.0;');
+    expect(output).toContain('returned.borrow().value');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair(
+          'return_counter_provider',
+          providerOutput,
+          'imported_counter_return',
+          output,
+          'assert_eq!(imported_counter_return::imported_counter_return(), 4.0);',
+        ),
       ).not.toThrow();
     }
   });

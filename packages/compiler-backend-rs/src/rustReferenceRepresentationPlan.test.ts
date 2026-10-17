@@ -281,6 +281,120 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
   });
 
+  it('plans exact local and imported shared class returns', () => {
+    const provider = lower(
+      'return-provider.ts',
+      `export class Counter { value = 0; }
+       export function makeCounter(): Counter { const value = new Counter(); const alias = value; alias.value = 1; return value; }`,
+    );
+    const consumer = lower(
+      'return-consumer.ts',
+      `import { Counter, makeCounter } from './return-provider.js';
+       export function run(): number { const value: Counter = makeCounter(); const alias: Counter = value; alias.value = 2; return value.value; }`,
+    );
+    const plan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution: resolve('./return-provider.js', provider, consumer),
+      modules: [provider, consumer],
+    });
+    const providerPlan = getModulePlan(plan, provider);
+    const consumerPlan = getModulePlan(plan, consumer);
+
+    expect(providerPlan.refusals).toEqual([]);
+    expect(consumerPlan.refusals).toEqual([]);
+    expect(providerPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'makeCounter' }),
+          parameters: [],
+          returns: 'shared-ref-cell-class',
+        }),
+      ]),
+    );
+    expect(consumerPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'makeCounter' }),
+          parameters: [],
+          returns: 'shared-ref-cell-class',
+        }),
+      ]),
+    );
+    expect(providerPlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'value']);
+    expect(consumerPlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'value']);
+  });
+
+  it('refuses unsupported exact class return boundaries', () => {
+    const cases = [
+      lower(
+        'return-optional.ts',
+        `class Counter { value = 0; }
+         export function make(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; }`,
+      ),
+      lower(
+        'return-dynamic.ts',
+        `class Counter { value = 0; }
+         export function make(): any { return new Counter(); }`,
+      ),
+      lower(
+        'return-union.ts',
+        `class Counter { value = 0; }
+         class Other { value = 1; }
+         export function make(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); }`,
+      ),
+      lower(
+        'return-generic.ts',
+        `class Counter { value = 0; }
+         export function make<T>(): Counter { return new Counter(); }`,
+      ),
+      lower(
+        'return-async.ts',
+        `class Counter { value = 0; }
+         export async function make(): Promise<Counter> { return new Counter(); }`,
+      ),
+      lower(
+        'return-owner.ts',
+        `class Counter { value = 0; }
+         class Other { value = 1; }
+         export function make(): Counter { return new Other(); }`,
+      ),
+      lower(
+        'return-inheritance.ts',
+        `class Base { value = 0; }
+         class Counter extends Base {}
+         export function make(): Counter { return new Counter(); }`,
+      ),
+      lower(
+        'return-accessor.ts',
+        `class Counter { stored = 0; get value(): number { return this.stored; } }
+         export function make(): Counter { return new Counter(); }`,
+      ),
+      lower(
+        'return-identity-field.ts',
+        `class Child { value = 0; }
+         class Counter { child = new Child(); }
+         export function make(): Counter { return new Counter(); }`,
+      ),
+      lower(
+        'return-borrowed.ts',
+        `class Counter { value = 0; }
+         export function identity(counter: Counter): Counter { return counter; }`,
+      ),
+      lower(
+        'return-control-flow.ts',
+        `class Counter { value = 0; }
+         export function make(flag: boolean): Counter { if (flag) return new Counter(); return new Counter(); }`,
+      ),
+    ];
+
+    for (const module of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-return-unrepresented' })]),
+      );
+    }
+  });
+
   it('refuses unsafe class-parameter boundaries and overlapping or wrong-owner borrows', () => {
     const cases: readonly [Readonly<IrModule>, string][] = [
       [
@@ -707,16 +821,8 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
-  it('refuses shared-class escape, storage, reassignment, dynamic calls, suspension, and ambiguous owners', () => {
+  it('refuses shared-class storage, reassignment, dynamic calls, suspension, and ambiguous owners', () => {
     const cases = [
-      [
-        lower(
-          'class-return.ts',
-          `class Counter { value = 0; }
-           export function run(): Counter { const values = new Counter(); const alias = values; alias.value = 1; return alias; }`,
-        ),
-        'rust-reference-shared-class-use-unrepresented',
-      ],
       [
         lower(
           'class-storage.ts',

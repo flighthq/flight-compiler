@@ -232,6 +232,7 @@ interface EmitContext {
   referentMutatedParameterIds: ReadonlySet<string>;
   sharedArrayBindingIds: ReadonlySet<string>;
   sharedClassBindingIds: ReadonlySet<string>;
+  sharedClassReturnBindingIds: ReadonlySet<string>;
   sharedMapBindingIds: ReadonlySet<string>;
   sharedSetBindingIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
@@ -254,6 +255,7 @@ interface EmitContext {
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
   returnsAbsent: boolean;
+  returnsSharedClass?: boolean | undefined;
   targetNames: ReadonlyMap<string, string>;
 }
 
@@ -441,6 +443,11 @@ function emitIrModuleRustWithContext(
       );
     }),
   );
+  const sharedClassReturnBindingIds = new Set(
+    referenceModulePlan?.callables.flatMap((callable) =>
+      callable.returns === 'shared-ref-cell-class' ? [callable.binding.id] : [],
+    ) ?? [],
+  );
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
   const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
@@ -521,6 +528,7 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds,
     sharedArrayBindingIds,
     sharedClassBindingIds,
+    sharedClassReturnBindingIds,
     sharedMapBindingIds,
     sharedSetBindingIds,
     taggedUnionBindingNames,
@@ -2243,17 +2251,27 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   if (declaration.namespaceMember) {
     emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
   }
+  const returnsSharedClass = outer.sharedClassReturnBindingIds.has(declaration.binding.id);
   const context: EmitContext = {
     ...outer,
     activeTypeParameters: declaration.typeParameters,
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    returnsSharedClass,
   };
+  if (returnsSharedClass) {
+    context.needsRcImport.add('Rc');
+    context.needsRefCellImport.add('RefCell');
+  }
+  const returnType = emitType(
+    declaration.async ? getIrTaskAwaitedTypeRust(declaration.returns, context) : declaration.returns,
+    context,
+  );
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
   return [
-    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.async ? getIrTaskAwaitedTypeRust(declaration.returns, context) : declaration.returns, context)} {`,
+    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${returnsSharedClass ? `Rc<RefCell<${returnType}>>` : returnType} {`,
     ...indentSourceLines([
       ...declaration.parameters.flatMap((parameter) =>
         parameter.initializer
@@ -3573,6 +3591,33 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
   return source;
 }
 
+function emitSharedClassReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  context.needsRcImport.add('Rc');
+  context.needsRefCellImport.add('RefCell');
+  if (expression.kind === 'conditional') {
+    const condition = normalizeSourceTextGrouping(emitExpression(expression.condition, context));
+    const whenTrue = emitSharedClassReturnedExpressionRust(expression.whenTrue, context);
+    const whenFalse = emitSharedClassReturnedExpressionRust(expression.whenFalse, context);
+    return `if ${condition} { ${whenTrue} } else { ${whenFalse} }`;
+  }
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedClassBindingIds.has(expression.reference.binding.id)
+  ) {
+    return `Rc::clone(&${getBindingTargetNameRust(expression.reference.binding, context)})`;
+  }
+  if (isIrSharedClassReturnCallRust(expression, context)) return emitExpression(expression, context);
+  if (expression.kind !== 'new' && !(expression.kind === 'identifier' && expression.reference.kind === 'binding')) {
+    emissionError(
+      context,
+      'shared class return expression is outside the exact constructed, local-alias, or selected carrier',
+      'rust-reference-shared-class-return-unrepresented',
+    );
+  }
+  return `Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+}
+
 function emitContextualCallableUnionConstructionRust(
   expression: Readonly<IrExpression>,
   targetType: Readonly<IrType>,
@@ -4229,6 +4274,15 @@ function getRustSharedClassBindingRust(
     context.sharedClassBindingIds.has(expression.reference.binding.id)
     ? expression.reference.binding
     : undefined;
+}
+
+function isIrSharedClassReturnCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  return (
+    expression.kind === 'call' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'binding' &&
+    context.sharedClassReturnBindingIds.has(expression.callee.reference.binding.id)
+  );
 }
 
 function getIrSharedClassFieldRust(
@@ -4939,6 +4993,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return lines;
     }
     case 'return':
+      if (context.returnsSharedClass) {
+        if (!statement.expression) {
+          emissionError(
+            context,
+            'shared class return requires one exact value',
+            'rust-reference-shared-class-return-unrepresented',
+          );
+        }
+        return [`return ${emitSharedClassReturnedExpressionRust(statement.expression, context)};`];
+      }
       // Comparing against `None` is not narrowing. Returning a binding that can be absent from a
       // function that cannot return one is Rust that does not compile, so it refuses here.
       if (
@@ -5799,7 +5863,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       variable.initializer.reference.kind === 'binding' &&
       context.sharedClassBindingIds.has(variable.initializer.reference.binding.id)
         ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
-        : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
+        : isIrSharedClassReturnCallRust(variable.initializer, context)
+          ? emitExpression(variable.initializer, context)
+          : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
   const sharedHashCollectionKind = context.sharedMapBindingIds.has(variable.binding.id)
