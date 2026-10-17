@@ -11625,7 +11625,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          }
          function adjust(value?: Counter): number {
            if (value === undefined) return 0;
-           value.value += 1;
+           value.value = 3;
            return value.value;
          }
          function forward(value?: Counter): number { return adjust(value); }
