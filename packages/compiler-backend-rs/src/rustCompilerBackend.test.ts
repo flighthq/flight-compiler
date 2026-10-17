@@ -5418,6 +5418,62 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('unwrap_or_else(|| 0.0)');
   });
 
+  it('refuses computed ambient Record element reads instead of indexing the emitted map', () => {
+    for (const source of [
+      'export function read(values: Record<string, number>, key: string): number { return values[key]; }',
+      'export function read(values: Readonly<Record<string, string>>, key: string): string { return values[key]; }',
+      'export function read(values: Record<number, number>, key: number): number { return values[key]; }',
+      'export function read(values: NoInfer<Record<string, number>>, key: string): number { return values[key]; }',
+      `export function read(values: Record<'a' | 'b', number>, key: 'a'): number { return values[key]; }`,
+    ]) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower('record-element-read.ts', source).module),
+      );
+
+      expect(failure.rule).toBe('rust-computed-record-access-unrepresented');
+      expect(failure.message).toContain('keyed lookup over the emitted map');
+      expect(failure.message).toContain('no keyed Record element-read plan');
+    }
+  });
+
+  it('refuses a Record read before staging or duplicating its key expression', () => {
+    const record = lower(
+      'record-key.ts',
+      `function keyFor(): string { return 'a'; }
+       export function read(values: Record<string, number>): number { return values[keyFor()]; }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(record.module))).toBe('rust-computed-record-access-unrepresented');
+
+    // The supported numeric path keeps its own single evaluation of a side-effecting operand.
+    const supported = lower(
+      'array-key.ts',
+      `function keyFor(): number { return 0; }
+       export function read(values: number[]): number { const index = keyFor(); return values[index] ?? 0; }`,
+    );
+    const output = emitIrModuleRust(supported.module).contents;
+    expect(output.match(/= key_for\(\)/gu)).toHaveLength(1);
+  });
+
+  it('keeps numeric array indexing and supported Record values on their existing paths', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'record-supported.ts',
+        `export function id(values: Record<string, number>): Record<string, number> { return values; }
+         interface Named { a: number; b: string; }
+         export function named(value: Named, key: 'a'): number { return value[key]; }
+         export function at(values: readonly number[]): number {
+           let index = 0;
+           if (0 <= index && values.length > index) { return values[index]; }
+           return 0;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('std::collections::HashMap<String, f64>');
+    expect(output).toContain('selection_receiver.a.clone()');
+    expect(output).toContain('[index as usize]');
+  });
+
   it('wraps returned closures in Rc::new with move and emits function types as Rc<dyn Fn>', () => {
     const result = lower(
       'callback.ts',

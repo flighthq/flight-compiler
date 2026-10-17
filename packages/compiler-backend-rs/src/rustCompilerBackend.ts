@@ -2749,6 +2749,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
       }
       if (expression.optional) return emitOptionalElementExpressionRust(expression, context);
+      assertRustAmbientRecordElementReadRust(expression, context);
       {
         const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
         if (closedSelection) return closedSelection;
@@ -7481,6 +7482,56 @@ function emitOptionalElementExpressionRust(
   emissionError(context, 'optional element access requires array or fixed-tuple receiver evidence');
 }
 
+// A source `Record` is emitted as Rust's keyed map, not as a struct: no member of it has a field
+// position, and a closed key set does not turn it into a struct either. Its element read is a lookup
+// whose missing key answers undefined, so a total read whose declared result carries no absence has
+// no represented carrier; indexing the map with the source index would emit code that does not
+// compile. This backend has no keyed Record element-read plan, so the read is refused rather than
+// guessed at, and the refusal is owned by computed Record access before any field or index spelling
+// is chosen. Closed-key selection and ordinary indexing keep that ownership for non-Record carriers.
+function assertRustAmbientRecordElementReadRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): void {
+  const type = inferIrExpressionTypeRust(expression.object, context);
+  if (!getIrAmbientRecordElementTypeRust(type, context)) return;
+  // A Record read that already met the computed-object refusal keeps that ownership and message; this
+  // fix only stops the shapes that previously emitted an invalid field or index spelling.
+  if (expression.semantics.receivers.includes('object')) {
+    emissionError(
+      context,
+      'computed object access requires JavaScript property-key coercion lowering',
+      'rust-computed-object-access-unsupported',
+    );
+  }
+  emissionRuleError(
+    context,
+    'a computed element read through Record is a keyed lookup over the emitted map: a missing key answers undefined, and a total read whose declared result carries no absence has no represented Rust carrier. This backend has no keyed Record element-read plan; read a declared property, or keep the mapping in a carrier whose keyed lookup this backend plans',
+    'rust-computed-record-access-unrepresented',
+  );
+}
+
+function getIrAmbientRecordElementTypeRust(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+): Readonly<{ key: Readonly<IrType>; value: Readonly<IrType> }> | undefined {
+  if (!type) return undefined;
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'named' || resolved.reference.kind !== 'ambient') return undefined;
+  const name = resolved.reference.name;
+  if (
+    (name === 'Readonly' || name === 'Required' || name === 'NoInfer') &&
+    resolved.typeArguments.length === 1 &&
+    resolved.typeArguments[0]
+  ) {
+    return getIrAmbientRecordElementTypeRust(resolved.typeArguments[0], context);
+  }
+  if (name !== 'Record' || resolved.typeArguments.length !== 2) return undefined;
+  const key = resolved.typeArguments[0];
+  const value = resolved.typeArguments[1];
+  return key && value ? { key, value } : undefined;
+}
+
 function emitOptionalPropertyExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -7528,6 +7579,7 @@ function emitRequiredElementExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): string {
+  assertRustAmbientRecordElementReadRust(expression, context);
   const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
   if (closedSelection) return closedSelection;
   if (expression.semantics.receivers.includes('object')) {
