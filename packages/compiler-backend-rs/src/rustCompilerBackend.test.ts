@@ -18675,3 +18675,40 @@ describe('emitIrModuleRust runtime binding diagnostics', () => {
     expect(output).not.toContain('has no Rust binding');
   });
 });
+
+describe('emitIrModuleRust import-path refusals', () => {
+  it('names the rule for a bare import Rust has no runtime or standard-library mapping for', () => {
+    for (const source of [
+      `import { helper } from 'some-lib'; export const x = helper;`,
+      `import { readFileSync } from 'node:fs'; export const x = readFileSync;`,
+    ]) {
+      const failure = captureBackendEmissionFailure(() => emitIrModuleRust(lower('external-import.ts', source).module));
+
+      expect(failure.rule).toBe('rust-external-import-unsupported');
+      expect(failure.classification).toBe('compiler-restriction');
+      expect(failure.message).toContain('requires a runtime or standard-library mapping');
+    }
+  });
+
+  it('names the rule for a package specifier that carries no package name', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('package-import.ts', `import { x } from '@scope'; export const y = x;`).module),
+    );
+
+    expect(failure.rule).toBe('rust-package-import-name-unresolved');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('cannot identify package import @scope');
+  });
+
+  it('carries the ambiguity rule at the defensive source-tree site', () => {
+    // The source-tree planner refuses `rust-source-tree-import-ambiguity` before it can publish
+    // references that spell one specifier two ways, so no emitted module reaches this branch. Site
+    // coverage is a property of the source and is pinned as one.
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    const message = source.split('resolves to multiple canonical Rust paths').length - 1;
+    const rule = source.split("'rust-source-tree-import-path-ambiguous'").length - 1;
+
+    expect(message).toBe(1);
+    expect(rule).toBe(1);
+  });
+});

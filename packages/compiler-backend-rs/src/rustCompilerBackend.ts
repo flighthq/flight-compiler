@@ -9025,7 +9025,11 @@ function rustImportModule(specifier: string, context: EmitContext): string {
   ];
   if (plannedPaths.length === 1) return plannedPaths[0]!;
   if (plannedPaths.length > 1) {
-    emissionError(context, `source-tree import ${specifier} resolves to multiple canonical Rust paths`);
+    emissionRuleError(
+      context,
+      `source-tree import ${specifier} resolves to multiple canonical Rust paths`,
+      'rust-source-tree-import-path-ambiguous',
+    );
   }
   if (specifier.startsWith('.')) {
     const resolvedModule = resolveImportModuleRust(specifier, undefined, context);
@@ -9038,10 +9042,16 @@ function rustImportModule(specifier: string, context: EmitContext): string {
   }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
-    if (!packageName) emissionError(context, `cannot identify package import ${specifier}`);
+    if (!packageName) {
+      emissionRuleError(context, `cannot identify package import ${specifier}`, 'rust-package-import-name-unresolved');
+    }
     return convertPackageNameToRustCrateName(packageName).replaceAll('-', '_');
   }
-  emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
+  emissionRuleError(
+    context,
+    `external import ${specifier} requires a runtime or standard-library mapping`,
+    'rust-external-import-unsupported',
+  );
 }
 
 function resolveImportModuleRust(
