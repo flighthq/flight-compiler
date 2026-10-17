@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/assertionSubUnionNarrowing.ts: cast to union requires Rust type-directed lowering

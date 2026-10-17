@@ -14023,3 +14023,63 @@ describe('emitIrModuleRust F0 containment witnesses', () => {
     expect(output).not.toContain('values.value = 1.0;');
   });
 });
+
+describe('emitIrModuleRust assertion recovery', () => {
+  it('converts one union carrier to a closed subset of its alternatives', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'sub-union.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         interface Gamma { c: number }
+         export function read(value: Alpha | Beta | Gamma): Alpha | Beta { return value as Alpha | Beta; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match value {');
+    expect(output).toContain('(value) => AnonymousUnion2::Alpha(value)');
+    expect(output).toContain('_ => panic!("asserted union alternative is not present in the value"),');
+  });
+
+  it('carries absence through the conversion and drops it when the assertion asserts presence', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'sub-union-absence.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         interface Gamma { c: number }
+         export function nullable(value: (Alpha | Beta | Gamma) | undefined): (Alpha | Beta) | undefined { return value as (Alpha | Beta) | undefined; }
+         export function present(value: (Alpha | Beta | Gamma) | undefined): Alpha | Beta { return value as Alpha | Beta; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Some(value) => Some(match value {');
+    expect(output).toContain('None => None,');
+    expect(output).toContain('None => panic!("asserted union alternative is not present in the value"),');
+  });
+
+  it('keeps a class assertion a stable refusal, because Rust has no inheritance carrier to cast along', () => {
+    const module = lower(
+      'class-cast.ts',
+      `class BaseShape { public id = ''; }
+       class DerivedShape extends BaseShape { public extra = 0; }
+       export function narrow(value: BaseShape | undefined): DerivedShape | undefined { return value as DerivedShape | undefined; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-cast-unsupported');
+  });
+
+  it.skipIf(!rustcAvailable)('emits a union-subset assertion the Rust compiler accepts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'sub-union-rustc.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         interface Gamma { c: number }
+         export function read(value: Alpha | Beta | Gamma): Alpha | Beta { return value as Alpha | Beta; }`,
+      ).module,
+    ).contents;
+
+    expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+});

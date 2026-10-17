@@ -1427,6 +1427,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const unionCast = emitPrimitiveUnionCastRust(expression, context);
       if (unionCast) return unionCast;
+      const generalUnionCast = emitGeneralUnionCastRust(expression, context);
+      if (generalUnionCast) return generalUnionCast;
+      if (expression.type.kind === 'union') {
+        emissionRuleError(
+          context,
+          'an assertion to a union needs one canonical nominal enum owner on both sides, with every destination alternative present in the value. Rust has no inheritance carrier to downcast between classes, and a structural or erased assertion has no exact alternative to select. Assert the concrete alternative, or narrow the value where its alternative is known',
+          'rust-union-cast-unsupported',
+        );
+      }
       if (!isIrCastTargetNumericRust(expression.type)) {
         emissionError(context, `cast to ${expression.type.kind} requires Rust type-directed lowering`);
       }
@@ -5897,6 +5906,97 @@ function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
     return nonNull.length === 1 && sole !== undefined && isIrTypeCopyRust(sole);
   }
   return false;
+}
+
+// An assertion that narrows one union carrier to another is a checked conversion when both carriers are
+// generated enums over the same nominal records: the alternative that is present is moved into the
+// destination's own variant, and anything else is the assertion being wrong at runtime. This is the Rust
+// spelling of the C++ `get_if` chain that throws when no destination alternative is active.
+function emitGeneralUnionCastRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  const source = sourceType ? getIrCastUnionCarrierRust(sourceType, context) : undefined;
+  const destination = getIrCastUnionCarrierRust(expression.type, context);
+  if (!source || !destination) return undefined;
+  if (source.enumName === destination.enumName) return undefined;
+  // Dropping the outer absence is the `present` assertion: the source must hold a value, and a missing
+  // one is the assertion being wrong at runtime -- the same throw the C++ `has_value()` guard performs.
+  // Widening, or changing which sentinel the absence is, stays a refusal.
+  const narrowsPresence = source.absence !== 'none' && destination.absence === 'none';
+  if (source.absence !== destination.absence && !narrowsPresence) return undefined;
+  const convertible = destination.members.filter((member) =>
+    source.members.some((candidate) => candidate.name === member.name && candidate.targetName === member.targetName),
+  );
+  if (convertible.length === 0) return undefined;
+  const match = (operand: string): string =>
+    `match ${operand} { ${convertible
+      .map(
+        (member) =>
+          `${source.enumName}::${pascalCase(member.name)}(value) => ${destination.enumName}::${pascalCase(member.name)}(value),`,
+      )
+      .join(' ')} _ => panic!("asserted union alternative is not present in the value"), }`;
+  const operand = emitExpression(expression.expression, context);
+  if (narrowsPresence) {
+    return `match ${operand} { Some(value) => ${match('value')}, None => panic!("asserted union alternative is not present in the value"), }`;
+  }
+  if (source.absence === 'undefined') {
+    return `match ${operand} { Some(value) => Some(${match('value')}), None => None, }`;
+  }
+  return match(operand);
+}
+
+interface RustCastUnionCarrier {
+  readonly absence: 'null' | 'undefined' | 'none';
+  readonly enumName: string;
+  readonly members: readonly RustUnionMemberRecord[];
+}
+
+// The carrier a union type is emitted as, when it is a generated enum rather than a single value. A
+// class union (one value slot) has no enum owner and answers undefined, which keeps it a refusal.
+function getIrCastUnionCarrierRust(type: Readonly<IrType>, context: EmitContext): RustCastUnionCarrier | undefined {
+  const resolved = resolveIrCastUnionTypeRust(type, context);
+  if (resolved.kind !== 'union') return undefined;
+  // A parenthesized group in an assertion is a nested union node, and `(A | B) | undefined` is the same
+  // carrier as `A | B | undefined`; flatten before asking which alternatives it holds.
+  const unionTypes = flattenIrUnionTypesRust(resolved.types);
+  const absence = unionTypes.some((member) => member.kind === 'null')
+    ? 'null'
+    : unionTypes.some((member) => member.kind === 'undefined')
+      ? 'undefined'
+      : 'none';
+  const concreteTypes = unionTypes.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  // A single value slot plus a sentinel is an `Option`, not an enum carrier: there is no alternative to
+  // select, so a class assertion over it stays a refusal.
+  if (concreteTypes.length < 2) return undefined;
+  const concrete = {
+    kind: 'union' as const,
+    types: [concreteTypes[0]!, concreteTypes[1]!, ...concreteTypes.slice(2)] as const,
+  };
+  const members = getIrUnionTypeMemberRecordsRust(concrete, context);
+  if (!members) return undefined;
+  return { absence, enumName: emitType(concrete, context), members };
+}
+
+function flattenIrUnionTypesRust(types: readonly Readonly<IrType>[]): readonly Readonly<IrType>[] {
+  return types.flatMap((member) => (member.kind === 'union' ? flattenIrUnionTypesRust(member.types) : [member]));
+}
+
+// An alias names the carrier the assertion really talks about, so the comparison resolves through it.
+function resolveIrCastUnionTypeRust(type: Readonly<IrType>, context: EmitContext, depth = 0): Readonly<IrType> {
+  if (
+    depth > 8 ||
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.space !== 'type' ||
+    type.typeArguments.length > 0
+  ) {
+    return type;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
+  if (location?.declaration.kind !== 'typeAlias') return type;
+  return resolveIrCastUnionTypeRust(location.declaration.type, context, depth + 1);
 }
 
 function emitPrimitiveUnionCastRust(
