@@ -7089,7 +7089,7 @@ function getIrClassConstructorParameterPlanRust(
     }
     const location = getIrClassDeclarationLocationForTypeRust(parameter.type, context, module);
     if (!location) return 'other' as const;
-    if (!isIrSimpleConstructorOwnerDeclarationRust(location.declaration)) return undefined;
+    if (!isIrSimpleConstructorOwnerDeclarationRust(location.declaration, location.module, context)) return undefined;
     if (
       parameter.initializer ||
       parameter.rest ||
@@ -7230,7 +7230,11 @@ function isIrRequiredPrimitiveClassFieldRust(field: Readonly<IrClassField>): boo
   );
 }
 
-function isIrSimpleConstructorOwnerDeclarationRust(declaration: Readonly<IrClassDeclaration>): boolean {
+function isIrSimpleConstructorOwnerDeclarationRust(
+  declaration: Readonly<IrClassDeclaration>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
   return (
     !declaration.abstract &&
     declaration.extends === undefined &&
@@ -7239,26 +7243,7 @@ function isIrSimpleConstructorOwnerDeclarationRust(declaration: Readonly<IrClass
     declaration.fields.length > 0 &&
     declaration.fields.every(isIrRequiredPrimitiveClassFieldRust) &&
     declaration.methods.every(
-      (method) =>
-        !method.abstract &&
-        method.accessor === undefined &&
-        !method.async &&
-        !method.branded &&
-        method.overloads.length === 0 &&
-        !method.static &&
-        method.typeParameters.length === 0 &&
-        method.parameters.every(
-          (parameter) =>
-            !parameter.initializer &&
-            !parameter.optional &&
-            !parameter.rest &&
-            isIrRequiredPrimitiveTypeRust(parameter.type),
-        ) &&
-        method.returns.kind === 'primitive' &&
-        (method.returns.name === 'boolean' ||
-          method.returns.name === 'number' ||
-          method.returns.name === 'string' ||
-          method.returns.name === 'void'),
+      (method) => getIrClassMethodParameterPlanRust(method, declaration, module, context) !== undefined,
     )
   );
 }

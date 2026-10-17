@@ -11506,6 +11506,43 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.borrow_mut().merge(Some(Rc::clone(&other_alias)))');
   });
 
+  it('composes optional function, constructor, and method class carriers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-simple-class-parameter-composition.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+         }
+         class Snapshot {
+           value: number;
+           constructor(owner?: Counter) { this.value = owner === undefined ? 0 : owner.value; }
+         }
+         function adjust(value?: Counter): number {
+           if (value === undefined) return 0;
+           value.value = 3;
+           return value.value;
+         }
+         function forward(value?: Counter): number { return adjust(value); }
+         export function run(): number {
+           const receiver = new Counter(2); const receiverAlias = receiver;
+           const other = new Counter(7); const otherAlias = other;
+           return forward(receiverAlias) + new Snapshot(receiverAlias).value + receiver.inspect(otherAlias);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn adjust(mut value: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('fn forward(value: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('fn new(owner: Option<Rc<RefCell<Counter>>>) -> Self');
+    expect(output).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(output).toContain('value.as_ref().unwrap().borrow_mut().value = 3.0');
+    expect(output).toContain('adjust(value.clone())');
+    expect(output).toContain('Snapshot::new(Some(Rc::clone(&receiver_alias)))');
+    expect(output).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
+  });
+
   it('emits an imported optional class method carrier without a public callable plan', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-provider.ts',
