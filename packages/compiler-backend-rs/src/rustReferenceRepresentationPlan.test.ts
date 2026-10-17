@@ -217,6 +217,109 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('bridges an already-shared primitive array assertion into an independently planned readonly parameter', () => {
+    const module = lower(
+      'primitive-readonly-array-shared.ts',
+      `function count(values: readonly number[]): number { return values.length; }
+       export function report(ready: readonly number[]): number {
+         const values = [1];
+         const alias = values;
+         alias.push(2);
+         const direct = (values as readonly number[]).length;
+         return direct + count(ready) + count(ready) + count(values as readonly number[]);
+       }`,
+    );
+    const first = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] });
+    const modulePlan = getModulePlan(first, module);
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'count')).toEqual(
+      expect.objectContaining({ parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }] }),
+    );
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'report')).toEqual(
+      expect.objectContaining({ parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }] }),
+    );
+  });
+
+  it('resolves one imported closed readonly alias for an already-shared direct read', () => {
+    const provider = lower('primitive-readonly-array-aliases.ts', 'export type ReadonlyNumbers = readonly number[];');
+    const consumer = lower(
+      'primitive-readonly-array-import.ts',
+      `import { ReadonlyNumbers } from './primitive-readonly-array-aliases.js';
+       export function report(): number {
+         const values = [1];
+         const alias = values;
+         alias.push(2);
+         return (values as ReadonlyNumbers).length;
+       }`,
+    );
+    const moduleResolution = resolve('./primitive-readonly-array-aliases.js', provider, consumer);
+    const plan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+    const modulePlan = getModulePlan(plan, consumer);
+
+    expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+  });
+
+  it('does not elect or partially commit readonly sharing solely for assertion sources', () => {
+    const module = lower(
+      'primitive-readonly-array-no-election.ts',
+      `function count(values: readonly number[]): number { return values.length; }
+       export function report(values: number[]): number {
+         return count(values as readonly number[]) + count(values as readonly number[]);
+       }`,
+    );
+    const plan = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const modulePlan = getModulePlan(plan, module);
+
+    expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+    expect(modulePlan.sharedArrayBindings).toEqual([]);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'count')).toBeUndefined();
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'report')).toBeUndefined();
+  });
+
+  it('recognizes an already-planned shared return as a readonly assertion source', () => {
+    const module = lower(
+      'primitive-readonly-array-shared-return.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[]): number[] { return values; }
+       function count(values: readonly number[]): number { return values.length; }
+       export function report(ready: readonly number[]): number {
+         const source = [1];
+         const pack: Pack = [identity(source), [2]];
+         const combined = source.concat(...pack);
+         const direct = (identity(source) as readonly number[]).length;
+         return direct + combined.length + count(ready) + count(ready) + count(identity(source) as readonly number[]);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'pack' }) }),
+    ]);
+    expect(modulePlan.sharedArrayBindings).toEqual([
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'source' }) }),
+    ]);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'identity')).toEqual(
+      expect.objectContaining({
+        parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+        returns: 'shared-ref-cell-vec',
+      }),
+    );
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'count')).toEqual(
+      expect.objectContaining({ parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }] }),
+    );
+  });
+
   it('leaves an existing mutable tuple-pack identity plan in precedence over readonly reuse', () => {
     const module = lower(
       'readonly-array-existing-plan.ts',

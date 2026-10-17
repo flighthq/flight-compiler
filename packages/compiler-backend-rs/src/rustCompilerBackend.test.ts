@@ -28206,6 +28206,234 @@ describe('emitIrModuleRust identity assertions', () => {
   });
 });
 
+describe('emitIrModuleRust primitive mutable-to-readonly array assertions', () => {
+  it('moves exact plain Vec and single-undefined Option carriers without cloning', () => {
+    const result = lower(
+      'primitive-readonly-array-identity.ts',
+      `type MutableFlags = boolean[];
+       type ReadonlyFlags = readonly boolean[];
+       type MutableNumbers = number[] | undefined;
+       type ReadonlyNumbers = readonly number[] | undefined;
+       type MutableLabels = string[];
+       type ReadonlyLabels = readonly string[];
+       function labels(): MutableLabels { return ["ready"]; }
+       export function flags(values: MutableFlags): ReadonlyFlags { return values as ReadonlyFlags; }
+       export function numbers(values: MutableNumbers): ReadonlyNumbers { return values as ReadonlyNumbers; }
+       export function produced(): ReadonlyLabels { return labels() as ReadonlyLabels; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn flags(values: MutableFlags) -> ReadonlyFlags {');
+    expect(output).toContain('pub fn numbers(values: MutableNumbers) -> ReadonlyNumbers {');
+    expect(output).toContain('pub fn produced() -> ReadonlyLabels {');
+    expect(output.match(/return values;/gu)).toHaveLength(2);
+    expect(output).toContain('return labels();');
+    expect(output).not.toContain('values.clone()');
+    expect(output).not.toContain('labels().clone()');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('resolves one unique imported pair of closed zero-parameter aliases', () => {
+    const aliasesSource = ts.createSourceFile(
+      '/flight/packages/math/src/primitive-readonly-aliases.ts',
+      'export type MutableNumbers = number[]; export type ReadonlyNumbers = readonly number[];',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/primitive-readonly-consumer.ts',
+      `import { MutableNumbers, ReadonlyNumbers } from './primitive-readonly-aliases.js';
+       export function freeze(values: MutableNumbers): ReadonlyNumbers {
+         return values as ReadonlyNumbers;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const provisionalAliases = lowerTypeScriptSource(aliasesSource, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    }).module;
+    const provisionalConsumer = lowerTypeScriptSource(consumerSource, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    }).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(provisionalConsumer),
+          specifier: './primitive-readonly-aliases.js',
+          target: getRustTestModuleIdentity(provisionalAliases),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [aliasesResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: aliasesSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(aliasesResult?.diagnostics).toEqual([]);
+    expect(consumerResult?.diagnostics).toEqual([]);
+    const aliases = aliasesResult!.module;
+    const consumer = consumerResult!.module;
+    const output = emitRustModuleInGraph([aliases, consumer], consumer, [...moduleResolution.edges]);
+
+    expect(output).toContain('pub fn freeze(values: MutableNumbers_2) -> ReadonlyNumbers_2 {');
+    expect(output).toContain('return values;');
+    expect(output).not.toContain('values.clone()');
+  });
+
+  it.each([
+    {
+      name: 'a primitive mismatch',
+      source: 'export function wrong(values: number[]): readonly string[] { return values as readonly string[]; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+    {
+      name: 'the reverse readonly-to-mutable direction',
+      source: 'export function wrong(values: readonly number[]): number[] { return values as number[]; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+    {
+      name: 'an identity-bearing element array',
+      source:
+        'interface Point { value: number } export function wrong(values: Point[]): readonly Point[] { return values as readonly Point[]; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+    {
+      name: 'a property operand',
+      source:
+        'interface Holder { values: number[] } export function wrong(holder: Holder): readonly number[] { return holder.values as readonly number[]; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+    {
+      name: 'a nested assertion operand',
+      source:
+        'export function wrong(values: number[]): readonly number[] { return (values as number[]) as readonly number[]; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+    {
+      name: 'a null wrapper',
+      source:
+        'export function wrong(values: number[] | null): readonly number[] | null { return values as readonly number[] | null; }',
+      rule: 'rust-union-cast-unsupported',
+    },
+    {
+      name: 'a parameterized alias',
+      source:
+        'type Mutable<T> = T[]; type Frozen<T> = readonly T[]; export function wrong(values: Mutable<number>): Frozen<number> { return values as Frozen<number>; }',
+      rule: 'rust-cast-requires-type-directed-lowering',
+    },
+  ])('keeps $name outside the dedicated lane', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('primitive-readonly-array-refused.ts', source).module))).toBe(
+      rule,
+    );
+  });
+
+  it.each([
+    `export function wrong(values: number[]): readonly number[] {
+       const alias = values;
+       void alias.length;
+       return values as readonly number[];
+     }`,
+    `export function wrong(values: number[] | undefined): readonly number[] | undefined {
+       const alias = values;
+       void alias;
+       return values as readonly number[] | undefined;
+     }`,
+  ])('refuses an exact reused source that would otherwise require a deep clone', (source) => {
+    const module = lower('primitive-readonly-array-reused.ts', source).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-shared-identity-deep-clone-unrepresented');
+  });
+
+  it('keeps unresolved array-call planning ahead of the assertion lane', () => {
+    const module = lower(
+      'primitive-readonly-array-unresolved.ts',
+      `import { forward } from './missing.js';
+       export function wrong(values: number[]): readonly number[] {
+         return forward(values) as readonly number[];
+       }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-array-call-target-unresolved');
+  });
+
+  it('bridges only an already-shared source into planned readonly call and direct-read contexts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'primitive-readonly-array-shared.ts',
+        `function count(values: readonly number[]): number { return values.length; }
+         export function report(ready: readonly number[]): number {
+           const values = [1];
+           const alias = values;
+           alias.push(2);
+           const direct = (values as readonly number[]).length;
+           return direct + count(ready) + count(ready) + count(values as readonly number[]);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let values: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(vec![1.0]));');
+    expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&values);');
+    expect(output).toContain('let direct: f64 = values.borrow().len() as f64;');
+    expect(output.match(/count\(Rc::clone\(&ready\)\)/gu)).toHaveLength(2);
+    expect(output).toContain('count(Rc::clone(&values))');
+    expect(output).not.toContain('values.borrow().clone()');
+  });
+
+  it('temporarily borrows an already-planned shared return and passes its owner without wrapping again', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'primitive-readonly-array-shared-return.ts',
+        `type Pack = readonly [number[], number[]];
+         function identity(values: number[]): number[] { return values; }
+         function count(values: readonly number[]): number { return values.length; }
+         export function report(ready: readonly number[]): number {
+           const source = [1];
+           const pack: Pack = [identity(source), [2]];
+           const combined = source.concat(...pack);
+           const direct = (identity(source) as readonly number[]).length;
+           return direct + combined.length + count(ready) + count(ready) + count(identity(source) as readonly number[]);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn identity(values: Rc<RefCell<Vec<f64>>>) -> Rc<RefCell<Vec<f64>>> {');
+    expect(output).toContain('identity(Rc::clone(&source)).borrow().len() as f64');
+    expect(output).toContain('count(identity(Rc::clone(&source)))');
+    expect(output).not.toContain('Rc::new(RefCell::new(identity(');
+    expect(output).not.toContain('identity(Rc::clone(&source)).borrow().clone()');
+  });
+
+  it('does not elect sharing solely because the assertion is called twice', () => {
+    const module = lower(
+      'primitive-readonly-array-no-election.ts',
+      `function count(values: readonly number[]): number { return values.length; }
+       export function report(values: number[]): number {
+         return count(values as readonly number[]) + count(values as readonly number[]);
+       }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-shared-identity-deep-clone-unrepresented');
+  });
+
+  it('does not expose a mutable shared receiver through the readonly assertion', () => {
+    const module = lower(
+      'primitive-readonly-array-mutation.ts',
+      `export function wrong(values: number[]): void {
+         const alias = values;
+         alias.push(1);
+         (values as readonly number[])[0] = 2;
+       }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-shared-array-use-unrepresented');
+  });
+});
+
 describe('emitIrModuleRust exact numeric enum assertions', () => {
   it('converts local member, parameter, and call values through the i32 discriminant carrier', () => {
     const result = lower(
