@@ -482,6 +482,7 @@ function emitIrModuleRustWithContext(
   // Method arity must be refused before the shared extra-argument pass, whose target ABI cannot
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
   // after erasing extra arguments.
+  assertArrayIsArrayInvocationSemanticsRust(sourceModule);
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
@@ -857,6 +858,7 @@ function emitIrModuleRustWithContext(
     nativeFutureLocalBindingIds.add(bindingId);
   }
   collectPrimitiveUnionBindingsRust(module, context);
+  assertArrayIsArraySemanticsRust(module, context);
   assertArrayOperationSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
@@ -1707,6 +1709,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (isArrayIsArrayCallRust(expression)) return emitArrayIsArrayCallRust(expression, context);
       if (isArrayCopyWithinCallRust(expression)) return emitArrayCopyWithinCallRust(expression, context);
       if (isArrayFillCallRust(expression)) return emitArrayFillCallRust(expression, context);
       if (isArrayFindIndexCallRust(expression)) return emitArrayFindIndexCallRust(expression, context);
@@ -3860,6 +3863,19 @@ function emitArrayElementOptionRust(
   return `{ let ${receiverName} = ${receiver}; ${emitGuardedArrayGetRust(receiverName, expression.index, context)} }`;
 }
 
+function isArrayIsArrayCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.name === 'isArray' &&
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'ambient' &&
+    expression.callee.object.reference.name === 'Array'
+  );
+}
+
 function isArrayShiftCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -4113,6 +4129,27 @@ function isArraySpliceCallRust(
     expression.callee.member?.receiver === 'array' &&
     expression.callee.member.name === 'splice'
   );
+}
+
+function emitArrayIsArrayCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const argument = expression.arguments[0];
+  const domain = argument ? getRustArrayIsArrayExpressionDomainRust(argument, context) : undefined;
+  if (!argument || (domain !== 'array' && domain !== 'nonArray')) {
+    return emissionError(context, 'Array.isArray emission requires one statically decided argument domain');
+  }
+  const valueName = getGeneratedTargetNameRust('array_is_array_value', context);
+  const value =
+    (argument.kind === 'literal' && argument.value === null) ||
+    argument.kind === 'undefinedValue' ||
+    (argument.kind === 'identifier' && argument.reference.kind === 'ambient' && argument.reference.name === 'undefined')
+      ? '()'
+      : argument.kind === 'identifier' && argument.reference.kind === 'binding'
+        ? emitIdentifierReferenceRust(argument.reference, context)
+        : emitExpression(argument, context);
+  return `{ let ${valueName} = &${value}; let _ = ${valueName}; ${domain === 'array' ? 'true' : 'false'} }`;
 }
 
 function emitArrayGrowthCallRust(
@@ -11017,6 +11054,212 @@ interface RustArrayOperationRefusal {
     | 'rust-array-sort-result-carrier-unrepresented';
 }
 
+type RustArrayIsArrayDomain = 'array' | 'empty' | 'mixed' | 'nonArray' | 'unresolved';
+
+interface RustArrayIsArrayRefusal {
+  readonly message: string;
+  readonly rule:
+    | 'rust-array-is-array-result-carrier-unrepresented'
+    | 'rust-array-is-array-runtime-discrimination-unrepresented';
+}
+
+function assertArrayIsArrayInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayIsArrayCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        expression.typeArguments.length !== 0 ||
+        !signature ||
+        signature.parameterCount !== 1 ||
+        signature.restParameter !== undefined ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== 1 ||
+        expression.arguments.length !== 1 ||
+        expression.arguments[0]?.kind === 'spread'
+      ) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'Array.isArray requires the exact non-optional ambient call with one fixed non-spread argument and a non-generic signature',
+    'rust-array-is-array-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
+}
+
+function assertArrayIsArraySemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+  const refusals: RustArrayIsArrayRefusal[] = [];
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayIsArrayCallRust(expression)) return;
+      const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+      if (result.kind !== 'primitive' || result.name !== 'boolean') {
+        refusals.push({
+          message: 'Array.isArray requires the exact Rust bool result carrier',
+          rule: 'rust-array-is-array-result-carrier-unrepresented',
+        });
+        return;
+      }
+      const argument = expression.arguments[0];
+      const domain = argument ? getRustArrayIsArrayExpressionDomainRust(argument, context) : 'unresolved';
+      if (domain === 'array' || domain === 'nonArray') return;
+      refusals.push({
+        message:
+          domain === 'mixed'
+            ? 'Array.isArray over a mixed array and non-array domain needs branch-preserving Rust runtime discrimination; static folding will not guess the held alternative'
+            : 'Array.isArray over any, unknown, object, never, or an open or unresolved domain needs an exact Rust runtime discriminator and identity-preserving extraction',
+        rule: 'rust-array-is-array-runtime-discrimination-unrepresented',
+      });
+    },
+  });
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.message}`, `${right.rule}\u0000${right.message}`),
+  )[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
+}
+
+function getRustArrayIsArrayExpressionDomainRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): RustArrayIsArrayDomain {
+  switch (expression.kind) {
+    case 'array':
+    case 'tuple':
+      return 'array';
+    case 'function':
+    case 'literal':
+    case 'regexp':
+    case 'template':
+    case 'undefinedValue':
+      return 'nonArray';
+    case 'cast': {
+      const source = getRustArrayIsArrayExpressionDomainRust(expression.expression, context);
+      const target = getRustArrayIsArrayTypeDomainRust(expression.type, context, new Set());
+      return source === target && (source === 'array' || source === 'nonArray') ? source : 'unresolved';
+    }
+    case 'conditional': {
+      const whenTrue = getRustArrayIsArrayExpressionDomainRust(expression.whenTrue, context);
+      const whenFalse = getRustArrayIsArrayExpressionDomainRust(expression.whenFalse, context);
+      if (whenTrue === whenFalse) return whenTrue;
+      if ((whenTrue === 'array' || whenTrue === 'nonArray') && (whenFalse === 'array' || whenFalse === 'nonArray')) {
+        return 'mixed';
+      }
+      return 'unresolved';
+    }
+    case 'new':
+      if (expression.callee.kind === 'identifier') {
+        if (expression.callee.reference.kind === 'ambient') {
+          if (expression.callee.reference.name === 'Array') return 'array';
+          if (rustArrayIsArrayDisjointAmbientTypes.has(expression.callee.reference.name)) return 'nonArray';
+        }
+        if (
+          expression.callee.reference.kind === 'binding' &&
+          (expression.callee.reference.binding.kind === 'class' || expression.callee.reference.binding.kind === 'enum')
+        ) {
+          return 'nonArray';
+        }
+      }
+      return 'unresolved';
+    case 'identifier':
+      if (expression.reference.kind === 'ambient') {
+        return expression.reference.name === 'undefined' ? 'nonArray' : 'unresolved';
+      }
+      if (expression.reference.kind !== 'binding') return 'unresolved';
+      return getRustArrayIsArrayTypeDomainRust(
+        context.bindingTypes.get(expression.reference.binding.id),
+        context,
+        new Set(),
+      );
+    default: {
+      const type = inferIrExpressionTypeRust(expression, context);
+      return type ? getRustArrayIsArrayTypeDomainRust(type, context, new Set()) : 'unresolved';
+    }
+  }
+}
+
+function getRustArrayIsArrayTypeDomainRust(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): RustArrayIsArrayDomain {
+  if (!type) return 'unresolved';
+  switch (type.kind) {
+    case 'array':
+    case 'tuple':
+      return 'array';
+    case 'function':
+    case 'literal':
+    case 'null':
+    case 'undefined':
+      return 'nonArray';
+    case 'primitive':
+      return 'nonArray';
+    case 'never':
+      return 'empty';
+    case 'union': {
+      const domains = type.types
+        .map((member) => getRustArrayIsArrayTypeDomainRust(member, context, resolving))
+        .filter((domain) => domain !== 'empty');
+      if (domains.length === 0) return 'empty';
+      if (domains.some((domain) => domain === 'unresolved')) return 'unresolved';
+      if (domains.some((domain) => domain === 'mixed')) return 'mixed';
+      const represented = new Set(domains);
+      return represented.size === 1 ? domains[0]! : 'mixed';
+    }
+    case 'named': {
+      if (type.reference.kind === 'ambient') {
+        if (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') return 'array';
+        if (
+          (type.reference.name === 'NoInfer' ||
+            type.reference.name === 'Readonly' ||
+            type.reference.name === 'Required') &&
+          type.typeArguments.length === 1
+        ) {
+          return getRustArrayIsArrayTypeDomainRust(type.typeArguments[0], context, resolving);
+        }
+        return rustArrayIsArrayDisjointAmbientTypes.has(type.reference.name) ? 'nonArray' : 'unresolved';
+      }
+      const binding = type.reference.binding;
+      if (binding.kind === 'typeParameter' || resolving.has(binding.id)) return 'unresolved';
+      const resolved = resolveIrTypeAliasTargetRust(type, context);
+      if (resolved) {
+        return getRustArrayIsArrayTypeDomainRust(resolved, context, new Set(resolving).add(binding.id));
+      }
+      if (
+        binding.kind === 'class' ||
+        binding.kind === 'enum' ||
+        getIrClassDeclarationLocationForTypeRust(type, context) !== undefined
+      ) {
+        return 'nonArray';
+      }
+      return 'unresolved';
+    }
+    case 'conditionalFacet':
+    case 'indexedAccess':
+    case 'intersection':
+    case 'keyof':
+    case 'object':
+    case 'typeOf':
+    case 'unknown':
+      return 'unresolved';
+  }
+}
+
 function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>): void {
   let unsupported = false;
   analyzeIrModuleTraversal(module, {
@@ -15056,6 +15299,32 @@ const rustTypedArrayConstructorNames = new Set([
   'Uint8ClampedArray',
   'Uint16Array',
   'Uint32Array',
+]);
+
+const rustArrayIsArrayDisjointAmbientTypes: ReadonlySet<string> = new Set([
+  'ArrayBuffer',
+  'Boolean',
+  'DataView',
+  'Date',
+  'Error',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Map',
+  'Promise',
+  'RangeError',
+  'ReadonlyMap',
+  'ReadonlySet',
+  'Set',
+  'String',
+  'TypeError',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+  'WeakMap',
 ]);
 
 const rustPanicErrorConstructorNames: ReadonlySet<string> = new Set(['Error', 'RangeError', 'TypeError']);

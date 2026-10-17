@@ -25006,3 +25006,223 @@ describe('emitIrModuleRust array flatMap', () => {
     expect(output).toContain('.fold(');
   });
 });
+
+describe('emitIrModuleRust static Array.isArray', () => {
+  it('folds exact array and disjoint domains while borrowing reusable carriers', () => {
+    const result = lower(
+      'array-is-array-exact.ts',
+      `type NumericRows = number[];
+       type TextRows = string[];
+       class Box { value = 1; }
+       export function vector(values: number[]): number {
+         const answer = Array.isArray(values);
+         values.push(4);
+         return (answer ? 10 : 0) + values.length;
+       }
+       export function pair(value: readonly [number, string]): boolean {
+         const answer = Array.isArray(value);
+         value[0];
+         return answer;
+       }
+       export function rows(value: NumericRows | TextRows): boolean { return Array.isArray(value); }
+       export function text(value: string): boolean {
+         const answer = Array.isArray(value);
+         return answer || value === "";
+       }
+       export function box(value: Box): boolean { return Array.isArray(value); }
+       export function bytes(value: Uint8Array): boolean { return Array.isArray(value); }
+       export function nil(value: null): boolean { return Array.isArray(value); }
+       export function missing(value: undefined): boolean { return Array.isArray(value); }
+       export function callback(value: (input: number) => number): boolean { return Array.isArray(value); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/let array_is_array_value(?:_\d+)? = &/gu)).toHaveLength(9);
+    expect(output.match(/let _ = array_is_array_value(?:_\d+)?; true/gu)).toHaveLength(3);
+    expect(output.match(/let _ = array_is_array_value(?:_\d+)?; false/gu)).toHaveLength(6);
+    expect(output).toContain('let array_is_array_value = &values;');
+    expect(output).not.toContain('Vec::isArray');
+    expect(output).not.toContain('is_array(');
+  });
+
+  it('stages direct array and non-array literals with concrete temporary carriers', () => {
+    const result = lower(
+      'array-is-array-literals.ts',
+      `export function literals(): boolean {
+         return Array.isArray([1]) &&
+           !Array.isArray(null) &&
+           !Array.isArray(undefined) &&
+           !Array.isArray("value") &&
+           !Array.isArray(1) &&
+           !Array.isArray(false);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/let array_is_array_value(?:_\d+)? = &/gu)).toHaveLength(6);
+    expect(output).toContain('let array_is_array_value_2 = &();');
+    expect(output).toContain('let array_is_array_value_3 = &();');
+    expect(output.match(/let _ = array_is_array_value(?:_\d+)?; false/gu)).toHaveLength(5);
+  });
+
+  it('evaluates an effectful argument once and borrows a shared array identity without cloning it', () => {
+    const result = lower(
+      'array-is-array-evaluation.ts',
+      `function record(log: number[]): number[] { log.push(1); return [1]; }
+       export function effect(log: number[]): boolean { return Array.isArray(record(log)); }
+       export function shared(): number {
+         const values = [1];
+         const alias = values;
+         const answer = Array.isArray(alias);
+         values.push(2);
+         return (answer ? 10 : 0) + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/record\(/gu)).toHaveLength(2);
+    expect(output).toContain('let array_is_array_value = &record(');
+    expect(output).toContain('let array_is_array_value_2 = &alias;');
+    expect(output).not.toContain('let array_is_array_value_2 = &alias.borrow().clone();');
+  });
+
+  it('borrows a shared class identity without opening its RefCell carrier', () => {
+    const result = lower(
+      'array-is-array-shared-identities.ts',
+      `class Box { value: number; constructor(value: number) { this.value = value; } }
+       export function identities(): number {
+         const box: Box = new Box(1);
+         const boxAlias: Box = box;
+         const boxAnswer = Array.isArray(boxAlias);
+         box.value = 2;
+         return (boxAnswer ? 10 : 0) + boxAlias.value;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_is_array_value = &box_alias;');
+    expect(output).not.toContain('let array_is_array_value = &box_alias.borrow().clone();');
+  });
+
+  it('does not intercept local, imported, or neighbouring runtime-external static spellings', () => {
+    const localOutput = emitIrModuleRust(
+      lower(
+        'array-is-array-local.ts',
+        `class Array {
+           static isArray(value: number): boolean { return value > 0; }
+         }
+         export function local(value: number): boolean { return Array.isArray(value); }
+         export function task(): Promise<number> { return Promise.resolve(1); }`,
+      ).module,
+    ).contents;
+    expect(localOutput).toContain('Array::is_array(value)');
+    expect(localOutput).toContain('FlightTask::ready(1.0)');
+    expect(localOutput).not.toContain('array_is_array_value');
+
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-namespace.ts',
+      'export function isArray(value: number): boolean { return value > 0; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/array-is-array-imported.ts',
+      `import * as Array from './array-namespace.js';
+       export function imported(value: number): boolean { return Array.isArray(value); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Array-is-array-imported',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/array-is-array-imported.ts',
+          },
+          specifier: './array-namespace.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/array-namespace.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const importedOutput = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+    expect(importedOutput).toContain('use crate::array_namespace as Array;');
+    expect(importedOutput).toContain('Array::is_array(value)');
+    expect(importedOutput).not.toContain('array_is_array_value');
+  });
+
+  it.each([
+    ['unknown', 'export function check(value: unknown): boolean { return Array.isArray(value); }'],
+    ['any', 'export function check(value: any): boolean { return Array.isArray(value); }'],
+    ['object', 'export function check(value: object): boolean { return Array.isArray(value); }'],
+    ['a mixed union', 'export function check(value: number[] | string): boolean { return Array.isArray(value); }'],
+    [
+      'a nullish array union',
+      'export function check(value: number[] | undefined): boolean { return Array.isArray(value); }',
+    ],
+    [
+      'an open interface',
+      'interface Row { value: number } export function check(value: Row): boolean { return Array.isArray(value); }',
+    ],
+    ['a type parameter', 'export function check<T>(value: T): boolean { return Array.isArray(value); }'],
+    [
+      'an erased assertion',
+      'export function check(value: unknown): boolean { return Array.isArray(value as number[]); }',
+    ],
+  ])('refuses runtime discrimination for %s', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-is-array-domain.ts', source).module))).toBe(
+      'rust-array-is-array-runtime-discrimination-unrepresented',
+    );
+  });
+
+  it.each([
+    'export function check(value: number[]): boolean { return Array.isArray(); }',
+    'export function check(value: number[]): boolean { return Array.isArray(value, value); }',
+    'export function check(values: [number[]]): boolean { return Array.isArray(...values); }',
+    'export function check(value: number[]): boolean { return Array.isArray?.(value) ?? false; }',
+  ])('refuses invocation shape before extra-argument erasure', (source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-is-array-invocation.ts', source).module))).toBe(
+      'rust-array-is-array-invocation-unrepresented',
+    );
+  });
+
+  it('refuses a mutated result carrier before a runtime-domain refusal', () => {
+    const result = lower(
+      'array-is-array-result.ts',
+      `export function dynamic(value: unknown): boolean { return Array.isArray(value); }
+       export function exact(value: number[]): boolean { return Array.isArray(value); }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'exact',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the exact Array.isArray return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-is-array-result-carrier-unrepresented',
+    );
+  });
+});
