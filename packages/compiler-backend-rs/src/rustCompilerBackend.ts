@@ -210,6 +210,11 @@ type RustSharedClassRepresentation = Extract<
 
 type RustOptionalSharedClassRepresentation = Exclude<RustSharedClassRepresentation, 'shared-ref-cell-class'>;
 
+interface IrClassConstructorParameterPlanRust {
+  readonly borrowedPositions: ReadonlySet<number>;
+  readonly optionalClassPositions: ReadonlySet<number>;
+}
+
 interface RustAsyncTryCompletionEvidence {
   readonly abruptStatements: readonly Readonly<IrStatement>[];
   readonly suspensionCount: number;
@@ -795,15 +800,24 @@ function emitIrModuleRustWithContext(
     }
     if (borrowed.size > 0) borrowedParameterRepresentations.set(declaration.binding.id, borrowed);
   }
-  // A simple-class constructor may consume only primitive projections from an exact class owner.
-  // Those parameters are loans just like planned function parameters; recording their identities
-  // here makes both the signature and non-Copy field reads use the same `&C` representation.
+  // A simple-class constructor may consume primitive projections from an exact required or optional
+  // class owner. Required owners are loans; a trailing syntactic optional owner uses the same Option
+  // carrier as an optional function parameter.
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'class') continue;
-    const positions = getIrClassConstructorBorrowedParameterPositionsRust(declaration, module, context);
-    for (const position of positions ?? []) {
+    const plan = getIrClassConstructorParameterPlanRust(declaration, module, context);
+    for (const position of plan?.borrowedPositions ?? []) {
       const parameter = declaration.classConstructor?.parameters[position];
       if (parameter) borrowedClassParameterIds.add(parameter.binding.id);
+    }
+    for (const position of plan?.optionalClassPositions ?? []) {
+      const parameter = declaration.classConstructor?.parameters[position];
+      if (!parameter) continue;
+      optionalSharedClassParameterRepresentations.set(parameter.binding.id, 'optional-undefined-shared-ref-cell-class');
+      bindingTypes.set(parameter.binding.id, {
+        kind: 'union',
+        types: [parameter.type, { kind: 'undefined' }],
+      });
     }
   }
   collectPrimitiveUnionBindingsRust(module, context);
@@ -1955,7 +1969,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require Rust type-path lowering');
       }
-      const borrowedConstructorPositions = assertIrConstructorInvocationAbiRust(expression, context);
+      const constructorPlan = assertIrConstructorInvocationAbiRust(expression, context);
       {
         const constructor = emitConstructorReferenceRust(expression.callee.reference, context);
         if (
@@ -1977,13 +1991,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (!method) emissionError(context, 'DataView construction supports one through three arguments');
           return `${constructor}::${method}(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
         }
-        return `${constructor}::new(${expression.arguments
-          .map((argument, position) =>
-            borrowedConstructorPositions.has(position)
-              ? emitBorrowedClassOperandRust(argument, context)
-              : emitOwnedOperandRust(argument, context),
-          )
-          .join(', ')})`;
+        return `${constructor}::new(${emitConstructorArgumentsRust(expression, constructorPlan, context).join(', ')})`;
       }
     case 'object':
       return emitObjectExpressionRust(expression, context);
@@ -3327,8 +3335,10 @@ function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>
 function assertIrConstructorInvocationAbiRust(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
-): ReadonlySet<number> {
-  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') return new Set();
+): IrClassConstructorParameterPlanRust {
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') {
+    return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
+  }
   // A class this module declares has an associated `new` whenever its constructor was lowered to one,
   // so the call is emitted; a class whose constructor was refused has nothing to call.
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
@@ -3350,19 +3360,19 @@ function assertIrConstructorInvocationAbiRust(
     const target = local?.kind === 'class' ? local : importedTarget?.kind === 'class' ? importedTarget : undefined;
     const targetModule = local?.kind === 'class' ? context.module : importedModule;
     if (target?.kind === 'class') {
-      const borrowedPositions = targetModule
-        ? getIrClassConstructorBorrowedParameterPositionsRust(target, targetModule, context)
+      const constructorPlan = targetModule
+        ? getIrClassConstructorParameterPlanRust(target, targetModule, context)
         : undefined;
       const abstractBase = getIrClassStatelessAbstractBaseRust(target, context);
       if (getIrClassConstructorFieldAssignmentsRust(target, abstractBase !== undefined)) {
-        if (!borrowedPositions) {
+        if (!constructorPlan) {
           emissionError(
             context,
             `class ${target.binding.name} constructor class parameter requires exact readonly primitive projections`,
             'rust-reference-shared-class-construction-unrepresented',
           );
         }
-        for (const position of borrowedPositions) {
+        for (const position of constructorPlan.borrowedPositions) {
           const parameter = target.classConstructor?.parameters[position];
           const argument = expression.arguments[position];
           if (
@@ -3377,10 +3387,27 @@ function assertIrConstructorInvocationAbiRust(
             );
           }
         }
-        return borrowedPositions;
+        for (const position of constructorPlan.optionalClassPositions) {
+          const parameter = target.classConstructor?.parameters[position];
+          const argument = expression.arguments[position];
+          if (
+            !parameter ||
+            !hasIrOptionalParameterInvocationEvidenceRust(expression, target.classConstructor!.parameters, position) ||
+            (argument && !isIrOptionalClassConstructorArgumentRust(argument, parameter.type, targetModule!, context))
+          ) {
+            emissionError(
+              context,
+              `constructor argument ${String(position)} for ${target.binding.name} lacks the exact optional class owner carrier`,
+              'rust-reference-shared-class-construction-unrepresented',
+            );
+          }
+        }
+        return constructorPlan;
       }
       const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(target, context) : undefined;
-      if (concreteBase && getIrClassCompositionConstructorRust(target, concreteBase)) return new Set();
+      if (concreteBase && getIrClassCompositionConstructorRust(target, concreteBase)) {
+        return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
+      }
       const instanceFields = target.fields.filter((field) => !field.static);
       const constructed =
         !target.classConstructor ||
@@ -3391,7 +3418,7 @@ function assertIrConstructorInvocationAbiRust(
         instanceFields.length > 0 &&
         instanceFields.every((field) => field.initializer || field.declare)
       ) {
-        return new Set();
+        return { borrowedPositions: new Set(), optionalClassPositions: new Set() };
       }
     }
   }
@@ -3399,6 +3426,95 @@ function assertIrConstructorInvocationAbiRust(
     context,
     'class constructor calls require Rust initialization lowering',
     'rust-class-initialization-unsupported',
+  );
+}
+
+function emitConstructorArgumentsRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  plan: IrClassConstructorParameterPlanRust,
+  context: EmitContext,
+): string[] {
+  const parameterCount =
+    expression.semantics.optionalParameters?.parameterCount ??
+    expression.semantics.signature?.parameterCount ??
+    expression.arguments.length;
+  return Array.from({ length: parameterCount }, (_, position) => {
+    const argument = expression.arguments[position];
+    if (plan.optionalClassPositions.has(position)) {
+      if (!argument || getIrSharedClassSentinelExpressionRust(argument) === 'undefined') return 'None';
+      return emitSharedClassCarrierExpressionRust(argument, 'optional-undefined-shared-ref-cell-class', context);
+    }
+    if (!argument) emissionError(context, `missing required constructor argument at position ${String(position)}`);
+    return plan.borrowedPositions.has(position)
+      ? emitBorrowedClassOperandRust(argument, context)
+      : emitOwnedOperandRust(argument, context);
+  });
+}
+
+function hasIrOptionalParameterInvocationEvidenceRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  parameters: readonly Readonly<IrParameter>[],
+  position: number,
+): boolean {
+  const evidence = expression.semantics.optionalParameters;
+  if (
+    !evidence ||
+    evidence.parameterCount !== parameters.length ||
+    evidence.providedArgumentCount === 'dynamic' ||
+    evidence.providedArgumentCount !== expression.arguments.length
+  ) {
+    return false;
+  }
+  const expectedOptional = parameters.flatMap((parameter, index) =>
+    parameter.optional && !parameter.initializer ? [index] : [],
+  );
+  const expectedOmitted = expectedOptional.filter((index) => index >= expression.arguments.length);
+  const expectedProvided = expectedOptional.filter((index) => index < expression.arguments.length);
+  const optional = [...new Set(evidence.optional)].sort((left, right) => left - right);
+  const omitted = [...new Set(evidence.omitted)].sort((left, right) => left - right);
+  const provided = [...new Set(evidence.provided.map((item) => item.position))].sort((left, right) => left - right);
+  return (
+    evidence.optional.length === optional.length &&
+    evidence.omitted.length === omitted.length &&
+    evidence.provided.length === provided.length &&
+    optional.length === expectedOptional.length &&
+    optional.every((item, index) => item === expectedOptional[index]) &&
+    omitted.length === expectedOmitted.length &&
+    omitted.every((item, index) => item === expectedOmitted[index]) &&
+    provided.length === expectedProvided.length &&
+    provided.every((item, index) => item === expectedProvided[index]) &&
+    optional.includes(position)
+  );
+}
+
+function isIrOptionalClassConstructorArgumentRust(
+  expression: Readonly<IrExpression>,
+  parameterType: Readonly<IrType>,
+  parameterModule: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
+  if (getIrSharedClassSentinelExpressionRust(expression) === 'undefined') return true;
+  if (expression.kind === 'conditional') {
+    return (
+      isIrOptionalClassConstructorArgumentRust(expression.whenTrue, parameterType, parameterModule, context) &&
+      isIrOptionalClassConstructorArgumentRust(expression.whenFalse, parameterType, parameterModule, context)
+    );
+  }
+  const representation = getRustSharedClassExpressionRepresentationRust(expression, context);
+  if (representation !== 'shared-ref-cell-class' && representation !== 'optional-undefined-shared-ref-cell-class') {
+    return false;
+  }
+  const expressionType = getIrSharedClassIdentityExpressionTypeRust(expression, context);
+  if (!expressionType) return false;
+  const argumentType = getRustSharedClassPayloadTypeRust(expressionType, representation, context);
+  const argumentLocation = getIrClassDeclarationLocationForTypeRust(argumentType, context, context.module);
+  const parameterLocation = getIrClassDeclarationLocationForTypeRust(parameterType, context, parameterModule);
+  return (
+    argumentLocation !== undefined &&
+    parameterLocation !== undefined &&
+    argumentLocation.module.packageName === parameterLocation.module.packageName &&
+    argumentLocation.module.source === parameterLocation.module.source &&
+    argumentLocation.declaration.binding.id === parameterLocation.declaration.binding.id
   );
 }
 
@@ -6512,29 +6628,46 @@ function getIrClassConstructorFieldAssignmentsRust(
     : undefined;
 }
 
-function getIrClassConstructorBorrowedParameterPositionsRust(
+function getIrClassConstructorParameterPlanRust(
   declaration: Readonly<IrClassDeclaration>,
   module: Readonly<IrModule>,
   context: EmitContext,
-): ReadonlySet<number> | undefined {
+): IrClassConstructorParameterPlanRust | undefined {
   const constructor = declaration.classConstructor;
   if (!constructor || constructor.overloads.length > 0) return undefined;
-  const parameterKinds = constructor.parameters.map((parameter) => {
-    if (isIrRequiredPrimitiveTypeRust(parameter.type)) return 'primitive' as const;
+  const parameterKinds = constructor.parameters.map((parameter, position) => {
+    if (
+      !parameter.initializer &&
+      !parameter.optional &&
+      !parameter.rest &&
+      isIrRequiredPrimitiveTypeRust(parameter.type)
+    ) {
+      return 'primitive' as const;
+    }
     const location = getIrClassDeclarationLocationForTypeRust(parameter.type, context, module);
     if (!location) return 'other' as const;
     if (!isIrSimpleConstructorOwnerDeclarationRust(location.declaration)) return undefined;
-    return !parameter.initializer &&
-      !parameter.optional &&
-      !parameter.rest &&
-      parameter.type.kind === 'named' &&
-      parameter.type.typeArguments.length === 0
-      ? ({ kind: 'class', location } as const)
-      : undefined;
+    if (
+      parameter.initializer ||
+      parameter.rest ||
+      parameter.type.kind !== 'named' ||
+      parameter.type.typeArguments.length > 0
+    ) {
+      return undefined;
+    }
+    if (!parameter.optional) return { kind: 'class', location } as const;
+    return position === constructor.parameters.length - 1 ? ({ kind: 'optionalClass', location } as const) : undefined;
   });
-  if (parameterKinds.some((kind) => kind === undefined)) return undefined;
-  const borrowed = new Set(parameterKinds.flatMap((kind, position) => (typeof kind === 'object' ? [position] : [])));
-  if (borrowed.size === 0) return borrowed;
+  if (parameterKinds.some((kind) => kind === undefined || kind === 'other')) return undefined;
+  const optionalClassPositions = new Set(
+    parameterKinds.flatMap((kind, position) =>
+      typeof kind === 'object' && kind.kind === 'optionalClass' ? [position] : [],
+    ),
+  );
+  if (optionalClassPositions.size > 1) return undefined;
+  const borrowed = new Set(
+    parameterKinds.flatMap((kind, position) => (typeof kind === 'object' && kind.kind === 'class' ? [position] : [])),
+  );
   const usedClassParameters = new Set<number>();
   const fields = declaration.fields.filter((field) => !field.static);
   for (const statement of constructor.body) {
@@ -6561,6 +6694,53 @@ function getIrClassConstructorBorrowedParameterPositionsRust(
       }
       continue;
     }
+    if (right.kind === 'conditional') {
+      if (
+        right.condition.kind !== 'binary' ||
+        right.condition.operator !== '===' ||
+        right.condition.left.kind !== 'identifier' ||
+        right.condition.left.reference.kind !== 'binding' ||
+        getIrSharedClassSentinelExpressionRust(right.condition.right) !== 'undefined'
+      ) {
+        return undefined;
+      }
+      const parameterBindingId = right.condition.left.reference.binding.id;
+      const position = constructor.parameters.findIndex((parameter) => parameter.binding.id === parameterBindingId);
+      const kind = parameterKinds[position];
+      const projection = right.whenFalse;
+      const fallbackType = inferIrExpressionTypeRust(right.whenTrue, context);
+      if (
+        position < 0 ||
+        typeof kind !== 'object' ||
+        kind.kind !== 'optionalClass' ||
+        projection.kind !== 'property' ||
+        projection.optional ||
+        projection.structuralAccess !== undefined ||
+        projection.object.kind !== 'identifier' ||
+        projection.object.reference.kind !== 'binding' ||
+        projection.object.reference.binding.id !== parameterBindingId ||
+        projection.object.presence !== 'narrowedPresent' ||
+        fallbackType?.kind !== 'primitive' ||
+        targetField.type.kind !== 'primitive' ||
+        fallbackType.name !== targetField.type.name ||
+        irExpressionUsesBindingRust(right.whenTrue, parameterBindingId)
+      ) {
+        return undefined;
+      }
+      const ownerField = kind.location.declaration.fields.find(
+        (field) => !field.static && field.name === projection.name,
+      );
+      if (
+        !ownerField ||
+        !isIrRequiredPrimitiveClassFieldRust(ownerField) ||
+        ownerField.type.kind !== 'primitive' ||
+        ownerField.type.name !== targetField.type.name
+      ) {
+        return undefined;
+      }
+      usedClassParameters.add(position);
+      continue;
+    }
     if (
       right.kind !== 'property' ||
       right.optional ||
@@ -6573,7 +6753,7 @@ function getIrClassConstructorBorrowedParameterPositionsRust(
     const parameterBindingId = right.object.reference.binding.id;
     const position = constructor.parameters.findIndex((parameter) => parameter.binding.id === parameterBindingId);
     const kind = parameterKinds[position];
-    if (position < 0 || typeof kind !== 'object') return undefined;
+    if (position < 0 || typeof kind !== 'object' || kind.kind !== 'class') return undefined;
     const ownerField = kind.location.declaration.fields.find((field) => !field.static && field.name === right.name);
     if (
       !ownerField ||
@@ -6586,7 +6766,9 @@ function getIrClassConstructorBorrowedParameterPositionsRust(
     }
     usedClassParameters.add(position);
   }
-  return [...borrowed].every((position) => usedClassParameters.has(position)) ? borrowed : undefined;
+  return [...borrowed, ...optionalClassPositions].every((position) => usedClassParameters.has(position))
+    ? { borrowedPositions: borrowed, optionalClassPositions }
+    : undefined;
 }
 
 function isIrRequiredPrimitiveTypeRust(type: Readonly<IrType>): boolean {

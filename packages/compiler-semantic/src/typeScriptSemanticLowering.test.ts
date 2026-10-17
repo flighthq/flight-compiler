@@ -9894,6 +9894,76 @@ it('resolves optional parameter omitted and provided invocation semantics', () =
   expect(call3.expression.semantics.optionalParameters?.provided).toHaveLength(2);
 });
 
+it('preserves synthesized optional class constructor syntax and exact invocation evidence', () => {
+  const result = lower(
+    'optional-class-constructor.ts',
+    `class Owner { value = 1; }
+     class Snapshot {
+       value: number;
+       constructor(order: number, owner?: Owner) {
+         this.value = owner === undefined ? order : owner.value;
+       }
+     }
+     export function run(owner: Owner): void {
+       new Snapshot(1);
+       new Snapshot(2, undefined);
+       new Snapshot(3, owner);
+     }`,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const snapshot = result.module.declarations.find(
+    (declaration) => declaration.kind === 'class' && declaration.binding.name === 'Snapshot',
+  );
+  const run = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+  );
+  if (snapshot?.kind !== 'class' || run?.kind !== 'function') throw new Error('Expected constructor fixture');
+  expect(snapshot.classConstructor?.parameters[1]).toMatchObject({
+    binding: { name: 'owner' },
+    optional: true,
+    type: { kind: 'named' },
+  });
+  const assignment = snapshot.classConstructor?.body[0];
+  if (
+    assignment?.kind !== 'expression' ||
+    assignment.expression.kind !== 'assignment' ||
+    assignment.expression.right.kind !== 'conditional'
+  ) {
+    throw new Error('Expected conditional constructor projection');
+  }
+  expect(assignment.expression.right.whenFalse).toMatchObject({
+    kind: 'property',
+    object: { kind: 'identifier', presence: 'narrowedPresent' },
+  });
+  const constructions = run.body.map((statement) =>
+    statement.kind === 'expression' && statement.expression.kind === 'new' ? statement.expression : undefined,
+  );
+  expect(constructions.map((expression) => expression?.semantics.optionalParameters)).toEqual([
+    {
+      omitted: [1],
+      optional: [1],
+      parameterCount: 2,
+      provided: [],
+      providedArgumentCount: 1,
+    },
+    {
+      omitted: [],
+      optional: [1],
+      parameterCount: 2,
+      provided: [expect.objectContaining({ position: 1, value: 'undefined' })],
+      providedArgumentCount: 2,
+    },
+    {
+      omitted: [],
+      optional: [1],
+      parameterCount: 2,
+      provided: [expect.objectContaining({ position: 1, value: 'value' })],
+      providedArgumentCount: 2,
+    },
+  ]);
+});
+
 it('resolves default parameter omitted and provided invocation semantics', () => {
   const result = lower(
     'default-param.ts',

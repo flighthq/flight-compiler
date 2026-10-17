@@ -1354,6 +1354,60 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(getModulePlan(crossModulePlan, consumer).refusals).toEqual([]);
   });
 
+  it('plans one trailing synthesized optional constructor owner with exact invocation evidence', () => {
+    const module = lower(
+      'optional-class-constructor-owner.ts',
+      `class Owner { value: number; constructor(value: number) { this.value = value; } }
+       class Snapshot {
+         order: number; value: number;
+         constructor(order: number, owner?: Owner) {
+           this.order = order;
+           this.value = owner === undefined ? 0 : owner.value;
+         }
+       }
+       export function run(): number {
+         const owner = new Owner(4); const ownerAlias = owner;
+         const missing = new Snapshot(1); const missingAlias = missing;
+         const explicit = new Snapshot(2, undefined);
+         const present = new Snapshot(3, ownerAlias);
+         return missingAlias.value + explicit.value + present.value;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([]);
+  });
+
+  it('refuses an optional constructor owner call without exact invocation evidence', () => {
+    const module = lower(
+      'optional-class-constructor-evidence.ts',
+      `class Owner { value = 1; }
+       class Snapshot {
+         value: number;
+         constructor(owner?: Owner) { this.value = owner === undefined ? 0 : owner.value; }
+       }
+       export function run(): number {
+         const value = new Snapshot(); const alias = value; alias.value = 2; return value.value;
+       }`,
+    );
+    const run = module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+    );
+    const statement = run?.kind === 'function' ? run.body[0] : undefined;
+    const construction = statement?.kind === 'variable' ? statement.declarations[0]?.initializer : undefined;
+    if (construction?.kind !== 'new') throw new Error('Expected optional constructor call');
+    delete (construction.semantics as { optionalParameters?: unknown }).optionalParameters;
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-construction-unrepresented' }),
+      ]),
+    );
+  });
+
   it('refuses class constructor owners outside readonly nonescaping primitive projection', () => {
     const cases = [
       `class Owner { value = 1; } class Snapshot { owner: Owner; constructor(owner: Owner) { this.owner = owner; } }`,

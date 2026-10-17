@@ -25,6 +25,7 @@ import type {
   IrFunctionDeclaration,
   IrImportBinding,
   IrModule,
+  IrParameter,
   IrType,
 } from '../../compiler-types/src/index.js';
 import {
@@ -61,6 +62,11 @@ interface RustReferenceCallableDraft {
 interface RustReferenceFunctionRecord {
   readonly declaration: Readonly<IrFunctionDeclaration>;
   readonly mutatedParameterPositions: Set<number>;
+}
+
+interface RustSimpleClassConstructorPlan {
+  readonly borrowedPositions: ReadonlySet<number>;
+  readonly optionalClassParameters: ReadonlyMap<number, RustSharedClassCarrierType>;
 }
 
 interface RustReferenceImportRecord {
@@ -295,6 +301,24 @@ function createRustReferenceModuleRecords(
       )) {
         const parameter = function_.declaration.parameters[position];
         if (!parameter?.optional) continue;
+        record.bindingTypes.set(parameter.binding.id, {
+          kind: 'union',
+          types: [carrier.classType, { kind: 'undefined' }],
+        });
+      }
+    }
+    for (const declaration of record.module.declarations) {
+      if (declaration.kind !== 'class') continue;
+      const constructorPlan = getRustSimpleClassConstructorPlan(
+        declaration,
+        record,
+        records,
+        moduleResolution,
+        new Set(),
+      );
+      for (const [position, carrier] of constructorPlan?.optionalClassParameters ?? []) {
+        const parameter = declaration.classConstructor?.parameters[position];
+        if (!parameter) continue;
         record.bindingTypes.set(parameter.binding.id, {
           kind: 'union',
           types: [carrier.classType, { kind: 'undefined' }],
@@ -689,7 +713,10 @@ function addRustReferenceClassCallPlan(
     addRustReferenceCallablePlan(callables, callableBinding, new Set([position]), carrier.representation);
     const argument = call.arguments[position];
     const parameter = target.declaration.parameters[position];
-    if (parameter?.optional && !hasRustReferenceOptionalParameterCallEvidence(call, target.declaration, position)) {
+    if (
+      parameter?.optional &&
+      !hasRustReferenceOptionalParameterInvocationEvidence(call, target.declaration.parameters, position)
+    ) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-class-call-unrepresented',
@@ -767,25 +794,25 @@ function addRustReferenceClassCallPlan(
   }
 }
 
-function hasRustReferenceOptionalParameterCallEvidence(
-  call: IrCallExpression,
-  declaration: Readonly<IrFunctionDeclaration>,
+function hasRustReferenceOptionalParameterInvocationEvidence(
+  invocation: Readonly<IrCallExpression | Extract<IrExpression, { kind: 'new' }>>,
+  parameters: readonly Readonly<IrParameter>[],
   position: number,
 ): boolean {
-  const evidence = call.semantics.optionalParameters;
+  const evidence = invocation.semantics.optionalParameters;
   if (
     !evidence ||
-    evidence.parameterCount !== declaration.parameters.length ||
+    evidence.parameterCount !== parameters.length ||
     evidence.providedArgumentCount === 'dynamic' ||
-    evidence.providedArgumentCount !== call.arguments.length
+    evidence.providedArgumentCount !== invocation.arguments.length
   ) {
     return false;
   }
-  const expectedOptional = declaration.parameters.flatMap((parameter, index) =>
+  const expectedOptional = parameters.flatMap((parameter, index) =>
     parameter.optional && !parameter.initializer ? [index] : [],
   );
-  const expectedOmitted = expectedOptional.filter((index) => index >= call.arguments.length);
-  const expectedProvided = expectedOptional.filter((index) => index < call.arguments.length);
+  const expectedOmitted = expectedOptional.filter((index) => index >= invocation.arguments.length);
+  const expectedProvided = expectedOptional.filter((index) => index < invocation.arguments.length);
   const optional = [...new Set(evidence.optional)].sort((left, right) => left - right);
   const omitted = [...new Set(evidence.omitted)].sort((left, right) => left - right);
   const provided = [...new Set(evidence.provided.map((item) => item.position))].sort((left, right) => left - right);
@@ -2106,12 +2133,39 @@ function addRustSharedClassRefusals(
     const parameterPosition = parameterFunction?.declaration.parameters.findIndex(
       (parameter) => parameter.binding.id === evidence.binding.id,
     );
-    const plannedParameter =
+    const plannedFunctionParameter =
       parameterFunction && parameterPosition !== undefined && parameterPosition >= 0
         ? getRustReferenceOptionalClassParameterPlans(parameterFunction, module, modules, moduleResolution).has(
             parameterPosition,
           )
         : false;
+    const parameterClass =
+      evidence.declaration === 'parameter'
+        ? module.module.declarations.find(
+            (candidate) =>
+              candidate.kind === 'class' &&
+              candidate.classConstructor?.parameters.some((parameter) => parameter.binding.id === evidence.binding.id),
+          )
+        : undefined;
+    const constructorParameterPosition =
+      parameterClass?.kind === 'class'
+        ? parameterClass.classConstructor?.parameters.findIndex(
+            (parameter) => parameter.binding.id === evidence.binding.id,
+          )
+        : undefined;
+    const plannedConstructorParameter =
+      parameterClass?.kind === 'class' &&
+      constructorParameterPosition !== undefined &&
+      constructorParameterPosition >= 0
+        ? getRustSimpleClassConstructorPlan(
+            parameterClass,
+            module,
+            modules,
+            moduleResolution,
+            new Set(),
+          )?.optionalClassParameters.has(constructorParameterPosition) === true
+        : false;
+    const plannedParameter = plannedFunctionParameter || plannedConstructorParameter;
     if (
       evidence.declaration === 'parameter'
         ? !plannedParameter
@@ -2390,15 +2444,27 @@ function isRustSharedClassIdentifierUseRepresented(
     }
     if (isIrExpressionValue(invocation) && invocation.kind === 'new') {
       const target = getRustSimpleClassConstructorTarget(invocation, module, modules, moduleResolution);
-      return (
-        target !== undefined &&
-        getRustSimpleClassConstructorBorrowPositions(
-          target.declaration,
-          target.module,
+      if (!target) return false;
+      const constructorPlan = getRustSimpleClassConstructorPlan(
+        target.declaration,
+        target.module,
+        modules,
+        moduleResolution,
+        new Set(),
+      );
+      const optionalCarrier = constructorPlan?.optionalClassParameters.get(position);
+      if (optionalCarrier) {
+        return isRustReferenceClassCarrierExpressionCompatible(
+          expression,
+          optionalCarrier,
+          module,
           modules,
           moduleResolution,
-          new Set(),
-        )?.has(position) === true &&
+          target.module,
+        );
+      }
+      return (
+        constructorPlan?.borrowedPositions.has(position) === true &&
         isRustReferenceExactBorrowedClassConstructorArgument(
           expression,
           module,
@@ -4788,6 +4854,17 @@ function getRustSimpleClassConstructorBorrowPositions(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingClasses: ReadonlySet<string>,
 ): ReadonlySet<number> | undefined {
+  return getRustSimpleClassConstructorPlan(declaration, module, modules, moduleResolution, visitingClasses)
+    ?.borrowedPositions;
+}
+
+function getRustSimpleClassConstructorPlan(
+  declaration: Readonly<IrClassDeclaration>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  visitingClasses: ReadonlySet<string>,
+): RustSimpleClassConstructorPlan | undefined {
   const fields = declaration.fields.filter((field) => !field.static);
   if (fields.length === 0) return undefined;
   const constructor = declaration.classConstructor;
@@ -4795,27 +4872,52 @@ function getRustSimpleClassConstructorBorrowPositions(
     return fields.every(
       (field) => field.initializer !== undefined && !hasIrExpressionThisReferenceInPlan(field.initializer),
     )
-      ? new Set()
+      ? { borrowedPositions: new Set(), optionalClassParameters: new Map() }
       : undefined;
   }
   if (constructor.overloads.length > 0 || fields.some((field) => field.initializer !== undefined)) {
     return undefined;
   }
   const parameters = constructor.parameters;
-  if (
-    parameters.some(
-      (parameter) =>
-        parameter.optional ||
-        parameter.rest ||
-        parameter.initializer !== undefined ||
-        (!isRustSimpleClassPrimitiveType(parameter.type) &&
-          !isRustSharedClassTypeSupported(parameter.type, module, modules, moduleResolution, visitingClasses)),
-    )
-  ) {
-    return undefined;
-  }
+  const parameterKinds = parameters.map((parameter, position) => {
+    if (
+      !parameter.optional &&
+      !parameter.rest &&
+      parameter.initializer === undefined &&
+      isRustSimpleClassPrimitiveType(parameter.type)
+    ) {
+      return { kind: 'primitive' as const };
+    }
+    if (
+      parameter.rest ||
+      parameter.initializer !== undefined ||
+      !isRustSharedClassTypeSupported(parameter.type, module, modules, moduleResolution, visitingClasses)
+    ) {
+      return undefined;
+    }
+    if (!parameter.optional) return { kind: 'borrowedClass' as const };
+    if (position !== parameters.length - 1) return undefined;
+    return {
+      carrier: {
+        classType: parameter.type,
+        representation: 'optional-undefined-shared-ref-cell-class' as const,
+        sentinel: 'undefined' as const,
+      },
+      kind: 'optionalClass' as const,
+    };
+  });
+  if (parameterKinds.some((kind) => kind === undefined)) return undefined;
+  const optionalClassPositions = parameterKinds.flatMap((kind, position) =>
+    kind?.kind === 'optionalClass' ? [position] : [],
+  );
+  if (optionalClassPositions.length > 1) return undefined;
   const borrowedPositions = new Set(
-    parameters.flatMap((parameter, position) => (isRustSimpleClassPrimitiveType(parameter.type) ? [] : [position])),
+    parameterKinds.flatMap((kind, position) => (kind?.kind === 'borrowedClass' ? [position] : [])),
+  );
+  const optionalClassParameters = new Map(
+    parameterKinds.flatMap((kind, position) =>
+      kind?.kind === 'optionalClass' ? ([[position, kind.carrier]] as const) : [],
+    ),
   );
   const assigned = new Set<string>();
   const usedParameters = new Set<string>();
@@ -4838,13 +4940,62 @@ function getRustSimpleClassConstructorBorrowPositions(
     if (!field) return undefined;
     if (assignment.right.kind === 'identifier' && assignment.right.reference.kind === 'binding') {
       const parameterBindingId = assignment.right.reference.binding.id;
-      const parameter = parameters.find((candidate) => candidate.binding.id === parameterBindingId);
+      const parameterPosition = parameters.findIndex((candidate) => candidate.binding.id === parameterBindingId);
+      const parameter = parameters[parameterPosition];
       if (
         !parameter ||
         usedParameters.has(parameter.binding.id) ||
+        parameterKinds[parameterPosition]?.kind !== 'primitive' ||
         !isRustSimpleClassPrimitiveType(field.type) ||
         !isRustSimpleClassPrimitiveType(parameter.type) ||
         field.type.name !== parameter.type.name
+      ) {
+        return undefined;
+      }
+      usedParameters.add(parameter.binding.id);
+    } else if (assignment.right.kind === 'conditional') {
+      const conditional = assignment.right;
+      if (
+        conditional.condition.kind !== 'binary' ||
+        conditional.condition.operator !== '===' ||
+        conditional.condition.left.kind !== 'identifier' ||
+        conditional.condition.left.reference.kind !== 'binding' ||
+        !isRustReferenceSentinelExpression(conditional.condition.right, 'undefined')
+      ) {
+        return undefined;
+      }
+      const parameterBindingId = conditional.condition.left.reference.binding.id;
+      const parameterPosition = parameters.findIndex((candidate) => candidate.binding.id === parameterBindingId);
+      const parameter = parameters[parameterPosition];
+      const parameterKind = parameterKinds[parameterPosition];
+      const projection = conditional.whenFalse;
+      const fallbackType = getRustSimpleClassPrimitiveExpressionType(conditional.whenTrue, module);
+      if (
+        !parameter ||
+        parameterKind?.kind !== 'optionalClass' ||
+        projection.kind !== 'property' ||
+        projection.optional ||
+        projection.structuralAccess !== undefined ||
+        projection.object.kind !== 'identifier' ||
+        projection.object.reference.kind !== 'binding' ||
+        projection.object.reference.binding.id !== parameterBindingId ||
+        projection.object.presence !== 'narrowedPresent' ||
+        !fallbackType ||
+        !isRustSimpleClassPrimitiveType(field.type) ||
+        fallbackType.name !== field.type.name ||
+        irExpressionUsesBindingInPlan(conditional.whenTrue, parameterBindingId)
+      ) {
+        return undefined;
+      }
+      const ownerLocation = getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution);
+      const ownerField = ownerLocation?.declaration.fields.find(
+        (candidate) => !candidate.static && candidate.name === projection.name,
+      );
+      if (
+        !ownerField ||
+        !isRustSimpleClassField(ownerField) ||
+        !isRustSimpleClassPrimitiveType(ownerField.type) ||
+        field.type.name !== ownerField.type.name
       ) {
         return undefined;
       }
@@ -4860,7 +5011,7 @@ function getRustSimpleClassConstructorBorrowPositions(
       const parameterBindingId = assignment.right.object.reference.binding.id;
       const parameterPosition = parameters.findIndex((candidate) => candidate.binding.id === parameterBindingId);
       const parameter = parameters[parameterPosition];
-      if (!parameter || !borrowedPositions.has(parameterPosition)) return undefined;
+      if (!parameter || parameterKinds[parameterPosition]?.kind !== 'borrowedClass') return undefined;
       const ownerLocation = getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution);
       const ownerField = ownerLocation?.declaration.fields.find(
         (candidate) => !candidate.static && candidate.name === projection.name,
@@ -4884,8 +5035,26 @@ function getRustSimpleClassConstructorBorrowPositions(
     fields.every((field) => assigned.has(field.name)) &&
     parameters.length === usedParameters.size &&
     parameters.every((parameter) => usedParameters.has(parameter.binding.id))
-    ? borrowedPositions
+    ? { borrowedPositions, optionalClassParameters }
     : undefined;
+}
+
+function irExpressionUsesBindingInPlan(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  let found = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (
+        candidate.kind === 'identifier' &&
+        candidate.reference.kind === 'binding' &&
+        candidate.reference.binding.id === bindingId
+      ) {
+        found = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return found;
 }
 
 function hasIrExpressionThisReferenceInPlan(expression: Readonly<IrExpression>): boolean {
@@ -4964,10 +5133,9 @@ function isRustSimpleClassConstructorInvocationSupported(
   // Rust evaluates fixed call operands once from left to right. Keeping exact primitive arguments as
   // constructor operands therefore preserves source order; every dynamic/default/rest shape is refused here.
   if (
-    expression.arguments.length !== parameters.length ||
+    expression.arguments.length > parameters.length ||
     expression.semantics.construction === 'factory' ||
     expression.semantics.defaultParameters !== undefined ||
-    expression.semantics.optionalParameters !== undefined ||
     expression.semantics.overloadImplementation !== undefined ||
     expression.semantics.signature?.providedArgumentCount === 'dynamic' ||
     expression.semantics.signature?.restParameter !== undefined ||
@@ -4977,18 +5145,33 @@ function isRustSimpleClassConstructorInvocationSupported(
   ) {
     return false;
   }
-  const borrowedPositions = getRustSimpleClassConstructorBorrowPositions(
+  const constructorPlan = getRustSimpleClassConstructorPlan(
     declaration,
     declarationModule,
     modules,
     moduleResolution,
     new Set([`${moduleKey(declarationModule.module)}:${declaration.binding.id}`]),
   );
-  if (!borrowedPositions) return false;
+  if (!constructorPlan) return false;
   return parameters.every((parameter, position) => {
     const argument = expression.arguments[position];
+    const optionalCarrier = constructorPlan.optionalClassParameters.get(position);
+    if (optionalCarrier) {
+      if (!hasRustReferenceOptionalParameterInvocationEvidence(expression, parameters, position)) return false;
+      return (
+        argument === undefined ||
+        isRustReferenceClassCarrierExpressionCompatible(
+          argument,
+          optionalCarrier,
+          callerModule,
+          modules,
+          moduleResolution,
+          declarationModule,
+        )
+      );
+    }
     if (!argument) return false;
-    if (borrowedPositions.has(position)) {
+    if (constructorPlan.borrowedPositions.has(position)) {
       return isRustReferenceExactBorrowedClassConstructorArgument(
         argument,
         callerModule,

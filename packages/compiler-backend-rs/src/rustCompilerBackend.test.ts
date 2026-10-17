@@ -10841,6 +10841,170 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }
   });
 
+  it('emits one trailing synthesized optional constructor owner locally', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-constructor-owner.ts',
+        `class Owner {
+           value: number; label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+         }
+         class Snapshot {
+           order: number; value: number; label: string;
+           constructor(order: number, owner?: Owner) {
+             this.order = order;
+             this.value = owner === undefined ? 0 : owner.value;
+             this.label = owner === undefined ? "missing" : owner.label;
+           }
+         }
+         function makeOwner(value: number): Owner { return new Owner(value, "made"); }
+         function forward(owner?: Owner): number { return new Snapshot(4, owner).value; }
+         export function optionalConstructorOwner(): number {
+           const owner = new Owner(4, "local"); const ownerAlias = owner;
+           const missing = new Snapshot(1);
+           const explicit = new Snapshot(2, undefined);
+           const present = new Snapshot(3, ownerAlias);
+           const temporary = new Snapshot(5, new Owner(6, "temporary"));
+           const returned = new Snapshot(7, makeOwner(8));
+           return missing.value + explicit.value + present.value + temporary.value + returned.value + forward(ownerAlias);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn new(order: f64, owner: Option<Rc<RefCell<Owner>>>) -> Self');
+    expect(output).toContain(
+      'value: if owner.clone().is_none() { 0.0 } else { owner.as_ref().unwrap().borrow().value },',
+    );
+    expect(output).toContain(
+      'label: if owner.clone().is_none() { "missing".to_owned() } else { owner.as_ref().unwrap().borrow().label.clone() },',
+    );
+    expect(output).toContain('Snapshot::new(1.0, None)');
+    expect(output).toContain('Snapshot::new(2.0, None)');
+    expect(output).toContain('Snapshot::new(3.0, Some(Rc::clone(&owner_alias)))');
+    expect(output).toContain('Snapshot::new(4.0, owner.clone())');
+    expect(output).toContain(
+      'Snapshot::new(5.0, Some(Rc::new(RefCell::new(Owner::new(6.0, "temporary".to_owned())))))',
+    );
+    expect(output).toContain('Snapshot::new(7.0, Some(make_owner(8.0)))');
+    expect(output).not.toContain('Some(Some(');
+  });
+
+  it('emits an imported synthesized optional constructor owner from project lowering', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-constructor-provider.ts',
+      `export class Owner { value: number; constructor(value: number) { this.value = value; } }
+       export class Snapshot {
+         value: number;
+         constructor(owner?: Owner) { this.value = owner === undefined ? 0 : owner.value; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-constructor-consumer.ts',
+      `import { Owner, Snapshot } from './optional-constructor-provider.js';
+       export function importedOptionalConstructorOwner(): number {
+         const owner: Owner = new Owner(5); const ownerAlias: Owner = owner;
+         return new Snapshot().value + new Snapshot(undefined).value + new Snapshot(ownerAlias).value;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Optional-constructor-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-constructor-consumer.ts',
+          },
+          specifier: './optional-constructor-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-constructor-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn new(owner: Option<Rc<RefCell<Owner>>>) -> Self');
+    expect(output).toContain('Snapshot::new(None)');
+    expect(output).toContain('Snapshot::new(Some(Rc::clone(&owner_alias)))');
+    expect(output).not.toContain('Some(Some(');
+  });
+
+  it('refuses optional constructor owners outside the strict trailing projection slice', () => {
+    const cases = [
+      [
+        `class Owner { value = 1; } class Snapshot { value: number; constructor(owner?: Owner) { this.value = owner == undefined ? 0 : owner.value; } }`,
+        'rust-reference-shared-class-identity-unrepresented',
+      ],
+      [
+        `class Owner { value = 1; } class Snapshot { value: number; constructor(owner?: Owner | undefined) { this.value = owner === undefined ? 0 : owner.value; } }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: Owner = new Owner()) { this.value = owner.value; } }`,
+        'rust-reference-shared-class-construction-unrepresented',
+      ],
+      [
+        `class Owner { value = 1; } class Snapshot { value: number; constructor(first?: Owner, second?: Owner) { this.value = first === undefined ? 0 : first.value; } }`,
+        'rust-reference-shared-class-identity-unrepresented',
+      ],
+    ] as const;
+
+    for (const [index, [declarations, rule]] of cases.entries()) {
+      const result = lower(
+        `optional-class-constructor-refusal-${String(index)}.ts`,
+        `${declarations} export function run(): number { return new Snapshot().value; }`,
+      );
+      expect(
+        getEmissionRule(() => emitIrModuleRust(result.module)),
+        `refusal case ${String(index)}`,
+      ).toBe(rule);
+    }
+  });
+
+  it('refuses null and wrong-class optional constructor arguments', () => {
+    const arguments_ = ['null as never', 'new Other() as never'];
+
+    for (const [index, argument] of arguments_.entries()) {
+      const result = lower(
+        `optional-class-constructor-argument-refusal-${String(index)}.ts`,
+        `class Owner { value = 1; }
+         class Other { value = 2; }
+         class Snapshot {
+           value: number;
+           constructor(owner?: Owner) { this.value = owner === undefined ? 0 : owner.value; }
+         }
+         export function run(): number { return new Snapshot(${argument}).value; }`,
+      );
+      expect(
+        getEmissionRule(() => emitIrModuleRust(result.module)),
+        `argument refusal case ${String(index)}`,
+      ).toBe('rust-reference-shared-class-construction-unrepresented');
+    }
+  });
+
   it('constructs an imported shared class from exact primitive arguments', () => {
     const provider = lower(
       'pair-provider.ts',
@@ -20294,11 +20458,7 @@ describe('emitIrModuleRust import emission', () => {
       'type-facade.ts',
       "import type { Shape as localShape } from './types.js';\nexport type { localShape as PublicShape };",
     ).module;
-    const util = lowerPackage(
-      '@flighthq/core',
-      'util.ts',
-      'export function helper(): number { return 1; }',
-    ).module;
+    const util = lowerPackage('@flighthq/core', 'util.ts', 'export function helper(): number { return 1; }').module;
     const namespaceFacade = lowerPackage(
       '@flighthq/core',
       'namespace-facade.ts',
@@ -22259,10 +22419,7 @@ describe('emitIrModuleRust explicit reexport grounding', () => {
 
     expect(starOutput).toContain('pub use crate::barrel::VALUE as public_value;');
 
-    const first = lower(
-      'a.ts',
-      "export const root = 1;\nexport { bridge as publicValue } from './b.js';",
-    ).module;
+    const first = lower('a.ts', "export const root = 1;\nexport { bridge as publicValue } from './b.js';").module;
     const second = lower('b.ts', "export { root as bridge } from './a.js';").module;
     const cycleOutput = createResolutionSession(
       [first, second],
