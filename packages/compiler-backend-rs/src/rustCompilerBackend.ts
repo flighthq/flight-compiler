@@ -23470,7 +23470,13 @@ function resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
   ) {
     return undefined;
   }
-  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
+  // A regular import used only in a type position retains its value-space import identity. The named
+  // type node and the unique declaration resolver below provide the type authority for this lane.
+  const location = getIrNamedTypeDeclarationLocationRust(
+    type.reference.binding as Readonly<IrTypeBindingIdentity>,
+    context,
+    context.module,
+  );
   if (location?.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return undefined;
   const key = `${location.module.packageName}\0${normalizePathPortable(location.module.source)}\0${location.declaration.binding.id}`;
   if (resolving.has(key)) return undefined;
