@@ -1878,10 +1878,10 @@ function isRustSharedArrayIdentifierUseRepresented(
       isCallExpression(call) &&
       call.callee.kind === 'property' &&
       call.callee.member?.receiver === 'array' &&
-      call.callee.member.name === 'push'
+      (call.callee.member.name === 'push' || call.callee.member.name === 'unshift')
     ) {
       // The backend owns the exact fixed-tuple proof. Let a direct shared-array spread reach that
-      // gate so an unbounded self spread receives the push invocation refusal instead of a generic
+      // gate so an unbounded self spread receives the growth invocation refusal instead of a generic
       // reference-use refusal; represented tuple spreads snapshot every field before mutation.
       return true;
     }
@@ -1926,7 +1926,7 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
   if (
     call.callee.kind === 'property' &&
     call.callee.member?.receiver === 'array' &&
-    call.callee.member.name === 'push' &&
+    (call.callee.member.name === 'push' || call.callee.member.name === 'unshift') &&
     call.arguments.some((argument) => argument.kind === 'spread')
   ) {
     // The fixed-tuple spread lane materializes the complete argument pack before taking its one

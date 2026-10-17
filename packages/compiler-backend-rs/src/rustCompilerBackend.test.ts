@@ -20000,6 +20000,48 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(output).toContain('.0.clone();');
   });
 
+  it('snapshots fixed required scalar tuple spread segments before one unshift mutation', () => {
+    const result = lower(
+      'array-unshift-fixed-spread.ts',
+      `type Pair = readonly [number, number];
+       function pair(log: number[], digit: number): Pair { log.push(digit); return [digit, digit + 1]; }
+       export function numbers(values: number[], log: number[]): number {
+         return values.unshift(0, ...pair(log, 1), 2, ...pair(log, 3));
+       }
+       export function flags(values: boolean[], pair: readonly [boolean, boolean]): number {
+         return values.unshift(...pair);
+       }
+       export function words(values: string[], pair: [string, string]): number {
+         return values.unshift("a", ...pair);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_unshift_receiver = &mut *values;');
+    const first = output.indexOf('let array_unshift_argument0 = 0.0;', receiver);
+    const spread = output.indexOf('let array_unshift_spread1 = &(pair(log, 1.0));', first);
+    const second = output.indexOf('let array_unshift_argument2 = 2.0;', spread);
+    const finalSpread = output.indexOf('let array_unshift_spread3 = &(pair(log, 3.0));', second);
+    const borrow = output.indexOf('let mut array_unshift_values = array_unshift_receiver;', finalSpread);
+    const mutation = output.indexOf('array_unshift_values.insert(0, array_unshift_argument0);', borrow);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(first).toBeGreaterThan(receiver);
+    expect(spread).toBeGreaterThan(first);
+    expect(second).toBeGreaterThan(spread);
+    expect(finalSpread).toBeGreaterThan(second);
+    expect(borrow).toBeGreaterThan(finalSpread);
+    expect(mutation).toBeGreaterThan(borrow);
+    expect(output).toContain('let array_unshift_spread1_element0 = array_unshift_spread1.0.clone();');
+    expect(output).toContain('let array_unshift_spread1_element1 = array_unshift_spread1.1.clone();');
+    expect(output).toContain('array_unshift_values.insert(1, array_unshift_spread1_element0);');
+    expect(output).toContain('array_unshift_values.insert(2, array_unshift_spread1_element1);');
+    expect(output).toContain('array_unshift_values.insert(3, array_unshift_argument2);');
+    expect(output).toContain('let array_unshift_length = array_unshift_values.len() as f64;');
+    expect(output).toContain('let array_unshift_spread0 = &(pair);');
+    expect(output).toContain('let array_unshift_argument0_2 = "a".to_owned();');
+  });
+
   it('stages fixed tuple spread self and shared-alias reads before borrowing the receiver mutably', () => {
     const result = lower(
       'array-push-fixed-spread-shared.ts',
@@ -20027,6 +20069,37 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(laterMutation).toBeGreaterThan(release);
   });
 
+  it('stages fixed tuple spread unshift self and shared-alias reads before one mutable borrow', () => {
+    const result = lower(
+      'array-unshift-fixed-spread-shared.ts',
+      `function snapshot(first: number, second: number): readonly [number, number] { return [first, second]; }
+       export function prepend(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.unshift(...snapshot(values.length, alias[0] ?? 0));
+         values.push(9);
+         return length * 100 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_unshift_receiver = Rc::clone(&alias);');
+    const snapshot = output.indexOf('let array_unshift_spread0 = &(snapshot(', receiver);
+    const borrow = output.indexOf('let mut array_unshift_values = array_unshift_receiver.borrow_mut();', snapshot);
+    const first = output.indexOf('array_unshift_values.insert(0, array_unshift_spread0_element0);', borrow);
+    const second = output.indexOf('array_unshift_values.insert(1, array_unshift_spread0_element1);', first);
+    const release = output.indexOf('drop(array_unshift_values);', second);
+    const laterMutation = output.indexOf('values.borrow_mut().push(array_push_argument0)', release);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(snapshot).toBeGreaterThan(receiver);
+    expect(borrow).toBeGreaterThan(snapshot);
+    expect(first).toBeGreaterThan(borrow);
+    expect(second).toBeGreaterThan(first);
+    expect(release).toBeGreaterThan(second);
+    expect(laterMutation).toBeGreaterThan(release);
+  });
+
   it.each([
     {
       rule: 'rust-array-push-invocation-unrepresented',
@@ -20044,8 +20117,17 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     },
     {
       rule: 'rust-array-unshift-invocation-unrepresented',
+      source: 'export function prepend(values: number[], more: readonly number[]): void { values.unshift(...more); }',
+    },
+    {
+      rule: 'rust-array-unshift-invocation-unrepresented',
       source:
-        'export function prepend(values: number[], more: readonly [number, number]): void { values.unshift(...more); }',
+        'export function prepend(values: (number | undefined)[], more: readonly [number, number?]): void { values.unshift(...more); }',
+    },
+    {
+      rule: 'rust-array-unshift-invocation-unrepresented',
+      source:
+        'export function prepend(values: number[], more: readonly [number, ...number[]]): void { values.unshift(...more); }',
     },
     {
       rule: 'rust-array-push-element-carrier-unrepresented',
@@ -20056,6 +20138,16 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       rule: 'rust-array-push-result-observation-unrepresented',
       source:
         'export function append(values: number[], more: readonly [number, number]): string { return String(values.push(...more)); }',
+    },
+    {
+      rule: 'rust-array-unshift-element-carrier-unrepresented',
+      source:
+        'interface Item { value: number } export function prepend(values: Item[], more: readonly [Item]): void { values.unshift(...more); }',
+    },
+    {
+      rule: 'rust-array-unshift-result-observation-unrepresented',
+      source:
+        'export function prepend(values: number[], more: readonly [number, number]): string { return String(values.unshift(...more)); }',
     },
   ])('refuses unsupported fixed tuple spread growth with $rule', ({ rule, source }) => {
     const result = lower('array-push-fixed-spread-refused.ts', source);
@@ -20074,6 +20166,31 @@ describe('emitIrModuleRust array element access with coalescing', () => {
 
     expect(getEmissionRule(() => emitIrModuleRust(first))).toBe('rust-array-push-invocation-unrepresented');
     expect(getEmissionRule(() => emitIrModuleRust(second))).toBe('rust-array-push-invocation-unrepresented');
+  });
+
+  it('selects fixed tuple spread unshift refusals independently of declaration order', () => {
+    const declarations = [
+      'export function observed(values: number[], pair: readonly [number]): string { return String(values.unshift(...pair)); }',
+      'export function dynamic(values: number[], more: readonly number[]): void { values.unshift(...more); }',
+      'interface Item { value: number } export function identity(values: Item[], pair: readonly [Item]): void { values.unshift(...pair); }',
+    ];
+    const first = lower('array-unshift-fixed-spread-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-unshift-fixed-spread-order-b.ts', [...declarations].reverse().join('\n')).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(first))).toBe('rust-array-unshift-invocation-unrepresented');
+    expect(getEmissionRule(() => emitIrModuleRust(second))).toBe('rust-array-unshift-invocation-unrepresented');
+  });
+
+  it('prioritizes growth refusal stages across push and unshift independently of declaration order', () => {
+    const declarations = [
+      'export function observed(values: number[], pair: readonly [number]): string { return String(values.push(...pair)); }',
+      'export function dynamic(values: number[], more: readonly number[]): void { values.unshift(...more); }',
+    ];
+    const first = lower('array-growth-fixed-spread-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-growth-fixed-spread-order-b.ts', [...declarations].reverse().join('\n')).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(first))).toBe('rust-array-unshift-invocation-unrepresented');
+    expect(getEmissionRule(() => emitIrModuleRust(second))).toBe('rust-array-unshift-invocation-unrepresented');
   });
 
   it.each([
@@ -20141,6 +20258,44 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
 
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-push-result-carrier-unrepresented');
+  });
+
+  it('stably refuses a fixed tuple spread unshift result without an f64 carrier', () => {
+    const result = lower(
+      'array-unshift-fixed-spread-result-carrier.ts',
+      'export function prepend(values: number[], pair: readonly [number, number]): number { return values.unshift(...pair); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'prepend',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned fixed tuple spread array.unshift call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'string' };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-unshift-result-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a readonly fixed tuple spread unshift receiver', () => {
+    const result = lower(
+      'array-unshift-fixed-spread-readonly.ts',
+      'export function prepend(values: number[], pair: readonly [number, number]): number { return values.unshift(...pair); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'prepend',
+    );
+    if (declaration?.kind !== 'function' || declaration.parameters[0]?.type.kind !== 'array') {
+      throw new Error('expected mutable array parameter');
+    }
+    (declaration.parameters[0].type as { readonly: boolean }).readonly = true;
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-unshift-element-carrier-unrepresented',
+    );
   });
 
   it('emits zero and multiple fixed concat arguments after receiver-first left-to-right staging', () => {
@@ -29037,6 +29192,25 @@ describe('emitIrModuleRust static Array.of', () => {
            ...spreadSnapshot(spreadValues.length, 4),
          );
          spreadValues.push(9);
+         let unshiftOrder = 0;
+         const unshiftScalar = (digit: number): number => {
+           unshiftOrder = unshiftOrder * 10 + digit;
+           return digit;
+         };
+         const unshiftPair = (digit: number): readonly [number, number] => {
+           unshiftOrder = unshiftOrder * 10 + digit;
+           return [digit, digit + 1];
+         };
+         const unshiftSnapshot = (first: number, second: number): readonly [number, number] => [first, second];
+         const unshiftValues = [9];
+         const unshiftAlias = unshiftValues;
+         const unshiftLength = unshiftAlias.unshift(
+           unshiftScalar(1),
+           ...unshiftPair(2),
+           unshiftScalar(3),
+           ...unshiftSnapshot(unshiftValues.length, 4),
+         );
+         unshiftValues.push(8);
          return empty.length === 0 && constructedAlias.length === 1 && zeroWords.join("") === "z" &&
            constructedFlags.length === 1 && filledAlias.reduce((total, value) => total * 10 + value, 0) === 4445 &&
            emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 4212356 &&
@@ -29049,7 +29223,9 @@ describe('emitIrModuleRust static Array.of', () => {
            merged.reduce((total, value) => total * 10 + value, 0) === 5688 &&
            concatAlias.reduce((total, value) => total * 10 + value, 0) === 89 && spreadOrder === 123 &&
            spreadLength === 7 && spreadAlias.length === 8 &&
-           spreadValues.reduce((total, value) => total * 10 + value, 0) === 1233149;
+           spreadValues.reduce((total, value) => total * 10 + value, 0) === 1233149 && unshiftOrder === 123 &&
+           unshiftLength === 7 && unshiftAlias.length === 8 &&
+           unshiftValues.reduce((total, value) => total * 10 + value, 0) === 12331498;
        }`,
     );
 

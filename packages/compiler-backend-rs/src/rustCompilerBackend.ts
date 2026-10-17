@@ -4900,9 +4900,9 @@ function getArrayGrowthMemberRust(
   return expression.callee.member.name;
 }
 
-function isArrayFixedTupleSpreadPushCallRust(expression: Readonly<Extract<IrExpression, { kind: 'call' }>>): boolean {
+function isArrayFixedTupleSpreadGrowthCallRust(expression: Readonly<Extract<IrExpression, { kind: 'call' }>>): boolean {
   return (
-    getArrayGrowthMemberRust(expression) === 'push' &&
+    getArrayGrowthMemberRust(expression) !== undefined &&
     expression.arguments.some((argument) => argument.kind === 'spread')
   );
 }
@@ -5299,8 +5299,8 @@ function emitArrayGrowthCallRust(
   if (!member || expression.callee.kind !== 'property') {
     return emissionError(context, 'array growth emission requires push or unshift semantics');
   }
-  if (isArrayFixedTupleSpreadPushCallRust(expression)) {
-    return emitArrayFixedTupleSpreadPushCallRust(expression, context);
+  if (isArrayFixedTupleSpreadGrowthCallRust(expression)) {
+    return emitArrayFixedTupleSpreadGrowthCallRust(expression, member, context);
   }
   const arguments_ = expression.arguments.map((argument, index) => ({
     emitted: emitOwnedOperandRust(argument, context),
@@ -5315,8 +5315,9 @@ function emitArrayGrowthCallRust(
   return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
 }
 
-function emitArrayFixedTupleSpreadPushCallRust(
+function emitArrayFixedTupleSpreadGrowthCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  member: RustArrayGrowthMember,
   context: EmitContext,
 ): string {
   if (
@@ -5324,12 +5325,12 @@ function emitArrayFixedTupleSpreadPushCallRust(
     expression.callee.object.kind !== 'identifier' ||
     expression.callee.object.reference.kind !== 'binding'
   ) {
-    return emissionError(context, 'fixed tuple spread push emission requires one stable binding receiver');
+    return emissionError(context, `fixed tuple spread ${member} emission requires one stable binding receiver`);
   }
   const receiverBinding = expression.callee.object.reference.binding;
-  const receiverName = getGeneratedTargetNameRust('array_push_receiver', context);
-  const valuesName = getGeneratedTargetNameRust('array_push_values', context);
-  const lengthName = getGeneratedTargetNameRust('array_push_length', context);
+  const receiverName = getGeneratedTargetNameRust(`array_${member}_receiver`, context);
+  const valuesName = getGeneratedTargetNameRust(`array_${member}_values`, context);
+  const lengthName = getGeneratedTargetNameRust(`array_${member}_length`, context);
   const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
   if (sharedBinding) context.needsRcImport.add('Rc');
   const targetNames = new Map(context.targetNames);
@@ -5339,19 +5340,22 @@ function emitArrayFixedTupleSpreadPushCallRust(
   const values: string[] = [];
   for (const [position, argument] of expression.arguments.entries()) {
     if (argument.kind !== 'spread') {
-      const name = getGeneratedTargetNameRust(`array_push_argument${String(position)}`, context);
+      const name = getGeneratedTargetNameRust(`array_${member}_argument${String(position)}`, context);
       initializers.push(`let ${name} = ${emitOwnedOperandRust(argument, segmentContext)};`);
       values.push(name);
       continue;
     }
     const tuple = getRustFixedRequiredTupleSpreadTypeRust(argument, context);
     if (!tuple) {
-      return emissionError(context, 'fixed tuple spread push emission requires exact required tuple evidence');
+      return emissionError(context, `fixed tuple spread ${member} emission requires exact required tuple evidence`);
     }
-    const sourceName = getGeneratedTargetNameRust(`array_push_spread${String(position)}`, context);
+    const sourceName = getGeneratedTargetNameRust(`array_${member}_spread${String(position)}`, context);
     initializers.push(`let ${sourceName} = &(${emitExpression(argument.expression, segmentContext)});`);
     for (const [offset] of tuple.elements.entries()) {
-      const name = getGeneratedTargetNameRust(`array_push_spread${String(position)}_element${String(offset)}`, context);
+      const name = getGeneratedTargetNameRust(
+        `array_${member}_spread${String(position)}_element${String(offset)}`,
+        context,
+      );
       initializers.push(`let ${name} = ${sourceName}.${String(offset)}.clone();`);
       values.push(name);
     }
@@ -5363,12 +5367,14 @@ function emitArrayFixedTupleSpreadPushCallRust(
       ? `&mut *${receiverTarget}`
       : `&mut ${receiverTarget}`;
   const valuesInitializer = sharedBinding ? `${receiverName}.borrow_mut()` : receiverName;
-  const mutations = values.map((name) => `${valuesName}.push(${name});`);
+  const mutations = values.map((name, index) =>
+    member === 'push' ? `${valuesName}.push(${name});` : `${valuesName}.insert(${String(index)}, ${name});`,
+  );
   const release = sharedBinding ? ` drop(${valuesName});` : '';
   // The receiver identity is fixed before arguments run, but the mutable RefCell borrow is delayed
   // until every scalar and every fixed tuple field has been copied into an owned temporary. This is
   // the source call boundary: no mutation is visible to a later argument, and a same-group alias read
-  // cannot overlap the one mutable borrow used for the eventual append pack.
+  // cannot overlap the one mutable borrow used for the eventual growth pack.
   return `{ let ${receiverName} = ${receiverInitializer}; ${initializers.join(' ')} let mut ${valuesName} = ${valuesInitializer}; ${mutations.join(' ')} let ${lengthName} = ${valuesName}.len() as f64;${release} ${lengthName} }`;
 }
 
@@ -15608,13 +15614,13 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   for (const [call, { callee, expression }] of growthCalls.entries()) {
     const member = getArrayGrowthMemberRust(expression)!;
     const signature = expression.semantics.signature;
-    const fixedTupleSpreadPush = isArrayFixedTupleSpreadPushCallRust(expression);
-    const invalidSpreadPosition = fixedTupleSpreadPush
+    const fixedTupleSpreadGrowth = isArrayFixedTupleSpreadGrowthCallRust(expression);
+    const invalidSpreadPosition = fixedTupleSpreadGrowth
       ? expression.arguments.findIndex(
           (argument) => argument.kind === 'spread' && !getRustFixedRequiredTupleSpreadTypeRust(argument, context),
         )
       : -1;
-    const invocationRepresented = fixedTupleSpreadPush
+    const invocationRepresented = fixedTupleSpreadGrowth
       ? !expression.optional &&
         expression.semantics.optionalChain === undefined &&
         !callee.optional &&
@@ -15643,8 +15649,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       refusals.push({
         call,
         member,
-        message: fixedTupleSpreadPush
-          ? 'array.push spread requires a non-optional stable receiver and only exact fixed required tuple spread segments'
+        message: fixedTupleSpreadGrowth
+          ? `array.${member} spread requires a non-optional stable receiver and only exact fixed required tuple spread segments`
           : `array.${member} requires a non-optional stable receiver and a fixed non-spread argument pack`,
         position: invalidSpreadPosition,
         rule: `rust-array-${member}-invocation-unrepresented`,
@@ -15655,7 +15661,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     const receiverType = inferIrExpressionTypeRust(callee.object, context);
     const resolvedReceiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
     const receiverCarrier =
-      fixedTupleSpreadPush && resolvedReceiver?.kind === 'array' && !resolvedReceiver.readonly
+      fixedTupleSpreadGrowth && resolvedReceiver?.kind === 'array' && !resolvedReceiver.readonly
         ? getRustExactScalarCarrierRust(resolvedReceiver.element, context)
         : undefined;
     let invalidElementPosition = -1;
@@ -15663,7 +15669,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       resolvedReceiver?.kind === 'array' &&
       expression.arguments.every((argument, position) => {
         const represented =
-          fixedTupleSpreadPush && argument.kind === 'spread'
+          fixedTupleSpreadGrowth && argument.kind === 'spread'
             ? getRustFixedRequiredTupleSpreadTypeRust(argument, context)?.elements.every((element) => {
                 const sourceCarrier = getRustExactScalarCarrierRust(element.type, context);
                 return (
@@ -15674,7 +15680,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
                   analyzeIrTypeStructuralAssignability(element.type, resolvedReceiver.element).status === 'compatible'
                 );
               }) === true
-            : fixedTupleSpreadPush
+            : fixedTupleSpreadGrowth
               ? (() => {
                   const sourceType = inferRustArrayGrowthArgumentTypeRust(argument, context);
                   const sourceCarrier = sourceType ? getRustExactScalarCarrierRust(sourceType, context) : undefined;
@@ -15693,14 +15699,14 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       });
     if (
       resolvedReceiver?.kind !== 'array' ||
-      (fixedTupleSpreadPush && (!receiverCarrier || resolvedReceiver.readonly)) ||
+      (fixedTupleSpreadGrowth && (!receiverCarrier || resolvedReceiver.readonly)) ||
       !elementsRepresented
     ) {
       refusals.push({
         call,
         member,
-        message: fixedTupleSpreadPush
-          ? 'array.push fixed tuple spread receiver and flattened values require one identical exact bool, f64, or String carrier'
+        message: fixedTupleSpreadGrowth
+          ? `array.${member} fixed tuple spread receiver and flattened values require one identical exact bool, f64, or String carrier`
           : `array.${member} argument needs an exact Rust element carrier; incompatible or identity-changing adaptation is not represented`,
         position: invalidElementPosition,
         rule: `rust-array-${member}-element-carrier-unrepresented`,
@@ -15914,15 +15920,19 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
 
   const refusal = refusals.sort((left, right) => {
     const sortRule = (candidate: RustArrayOperationRefusal): string => {
-      const pushRank = new Map<RustArrayOperationRefusal['rule'], number>([
+      const growthRank = new Map<RustArrayOperationRefusal['rule'], number>([
         ['rust-array-push-invocation-unrepresented', 0],
         ['rust-array-push-element-carrier-unrepresented', 1],
         ['rust-array-push-result-carrier-unrepresented', 2],
         ['rust-array-push-result-observation-unrepresented', 3],
+        ['rust-array-unshift-invocation-unrepresented', 0],
+        ['rust-array-unshift-element-carrier-unrepresented', 1],
+        ['rust-array-unshift-result-carrier-unrepresented', 2],
+        ['rust-array-unshift-result-observation-unrepresented', 3],
       ]).get(candidate.rule);
-      return pushRank === undefined
+      return growthRank === undefined
         ? `${candidate.rule}\u0000${candidate.member}`
-        : `rust-array-push-${String(pushRank)}\u0000${candidate.member}`;
+        : `rust-array-push-${String(growthRank)}\u0000${candidate.member}`;
     };
     return (
       compareTextCodeUnits(sortRule(left), sortRule(right)) ||

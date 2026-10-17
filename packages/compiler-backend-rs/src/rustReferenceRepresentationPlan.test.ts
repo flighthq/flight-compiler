@@ -294,6 +294,24 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([]);
   });
 
+  it('permits direct receiver-group reads in staged fixed tuple spread unshift segments', () => {
+    const direct = lower(
+      'alias-fixed-spread-unshift.ts',
+      `function snapshot(first: number, second: number): readonly [number, number] { return [first, second]; }
+       export function prepend(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.unshift(...snapshot(values.length, alias[0] ?? 0));
+         values.push(9);
+         return length + alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [direct] }), direct).refusals,
+    ).toEqual([]);
+  });
+
   it('defers an unbounded shared self spread to the backend push invocation refusal', () => {
     const module = lower(
       'alias-unbounded-spread-push.ts',
@@ -301,6 +319,22 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          const values = [1, 2];
          const alias = values;
          const length = alias.push(...values);
+         return length + alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([]);
+  });
+
+  it('defers an unbounded shared self spread to the backend unshift invocation refusal', () => {
+    const module = lower(
+      'alias-unbounded-spread-unshift.ts',
+      `export function prepend(): number {
+         const values = [1, 2];
+         const alias = values;
+         const length = alias.unshift(...values);
          return length + alias.length;
        }`,
     );
