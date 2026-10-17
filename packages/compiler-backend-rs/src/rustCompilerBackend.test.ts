@@ -15766,3 +15766,54 @@ export function widen(command: Command): unknown { return command as Readonly<Pa
     expect(castFailure.rule).not.toBe('rust-intersection-type-unsupported');
   });
 });
+
+describe('emitIrModuleRust typeof representation refusals', () => {
+  it('names the typeof rule for an unresolved operand flow and keeps the message and origin', () => {
+    const module = lower(
+      'typeof-origin.ts',
+      `interface Texture { size: number }
+function read(): Texture | undefined { return undefined; }
+export function sizeWhenPresent(): number {
+  const texture = read();
+  if (typeof texture !== 'undefined') return texture.size;
+  return 0;
+}`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-typeof-runtime-representation-unsupported');
+    expect(failure.message).toContain('typeof on unknown requires Rust runtime representation evidence');
+    expect(failure.line).toBe(3);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('answers the same rule for the object-flow probe, because the site is shared', () => {
+    const module = lower(
+      'typeof-probe.ts',
+      "export function hasSharedMemory(): boolean { return typeof SharedArrayBuffer !== 'undefined'; }",
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-typeof-runtime-representation-unsupported');
+    // The flow word in the message comes from the evidence the ambient surface supplies (the golden
+    // presenceProbe fixture renders `object`; this isolated fixture has no such evidence and renders
+    // `unknown`), but the site and the rule are the same.
+    expect(failure.message).toContain('requires Rust runtime representation evidence');
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('does not borrow the typeof rule for neighbouring families', () => {
+    const cast = lower(
+      'typeof-counterexample-cast.ts',
+      `interface CommandBase { readonly id: string }
+interface Command extends CommandBase { readonly payload: number }
+export function widen(command: Command): unknown { return command as Readonly<Partial<CommandBase>>; }`,
+    ).module;
+    const castFailure = captureBackendEmissionFailure(() => emitIrModuleRust(cast));
+
+    expect(castFailure.rule).toBe('rust-cast-requires-type-directed-lowering');
+    expect(castFailure.rule).not.toBe('rust-typeof-runtime-representation-unsupported');
+    expect(castFailure.classification).toBe('compiler-restriction');
+  });
+});

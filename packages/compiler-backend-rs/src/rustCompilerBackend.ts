@@ -1853,6 +1853,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           emissionError(
             context,
             `typeof on ${expression.semantics.operand.flow} requires Rust runtime representation evidence`,
+            'rust-typeof-runtime-representation-unsupported',
           );
         }
         if (expression.semantics.operand.flow === 'undefined') return '"undefined".to_owned()';
