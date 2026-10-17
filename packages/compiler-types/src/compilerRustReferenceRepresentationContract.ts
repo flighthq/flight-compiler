@@ -33,6 +33,16 @@ export interface CompilerRustReferenceCallablePlan {
     | undefined;
 }
 
+export interface CompilerRustSharedArrayTupleComponentPlan {
+  readonly position: number;
+  readonly representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-vec'>;
+}
+
+export interface CompilerRustSharedArrayTupleBindingPlan {
+  readonly binding: IrBindingIdentity;
+  readonly components: readonly CompilerRustSharedArrayTupleComponentPlan[];
+}
+
 export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-array-call-target-ambiguous'
   | 'rust-reference-array-call-target-unresolved'
@@ -43,6 +53,9 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-shared-array-borrow-conflict'
   | 'rust-reference-shared-array-closure-escape-unrepresented'
   | 'rust-reference-shared-array-suspension-unrepresented'
+  | 'rust-reference-shared-array-tuple-pack-abi-unrepresented'
+  | 'rust-reference-shared-array-tuple-pack-flow-unrepresented'
+  | 'rust-reference-shared-array-tuple-pack-shape-unrepresented'
   | 'rust-reference-shared-array-use-unrepresented'
   | 'rust-reference-shared-class-alias-ambiguous'
   | 'rust-reference-shared-class-binding-reassignment-unrepresented'
@@ -98,6 +111,8 @@ export interface CompilerRustReferenceModulePlan {
     binding: IrBindingIdentity;
     representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-vec'>;
   }>[];
+  /** Local fixed array tuples whose elements each require one shared RefCell Vec carrier. */
+  readonly sharedArrayTupleBindings: readonly CompilerRustSharedArrayTupleBindingPlan[];
   /** Local simple-class aliases represented by one single-threaded shared RefCell carrier. */
   readonly sharedClassBindings: readonly Readonly<{
     binding: IrBindingIdentity;

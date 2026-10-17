@@ -17,6 +17,7 @@ import type {
   CompilerRustReferenceRepresentationPlan,
   CompilerRustReferenceRepresentationPlanInput,
   CompilerRustReferenceRepresentationRefusal,
+  CompilerRustSharedArrayTupleBindingPlan,
   IrBindingIdentity,
   IrClassDeclaration,
   IrClassField,
@@ -25,6 +26,7 @@ import type {
   IrFunctionDeclaration,
   IrImportBinding,
   IrModule,
+  IrNamedVariable,
   IrParameter,
   IrType,
 } from '../../compiler-types/src/index.js';
@@ -121,6 +123,7 @@ interface RustReferenceModuleRecord {
   readonly module: Readonly<IrModule>;
   readonly ownership: ReturnType<typeof analyzeIrModuleOwnershipEvidenceRust>;
   readonly sharedArrays: RustSharedArrayAnalysis;
+  readonly sharedArrayTuples: RustSharedArrayTupleAnalysis;
   sharedClasses: RustSharedClassAnalysis;
   readonly sharedMaps: RustSharedHashCollectionAnalysis;
   readonly sharedSets: RustSharedHashCollectionAnalysis;
@@ -131,6 +134,11 @@ interface RustSharedArrayAnalysis {
   readonly bindingIds: Set<string>;
   readonly groupByBindingId: ReadonlyMap<string, string>;
   readonly groupsByKey: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+interface RustSharedArrayTupleAnalysis {
+  readonly bindingPlans: readonly CompilerRustSharedArrayTupleBindingPlan[];
+  readonly refusals: readonly CompilerRustReferenceRepresentationRefusal[];
 }
 
 interface RustSharedHashCollectionAnalysis {
@@ -259,6 +267,7 @@ function createRustReferenceModuleRecords(
       module.declarations.flatMap((declaration) => (declaration.kind === 'class' ? [declaration.binding.id] : [])),
     );
     const sharedArrays = createRustSharedArrayAnalysis(module, ownership, bindingTypes);
+    const sharedArrayTuples = createRustSharedArrayTupleAnalysis(module, ownership, bindingTypes);
     const sharedClasses = createRustSharedClassAnalysis(module, ownership, bindingTypes, classBindingIds);
     const sharedMaps = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'map');
     const sharedSets = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'set');
@@ -276,6 +285,7 @@ function createRustReferenceModuleRecords(
       module,
       ownership,
       sharedArrays,
+      sharedArrayTuples,
       sharedClasses,
       sharedMaps,
       sharedSets,
@@ -526,6 +536,10 @@ function createRustReferenceModulePlan(
   const mutatedBindings = new Map<string, IrBindingIdentity>();
   const refusals = new Map<string, CompilerRustReferenceRepresentationRefusal>();
 
+  for (const refusal of module.sharedArrayTuples.refusals) {
+    addRustReferenceRefusal(refusals, refusal.code, refusal.subject, refusal.message);
+  }
+
   addRustAsyncClassMethodDeclarationRefusals(module, modules, moduleResolution, refusals);
   addRustSharedArrayRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassIdentityRefusals(module, modules, moduleResolution, refusals);
@@ -739,6 +753,7 @@ function createRustReferenceModulePlan(
         representation: 'shared-ref-cell-vec' as const,
       }))
       .sort((left, right) => compareTextCodeUnits(left.binding.id, right.binding.id)),
+    sharedArrayTupleBindings: module.sharedArrayTuples.bindingPlans,
     sharedClassBindings: [...module.sharedClasses.bindingRepresentations]
       .map(([id, representation]) => ({
         binding: module.ownership.bindings.find((evidence) => evidence.binding.id === id)!.binding,
@@ -1073,6 +1088,220 @@ function createRustSharedArrayAnalysis(
     }
   }
   return { ambiguousBindingIds, bindingIds, groupByBindingId, groupsByKey };
+}
+
+function createRustSharedArrayTupleAnalysis(
+  module: Readonly<IrModule>,
+  ownership: RustReferenceModuleRecord['ownership'],
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): RustSharedArrayTupleAnalysis {
+  const variablesByBindingId = new Map<string, Readonly<IrNamedVariable>>();
+  const candidateBindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      const binding = getRustSharedArrayTupleConcatSpreadBinding(expression);
+      if (!binding) return undefined;
+      const type = bindingTypes.get(binding.id);
+      if (type && isRustPotentialArrayOnlyTupleShape(type, module)) candidateBindingIds.add(binding.id);
+      return undefined;
+    },
+    variable(variable) {
+      if ('binding' in variable) variablesByBindingId.set(variable.binding.id, variable);
+    },
+  });
+
+  const bindingPlans: CompilerRustSharedArrayTupleBindingPlan[] = [];
+  const refusals: CompilerRustReferenceRepresentationRefusal[] = [];
+  for (const bindingId of [...candidateBindingIds].sort(compareTextCodeUnits)) {
+    const evidence = ownership.bindings.find((candidate) => candidate.binding.id === bindingId);
+    if (!evidence) continue;
+    const subject = `${moduleKey(module)}:${bindingId}`;
+    const tuple = resolveRustClosedLocalTypeAliasShape(evidence.type, module, new Set());
+    const components = tuple?.kind === 'tuple' ? getRustSharedArrayTupleComponents(tuple, module) : undefined;
+    const variable = variablesByBindingId.get(bindingId);
+    const uses = evidence.uses.filter((use) => use.kind === 'read');
+    const unsupportedUses = uses.filter((use) => !isRustSharedArrayTupleConcatSpreadUse(module, bindingId, use.path));
+    const abiUnsupported =
+      evidence.binding.scope === 'module' ||
+      evidence.declaration === 'parameter' ||
+      variable?.initializer?.kind === 'call' ||
+      unsupportedUses.some((use) => isRustSharedArrayTupleCallableBoundaryUse(module, use.path));
+    const flowUnsupported =
+      evidence.declaration === 'mutable' ||
+      evidence.mutation !== 'none' ||
+      evidence.boundaries.length > 0 ||
+      (variable !== undefined &&
+        variable.initializer?.kind !== 'call' &&
+        !isRustSharedArrayTupleDenseInitializer(variable.initializer, components?.length)) ||
+      unsupportedUses.some((use) => !isRustSharedArrayTupleCallableBoundaryUse(module, use.path));
+
+    const refusal = !components
+      ? {
+          code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented' as const,
+          message: `array tuple binding ${evidence.binding.name} does not have one closed homogeneous required tuple of exact dense primitive arrays`,
+          subject,
+        }
+      : flowUnsupported
+        ? {
+            code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' as const,
+            message: `array tuple binding ${evidence.binding.name} escapes the exact immutable local concat-spread flow`,
+            subject,
+          }
+        : abiUnsupported
+          ? {
+              code: 'rust-reference-shared-array-tuple-pack-abi-unrepresented' as const,
+              message: `array tuple binding ${evidence.binding.name} crosses a callable or module ABI without tuple-pack propagation`,
+              subject,
+            }
+          : undefined;
+    if (refusal) {
+      refusals.push(refusal);
+      continue;
+    }
+    bindingPlans.push({ binding: evidence.binding, components: components! });
+  }
+  return { bindingPlans, refusals };
+}
+
+function getRustSharedArrayTupleConcatSpreadBinding(
+  expression: Readonly<IrExpression>,
+): Readonly<IrBindingIdentity> | undefined {
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.typeArguments.length > 0 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    expression.callee.optionalChain !== undefined ||
+    expression.callee.member?.receiver !== 'array' ||
+    expression.callee.member.name !== 'concat' ||
+    expression.arguments.length !== 1 ||
+    expression.arguments[0]?.kind !== 'spread' ||
+    expression.arguments[0].expression.kind !== 'identifier' ||
+    expression.arguments[0].expression.reference.kind !== 'binding' ||
+    expression.semantics.signature?.parameterCount !== 1 ||
+    expression.semantics.signature.restParameter !== 0 ||
+    expression.semantics.signature.providedArgumentCount !== 'dynamic'
+  ) {
+    return undefined;
+  }
+  return expression.arguments[0].expression.reference.binding;
+}
+
+function isRustPotentialArrayOnlyTupleShape(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
+  const tuple = resolveRustPotentialLocalTypeAliasShape(type, module, new Set());
+  return (
+    tuple?.kind === 'tuple' &&
+    tuple.elements.length > 0 &&
+    tuple.elements.every(
+      (element) => resolveRustPotentialLocalTypeAliasShape(element.type, module, new Set())?.kind === 'array',
+    )
+  );
+}
+
+function resolveRustPotentialLocalTypeAliasShape(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named') return type;
+  if (type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const key = type.reference.binding.id;
+  if (resolving.has(key)) return undefined;
+  const declaration = module.declarations.find(
+    (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === key,
+  );
+  return declaration?.kind === 'typeAlias'
+    ? resolveRustPotentialLocalTypeAliasShape(declaration.type, module, new Set(resolving).add(key))
+    : undefined;
+}
+
+function resolveRustClosedLocalTypeAliasShape(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named') return type;
+  if (
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0 ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const key = type.reference.binding.id;
+  if (resolving.has(key)) return undefined;
+  const declaration = module.declarations.find(
+    (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === key,
+  );
+  if (declaration?.kind !== 'typeAlias' || declaration.typeParameters.length > 0) return undefined;
+  return resolveRustClosedLocalTypeAliasShape(declaration.type, module, new Set(resolving).add(key));
+}
+
+function getRustSharedArrayTupleComponents(
+  tuple: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  module: Readonly<IrModule>,
+): readonly Readonly<{ position: number; representation: 'shared-ref-cell-vec' }>[] | undefined {
+  if (tuple.elements.length === 0 || tuple.elements.some((element) => element.optional || element.rest)) {
+    return undefined;
+  }
+  const arrays = tuple.elements.map((element) => {
+    const type = resolveRustClosedLocalTypeAliasShape(element.type, module, new Set());
+    return type?.kind === 'array' ? type : undefined;
+  });
+  if (arrays.some((array) => !array)) return undefined;
+  const primitiveNames = arrays.map((array) => {
+    const element = resolveRustClosedLocalTypeAliasShape(array!.element, module, new Set());
+    return element?.kind === 'primitive' &&
+      (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
+      ? element.name
+      : undefined;
+  });
+  const primitiveName = primitiveNames[0];
+  if (!primitiveName || primitiveNames.some((candidate) => candidate !== primitiveName)) return undefined;
+  return tuple.elements.map((_element, position) => ({ position, representation: 'shared-ref-cell-vec' }));
+}
+
+function isRustSharedArrayTupleDenseInitializer(
+  initializer: Readonly<IrExpression> | undefined,
+  width: number | undefined,
+): boolean {
+  return (
+    width !== undefined &&
+    initializer?.kind === 'tuple' &&
+    initializer.elements.length === width &&
+    initializer.elements.every((element) => !element.optional && element.expression !== undefined)
+  );
+}
+
+function isRustSharedArrayTupleConcatSpreadUse(
+  module: Readonly<IrModule>,
+  bindingId: string,
+  path_: CompilerIrTraversalPath,
+): boolean {
+  if (path_.at(-1) !== 'expression') return false;
+  const spread = getIrModuleTraversalPathValue(module, path_.slice(0, -1));
+  const call = getIrModuleTraversalPathValue(module, path_.slice(0, -3));
+  return (
+    isIrExpressionValue(spread) &&
+    spread.kind === 'spread' &&
+    isCallExpression(call) &&
+    getRustSharedArrayTupleConcatSpreadBinding(call)?.id === bindingId
+  );
+}
+
+function isRustSharedArrayTupleCallableBoundaryUse(
+  module: Readonly<IrModule>,
+  path_: CompilerIrTraversalPath,
+): boolean {
+  for (let length = path_.length - 1; length >= 0; length -= 1) {
+    const parent = getIrModuleTraversalPathValue(module, path_.slice(0, length));
+    if (isCallExpression(parent)) return true;
+    if (isRecord(parent) && parent.kind === 'return') return true;
+  }
+  return false;
 }
 
 function activateRustSharedArrayCallMutations(

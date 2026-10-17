@@ -144,6 +144,157 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('plans a closed homogeneous local array-tuple concat pack deterministically', () => {
+    const module = lower(
+      'array-tuple-pack.ts',
+      `type Row = number[];
+       type Pack = readonly [Row, Row];
+       export function merge(): number[] {
+         const values = [0];
+         const pack: Pack = [[1], [2]];
+         return values.concat(...pack);
+       }`,
+    );
+    const first = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] });
+    const modulePlan = getModulePlan(first, module);
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([
+      {
+        binding: expect.objectContaining({ name: 'pack' }),
+        components: [
+          { position: 0, representation: 'shared-ref-cell-vec' },
+          { position: 1, representation: 'shared-ref-cell-vec' },
+        ],
+      },
+    ]);
+  });
+
+  it('keeps array-tuple component planning all-or-nothing for unsupported shapes', () => {
+    const module = lower(
+      'array-tuple-pack-shape.ts',
+      `interface Item { value: number; }
+       export function merge(values: Item[]): Item[] {
+         const pack: readonly [Item[], Item[]] = [[{ value: 1 }], [{ value: 2 }]];
+         return values.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented',
+        message: expect.stringContaining('pack'),
+        subject: expect.stringContaining(
+          module.declarations.flatMap((declaration) =>
+            declaration.kind === 'function'
+              ? declaration.body.flatMap((statement) =>
+                  statement.kind === 'variable'
+                    ? statement.declarations.flatMap((variable) =>
+                        'binding' in variable && variable.binding.name === 'pack' ? [variable.binding.id] : [],
+                      )
+                    : [],
+                )
+              : [],
+          )[0]!,
+        ),
+      }),
+    ]);
+  });
+
+  it('refuses unsupported tuple-pack flow and callable ABI crossings without partial carriers', () => {
+    const escaped = lower(
+      'array-tuple-pack-flow.ts',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         const alias = pack;
+         return alias.length === 2 ? values.concat(...pack) : values;
+       }`,
+    );
+    const parameter = lower(
+      'array-tuple-pack-abi.ts',
+      `type Pack = readonly [number[], number[]];
+       export function merge(values: number[], pack: Pack): number[] {
+         return values.concat(...pack);
+       }`,
+    );
+
+    const escapedPlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [escaped] }), escaped);
+    const parameterPlan = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [parameter] }),
+      parameter,
+    );
+    expect(escapedPlan.sharedArrayTupleBindings).toEqual([]);
+    expect(escapedPlan.refusals).toEqual([
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' }),
+    ]);
+    expect(parameterPlan.sharedArrayTupleBindings).toEqual([]);
+    expect(parameterPlan.refusals).toEqual([
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-abi-unrepresented' }),
+    ]);
+  });
+
+  it('ranks tuple-pack shape refusal before flow and ABI evidence deterministically', () => {
+    const module = lower(
+      'array-tuple-pack-rank.ts',
+      `type OpenPack<T> = readonly [T[], T[]];
+       export function merge(values: number[], pack: OpenPack<number>): number[] {
+         const read = (): number => pack.length;
+         return read() === 2 ? values.concat(...pack) : values;
+       }`,
+    );
+    const first = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+    const second = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] }),
+      module,
+    );
+
+    expect(second).toEqual(first);
+    expect(first.sharedArrayTupleBindings).toEqual([]);
+    expect(first.refusals).toEqual([
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented' }),
+    ]);
+
+    const flowBeforeAbi = lower(
+      'array-tuple-pack-flow-rank.ts',
+      `type Pack = readonly [number[], number[]];
+       function consume(pack: Pack): void { void pack; }
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [[1], [2]];
+         const read = (): number => pack.length;
+         consume(pack);
+         return read() === 2 ? values.concat(...pack) : values;
+       }`,
+    );
+    const flowPlan = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [flowBeforeAbi] }),
+      flowBeforeAbi,
+    );
+    expect(flowPlan.sharedArrayTupleBindings).toEqual([]);
+    expect(flowPlan.refusals).toEqual([
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' }),
+    ]);
+  });
+
+  it('leaves ordinary scalar tuple concat spreads outside the shared array-tuple lane', () => {
+    const module = lower(
+      'scalar-tuple-pack.ts',
+      `export function merge(values: number[]): number[] {
+         const pair: readonly [number, number] = [1, 2];
+         return values.concat(...pair);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.refusals).toEqual([]);
+  });
+
   it('promotes an observed reverse result only when the original array identity remains live', () => {
     const shared = lower(
       'reverse-result-shared.ts',
