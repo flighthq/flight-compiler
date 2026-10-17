@@ -1655,3 +1655,39 @@ describe('createCompilerCommandLineCheckReport', () => {
     });
   });
 });
+
+describe('compileCompilerCommandLineRequest finalization failure', () => {
+  it('reports the structured failure, writes no output, and answers the same twice', () => {
+    const sources = [
+      source(
+        'provider.ts',
+        'export function convert(value: unknown): { value: number } { return value as { value: number }; }',
+      ),
+      source('consumer.ts', "import { convert } from './provider.js';\nexport { convert };"),
+    ];
+    const run = () => {
+      const written = new Map<string, string>();
+      const out: string[] = [];
+      const errors: string[] = [];
+      const base = capabilities(sources, written, out);
+      const result = compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'rust', '--out', '/out', '--best-effort'] },
+        { ...base, writeError: (text: string) => errors.push(text) },
+      );
+      return { errors, out, result, written };
+    };
+    const first = run();
+    const second = run();
+
+    expect(first.result).toMatchObject({ emitted: 0, exitCode: 2, refusals: [] });
+    expect(first.result.failure).toMatchObject({ backend: 'rust', code: 'rust-source-tree-import-target-refused' });
+    expect(first.result.failure?.message).toContain('which was refused: rust-cast-requires-type-directed-lowering');
+    expect(first.result.failure?.subjects).toHaveLength(2);
+    expect(first.written.size).toBe(0);
+    expect(first.out).toEqual([]);
+    expect(first.errors).toEqual([`${first.result.failure?.code}: ${first.result.failure?.message}\n`]);
+    expect(second.result).toEqual(first.result);
+    expect(second.errors).toEqual(first.errors);
+    expect(second.written.size).toBe(0);
+  });
+});

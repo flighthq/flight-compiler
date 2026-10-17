@@ -214,6 +214,20 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly rule?: string | undefined;
 }
 
+/**
+ * A finalization failure a caller can branch on. Package-graph finalization is one run-level step, not a
+ * per-module emission, so this carries the backend and its own stable code instead of a module identity.
+ * A backend wraps only the failures it recognizes; an unexpected defect keeps escaping as itself.
+ */
+export interface CompilerBackendFinalizationFailure extends Error {
+  readonly backend: string;
+  /** The backend's own stable failure code, when the wrapped failure had one. */
+  readonly code?: string | undefined;
+  readonly kind: 'compiler-backend-finalization';
+  /** Backend-owned subjects, in the backend's deterministic order. */
+  readonly subjects?: readonly string[] | undefined;
+}
+
 export type HaxeCompilerEmissionMode = 'extern' | 'transpile';
 
 export interface HaxeCompilerBackendOptions {

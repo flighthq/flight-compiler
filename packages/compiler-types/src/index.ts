@@ -7,6 +7,7 @@ export type {
   CompilerCommandLineCheckRefusal,
   CompilerCommandLineCheckRequest,
   CompilerCommandLineCheckResult,
+  CompilerCommandLineFailure,
   CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,

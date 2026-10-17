@@ -17,6 +17,7 @@ import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { createCompilerTypeScriptAnalysisIdentity, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileTypeScriptPackageGraphOptions,
+  CompilerBackendFinalizationFailure,
   CompilerBackendModuleFile,
   CompilerBackendModuleFileReplacement,
   CompilerBackendPackageFile,
@@ -606,6 +607,25 @@ function freezeCompilerBackendPackageGraphValue<Value>(value: Value): Value {
     for (const member of Object.values(value)) freezeCompilerBackendPackageGraphValue(member);
   }
   return value;
+}
+
+// A finalization failure belongs to the run, not to a module: it names its backend and the backend's own
+// code. An unexpected error does not satisfy this shape, so a defect is never reported as an expected refusal.
+export function isCompilerBackendFinalizationFailure(value: unknown): value is CompilerBackendFinalizationFailure {
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'compiler-backend-finalization' &&
+    'backend' in value &&
+    typeof value.backend === 'string' &&
+    value.backend.length > 0 &&
+    (!('code' in value) || value.code === undefined || (typeof value.code === 'string' && value.code.length > 0)) &&
+    (!('subjects' in value) ||
+      value.subjects === undefined ||
+      (Array.isArray(value.subjects) &&
+        value.subjects.length > 0 &&
+        value.subjects.every((subject) => typeof subject === 'string' && subject.length > 0)))
+  );
 }
 
 export function isCompilerPackageGraphFailure(value: unknown): value is CompilerPackageGraphFailure {

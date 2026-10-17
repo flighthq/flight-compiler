@@ -24,7 +24,11 @@ import {
   isFlightPackageEligibilityFailure,
   readFlightPackageManifests,
 } from '../../compiler-inventory/src/index.js';
-import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../compiler-orchestration/src/index.js';
+import {
+  compileTypeScriptPackageGraph,
+  isCompilerBackendFinalizationFailure,
+  parseTypeScriptSource,
+} from '../../compiler-orchestration/src/index.js';
 import { analyzeTypeScriptSourcePortability } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
@@ -35,12 +39,14 @@ import type {
   CompilerCommandLineCheckRefusal,
   CompilerCommandLineCheckRequest,
   CompilerCommandLineCheckResult,
+  CompilerCommandLineFailure,
   CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,
   CompilerPackageCheckBaseline,
   CompilerPackageCheckProvenance,
   CompilerPackageCheckReport,
+  CompilerPackageCompilationResult,
   CppCompilerCAbiOutput,
   CppCompilerExternalBinding,
   CppCompilerExternalBindingManifest,
@@ -102,30 +108,45 @@ export function compileCompilerCommandLineRequest(
     capabilities.writeError(`No TypeScript modules under ${parsed.sourceDirectory}\n`);
     return { emitted: 0, exitCode: 2, refusals: [] };
   }
-  const result = compileTypeScriptPackageGraph({
-    backend,
-    backendOptions,
-    ...(parsed.bestEffort ? { bestEffort: true } : {}),
-    ...(parsed.emitPathPrefixes === undefined ? {} : { emitPathPrefixes: parsed.emitPathPrefixes }),
-    graph: {
-      entries: [],
-      moduleDependencies: [],
-      packages: [{ dependencies: [], name: parsed.packageName, root: parsed.sourceDirectory }],
-      schema: 'flight-compiler-package-graph/1',
-    },
-    sources: sources.map((source) => ({
-      packageName: parsed.packageName,
-      packageRoot: parsed.sourceDirectory,
-      sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
-      upstreamDirectory: parsed.sourceDirectory,
-    })),
-    ...(parsed.progress
-      ? {
-          observeProgress: (progress) =>
-            (capabilities.writeProgress ?? capabilities.writeError)(`${JSON.stringify(progress)}\n`),
-        }
-      : {}),
-  });
+  let result: CompilerPackageCompilationResult;
+  try {
+    result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions,
+      ...(parsed.bestEffort ? { bestEffort: true } : {}),
+      ...(parsed.emitPathPrefixes === undefined ? {} : { emitPathPrefixes: parsed.emitPathPrefixes }),
+      graph: {
+        entries: [],
+        moduleDependencies: [],
+        packages: [{ dependencies: [], name: parsed.packageName, root: parsed.sourceDirectory }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources: sources.map((source) => ({
+        packageName: parsed.packageName,
+        packageRoot: parsed.sourceDirectory,
+        sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
+        upstreamDirectory: parsed.sourceDirectory,
+      })),
+      ...(parsed.progress
+        ? {
+            observeProgress: (progress) =>
+              (capabilities.writeProgress ?? capabilities.writeError)(`${JSON.stringify(progress)}\n`),
+          }
+        : {}),
+    });
+  } catch (error) {
+    // A finalization failure is the run's, not a module's: report its code and message, write nothing, and
+    // keep the structured facts on the result. Any other error is a defect and keeps escaping.
+    if (!isCompilerBackendFinalizationFailure(error)) throw error;
+    const failure: CompilerCommandLineFailure = {
+      backend: error.backend,
+      ...(error.code === undefined ? {} : { code: error.code }),
+      message: error.message,
+      ...(error.subjects === undefined ? {} : { subjects: [...error.subjects] }),
+    };
+    capabilities.writeError(`${failure.code === undefined ? '' : `${failure.code}: `}${failure.message}\n`);
+    return { emitted: 0, exitCode: 2, failure, refusals: [] };
+  }
   for (const file of result.compilation.files) {
     capabilities.writeOutputFile(parsed.outputDirectory, file.path, file.contents);
   }

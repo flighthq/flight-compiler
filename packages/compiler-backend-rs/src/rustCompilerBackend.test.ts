@@ -21409,3 +21409,54 @@ describe('createRustCompilerBackend provisional module paths', () => {
     expect(() => compileRustSourceTree(files)).not.toThrow();
   });
 });
+
+describe('createRustCompilerBackend finalization failures', () => {
+  function captureFinalization(run: () => unknown): unknown {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected finalization to fail and it did not');
+  }
+
+  it('wraps a recognized source-tree failure with its backend, code, subjects, and cause', () => {
+    const consumer = lower('consumer.ts', "import { value } from './value.js';\nexport { value };").module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [consumer], options: {} });
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createRustSourceTreeFacade([consumer]),
+      moduleFiles: [{ file: session.emitModule(consumer)[0]!, module: getRustTestModuleIdentity(consumer) }],
+    };
+
+    const failure = captureFinalization(() => session.finalizePackageGraph!(finalization)) as Readonly<{
+      backend?: string;
+      cause?: unknown;
+      code?: string;
+      kind?: string;
+      message: string;
+      subjects?: readonly string[];
+    }>;
+
+    expect(failure.kind).toBe('compiler-backend-finalization');
+    expect(failure.backend).toBe('rust');
+    expect(failure.code).toBe('rust-source-tree-import-target-absent');
+    expect(failure.subjects).toHaveLength(1);
+    expect(failure.message).toContain('has no target module in this compilation');
+    expect(failure.cause instanceof Error).toBe(true);
+  });
+
+  it('rethrows a contract defect unchanged instead of wrapping it', () => {
+    const consumer = lower('consumer.ts', 'export const value = 1;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [consumer], options: {} });
+    const facade = { ...createRustSourceTreeFacade([consumer]), schema: 'not-a-facade' };
+    const finalization = {
+      facade: facade as unknown as CompilerModuleFacadePlan,
+      moduleFiles: [{ file: session.emitModule(consumer)[0]!, module: getRustTestModuleIdentity(consumer) }],
+    };
+
+    const failure = captureFinalization(() => session.finalizePackageGraph!(finalization));
+
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Readonly<{ kind?: string }>).kind).toBeUndefined();
+  });
+});

@@ -52,6 +52,7 @@ import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index
 import type {
   CompilerAsyncStateMachineAnalysis,
   CompilerBackend,
+  CompilerBackendFinalizationFailure,
   CompilerBackendPackageGraphFinalization,
   CompilerClosureEvidence,
   CompilerIrTraversalPath,
@@ -61,6 +62,8 @@ import type {
   CompilerRustReferenceRepresentation,
   CompilerRustReferenceRepresentationPlan,
   CompilerRustSourceTreeFilePlan,
+  CompilerRustSourceTreeFinalizationFailure,
+  CompilerRustSourceTreePlanningFailure,
   CompilerRustSourceTreeReferencePlan,
   EmittedFile,
   RustCompilerBackendOptions,
@@ -125,7 +128,11 @@ import {
   getCompilerRuntimeExternalSymbolTargetRust,
   isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
-import { createCompilerRustSourceTreeFinalization } from './rustSourceTreeFinalization.js';
+import {
+  createCompilerRustSourceTreeFinalization,
+  isCompilerRustSourceTreeFinalizationFailure,
+} from './rustSourceTreeFinalization.js';
+import { isCompilerRustSourceTreePlanningFailure } from './rustSourceTreePlan.js';
 import { createRustUnionRepresentationPlan } from './rustUnionRepresentationPlan.js';
 
 interface PrimitiveUnionEnum {
@@ -340,16 +347,25 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
           return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
         },
         finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
-          return createCompilerRustSourceTreeFinalization({
-            finalization,
-            ...(moduleResolution ? { moduleResolution } : {}),
-            reemitModule: ({ module, references, sourceFile }) =>
-              emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan, {
-                references,
-                sourceFile,
-              }),
-            semanticModules: modules,
-          });
+          try {
+            return createCompilerRustSourceTreeFinalization({
+              finalization,
+              ...(moduleResolution ? { moduleResolution } : {}),
+              reemitModule: ({ module, references, sourceFile }) =>
+                emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan, {
+                  references,
+                  sourceFile,
+                }),
+              semanticModules: modules,
+            });
+          } catch (error) {
+            // Two failure kinds belong to the run and a caller may branch on them. Anything else -- a
+            // contract TypeError, an invariant -- is a defect and keeps its own identity.
+            if (isCompilerRustSourceTreePlanningFailure(error) || isCompilerRustSourceTreeFinalizationFailure(error)) {
+              throw createRustBackendFinalizationFailure(error);
+            }
+            throw error;
+          }
         },
       });
     },
@@ -10852,6 +10868,21 @@ function emissionRuleError(context: EmitContext, message: string, rule: string):
 
 // The origin and classification a failure carries. Both ride on the failure record rather than in its
 // message, so naming them changes no emitted text and no pinned fixture.
+// The run-level identity of a recognized finalization failure: the backend and its own code, the message
+// unchanged, the subjects in the backend's deterministic order, and the original failure as the cause.
+function createRustBackendFinalizationFailure(
+  failure: Readonly<CompilerRustSourceTreePlanningFailure | CompilerRustSourceTreeFinalizationFailure>,
+): CompilerBackendFinalizationFailure {
+  const result = Object.assign(new Error(failure.message, { cause: failure }), {
+    backend: 'rust',
+    code: failure.code,
+    kind: 'compiler-backend-finalization' as const,
+    subjects: [...failure.subjects],
+  });
+  result.name = 'CompilerBackendFinalizationError';
+  return result;
+}
+
 function createRustEmissionFailureMetadata(
   context: EmitContext,
   classification: 'source-portability' | 'target-runtime' | undefined,

@@ -300,7 +300,9 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
   function rustBestEffortRun(
     sources: readonly (typeof provider)[],
     emitPathPrefixes?: readonly string[],
-  ): Readonly<{ code?: string; message?: string }> | undefined {
+  ):
+    | Readonly<{ backend?: string; code?: string; kind?: string; message?: string; subjects?: readonly string[] }>
+    | undefined {
     try {
       compileTypeScriptPackageGraph({
         backend: createRustCompilerBackend(),
@@ -323,7 +325,13 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
       });
       return undefined;
     } catch (error) {
-      return error as Readonly<{ code?: string; message?: string }>;
+      return error as Readonly<{
+        backend?: string;
+        code?: string;
+        kind?: string;
+        message?: string;
+        subjects?: readonly string[];
+      }>;
     }
   }
 
@@ -350,7 +358,10 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     const first = rustBestEffortRun([consumer, provider]);
     const second = rustBestEffortRun([provider, consumer]);
 
+    expect(first?.kind).toBe('compiler-backend-finalization');
+    expect(first?.backend).toBe('rust');
     expect(first?.code).toBe('rust-source-tree-import-target-refused');
+    expect(first?.subjects).toHaveLength(2);
     expect(first?.message).toContain('@scope/math/packages/math/src/provider.ts#Provider');
     expect(first?.message).toContain('which was refused: rust-cast-requires-type-directed-lowering:');
     expect(first?.message).toContain('cast to object requires Rust type-directed lowering');
@@ -361,6 +372,8 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
   it('attributes an import of a module outside the requested emit paths to selection', () => {
     const failure = rustBestEffortRun([consumer, provider], ['packages/math/src/consumer.ts']);
 
+    expect(failure?.kind).toBe('compiler-backend-finalization');
+    expect(failure?.backend).toBe('rust');
     expect(failure?.code).toBe('rust-source-tree-import-target-unselected');
     expect(failure?.message).toContain('which is not selected for this output');
   });

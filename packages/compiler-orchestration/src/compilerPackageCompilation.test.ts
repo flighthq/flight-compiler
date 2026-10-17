@@ -10,7 +10,11 @@ import type {
   TypeScriptPackageGraphSource,
 } from '../../compiler-types/src/index.js';
 import { parseTypeScriptSource } from './compilerOrchestration.js';
-import { compileTypeScriptPackageGraph, isCompilerPackageGraphFailure } from './compilerPackageCompilation.js';
+import {
+  compileTypeScriptPackageGraph,
+  isCompilerBackendFinalizationFailure,
+  isCompilerPackageGraphFailure,
+} from './compilerPackageCompilation.js';
 
 describe('compileTypeScriptPackageGraph', () => {
   it('compiles a cross-package graph once with explicit C++ identity and a build manifest', () => {
@@ -2208,5 +2212,29 @@ describe('compileTypeScriptPackageGraph finalization refusal evidence', () => {
         },
       ]);
     }
+  });
+});
+
+describe('isCompilerBackendFinalizationFailure', () => {
+  it('recognizes a complete finalization failure and rejects incomplete or unrelated values', () => {
+    const failure = Object.assign(new Error('finalization failed'), {
+      backend: 'rust',
+      code: 'rust-source-tree-import-target-absent',
+      kind: 'compiler-backend-finalization',
+      subjects: ['subject'],
+    });
+    const change = (changes: Readonly<Record<string, unknown>>) =>
+      Object.assign(new Error('changed'), { ...failure }, changes);
+
+    expect(isCompilerBackendFinalizationFailure(failure)).toBe(true);
+    expect(isCompilerBackendFinalizationFailure(change({ code: undefined, subjects: undefined }))).toBe(true);
+    expect(isCompilerBackendFinalizationFailure(new Error('plain'))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ kind: 'backend-emission' }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ backend: '' }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ code: '' }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ code: 1 }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ subjects: [] }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ subjects: [''] }))).toBe(false);
+    expect(isCompilerBackendFinalizationFailure(change({ subjects: [1] }))).toBe(false);
   });
 });

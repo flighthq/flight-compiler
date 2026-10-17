@@ -47,9 +47,19 @@ export interface CompilerCommandLineRefusal {
   readonly stage: 'dependency' | 'emission' | 'initialization' | 'lowering';
 }
 
+/** A run-level failure no module can own, reported as data so a caller keeps its code and subjects. */
+export interface CompilerCommandLineFailure {
+  readonly backend: string;
+  readonly code?: string | undefined;
+  readonly message: string;
+  readonly subjects?: readonly string[] | undefined;
+}
+
 export interface CompilerCommandLineResult {
   readonly emitted: number;
   readonly exitCode: number;
+  /** Present when the run failed after module emission, before any output could be written. */
+  readonly failure?: CompilerCommandLineFailure | undefined;
   readonly publicBindings?: CompilerBackendPublicBindingPlan | undefined;
   readonly refusals: readonly CompilerCommandLineRefusal[];
 }
