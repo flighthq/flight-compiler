@@ -179,6 +179,26 @@ function compileRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
   }
 }
 
+function runRustSourceTree(files: readonly Readonly<EmittedFile>[], main: string): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-source-tree-behavior-'));
+  try {
+    for (const file of files) {
+      const target = path.join(directory, file.path);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, file.path === 'lib.rs' ? `${file.contents}\nfn main() { ${main} }\n` : file.contents);
+    }
+    const executable = path.join(directory, 'subject');
+    const build = spawnSync('rustc', ['--edition', '2021', '-o', executable, path.join(directory, 'lib.rs')], {
+      encoding: 'utf8',
+    });
+    if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+    const run = spawnSync(executable, [], { encoding: 'utf8' });
+    if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
@@ -364,6 +384,77 @@ describe('createRustCompilerBackend', () => {
       'lib.rs',
     ]);
     expect(() => compileRustSourceTree(files)).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('runs a namespace facade through its finalized public module path', () => {
+    const entry = lower('index.ts', "export * as geometryTools from './geometry/tools.js';").module;
+    const tools = lower('geometry/tools.ts', 'export const answer = 42;').module;
+    const entryIdentity = getRustTestModuleIdentity(entry);
+    const toolsIdentity = getRustTestModuleIdentity(tools);
+    const specifier = './geometry/tools.js';
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ importer: entryIdentity, specifier, target: toolsIdentity }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const facade: CompilerModuleFacadePlan = {
+      modules: [
+        {
+          module: entryIdentity,
+          slots: [
+            {
+              exportName: 'geometryTools',
+              identity: 'fixture:value:geometryTools',
+              lane: 'value',
+              module: entryIdentity,
+              route: { kind: 'namespace', module: toolsIdentity },
+              source: { kind: 'module-namespace', specifier },
+              via: [
+                {
+                  kind: 'namespace-reexport',
+                  module: entryIdentity,
+                  specifier,
+                  target: toolsIdentity,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      schema: 'flight-compiler-module-facade/1',
+      semantics: {
+        bindingAccess: 'live',
+        explicitPrecedence: 'named-over-star',
+        starAmbiguity: 'refuse-distinct-resolutions',
+        starDefault: 'excluded',
+        typeValueLanes: 'independent',
+      },
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [tools, entry],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!({
+      facade,
+      moduleFiles: [entry, tools].map((module) => ({
+        file: session.emitModule(module)[0]!,
+        module: getRustTestModuleIdentity(module),
+      })),
+    });
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    expect(files.map(({ path: filePath }) => filePath).sort()).toEqual([
+      'geometry/mod.rs',
+      'geometry/tools.rs',
+      'lib.rs',
+    ]);
+    expect(files.find(({ path: filePath }) => filePath === 'lib.rs')?.contents).toContain(
+      'pub use crate::geometry::tools as geometry_tools;',
+    );
+    expect(() => runRustSourceTree(files, 'assert_eq!(geometry_tools::ANSWER, 42.0);')).not.toThrow();
   });
 
   it('uses explicit package-export resolution from the complete backend module context', () => {

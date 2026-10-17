@@ -29,16 +29,33 @@ export interface CompilerRustPublicDependencyEdge {
   readonly target: CompilerRustPublicModuleLocator;
 }
 
-export type CompilerRustPublicBindingCarrier = 'class' | 'enum' | 'function' | 'interface' | 'type-alias' | 'value';
+export type CompilerRustPublicBindingCarrier =
+  | 'class'
+  | 'enum'
+  | 'function'
+  | 'interface'
+  | 'module'
+  | 'type-alias'
+  | 'value';
 
-export interface CompilerRustPublicBindingLocator {
-  readonly carrier: CompilerRustPublicBindingCarrier;
-  readonly module: CompilerRustPublicModuleLocator;
-  readonly spelling: string;
-}
+export type CompilerRustPublicBindingLocator =
+  | Readonly<{
+      carrier: Exclude<CompilerRustPublicBindingCarrier, 'module'>;
+      module: CompilerRustPublicModuleLocator;
+      spelling: string;
+    }>
+  | Readonly<{
+      carrier: 'module';
+      /** Module that publicly exposes the facade spelling. */
+      module: CompilerRustPublicModuleLocator;
+      spelling: string;
+      /** Exact source module denoted by the public namespace alias. */
+      target: CompilerRustPublicModuleLocator;
+    }>;
 
 export type CompilerRustPublicBindingRefusalCode =
   | 'rust-declaration-missing'
+  | 'rust-module-missing'
   | 'rust-module-refused'
   | 'rust-unsupported-facade-route';
 
@@ -73,7 +90,7 @@ export interface CompilerRustPublicBindingPlan {
   readonly crates: readonly CompilerRustPublicCrateIdentity[];
   readonly dependencies: readonly CompilerRustPublicDependencyEdge[];
   readonly modules: readonly CompilerRustPublicModulePlan[];
-  readonly schema: 'flight-rust-public-binding-plan/1';
+  readonly schema: 'flight-rust-public-binding-plan/2';
 }
 
 export interface CompilerRustPublicBindingModuleRefusal {

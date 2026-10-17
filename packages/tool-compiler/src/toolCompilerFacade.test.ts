@@ -82,7 +82,92 @@ describe('@flighthq/tool-compiler', () => {
         expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'add'] }) }),
         expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'scale'] }) }),
       ]),
-      schema: 'flight-rust-public-binding-plan/1',
+      schema: 'flight-rust-public-binding-plan/2',
+    });
+  });
+
+  it('reports a namespace module locator that agrees with finalized files reaching target compilation', () => {
+    const entry = {
+      packageName: '@scope/math',
+      packageRoot: '/flight/packages/math',
+      sourceFile: parseTypeScriptSource(
+        '/flight/packages/math/src/index.ts',
+        "export * as geometryTools from './geometry/tools.js';",
+      ),
+      upstreamDirectory: '/flight',
+    };
+    const tools = {
+      packageName: '@scope/math',
+      packageRoot: '/flight/packages/math',
+      sourceFile: parseTypeScriptSource('/flight/packages/math/src/geometry/tools.ts', 'export const answer = 42;'),
+      upstreamDirectory: '/flight',
+    };
+    const compile = (sources: readonly (typeof entry)[]) => {
+      let compiledFiles: readonly Readonly<{ contents: string; path: string }>[] = [];
+      const result = compileTypeScriptPackageGraph({
+        backend: createRustCompilerBackend(),
+        backendOptions: {},
+        graph: {
+          entries: [{ name: 'Index', packageName: '@scope/math', source: 'packages/math/src/index.ts' }],
+          moduleDependencies: [],
+          packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+          schema: 'flight-compiler-package-graph/1',
+        },
+        sources,
+        targetCompilationSmoke: {
+          compileEmittedSources(files) {
+            compiledFiles = files;
+            return [];
+          },
+          name: 'rustc-fixture',
+          supportsEmittedSource: ({ path }) => path.endsWith('.rs'),
+        },
+      });
+      return { compiledFiles, result };
+    };
+    const first = compile([entry, tools]);
+    const second = compile([tools, entry]);
+
+    expect(first.result.report.publicBindings).toBeDefined();
+    expect(second.result.report.publicBindings).toEqual(first.result.report.publicBindings);
+    expect(second.result.compilation.files).toEqual(first.result.compilation.files);
+    expect(isDeeplyFrozen(first.result.report.publicBindings, new WeakSet())).toBe(true);
+    expect(first.compiledFiles.map(({ path }) => path)).toEqual(['geometry/mod.rs', 'geometry/tools.rs', 'lib.rs']);
+    expect(first.compiledFiles.map(({ path }) => path)).not.toContain('index.rs');
+    expect(first.result.compilation.files.map(({ path }) => path)).toEqual([
+      'geometry/mod.rs',
+      'geometry/tools.rs',
+      'lib.rs',
+    ]);
+    expect(first.result.compilation.files.find(({ path }) => path === 'lib.rs')?.contents).toContain(
+      'pub use crate::geometry::tools as geometry_tools;',
+    );
+    expect(first.result.compilation.files.find(({ path }) => path === 'geometry/mod.rs')?.contents).toBe(
+      'pub mod tools;\n',
+    );
+    expect(first.result.report.publicBindings).toMatchObject({
+      bindings: [
+        {
+          binding: {
+            availability: 'available',
+            locator: {
+              carrier: 'module',
+              module: { modulePath: [] },
+              spelling: 'geometry_tools',
+              target: { modulePath: ['geometry', 'tools'] },
+            },
+          },
+        },
+      ],
+      dependencies: [
+        {
+          from: { modulePath: [] },
+          kind: 'namespace-reexport',
+          specifier: './geometry/tools.js',
+          target: { modulePath: ['geometry', 'tools'] },
+        },
+      ],
+      schema: 'flight-rust-public-binding-plan/2',
     });
   });
 
@@ -204,3 +289,9 @@ describe('@flighthq/tool-compiler', () => {
     expect(cubeTexture?.contents).not.toContain('Extract');
   });
 });
+
+function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return true;
+  seen.add(value);
+  return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
+}

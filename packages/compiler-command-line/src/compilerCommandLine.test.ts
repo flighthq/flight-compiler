@@ -338,7 +338,7 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result).toMatchObject({
       emitted: 1,
       exitCode: 0,
-      publicBindings: { schema: 'flight-rust-public-binding-plan/1' },
+      publicBindings: { schema: 'flight-rust-public-binding-plan/2' },
       refusals: [],
     });
     expect(written.get('/out/bridge.rs')).toContain('use downstream_runtime::FlightTask;');
@@ -937,7 +937,7 @@ describe('validateCompilerCommandLineCheckRequest', () => {
         bindings: expect.arrayContaining([
           expect.objectContaining({ binding: expect.objectContaining({ availability: 'available' }) }),
         ]),
-        schema: 'flight-rust-public-binding-plan/1',
+        schema: 'flight-rust-public-binding-plan/2',
       },
       runtimeCrate: 'downstream_runtime',
       schema: 'flight-compiler-check-run/1',

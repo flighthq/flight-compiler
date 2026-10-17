@@ -56,7 +56,7 @@ describe('createCompilerRustPublicBindingPlan', () => {
       return result.locator;
     };
 
-    expect(first.schema).toBe('flight-rust-public-binding-plan/1');
+    expect(first.schema).toBe('flight-rust-public-binding-plan/2');
     expect(second).toEqual(first);
     expect(input).toEqual(snapshot);
     expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
@@ -78,6 +78,11 @@ describe('createCompilerRustPublicBindingPlan', () => {
       ['state', 'status'],
       ['geometry', 'widget'],
     ]);
+    expect(first.dependencies.find((edge) => edge.kind === 'namespace-reexport')).toMatchObject({
+      from: { crate: { cargoName: 'scope-api' }, modulePath: ['public', 'contract'] },
+      specifier: '@alpha/model',
+      target: { crate: { cargoName: 'alpha-model' }, modulePath: ['geometry', 'widget'] },
+    });
     expect(available('fixture:type:PublicWidget')).toMatchObject({
       carrier: 'interface',
       module: { crate: { cargoName: 'scope-api' }, modulePath: ['public', 'contract'] },
@@ -86,11 +91,11 @@ describe('createCompilerRustPublicBindingPlan', () => {
     expect(available('fixture:value:makeWidget')).toMatchObject({ carrier: 'function', spelling: 'make_widget' });
     expect(available('fixture:value:status')).toMatchObject({ carrier: 'value', spelling: 'status' });
     expect(available('fixture:value:localStatus')).toMatchObject({ carrier: 'value', spelling: 'LOCAL_STATUS' });
-    expect(
-      first.bindings.find((binding) => binding.facadeIdentity === 'fixture:value:geometry')?.binding,
-    ).toMatchObject({
-      availability: 'refused',
-      refusal: { code: 'rust-unsupported-facade-route' },
+    expect(available('fixture:value:geometry')).toMatchObject({
+      carrier: 'module',
+      module: { crate: { cargoName: 'scope-api' }, modulePath: ['public', 'contract'] },
+      spelling: 'geometry',
+      target: { crate: { cargoName: 'alpha-model' }, modulePath: ['geometry', 'widget'] },
     });
     expect(first.bindings.map((binding) => binding.key)).toEqual(
       [...first.bindings.map((binding) => binding.key)].sort(),
@@ -111,6 +116,9 @@ describe('createCompilerRustPublicBindingPlan', () => {
     expect(
       missing.bindings.find((binding) => binding.facadeIdentity === 'fixture:type:PublicWidget')?.binding,
     ).toMatchObject({ availability: 'refused', refusal: { code: 'rust-declaration-missing' } });
+    expect(
+      missing.bindings.find((binding) => binding.facadeIdentity === 'fixture:value:geometry')?.binding,
+    ).toMatchObject({ availability: 'refused', refusal: { code: 'rust-module-missing' } });
   });
 
   it('fails loudly when package or source normalization aliases distinct Rust locators', () => {
@@ -175,6 +183,17 @@ describe('createCompilerRustPublicBindingPlan', () => {
     ]);
 
     expectPlanningFailure({ facade, modules: [entry, first, second] }, 'rust-public-binding-collision');
+
+    const firstNamespace = lower('@scope/model', 'packages/model/src/first-namespace.ts', 'export const first = 1;');
+    const secondNamespace = lower('@scope/model', 'packages/model/src/second-namespace.ts', 'export const second = 2;');
+    const namespaceFacade = createFacade(entry, [
+      namespaceSlot(entry, firstNamespace, 'fooBar'),
+      namespaceSlot(entry, secondNamespace, 'foo_bar'),
+    ]);
+    expectPlanningFailure(
+      { facade: namespaceFacade, modules: [entry, firstNamespace, secondNamespace] },
+      'rust-public-binding-collision',
+    );
   });
 
   it('requires the versioned neutral facade contract', () => {

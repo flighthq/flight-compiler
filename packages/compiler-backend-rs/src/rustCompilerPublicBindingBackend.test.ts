@@ -30,7 +30,7 @@ describe('createRustCompilerPublicBindingBackend', () => {
       crates: [],
       dependencies: [],
       modules: [],
-      schema: 'flight-rust-public-binding-plan/1',
+      schema: 'flight-rust-public-binding-plan/2',
     });
     expect(
       backend.createEmissionSession!({ modules: [], options: {} }).finalizePackageGraph?.({

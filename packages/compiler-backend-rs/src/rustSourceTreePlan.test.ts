@@ -73,6 +73,57 @@ describe('createCompilerRustSourceTreePlan', () => {
     expect(findFile(plan, '@scope/math', ['internal']).sourceFragment).toBe('mod value;');
   });
 
+  it('makes the exact target path of a namespace facade slot public', () => {
+    const entry = lower('@scope/math', 'index.ts', "export * as geometryTools from './geometry/tools.js';");
+    const tools = lower('@scope/math', 'geometry/tools.ts', 'export const answer = 42;');
+    const privateValue = lower('@scope/math', 'internal/value.ts', 'export const value = 1;');
+    const facade = createFacade([entry]);
+    const namespaceFacade: CompilerModuleFacadePlan = {
+      ...facade,
+      modules: [
+        {
+          module: identity(entry),
+          slots: [
+            {
+              exportName: 'geometryTools',
+              identity: 'fixture:value:geometryTools',
+              lane: 'value',
+              module: identity(entry),
+              route: { kind: 'namespace', module: identity(tools) },
+              source: { kind: 'module-namespace', specifier: './geometry/tools.js' },
+              via: [
+                {
+                  kind: 'namespace-reexport',
+                  module: identity(entry),
+                  specifier: './geometry/tools.js',
+                  target: identity(tools),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const plan = createCompilerRustSourceTreePlan({
+      facade: namespaceFacade,
+      moduleResolution: {
+        edges: [
+          {
+            importer: identity(entry),
+            specifier: './geometry/tools.js',
+            target: identity(tools),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [privateValue, tools, entry],
+    });
+
+    expect(findFile(plan, '@scope/math', []).sourceFragment).toBe('pub mod geometry;\nmod internal;');
+    expect(findFile(plan, '@scope/math', ['geometry']).sourceFragment).toBe('pub mod tools;');
+    expect(findFile(plan, '@scope/math', ['internal']).sourceFragment).toBe('mod value;');
+  });
+
   it('plans scoped multi-package files and canonical same- and cross-crate references', () => {
     const entry = lower('@alpha/math', 'index.ts', "import { useValue } from './nested/use.js'; export { useValue };");
     const use = lower(

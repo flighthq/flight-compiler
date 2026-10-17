@@ -63,7 +63,7 @@ export function createCompilerRustPublicBindingPlan(
     crates,
     dependencies,
     modules,
-    schema: 'flight-rust-public-binding-plan/1',
+    schema: 'flight-rust-public-binding-plan/2',
   });
 }
 
@@ -211,8 +211,8 @@ function createRustPublicBindings(
       const identity = createRustPublicBindingSourceExportIdentity(slot);
       const key = `source-export:${normalizeCompilerStructuralValueCanonical(identity)}`;
       const publicModule = getRustPublicBindingModule(input.modules, facadeModule.module);
-      const declarationModule =
-        slot.route.kind === 'binding' ? getRustPublicBindingModule(input.modules, slot.route.module) : undefined;
+      const targetModule = getRustPublicBindingModule(input.modules, slot.route.module);
+      const declarationModule = slot.route.kind === 'binding' ? targetModule : undefined;
       const declaration =
         slot.route.kind === 'binding' && declarationModule
           ? getRustPublicBindingDeclaration(declarationModule, slot.route.binding.id)
@@ -233,13 +233,32 @@ function createRustPublicBindings(
             subject: key,
           },
         };
-      } else if (slot.route.kind !== 'binding') {
+      } else if (slot.route.kind === 'expression') {
         binding = {
           availability: 'refused',
           refusal: {
             code: 'rust-unsupported-facade-route',
             message: `Rust public binding ${slot.exportName} requires ${slot.route.kind} facade lowering`,
             subject: key,
+          },
+        };
+      } else if (slot.route.kind === 'namespace' && (!publicModule || !targetModule)) {
+        binding = {
+          availability: 'refused',
+          refusal: {
+            code: 'rust-module-missing',
+            message: `Rust public namespace module is absent for ${slot.exportName}`,
+            subject: key,
+          },
+        };
+      } else if (slot.route.kind === 'namespace') {
+        binding = {
+          availability: 'available',
+          locator: {
+            carrier: 'module',
+            module: locators.get(getRustPublicModuleIdentityKey(publicModule!))!,
+            spelling: getRustPublicExportName(slot.lane, slot.exportName),
+            target: locators.get(getRustPublicModuleIdentityKey(targetModule!))!,
           },
         };
       } else if (!publicModule || !declarationModule || !declaration) {
@@ -323,7 +342,9 @@ function getRustPublicPatternBindings(pattern: Readonly<IrBindingPattern>): read
   return pattern.rest ? [...children, ...getRustPublicPatternBindings(pattern.rest)] : children;
 }
 
-function getRustPublicBindingCarrier(declaration: Readonly<IrDeclaration>): CompilerRustPublicBindingCarrier {
+function getRustPublicBindingCarrier(
+  declaration: Readonly<IrDeclaration>,
+): Exclude<CompilerRustPublicBindingCarrier, 'module'> {
   if (declaration.kind === 'typeAlias') return 'type-alias';
   if (declaration.kind === 'variable') return 'value';
   return declaration.kind;
