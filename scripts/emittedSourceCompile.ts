@@ -10,6 +10,7 @@ import {
   findCppCompilerToolchain,
 } from './cppToolchain.js';
 import { resolveDependency } from './dependencyLock.js';
+import { findRustCompilerToolchain } from './rustToolchain.js';
 import { getSourceCompileTargets, parseSourceCompileFilters } from './sourceCompileFilters.js';
 
 // Does the emitted source actually compile?
@@ -33,6 +34,7 @@ const filters = parseSourceCompileFilters(process.argv.slice(2));
 const haxeSelected = filters.targets.has('haxe');
 const rustSelected = filters.targets.has('rust');
 const cppSelected = filters.targets.has('cpp');
+const rustToolchain = rustSelected ? findRustCompilerToolchain({ link: false }) : undefined;
 const supportDirectory = path.join(goldenDirectory, 'support');
 const cppRuntime = cppSelected ? resolveDependency(root, 'flight-cpp') : undefined;
 
@@ -76,7 +78,7 @@ if (!haxeSelected && !rustSelected && !cppSelected) {
   reports.push('haxe not installed (skipped)');
 }
 
-if (rustSelected && hasCommand('rustc', ['--version'])) {
+if (rustToolchain) {
   const rustFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'rust')));
   const workspace = mkdtempSync(path.join(tmpdir(), 'flight-compile-'));
   try {
@@ -94,7 +96,7 @@ if (rustSelected && hasCommand('rustc', ['--version'])) {
       // name. Building a library needs no linker, so this works without a system C toolchain.
       const runtime = path.join(crate, 'libflight_runtime.rlib');
       const built = spawnSync(
-        'rustc',
+        rustToolchain.rustc,
         ['--edition', '2021', '--crate-name', 'flight_runtime', '--crate-type=lib', '-o', runtime, 'flight_runtime.rs'],
         { cwd: crate, encoding: 'utf8' },
       );
@@ -107,7 +109,7 @@ if (rustSelected && hasCommand('rustc', ['--version'])) {
         `${[...(modules.includes('helper') ? [] : ['helper']), ...modules].map((module) => `pub mod ${module};`).join('\n')}\n`,
       );
       const result = spawnSync(
-        'rustc',
+        rustToolchain.rustc,
         [
           '--edition',
           '2021',

@@ -2,9 +2,9 @@ import { parse } from 'yaml';
 
 import { collectWorkflowJobs, getStepRun } from './releaseWorkflow.js';
 
-// C++ CI jobs must exercise only the C++ target, in both emitted-source lanes. Each command
-// deliberately defaults to every installed target for local verification, so omitting a target here
-// makes runner image contents decide whether a nominal C++ job also builds Haxe or Rust.
+// Target-specific CI jobs must exercise only their named target in both emitted-source lanes. Each
+// command deliberately defaults to every installed target for local verification, so omitting a
+// target here makes runner image contents decide what a nominally isolated job validates.
 
 export function collectCiWorkflowIssues(name: string, contents: string): readonly string[] {
   const document = parseWorkflow(contents);
@@ -32,7 +32,45 @@ export function collectCiWorkflowIssues(name: string, contents: string): readonl
       }
     }
   }
+  const rustJob = jobs.get(rustTargetJob);
+  if (rustJob === undefined) {
+    issues.push(`${name}: required Rust job ${rustTargetJob} is missing`);
+    return issues;
+  }
+  const environment = asRecord(rustJob.job.env);
+  if (String(environment?.FLIGHT_RUST_REQUIRE_RUSTC ?? '') !== '1') {
+    issues.push(`${name}: Rust job ${rustTargetJob} does not require rustc`);
+  }
+  const toolchain = environment?.RUSTUP_TOOLCHAIN;
+  if (typeof toolchain !== 'string' || !rustToolchainVersionPattern.test(toolchain)) {
+    issues.push(`${name}: Rust job ${rustTargetJob} does not pin an exact Rust toolchain`);
+  }
+  const installSteps = rustJob.steps.filter((step) => rustToolchainInstallPattern.test(getStepRun(step)));
+  if (installSteps.length !== 1) {
+    issues.push(
+      `${name}: Rust job ${rustTargetJob} has ${String(installSteps.length)} pinned toolchain install steps, expected 1`,
+    );
+  }
+  for (const lane of rustTargetLanes) {
+    const steps = rustJob.steps.filter((step) => lane.pattern.test(getStepRun(step)));
+    if (steps.length !== 1) {
+      issues.push(`${name}: Rust job ${rustTargetJob} has ${String(steps.length)} ${lane.label} steps, expected 1`);
+      continue;
+    }
+    const targets = collectTargets(getStepRun(steps[0]!));
+    if (targets.length !== 1 || targets[0] !== 'rust') {
+      issues.push(
+        `${name}: Rust job ${rustTargetJob} selects ${targets.length === 0 ? `all installed ${lane.label} targets` : targets.join(', ')}, expected exactly rust`,
+      );
+    }
+  }
   return issues;
+}
+
+function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
 }
 
 function collectTargets(command: string): readonly string[] {
@@ -57,4 +95,8 @@ const cppTargetLanes = [
   { label: 'compile', pattern: /\bnpm run compile:check(?:\s|$)/u },
   { label: 'oracle', pattern: /\bnpm run oracle:check(?:\s|$)/u },
 ] as const;
+const rustTargetJob = 'rust-generated-corpus';
+const rustTargetLanes = cppTargetLanes;
+const rustToolchainInstallPattern = /\brustup toolchain install\s+["']?\$RUSTUP_TOOLCHAIN["']?(?:\s|$)/u;
+const rustToolchainVersionPattern = /^\d+\.\d+\.\d+$/u;
 const targetPattern = /(?:^|\s)--target(?:=|\s+)([^\s]+)/gu;

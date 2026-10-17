@@ -29,6 +29,7 @@ import {
   type CppCompilerToolchain,
 } from './cppToolchain.js';
 import { resolveDependency } from './dependencyLock.js';
+import { findRustCompilerToolchain, type RustCompilerToolchain } from './rustToolchain.js';
 
 // Does the emitted source do what the source language does?
 //
@@ -110,7 +111,8 @@ const haxeSelected = filters.targets.has('haxe');
 const rustSelected = filters.targets.has('rust');
 const cppSelected = filters.targets.has('cpp');
 const haxeAvailable = haxeSelected && hasCommand('haxe');
-const rustAvailable = rustSelected && hasCommand('rustc') && hasCommand('cc');
+const rustToolchain = rustSelected ? findRustCompilerToolchain({ link: true }) : undefined;
+const rustAvailable = rustToolchain !== undefined;
 // The runtime lives in its own repository now, so the C++ lane needs a rehydrated checkout as well
 // as a toolchain. An absent checkout is reported and skipped, exactly like an absent compiler.
 const cppRuntimeInclude = cppSelected ? path.join(resolveDependency(root, 'flight-cpp').directory, 'include') : '';
@@ -139,7 +141,7 @@ try {
     const rustCases = selectOracleCases(cases, expected, 'rust');
     if (rustAvailable && rustCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'rust'))) {
       try {
-        compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
+        compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases, rustToolchain));
       } catch (error) {
         failures.push(createBehavioralOracleFailureRecord(fixture, 'rust', error));
       }
@@ -337,7 +339,11 @@ function runHaxeOracle(fixture: string, cases: readonly OracleCase[]): readonly 
   return runLines('node', ['oracle.js'], directory, `${fixture} haxe`);
 }
 
-function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly string[] {
+function runRustOracle(
+  fixture: string,
+  cases: readonly OracleCase[],
+  toolchain: Readonly<RustCompilerToolchain>,
+): readonly string[] {
   const directory = path.join(workspace, fixture, 'rust');
   cpSync(path.join(goldenDirectory, fixture, 'rust'), directory, { recursive: true });
   cpSync(path.join(supportDirectory, 'rust'), directory, { recursive: true });
@@ -346,7 +352,7 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     .map((entry) => entry.slice(0, -'.rs'.length));
   const runtime = path.join(directory, 'libflight_runtime.rlib');
   const builtRuntime = spawnSync(
-    'rustc',
+    toolchain.rustc,
     ['--edition', '2021', '--crate-name', 'flight_runtime', '--crate-type=lib', '-o', runtime, 'flight_runtime.rs'],
     { cwd: directory, encoding: 'utf8' },
   );
@@ -434,7 +440,7 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     ].join('\n'),
   );
   const built = spawnSync(
-    'rustc',
+    toolchain.rustc,
     ['--edition', '2021', '--extern', `flight_runtime=${runtime}`, '-o', 'oracle', 'main.rs'],
     { cwd: directory, encoding: 'utf8' },
   );

@@ -91,4 +91,48 @@ describe('collectCiWorkflowIssues', () => {
       `${ciFile}: C++ job cpp-conformance has 0 compile steps, expected 1`,
     );
   });
+
+  it('reports a missing Rust job', () => {
+    const contents = mutated('  rust-generated-corpus:', '  renamed-rust-generated-corpus:');
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: required Rust job rust-generated-corpus is missing`,
+    );
+  });
+
+  it('reports Rust validation that can skip an absent compiler', () => {
+    const contents = mutated('      FLIGHT_RUST_REQUIRE_RUSTC: 1', '      FLIGHT_RUST_REQUIRE_RUSTC: 0');
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus does not require rustc`,
+    );
+  });
+
+  it('reports an unpinned Rust toolchain and missing install', () => {
+    const contents = mutated("      RUSTUP_TOOLCHAIN: '1.85.1'", '      RUSTUP_TOOLCHAIN: stable').replace(
+      'rustup toolchain install "$RUSTUP_TOOLCHAIN"',
+      'rustup show',
+    );
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus does not pin an exact Rust toolchain`,
+    );
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus has 0 pinned toolchain install steps, expected 1`,
+    );
+  });
+
+  it('reports Rust compile and oracle commands that do not select exactly Rust', () => {
+    const contents = mutated('npm run compile:check -- --target rust', 'npm run compile:check').replace(
+      'npm run oracle:check -- --target rust',
+      'npm run oracle:check -- --target haxe',
+    );
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus selects all installed compile targets, expected exactly rust`,
+    );
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus selects haxe, expected exactly rust`,
+    );
+  });
 });

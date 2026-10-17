@@ -117,6 +117,26 @@ jobs:
           FLIGHT_CPP_REQUIRE_CXX: 1
         run: npm run oracle:check -- --target cpp
 
+  rust-generated-corpus:
+    name: Rust generated corpus
+    runs-on: ubuntu-latest
+    env:
+      FLIGHT_RUST_REQUIRE_RUSTC: 1
+      RUSTUP_TOOLCHAIN: '1.85.1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compile every emitted Rust fixture
+        run: npm run compile:check -- --target rust
+      - name: Run every eligible Rust source oracle
+        run: npm run oracle:check -- --target rust
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
