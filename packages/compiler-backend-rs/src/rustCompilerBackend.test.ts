@@ -9482,6 +9482,300 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
 
+  it('emits an undefined optional shared-class local carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-undefined-class-local.ts',
+        `class Counter {
+           value = 1;
+           increment(amount: number): void { this.value += amount; }
+         }
+         export function optionalUndefinedClassLocal(flag: boolean): number {
+           const required: Counter = new Counter();
+           const value: Counter | undefined = flag ? required : undefined;
+           const alias: Counter | undefined = value;
+           if (alias !== undefined) { alias.increment(2); alias.value = 4; }
+           return value === undefined ? 0 : value.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let value: Option<Rc<RefCell<Counter>>> = if flag');
+    expect(output).toContain('Some(Rc::clone(&required))');
+    expect(output).toContain('let alias: Option<Rc<RefCell<Counter>>> = value.clone();');
+    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().increment(2.0)');
+    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().value = 4.0');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          'assert_eq!(optional_undefined_class_local(true), 4.0); assert_eq!(optional_undefined_class_local(false), 0.0);',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('emits a null optional shared-class local member carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-null-class-local.ts',
+        `class Counter {
+           label = "start";
+           rename(label: string): void { this.label = label; }
+         }
+         export function optionalNullClassLocal(flag: boolean): string {
+           const required: Counter = new Counter();
+           const value: Counter | null = flag ? required : null;
+           const alias: Counter | null = value;
+           if (alias !== null) alias.rename("done");
+           return value === null ? "none" : value.label;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let value: Option<Rc<RefCell<Counter>>> = if flag');
+    expect(output).toContain('let alias: Option<Rc<RefCell<Counter>>> = value.clone();');
+    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().rename("done".to_owned())');
+    expect(output).toContain('value.as_ref().unwrap().borrow().label.clone()');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          'assert_eq!(optional_null_class_local(true), "done".to_owned()); assert_eq!(optional_null_class_local(false), "none".to_owned());',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('emits optional shared-class strict identity truth tables', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-identity.ts',
+        `class Counter { value: number; constructor(value: number) { this.value = value; } }
+         function maybe(value: number): Counter | undefined {
+           return value > 0 ? new Counter(value) : undefined;
+         }
+         export function optionalClassIdentity(): boolean {
+           const required: Counter = new Counter(0);
+           const other: Counter = new Counter(0);
+           const undefinedValue: Counter | undefined = required;
+           const undefinedAlias: Counter | undefined = undefinedValue;
+           const missingUndefined: Counter | undefined = undefined;
+           const nullValue: Counter | null = required;
+           const missingNull: Counter | null = null;
+           let state = 0;
+           const next = (value: number): number => { state = state * 10 + value; return value; };
+           return undefinedValue === undefinedAlias &&
+             undefinedValue === required &&
+             undefinedValue === nullValue &&
+             undefinedValue !== other &&
+             missingUndefined === undefined &&
+             undefined === missingUndefined &&
+             missingNull === null &&
+             null === missingNull &&
+             missingUndefined !== missingNull &&
+             maybe(next(1)) !== maybe(next(2)) && state === 12;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/Rc::ptr_eq/gu)).toHaveLength(6);
+    expect(output).toContain('(None, None) => true');
+    expect(output).toContain('(None, None) => false');
+    expect(output.indexOf('let identity_left')).toBeLessThan(output.indexOf('let identity_right'));
+    expect(output.match(/next\(1\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/next\(2\.0\)/gu)).toHaveLength(1);
+    expect(output.indexOf('next(1.0)')).toBeLessThan(output.indexOf('next(2.0)'));
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert!(optional_class_identity());')).not.toThrow();
+    }
+  });
+
+  it('emits fixed local optional shared-class call and return ABI', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-local-abi.ts',
+        `class Counter {
+           value = 1;
+           increment(): void { this.value += 1; }
+         }
+         function increment(value: Counter | undefined): void {
+           if (value !== undefined) value.increment();
+         }
+         function echo(value: Counter | undefined): Counter | undefined { return value; }
+         function make(): Counter { return new Counter(); }
+         export function optionalClassLocalAbi(): boolean {
+           const required: Counter = new Counter();
+           increment(required);
+           const echoed: Counter | undefined = echo(required);
+           const lifted: Counter | undefined = make();
+           const missing: Counter | undefined = undefined;
+           increment(missing);
+           const absent: Counter | undefined = echo(missing);
+           return echoed === required && lifted !== required && absent === undefined && required.value === 2;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn increment(value: Option<Rc<RefCell<Counter>>>)');
+    expect(output).toContain('fn echo(value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>');
+    expect(output).toContain('increment(Some(Rc::clone(&required)))');
+    expect(output).toContain('echo(Some(Rc::clone(&required)))');
+    expect(output).toContain('let lifted: Option<Rc<RefCell<Counter>>> = Some(make());');
+    expect(output).toContain('increment(missing.clone())');
+    expect(output).toContain('echo(missing.clone())');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert!(optional_class_local_abi());')).not.toThrow();
+    }
+  });
+
+  it('emits fixed imported optional shared-class call and return ABI', () => {
+    const provider = lower(
+      'optional-class-provider.ts',
+      `export class Counter {
+         value = 1;
+         increment(): void { this.value += 1; }
+       }
+       export function increment(value: Counter | undefined): void {
+         if (value !== undefined) value.increment();
+       }
+       export function echo(value: Counter | undefined): Counter | undefined { return value; }
+       export function echoNull(value: Counter | null): Counter | null { return value; }`,
+    ).module;
+    const consumer = lower(
+      'optional-class-consumer.ts',
+      `import { Counter, echo, echoNull, increment } from './optional-class-provider.js';
+       export function optionalClassImportedAbi(): boolean {
+         const required: Counter = new Counter();
+         increment(required);
+         const returned: Counter | undefined = echo(required);
+         const returnedNull: Counter | null = echoNull(required);
+         const missingNull: Counter | null = null;
+         const absentNull: Counter | null = echoNull(missingNull);
+         return returned === required && returnedNull === required && absentNull === null;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './optional-class-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn increment(value: Option<Rc<RefCell<Counter>>>)');
+    expect(providerOutput).toContain(
+      'pub fn echo(value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(providerOutput).toContain(
+      'pub fn echo_null(value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(output).toContain('increment(Some(Rc::clone(&required)))');
+    expect(output).toContain('echo(Some(Rc::clone(&required)))');
+    expect(output).toContain('echo_null(Some(Rc::clone(&required)))');
+    expect(output).toContain('echo_null(missing_null.clone())');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair(
+          'optional_class_provider',
+          providerOutput,
+          'optional_class_consumer',
+          output,
+          'assert!(optional_class_consumer::optional_class_imported_abi());',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('composes optional shared-class returns with narrowed members', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-return-member.ts',
+        `class Counter {
+           value = 4;
+           increment(): void { this.value += 1; }
+         }
+         function make(flag: boolean): Counter | null { return flag ? new Counter() : null; }
+         export function optionalClassReturnMember(flag: boolean): number {
+           const returned: Counter | null = make(flag);
+           if (returned === null) return 0;
+           returned.increment();
+           return returned.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn make(flag: bool) -> Option<Rc<RefCell<Counter>>>');
+    expect(output).toContain('return if flag { Some(Rc::new(RefCell::new(Counter::new()))) } else { None };');
+    expect(output).toContain('returned.as_ref().unwrap().borrow_mut().increment()');
+    expect(output).toContain('returned.as_ref().unwrap().borrow().value');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          'assert_eq!(optional_class_return_member(true), 5.0); assert_eq!(optional_class_return_member(false), 0.0);',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('preserves representative optional shared-class emitter refusals', () => {
+    const cases: readonly [string, string, string][] = [
+      [
+        'dual-sentinel',
+        `class Counter { value = 0; }
+         export function inspect(value: Counter | null | undefined): boolean { return value === null; }`,
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        'borrow-conflict',
+        `class Counter { value = 0; }
+         export function update(): number {
+           const value: Counter | undefined = new Counter();
+           const alias: Counter | undefined = value;
+           if (alias !== undefined && value !== undefined) alias.value = value.value;
+           return alias === undefined ? 0 : alias.value;
+         }`,
+        'rust-reference-shared-class-borrow-conflict',
+      ],
+      [
+        'ambiguous-alias',
+        `class Counter { value = 0; }
+         export function inspect(flag: boolean): boolean {
+           const left: Counter | undefined = new Counter();
+           const right: Counter | undefined = new Counter();
+           const value: Counter | undefined = flag ? left : right;
+           return value === left;
+         }`,
+        'rust-reference-shared-class-alias-ambiguous',
+      ],
+      [
+        'loose-identity',
+        `class Counter { value = 0; }
+         export function compare(): boolean {
+           const left: Counter | undefined = new Counter();
+           const right: Counter | undefined = left;
+           return left == right;
+         }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+    ];
+
+    for (const [name, source, rule] of cases) {
+      expect(getEmissionRule(() => emitIrModuleRust(lower(`optional-class-${name}.ts`, source).module))).toBe(rule);
+    }
+  });
+
   it('keeps readonly class aliases live through primitive fields and a post-alias method call', () => {
     const output = emitIrModuleRust(
       lower(
@@ -10404,7 +10698,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     for (const [index, source] of cases.entries()) {
       expect(
         getEmissionRule(() => emitIrModuleRust(lower(`identity-refusal-${String(index)}.ts`, source).module)),
-      ).toBe('rust-reference-shared-class-identity-unrepresented');
+        `identity refusal ${String(index)}`,
+      ).toBe(
+        index === 6
+          ? 'rust-reference-shared-class-use-unrepresented'
+          : 'rust-reference-shared-class-identity-unrepresented',
+      );
     }
   });
 
@@ -10437,7 +10736,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     for (const [index, source] of cases.entries()) {
       expect(
         getEmissionRule(() => emitIrModuleRust(lower(`loose-identity-refusal-${String(index)}.ts`, source).module)),
-      ).toBe('rust-reference-shared-class-identity-unrepresented');
+      ).toBe(
+        index === 6
+          ? 'rust-reference-shared-class-use-unrepresented'
+          : 'rust-reference-shared-class-identity-unrepresented',
+      );
     }
   });
 

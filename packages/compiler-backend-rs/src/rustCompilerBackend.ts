@@ -190,6 +190,13 @@ interface RustNamedTypeDeclarationLocation {
 
 type RustNamedVariableDeclaration = Readonly<IrVariableDeclaration & Readonly<{ binding: IrBindingIdentity }>>;
 
+type RustSharedClassRepresentation = Extract<
+  CompilerRustReferenceRepresentation,
+  'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
+>;
+
+type RustOptionalSharedClassRepresentation = Exclude<RustSharedClassRepresentation, 'shared-ref-cell-class'>;
+
 interface RustAsyncTryCompletionEvidence {
   readonly abruptStatements: readonly Readonly<IrStatement>[];
   readonly suspensionCount: number;
@@ -282,9 +289,13 @@ interface EmitContext {
   referentMutatedParameterIds: ReadonlySet<string>;
   sharedArrayBindingIds: ReadonlySet<string>;
   sharedClassBindingIds: ReadonlySet<string>;
+  sharedClassBindingRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedClassReturnBindingIds: ReadonlySet<string>;
+  sharedClassReturnRepresentation?: RustSharedClassRepresentation | undefined;
+  sharedClassReturnRepresentations: ReadonlyMap<string, RustSharedClassRepresentation>;
   sharedMapBindingIds: ReadonlySet<string>;
   sharedSetBindingIds: ReadonlySet<string>;
+  optionalSharedClassParameterRepresentations: ReadonlyMap<string, RustOptionalSharedClassRepresentation>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   // Every module's own binding allocation, keyed by module identity. An import has to spell an exported
   // name the way its declaring module allocates it -- `WIDGET` for a constant called `Widget`, not the
@@ -468,14 +479,19 @@ function emitIrModuleRustWithContext(
   const sharedArrayBindingIds = new Set(
     referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
   );
+  const sharedClassBindingRepresentations = new Map(
+    referenceModulePlan?.sharedClassBindings.map(({ binding, representation }) => [binding.id, representation]) ?? [],
+  );
   const sharedClassBindingIds = new Set(
-    referenceModulePlan?.sharedClassBindings.map(({ binding }) => binding.id) ?? [],
+    [...sharedClassBindingRepresentations].flatMap(([bindingId, representation]) =>
+      representation === 'shared-ref-cell-class' ? [bindingId] : [],
+    ),
   );
   const sharedMapBindingIds = new Set(referenceModulePlan?.sharedMapBindings.map(({ binding }) => binding.id) ?? []);
   const sharedSetBindingIds = new Set(referenceModulePlan?.sharedSetBindings.map(({ binding }) => binding.id) ?? []);
   const sharedReferenceBindingIds = new Set([
     ...sharedArrayBindingIds,
-    ...sharedClassBindingIds,
+    ...sharedClassBindingRepresentations.keys(),
     ...sharedMapBindingIds,
     ...sharedSetBindingIds,
   ]);
@@ -520,9 +536,28 @@ function emitIrModuleRustWithContext(
       );
     }),
   );
-  const sharedClassReturnBindingIds = new Set(
+  const optionalSharedClassParameterRepresentations = new Map<string, RustOptionalSharedClassRepresentation>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    const representations = borrowedParameterRepresentations.get(declaration.binding.id);
+    for (const [position, parameter] of declaration.parameters.entries()) {
+      const representation = representations?.get(position);
+      if (
+        representation === 'optional-null-shared-ref-cell-class' ||
+        representation === 'optional-undefined-shared-ref-cell-class'
+      ) {
+        optionalSharedClassParameterRepresentations.set(parameter.binding.id, representation);
+      }
+    }
+  }
+  const sharedClassReturnRepresentations = new Map<string, RustSharedClassRepresentation>(
     referenceModulePlan?.callables.flatMap((callable) =>
-      callable.returns === 'shared-ref-cell-class' ? [callable.binding.id] : [],
+      callable.returns ? [[callable.binding.id, callable.returns] as const] : [],
+    ) ?? [],
+  );
+  const sharedClassReturnBindingIds = new Set(
+    [...sharedClassReturnRepresentations].flatMap(([bindingId, representation]) =>
+      representation === 'shared-ref-cell-class' ? [bindingId] : [],
     ) ?? [],
   );
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
@@ -612,9 +647,12 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds,
     sharedArrayBindingIds,
     sharedClassBindingIds,
+    sharedClassBindingRepresentations,
     sharedClassReturnBindingIds,
+    sharedClassReturnRepresentations,
     sharedMapBindingIds,
     sharedSetBindingIds,
+    optionalSharedClassParameterRepresentations,
     taggedUnionBindingNames,
     bindingTypes,
     module,
@@ -1107,6 +1145,7 @@ function emitEnumNamespaceFunctionRust(declaration: Readonly<IrFunctionDeclarati
     activeTypeParameters: declaration.typeParameters,
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    sharedClassReturnRepresentation: undefined,
   };
   if (declaration.async) emissionError(context, 'async enum namespace functions require Rust task lowering');
   return [
@@ -1399,10 +1438,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         // instead carries a generated enum, so strict comparison selects one unit variant while
         // loose comparison deliberately accepts either.
         if (evidence.admitsNull && evidence.admitsUndefined) {
-          const operand =
-            expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
-              ? expression.right
-              : expression.left;
+          const operand = getIrSharedClassSentinelExpressionRust(expression.left) ? expression.right : expression.left;
           const union = getIrExpressionDualSentinelUnionRust(operand, context);
           if (!union) {
             emissionError(context, 'dual-sentinel nullish comparison requires Rust union representation evidence');
@@ -1414,10 +1450,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const test = `matches!(&${emitExpression(operand, context)}, ${patterns.join(' | ')})`;
           return expression.operator === '!=' || expression.operator === '!==' ? `!${test}` : test;
         }
-        const operand =
-          expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
-            ? expression.right
-            : expression.left;
+        const operand = getIrSharedClassSentinelExpressionRust(expression.left) ? expression.right : expression.left;
         const negated = expression.operator === '!=' || expression.operator === '!==';
         // A type parameter is emitted as the type argument itself, so there is no Option to ask and
         // folding the test would answer for one instantiation of a constraint that admits another.
@@ -1428,7 +1461,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             'rust-constrained-parameter-presence-unsupported',
           );
         }
-        return `${emitExpression(operand, context)}.${negated ? 'is_some' : 'is_none'}()`;
+        const sharedClassRepresentation = getRustSharedClassExpressionRepresentationRust(operand, context);
+        const emittedOperand = isRustOptionalSharedClassRepresentation(sharedClassRepresentation)
+          ? emitSharedClassCarrierExpressionRust(operand, sharedClassRepresentation, context)
+          : emitExpression(operand, context);
+        return `${normalizeSourceTextGrouping(emittedOperand)}.${negated ? 'is_some' : 'is_none'}()`;
       }
       if (expression.operator === '??') {
         // Rust has no `??`. The shape is `Option::unwrap_or_else`, which needs the left operand to
@@ -1777,12 +1814,25 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         returnsAbsent: hasIrTypeAbsentMember(expression.returns),
         returnsSharedClass:
           expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
+        sharedClassReturnRepresentation:
+          expression.binding === undefined
+            ? undefined
+            : context.sharedClassReturnRepresentations.get(expression.binding.id),
       };
       return expression.expression
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, closureContext))}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, closureContext)).join('\n')}\n}`;
     }
     case 'identifier': {
+      if (expression.reference.kind === 'binding') {
+        const representation = getRustSharedClassBindingRepresentationRust(expression.reference.binding, context);
+        if (isRustOptionalSharedClassRepresentation(representation)) {
+          const target = emitIdentifierReferenceRust(expression.reference, context);
+          return expression.presence === 'narrowedPresent'
+            ? `Rc::clone(${target}.as_ref().unwrap())`
+            : `${target}.clone()`;
+        }
+      }
       if (
         expression.reference.kind === 'binding' &&
         (context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
@@ -2197,15 +2247,14 @@ function emitSharedClassFieldAssignmentRust(
   if (
     expression.operator !== '=' ||
     expression.left.kind !== 'property' ||
-    expression.left.object.kind !== 'identifier' ||
-    expression.left.object.reference.kind !== 'binding' ||
-    !context.sharedClassBindingIds.has(expression.left.object.reference.binding.id)
+    getRustSharedClassBindingRust(expression.left.object, context) === undefined
   ) {
     return undefined;
   }
-  const receiver = emitIdentifierReferenceRust(expression.left.object.reference, context);
+  const receiver = emitSharedClassBorrowReceiverRust(expression.left.object, true, context);
+  if (!receiver) return undefined;
   const right = emitOwnedOperandRust(expression.right, context);
-  return `${receiver}.borrow_mut().${safeRustValueName(expression.left.name)} = ${normalizeSourceTextGrouping(right)}`;
+  return `${receiver}.${safeRustValueName(expression.left.name)} = ${normalizeSourceTextGrouping(right)}`;
 }
 
 function emitSharedClassFieldRust(
@@ -2221,10 +2270,9 @@ function emitSharedClassFieldRust(
   const field = declaration?.fields.find((candidate) => !candidate.static && candidate.name === expression.name);
   if (!field) return undefined;
   const owned = isIrTypeCopyValueRust(field.type) ? '' : '.clone()';
-  const receiver = binding
-    ? getBindingTargetNameRust(binding, context)
-    : normalizeSourceTextGrouping(emitExpression(expression.object, context));
-  return `${receiver}.borrow().${safeRustValueName(expression.name)}${owned}`;
+  const receiver = emitSharedClassBorrowReceiverRust(expression.object, false, context);
+  if (!receiver) return undefined;
+  return `${receiver}.${safeRustValueName(expression.name)}${owned}`;
 }
 
 function hasOnlyIrTypedArrayReceiversRust(receivers: readonly IrIndexedReceiver[]): boolean {
@@ -2625,6 +2673,7 @@ function emitImmediateAsyncClosureCallRust(
     nativeAsyncFunction: true,
     returnsAbsent: hasIrTypeAbsentMember(awaitedType),
     returnsSharedClass: false,
+    sharedClassReturnRepresentation: undefined,
   };
   const argumentNames = expression.arguments.map(() => getGeneratedTargetNameRust('async_argument', context));
   const argumentBindings = expression.arguments.map((argument, index) => {
@@ -2819,7 +2868,8 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   if (declaration.namespaceMember) {
     emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
   }
-  const returnsSharedClass = outer.sharedClassReturnBindingIds.has(declaration.binding.id);
+  const sharedClassReturnRepresentation = outer.sharedClassReturnRepresentations.get(declaration.binding.id);
+  const returnsSharedClass = sharedClassReturnRepresentation === 'shared-ref-cell-class';
   const nativeReturnType = declaration.async
     ? getIrTaskAwaitedTypeRust(declaration.returns, outer)
     : declaration.returns;
@@ -2832,17 +2882,20 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     nativeAsyncFunction: declaration.async,
     returnsAbsent: hasIrTypeAbsentMember(nativeReturnType),
     returnsSharedClass,
+    sharedClassReturnRepresentation,
   };
-  if (returnsSharedClass) {
+  if (sharedClassReturnRepresentation) {
     context.needsRcImport.add('Rc');
     context.needsRefCellImport.add('RefCell');
   }
-  const returnType = emitType(nativeReturnType, context);
+  const returnType = sharedClassReturnRepresentation
+    ? emitSharedClassCarrierTypeRust(nativeReturnType, sharedClassReturnRepresentation, context)
+    : emitType(nativeReturnType, context);
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
   return [
-    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${returnsSharedClass ? `Rc<RefCell<${returnType}>>` : returnType} {`,
+    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${returnType} {`,
     ...indentSourceLines([
       ...declaration.parameters.flatMap((parameter) =>
         parameter.initializer
@@ -3190,11 +3243,13 @@ function emitCallArgumentsRust(
   if (!defaults && !optionals) {
     return expression.arguments.map((argument, index) => {
       const representation = borrowed.get(index);
-      return representation === 'borrowed-class'
-        ? emitBorrowedClassOperandRust(argument, context)
-        : representation || isIrLocalCallReferentMutatedParameterRust(expression, index, context)
-          ? emitLentOperandRust(argument, context)
-          : emitOwnedOperandRust(argument, context);
+      return isRustOptionalSharedClassRepresentation(representation)
+        ? emitSharedClassCarrierExpressionRust(argument, representation, context)
+        : representation === 'borrowed-class'
+          ? emitBorrowedClassOperandRust(argument, context)
+          : representation || isIrLocalCallReferentMutatedParameterRust(expression, index, context)
+            ? emitLentOperandRust(argument, context)
+            : emitOwnedOperandRust(argument, context);
     });
   }
   const plan = defaults ?? optionals;
@@ -4072,10 +4127,89 @@ function emitClosedKeyElementWriteRust(
 }
 
 function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, context: EmitContext): Readonly<IrType> {
-  if (type.kind !== 'union') emissionError(context, `${subject} requires one concrete Rust Option payload`);
-  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'union') emissionError(context, `${subject} requires one concrete Rust Option payload`);
+  const concrete = resolved.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   if (concrete.length !== 1) emissionError(context, `${subject} requires one concrete Rust Option payload`);
   return concrete[0]!;
+}
+
+function emitSharedClassCarrierTypeRust(
+  type: Readonly<IrType>,
+  representation: RustSharedClassRepresentation,
+  context: EmitContext,
+): string {
+  const payload = getRustSharedClassPayloadTypeRust(type, representation, context);
+  if (!getIrClassDeclarationLocationForTypeRust(payload, context)) {
+    return emissionRuleError(
+      context,
+      'planned shared class carrier lacks one exact named class payload',
+      'rust-reference-shared-class-type-unrepresented',
+    );
+  }
+  const carrier = `Rc<RefCell<${emitType(payload, context)}>>`;
+  return representation === 'shared-ref-cell-class' ? carrier : `Option<${carrier}>`;
+}
+
+function getRustSharedClassPayloadTypeRust(
+  type: Readonly<IrType>,
+  representation: RustSharedClassRepresentation,
+  context: EmitContext,
+): Readonly<IrType> {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  return representation === 'shared-ref-cell-class'
+    ? resolved
+    : getIrTypeOptionalPayloadRust(resolved, 'optional shared class carrier', context);
+}
+
+function getRustSharedClassTypeRepresentationRust(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+): RustSharedClassRepresentation | undefined {
+  if (!type) return undefined;
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (getIrClassDeclarationLocationForTypeRust(resolved, context)) return 'shared-ref-cell-class';
+  if (resolved.kind !== 'union') return undefined;
+  const sentinels = resolved.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const payloads = resolved.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (sentinels.length !== 1 || payloads.length !== 1) return undefined;
+  if (!getIrClassDeclarationLocationForTypeRust(payloads[0], context)) return undefined;
+  return sentinels[0]!.kind === 'null'
+    ? 'optional-null-shared-ref-cell-class'
+    : 'optional-undefined-shared-ref-cell-class';
+}
+
+function getIrSharedClassSentinelExpressionRust(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {
+  if (expression.kind === 'literal' && expression.value === null) return 'null';
+  if (expression.kind === 'undefinedValue') return 'undefined';
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'ambient' &&
+    expression.reference.name === 'undefined'
+  ) {
+    return 'undefined';
+  }
+  return undefined;
+}
+
+function getRustOptionalSharedClassSentinel(
+  representation: RustSharedClassRepresentation,
+): 'null' | 'undefined' | undefined {
+  if (representation === 'optional-null-shared-ref-cell-class') return 'null';
+  if (representation === 'optional-undefined-shared-ref-cell-class') return 'undefined';
+  return undefined;
+}
+
+function isRustOptionalSharedClassRepresentation(
+  representation: CompilerRustReferenceRepresentation | undefined,
+): representation is RustOptionalSharedClassRepresentation {
+  return (
+    representation === 'optional-null-shared-ref-cell-class' ||
+    representation === 'optional-undefined-shared-ref-cell-class'
+  );
 }
 
 function emitObjectRestExpressionRust(
@@ -4768,7 +4902,9 @@ function emitContextualReturnValueRust(
   context: EmitContext,
   ownForDeferredCleanup = false,
 ): string {
-  if (context.returnsSharedClass) return emitSharedClassReturnedExpressionRust(expression, context);
+  if (context.sharedClassReturnRepresentation) {
+    return emitSharedClassCarrierExpressionRust(expression, context.sharedClassReturnRepresentation, context);
+  }
   if (
     !context.returnsAbsent &&
     expression.kind === 'identifier' &&
@@ -4833,31 +4969,66 @@ function emitContextualOwnedReturnValueRust(expression: Readonly<IrExpression>, 
   return emitContextualReturnValueRust(expression, context, true);
 }
 
-function emitSharedClassReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+function emitSharedClassCarrierExpressionRust(
+  expression: Readonly<IrExpression>,
+  targetRepresentation: RustSharedClassRepresentation,
+  context: EmitContext,
+): string {
   context.needsRcImport.add('Rc');
   context.needsRefCellImport.add('RefCell');
   if (expression.kind === 'conditional') {
     const condition = normalizeSourceTextGrouping(emitExpression(expression.condition, context));
-    const whenTrue = emitSharedClassReturnedExpressionRust(expression.whenTrue, context);
-    const whenFalse = emitSharedClassReturnedExpressionRust(expression.whenFalse, context);
+    const whenTrue = emitSharedClassCarrierExpressionRust(expression.whenTrue, targetRepresentation, context);
+    const whenFalse = emitSharedClassCarrierExpressionRust(expression.whenFalse, targetRepresentation, context);
     return `if ${condition} { ${whenTrue} } else { ${whenFalse} }`;
   }
-  if (
-    expression.kind === 'identifier' &&
-    expression.reference.kind === 'binding' &&
-    context.sharedClassBindingIds.has(expression.reference.binding.id)
-  ) {
-    return `Rc::clone(&${getBindingTargetNameRust(expression.reference.binding, context)})`;
+  const sentinel = getIrSharedClassSentinelExpressionRust(expression);
+  if (sentinel) {
+    if (getRustOptionalSharedClassSentinel(targetRepresentation) !== sentinel) {
+      emissionRuleError(
+        context,
+        `shared class ${sentinel} value does not match the selected Rust optional carrier`,
+        'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+    return 'None';
   }
-  if (isIrSharedClassReturnCallRust(expression, context)) return emitExpression(expression, context);
-  if (expression.kind !== 'new' && !(expression.kind === 'identifier' && expression.reference.kind === 'binding')) {
-    emissionError(
+  const sourceRepresentation = getRustSharedClassExpressionRepresentationRust(expression, context);
+  let carrier: string;
+  if (expression.kind === 'new') {
+    carrier = `Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+  } else if (expression.kind === 'identifier' && expression.reference.kind === 'binding' && sourceRepresentation) {
+    const source = getBindingTargetNameRust(expression.reference.binding, context);
+    if (isRustOptionalSharedClassRepresentation(sourceRepresentation)) {
+      if (targetRepresentation === sourceRepresentation) return `${source}.clone()`;
+      if (targetRepresentation === 'shared-ref-cell-class' && expression.presence === 'narrowedPresent') {
+        return `Rc::clone(${source}.as_ref().unwrap())`;
+      }
+      return emissionRuleError(
+        context,
+        'optional shared class carrier cannot enter a different or required carrier without exact narrowing',
+        'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+    carrier = `Rc::clone(&${source})`;
+  } else if (expression.kind === 'call' && sourceRepresentation) {
+    if (isRustOptionalSharedClassRepresentation(sourceRepresentation)) {
+      if (targetRepresentation === sourceRepresentation) return emitExpression(expression, context);
+      return emissionRuleError(
+        context,
+        'optional shared class call result cannot enter a different or required carrier',
+        'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+    carrier = emitExpression(expression, context);
+  } else {
+    return emissionRuleError(
       context,
       'shared class return expression is outside the exact constructed, local-alias, or selected carrier',
       'rust-reference-shared-class-return-unrepresented',
     );
   }
-  return `Rc::new(RefCell::new(${emitExpression(expression, context)}))`;
+  return targetRepresentation === 'shared-ref-cell-class' ? carrier : `Some(${carrier})`;
 }
 
 function emitSharedClassIdentityComparisonRust(
@@ -4872,19 +5043,41 @@ function emitSharedClassIdentityComparisonRust(
   ) {
     return undefined;
   }
+  const leftRepresentation = getRustSharedClassExpressionRepresentationRust(expression.left, context);
+  const rightRepresentation = getRustSharedClassExpressionRepresentationRust(expression.right, context);
+  if (!leftRepresentation || !rightRepresentation) return undefined;
   const leftType = getIrSharedClassIdentityExpressionTypeRust(expression.left, context);
   const rightType = getIrSharedClassIdentityExpressionTypeRust(expression.right, context);
-  const leftOwner = leftType ? getIrClassTypeIdentityRust(leftType, context) : undefined;
-  const rightOwner = rightType ? getIrClassTypeIdentityRust(rightType, context) : undefined;
+  const leftOwner = leftType
+    ? getIrClassTypeIdentityRust(getRustSharedClassPayloadTypeRust(leftType, leftRepresentation, context), context)
+    : undefined;
+  const rightOwner = rightType
+    ? getIrClassTypeIdentityRust(getRustSharedClassPayloadTypeRust(rightType, rightRepresentation, context), context)
+    : undefined;
   if (!leftOwner || leftOwner !== rightOwner) return undefined;
-  const left = emitSharedClassIdentityCarrierReferenceRust(expression.left, context);
-  const right = emitSharedClassIdentityCarrierReferenceRust(expression.right, context);
-  if (!left || !right) return undefined;
   context.needsRcImport.add('Rc');
   const leftName = getGeneratedTargetNameRust('identity_left', context);
   const rightName = getGeneratedTargetNameRust('identity_right', context);
-  const comparison = `Rc::ptr_eq(${leftName}, ${rightName})`;
-  return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${expression.operator === '!=' || expression.operator === '!==' ? `!${comparison}` : comparison} }`;
+  if (leftRepresentation === 'shared-ref-cell-class' && rightRepresentation === 'shared-ref-cell-class') {
+    const left = emitSharedClassIdentityCarrierReferenceRust(expression.left, context);
+    const right = emitSharedClassIdentityCarrierReferenceRust(expression.right, context);
+    if (!left || !right) return undefined;
+    const comparison = `Rc::ptr_eq(${leftName}, ${rightName})`;
+    return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${expression.operator === '!=' || expression.operator === '!==' ? `!${comparison}` : comparison} }`;
+  }
+  const left = emitSharedClassCarrierExpressionRust(expression.left, leftRepresentation, context);
+  const right = emitSharedClassCarrierExpressionRust(expression.right, rightRepresentation, context);
+  let comparison: string;
+  if (leftRepresentation === 'shared-ref-cell-class') {
+    comparison = `match &${rightName} { Some(${rightName}_value) => Rc::ptr_eq(&${leftName}, ${rightName}_value), None => false }`;
+  } else if (rightRepresentation === 'shared-ref-cell-class') {
+    comparison = `match &${leftName} { Some(${leftName}_value) => Rc::ptr_eq(${leftName}_value, &${rightName}), None => false }`;
+  } else {
+    const sameSentinel = leftRepresentation === rightRepresentation;
+    comparison = `match (&${leftName}, &${rightName}) { (Some(${leftName}_value), Some(${rightName}_value)) => Rc::ptr_eq(${leftName}_value, ${rightName}_value), (None, None) => ${String(sameSentinel)}, _ => false }`;
+  }
+  const result = expression.operator === '!=' || expression.operator === '!==' ? `!(${comparison})` : comparison;
+  return `{ let ${leftName} = ${left}; let ${rightName} = ${right}; ${result} }`;
 }
 
 function emitSharedClassIdentityCarrierReferenceRust(
@@ -5635,18 +5828,48 @@ function getRustSharedClassBindingRust(
 ): Readonly<IrBindingIdentity> | undefined {
   return expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
-    context.sharedClassBindingIds.has(expression.reference.binding.id)
+    (context.sharedClassBindingRepresentations.has(expression.reference.binding.id) ||
+      context.optionalSharedClassParameterRepresentations.has(expression.reference.binding.id))
     ? expression.reference.binding
     : undefined;
 }
 
 function isIrSharedClassReturnCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
-  return (
-    expression.kind === 'call' &&
+  return getRustSharedClassReturnCallRepresentationRust(expression, context) === 'shared-ref-cell-class';
+}
+
+function getRustSharedClassReturnCallRepresentationRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): RustSharedClassRepresentation | undefined {
+  return expression.kind === 'call' &&
     expression.callee.kind === 'identifier' &&
-    expression.callee.reference.kind === 'binding' &&
-    context.sharedClassReturnBindingIds.has(expression.callee.reference.binding.id)
+    expression.callee.reference.kind === 'binding'
+    ? context.sharedClassReturnRepresentations.get(expression.callee.reference.binding.id)
+    : undefined;
+}
+
+function getRustSharedClassBindingRepresentationRust(
+  binding: Readonly<IrBindingIdentity>,
+  context: EmitContext,
+): RustSharedClassRepresentation | undefined {
+  return (
+    context.sharedClassBindingRepresentations.get(binding.id) ??
+    context.optionalSharedClassParameterRepresentations.get(binding.id)
   );
+}
+
+function getRustSharedClassExpressionRepresentationRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): RustSharedClassRepresentation | undefined {
+  if (expression.kind === 'new') return 'shared-ref-cell-class';
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    return getRustSharedClassBindingRepresentationRust(expression.reference.binding, context);
+  }
+  const returned = getRustSharedClassReturnCallRepresentationRust(expression, context);
+  if (returned) return returned;
+  return getRustSharedClassTypeRepresentationRust(inferIrExpressionTypeRust(expression, context), context);
 }
 
 function getIrSharedClassFieldRust(
@@ -5673,7 +5896,12 @@ function getIrSharedClassDeclarationRust(
   binding: Readonly<IrBindingIdentity>,
   context: EmitContext,
 ): Readonly<IrClassDeclaration> | undefined {
-  const type = context.bindingTypes.get(binding.id);
+  const representation = getRustSharedClassBindingRepresentationRust(binding, context);
+  const bindingType = context.bindingTypes.get(binding.id);
+  const type =
+    bindingType && isRustOptionalSharedClassRepresentation(representation)
+      ? getIrTypeOptionalPayloadRust(bindingType, 'optional shared class binding', context)
+      : bindingType;
   return getIrSharedClassDeclarationForTypeRust(type, context);
 }
 
@@ -5744,10 +5972,34 @@ function emitSharedClassMethodCallRust(
   if (!declaration || !method) return undefined;
   const target = getIrClassMethodTargetNameRust(method);
   const mutable = getIrClassMutatingMethodNamesRust(declaration).has(target);
-  const receiver = binding
-    ? getBindingTargetNameRust(binding, context)
-    : normalizeSourceTextGrouping(emitExpression(callee.object, context));
-  return `${receiver}.${mutable ? 'borrow_mut' : 'borrow'}().${target}(${emitCallArgumentsRust(expression, context).join(', ')})`;
+  const receiver = emitSharedClassBorrowReceiverRust(callee.object, mutable, context);
+  if (!receiver) return undefined;
+  return `${receiver}.${target}(${emitCallArgumentsRust(expression, context).join(', ')})`;
+}
+
+function emitSharedClassBorrowReceiverRust(
+  expression: Readonly<IrExpression>,
+  mutable: boolean,
+  context: EmitContext,
+): string | undefined {
+  const binding = getRustSharedClassBindingRust(expression, context);
+  if (binding) {
+    const representation = getRustSharedClassBindingRepresentationRust(binding, context);
+    const source = getBindingTargetNameRust(binding, context);
+    if (isRustOptionalSharedClassRepresentation(representation)) {
+      if (expression.kind !== 'identifier' || expression.presence !== 'narrowedPresent') {
+        return emissionRuleError(
+          context,
+          'optional shared class member access requires exact presence narrowing',
+          'rust-reference-shared-class-member-unrepresented',
+        );
+      }
+      return `${source}.as_ref().unwrap().${mutable ? 'borrow_mut' : 'borrow'}()`;
+    }
+    return `${source}.${mutable ? 'borrow_mut' : 'borrow'}()`;
+  }
+  if (!isIrSharedClassReturnCallRust(expression, context)) return undefined;
+  return `${normalizeSourceTextGrouping(emitExpression(expression, context))}.${mutable ? 'borrow_mut' : 'borrow'}()`;
 }
 
 function getRustSharedHashCollectionBindingRust(
@@ -6781,7 +7033,7 @@ function emitAsyncTryFinallyTryCompletionRust(
     }
     if (statement.kind === 'return') {
       if (!statement.expression) {
-        if (context.returnsSharedClass) {
+        if (context.sharedClassReturnRepresentation) {
           emissionRuleError(
             context,
             'shared class return requires one exact value',
@@ -7105,6 +7357,21 @@ function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): b
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const parameterType = context.assertedUnknownBindingTypes.get(parameter.binding.id) ?? parameter.type;
+  const optionalSharedClassRepresentation = context.optionalSharedClassParameterRepresentations.get(
+    parameter.binding.id,
+  );
+  if (optionalSharedClassRepresentation) {
+    if (parameter.initializer || parameter.optional || parameter.rest) {
+      emissionError(
+        context,
+        `optional shared class parameter ${parameter.binding.name} must use one fixed explicit union carrier in Rust`,
+      );
+    }
+    context.needsRcImport.add('Rc');
+    context.needsRefCellImport.add('RefCell');
+    const binding = `${context.reboundBindingIds.has(parameter.binding.id) ? 'mut ' : ''}${getBindingTargetNameRust(parameter.binding, context)}`;
+    return `${binding}: ${emitSharedClassCarrierTypeRust(parameterType, optionalSharedClassRepresentation, context)}`;
+  }
   // The source mutates what this parameter names, and the caller sees the change. Moving the value in
   // would mutate a copy and drop it — the same source, a different meaning — so the parameter is
   // borrowed mutably and every call site lends rather than gives.
@@ -8080,27 +8347,21 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
           : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
-  if (context.sharedClassBindingIds.has(variable.binding.id)) {
+  const sharedClassRepresentation = context.sharedClassBindingRepresentations.get(variable.binding.id);
+  if (sharedClassRepresentation) {
     const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
-    if (type?.kind !== 'named' || !variable.initializer) {
+    if (!type || !variable.initializer) {
       emissionError(
         context,
-        `shared class binding ${variable.binding.name} requires an initialized exact named class representation`,
+        `shared class binding ${variable.binding.name} requires an initialized exact class carrier`,
         'rust-reference-shared-class-use-unrepresented',
       );
     }
     context.needsRefCellImport.add('RefCell');
     context.needsRcImport.add('Rc');
     const name = getBindingTargetNameRust(variable.binding, context);
-    const initializer =
-      variable.initializer.kind === 'identifier' &&
-      variable.initializer.reference.kind === 'binding' &&
-      context.sharedClassBindingIds.has(variable.initializer.reference.binding.id)
-        ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
-        : isIrSharedClassReturnCallRust(variable.initializer, context)
-          ? emitExpression(variable.initializer, context)
-          : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
-    return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
+    const initializer = emitSharedClassCarrierExpressionRust(variable.initializer, sharedClassRepresentation, context);
+    return `let ${name}: ${emitSharedClassCarrierTypeRust(type, sharedClassRepresentation, context)} = ${initializer};`;
   }
   const sharedHashCollectionKind = context.sharedMapBindingIds.has(variable.binding.id)
     ? 'map'
