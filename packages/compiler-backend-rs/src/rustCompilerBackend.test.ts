@@ -12943,6 +12943,99 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output.match(/Rc::ptr_eq\(/gu) ?? []).toHaveLength(5);
   });
 
+  it('replaces one writable required retained-class field after staging its identity carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'writable-retained-class-field.ts',
+        `class Child { value: number; constructor(value: number) { this.value = value; } }
+         class Holder {
+           child: Child;
+           constructor(child: Child) { this.child = child; }
+           selected(): Child { return this.child; }
+         }
+         function replaceAndReturn(): Child {
+           const first = new Child(1); const holder = new Holder(first); const next = new Child(2);
+           return holder.child = next;
+         }
+         function replaceIdentity(): boolean {
+           const holder = new Holder(new Child(1)); const next = new Child(2);
+           return (holder.child = next) === next;
+         }
+         export function writableRetainedClassField(flag: boolean): boolean {
+           const first = new Child(1); const firstAlias = first;
+           const second = new Child(2); const secondAlias = second;
+           const holder = new Holder(first); const holderAlias = holder;
+           const projected = holder.child;
+           const assigned = holderAlias.child = flag ? secondAlias : second;
+           const selfAssigned = holder.child = holder.child;
+           holder.child.value += 1;
+           return projected === firstAlias && assigned === second && selfAssigned === secondAlias &&
+             holder.child === assigned && holderAlias.selected() === second && replaceAndReturn() !== first &&
+             replaceIdentity();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('child: Rc<RefCell<Child>>,');
+    expect(output).toMatch(
+      /let assigned: Rc<RefCell<Child>> = \{ let class_field_right(?:_\d+)? = if flag \{ Rc::clone\(&second_alias\) \} else \{ Rc::clone\(&second\) \}; holder_alias\.borrow_mut\(\)\.child = Rc::clone\(&class_field_right(?:_\d+)?\); class_field_right(?:_\d+)? \};/u,
+    );
+    expect(output).toMatch(
+      /let self_assigned: Rc<RefCell<Child>> = \{ let class_field_right(?:_\d+)? = \{ Rc::clone\(&holder\.borrow\(\)\.child\) \}; holder\.borrow_mut\(\)\.child = Rc::clone\(&class_field_right(?:_\d+)?\); class_field_right(?:_\d+)? \};/u,
+    );
+    expect(output).toMatch(
+      /return \{ let class_field_right(?:_\d+)? = Rc::clone\(&next\); holder\.borrow_mut\(\)\.child = Rc::clone\(&class_field_right(?:_\d+)?\); class_field_right(?:_\d+)? \};/u,
+    );
+    expect(output).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
+    expect(output.match(/Rc::ptr_eq\(/gu) ?? []).toHaveLength(7);
+  });
+
+  it('refuses retained-class field replacement shapes outside the writable required slice', () => {
+    const cases = [
+      [
+        `class Child { value = 0; }
+         class Holder { readonly child: Child; constructor(child: Child) { this.child = child; } }
+         export function run(): void { const holder = new Holder(new Child()); const next = new Child(); holder.child = next; }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { child: Child; constructor(child: Child) { this.child = child; } }
+         function makeHolder(): Holder { return new Holder(new Child()); }
+         export function run(): void { const next = new Child(); makeHolder().child = next; }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { child: Child; constructor(child: Child) { this.child = child; }
+           replace(next: Child): void { this.child = next; }
+         }
+         export function run(): number { const holder = new Holder(new Child()); return holder.child.value; }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { child: Child; constructor(child: Child) { this.child = child; } }
+         export function run(): void {
+           const first = new Holder(new Child()); const second = new Holder(new Child()); const next = new Child();
+           first.child = second.child = next;
+         }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Child { value = 0; }
+         class Holder { child: Child; constructor(child: Child) { this.child = child; } }
+         export function run(): void { const holder = new Holder(new Child()); holder.child++; }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+    ] as const;
+
+    for (const [index, [source, rule]] of cases.entries()) {
+      const module = lower(`writable-retained-class-field-refusal-${String(index)}.ts`, source).module;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule).toBe(rule);
+    }
+  });
+
   it('retains direct null and undefined readonly leaf-class fields with staged optional projections', () => {
     const output = emitIrModuleRust(
       lower(
@@ -13090,6 +13183,85 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(consumerOutput).toMatch(/Holder::new\(Rc::clone\(&alias\)\)/u);
     expect(consumerOutput).toMatch(
       /let projected: Rc<RefCell<Child(?:_\d+)?>> = \{ Rc::clone\(&holder\.borrow\(\)\.child\) \};/u,
+    );
+    expect(consumerOutput).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
+  });
+
+  it('emits imported writable retained-field replacement deterministically from reversed module order', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/writable-retained-field-provider.ts',
+      `export class Child { value: number; constructor(value: number) { this.value = value; } }
+       export class Holder {
+         child: Child;
+         constructor(child: Child) { this.child = child; }
+         selected(): Child { return this.child; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/writable-retained-field-consumer.ts',
+      `import { Child, Holder } from './writable-retained-field-provider.js';
+       export function run(): boolean {
+         const first = new Child(1); const firstAlias = first;
+         const second = new Child(2); const secondAlias = second;
+         const holder = new Holder(firstAlias); const holderAlias = holder;
+         const projected = holder.child;
+         const assigned = holderAlias.child = secondAlias;
+         holder.child.value += 1;
+         return projected === first && assigned === second && holder.child === assigned &&
+           holderAlias.selected() === second && holder.child.value === 3;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Writable-retained-field-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/writable-retained-field-consumer.ts',
+          },
+          specifier: './writable-retained-field-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/writable-retained-field-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    });
+    const providerOutput = reversed.emitModule(provider)[0]!.contents;
+    const consumerOutput = reversed.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toBe(forward.emitModule(provider)[0]!.contents);
+    expect(consumerOutput).toBe(forward.emitModule(consumer)[0]!.contents);
+    expect(providerOutput).toContain('child: Rc<RefCell<Child>>,');
+    expect(providerOutput).toContain('return Rc::clone(&self.child);');
+    expect(consumerOutput).toMatch(
+      /let assigned: Rc<RefCell<Child(?:_\d+)?>> = \{ let class_field_right = Rc::clone\(&second_alias\); holder_alias\.borrow_mut\(\)\.child = Rc::clone\(&class_field_right\); class_field_right \};/u,
     );
     expect(consumerOutput).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
   });
@@ -13987,6 +14159,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            selected(): Counter { return this.child; }
            maybeSelected(): Counter | null { return this.child; }
          }
+         class WritableRetainedSnapshot {
+           child: Counter;
+           constructor(child: Counter) { this.child = child; }
+           selected(): Counter { return this.child; }
+         }
          function adjust(value?: Counter): number {
            if (value === undefined) return 0;
            value.value = 3;
@@ -14452,6 +14629,13 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const retainedProjection = retainedAlias.child; retainedProjection.value += 1;
            const retainedSelected = retained.selected(); const retainedMaybe = retainedAlias.maybeSelected();
            const retainedFresh = new RetainedSnapshot(new Counter(13, "fresh"));
+           const writableOriginal = new Counter(14, "writable-original");
+           const writableReplacement = new Counter(15, "writable-replacement");
+           const writable = new WritableRetainedSnapshot(writableOriginal); const writableAlias = writable;
+           const writableProjected = writable.child;
+           const writableAssigned = writableAlias.child = writableReplacement;
+           const writableSelfAssigned = writable.child = writable.child;
+           writable.child.value += 1;
            const nullableChild = new Counter(21, "nullable-retained"); const nullableChildAlias = nullableChild;
            const nullableCarrier: Counter | null = nullableChildAlias;
            const nullableRetained = new NullableRetainedSnapshot(nullableCarrier);
@@ -14501,6 +14685,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              retained.child === retainedChild && retainedProjection === retainedChildAlias &&
              retainedSelected === retainedChild && retainedMaybe !== null && retainedMaybe === retainedChild &&
              retained.child.value === 12 && retainedFresh.child.value === 13 &&
+             writableProjected === writableOriginal && writableAssigned === writableReplacement &&
+             writableSelfAssigned === writableReplacement && writable.child === writableAssigned &&
+             writableAlias.selected() === writableReplacement && writable.child.value === 16 &&
              nullableRetained.child === nullableChild && nullableSelected === nullableProjection &&
              nullableRequired === nullableChildAlias && nullableRetained.child!.value === 23 &&
              missingNullableRetained.child === null && optionalRetained.child === optionalChild &&

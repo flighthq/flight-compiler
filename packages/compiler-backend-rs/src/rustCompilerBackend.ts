@@ -2900,6 +2900,17 @@ function emitSharedClassFieldAssignmentRust(
   expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
   context: EmitContext,
 ): string | undefined {
+  const replacement = getIrExactWritableRetainedClassFieldReplacementPlanRust(expression, context);
+  if (replacement && expression.left.kind === 'property') {
+    context.needsRcImport.add('Rc');
+    context.needsRefCellImport.add('RefCell');
+    const rightName = getGeneratedTargetNameRust('class_field_right', context);
+    const right = emitSharedClassCarrierExpressionRust(expression.right, 'shared-ref-cell-class', context);
+    const receiver = emitSharedClassBorrowReceiverRust(expression.left.object, true, context);
+    if (!receiver) return undefined;
+    const fieldName = safeRustValueName(replacement.field.name);
+    return `{ let ${rightName} = ${normalizeSourceTextGrouping(right)}; ${receiver}.${fieldName} = Rc::clone(&${rightName}); ${rightName} }`;
+  }
   if (
     expression.left.kind !== 'property' ||
     (getRustSharedClassBindingRust(expression.left.object, context) === undefined &&
@@ -2931,6 +2942,53 @@ function emitSharedClassFieldAssignmentRust(
       ? `let mut ${updatedName} = ${currentName}; ${updatedName}.push_str(&${rightName});`
       : `let ${updatedName} = ${currentName} ${expression.operator.slice(0, -1)} ${rightName};`;
   return `{ let ${currentName} = ${current}; let ${rightName} = ${right}; ${update} ${writeReceiver}.${fieldName} = ${updatedName}; }`;
+}
+
+function getIrExactWritableRetainedClassFieldReplacementPlanRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): IrClassRetainedFieldPlanRust | undefined {
+  const left = expression.left;
+  if (
+    expression.operator !== '=' ||
+    left.kind !== 'property' ||
+    left.optional ||
+    left.structuralAccess !== undefined ||
+    left.object.kind !== 'identifier' ||
+    left.object.reference.kind !== 'binding' ||
+    getRustSharedClassExpressionRepresentationRust(left.object, context) !== 'shared-ref-cell-class'
+  ) {
+    return undefined;
+  }
+  const retained = getIrClassRetainedFieldProjectionRust(left, context);
+  if (
+    !retained ||
+    retained.field.readonly ||
+    retained.carrier.representation !== 'shared-ref-cell-class' ||
+    expression.right.kind === 'assignment' ||
+    !isIrExactRequiredRetainedClassCarrierArgumentRust(expression.right, retained, context)
+  ) {
+    return undefined;
+  }
+  return retained;
+}
+
+function isIrExactRequiredRetainedClassCarrierArgumentRust(
+  expression: Readonly<IrExpression>,
+  retained: IrClassRetainedFieldPlanRust,
+  context: EmitContext,
+): boolean {
+  if (expression.kind === 'conditional') {
+    return (
+      isIrExactRequiredRetainedClassCarrierArgumentRust(expression.whenTrue, retained, context) &&
+      isIrExactRequiredRetainedClassCarrierArgumentRust(expression.whenFalse, retained, context)
+    );
+  }
+  if (expression.kind === 'assignment') return false;
+  return (
+    getRustSharedClassExpressionRepresentationRust(expression, context) === 'shared-ref-cell-class' &&
+    isIrExactRetainedClassCarrierArgumentRust(expression, retained.carrier, retained.module, context)
+  );
 }
 
 function emitBorrowedClassFieldAssignmentRust(
@@ -6540,6 +6598,8 @@ function inferIrExpressionTypeRust(
       return expression.type;
     case 'call':
       return expression.semantics.resultType;
+    case 'assignment':
+      return expression.left.kind === 'property' ? expression.left.type : undefined;
     case 'identifier':
       return expression.reference.kind === 'binding'
         ? context.bindingTypes.get(expression.reference.binding.id)
@@ -7454,6 +7514,13 @@ function emitSharedClassCarrierExpressionRust(
     const whenFalse = emitSharedClassCarrierExpressionRust(expression.whenFalse, targetRepresentation, context);
     return `if ${condition} { ${whenTrue} } else { ${whenFalse} }`;
   }
+  if (expression.kind === 'assignment') {
+    const replacement = getIrExactWritableRetainedClassFieldReplacementPlanRust(expression, context);
+    if (replacement) {
+      const carrier = emitExpression(expression, context);
+      return targetRepresentation === 'shared-ref-cell-class' ? carrier : `Some(${carrier})`;
+    }
+  }
   const sentinel = getIrSharedClassSentinelExpressionRust(expression);
   if (sentinel) {
     if (getRustOptionalSharedClassSentinel(targetRepresentation) !== sentinel) {
@@ -7569,6 +7636,12 @@ function emitSharedClassIdentityCarrierReferenceRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): string | undefined {
+  if (
+    expression.kind === 'assignment' &&
+    getIrExactWritableRetainedClassFieldReplacementPlanRust(expression, context)
+  ) {
+    return `&${normalizeSourceTextGrouping(emitExpression(expression, context))}`;
+  }
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
@@ -8373,6 +8446,12 @@ function getRustSharedClassExpressionRepresentationRust(
   context: EmitContext,
 ): RustSharedClassRepresentation | undefined {
   if (expression.kind === 'new') return 'shared-ref-cell-class';
+  if (
+    expression.kind === 'assignment' &&
+    getIrExactWritableRetainedClassFieldReplacementPlanRust(expression, context)
+  ) {
+    return 'shared-ref-cell-class';
+  }
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     return getRustSharedClassBindingRepresentationRust(expression.reference.binding, context);
   }
@@ -9257,14 +9336,13 @@ function getIrClassRetainedFieldPlanRust(
     field.declare ||
     field.initializer ||
     field.optional ||
-    !field.readonly ||
     field.static ||
     field.parameterProperty !== undefined
   ) {
     return undefined;
   }
   const carrier = getIrDirectRetainedClassCarrierPlanRust(field.type, module, context);
-  if (!carrier) return undefined;
+  if (!carrier || (!field.readonly && carrier.representation !== 'shared-ref-cell-class')) return undefined;
   const payload = getIrClassDeclarationLocationForTypeRust(carrier.classType, context, module);
   if (!payload || isSameIrClassDeclarationLocationRust({ declaration, module }, payload)) return undefined;
   const payloadKey = `${payload.module.packageName}\0${payload.module.source}\0${payload.declaration.binding.id}`;

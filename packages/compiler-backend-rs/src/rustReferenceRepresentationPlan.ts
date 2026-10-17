@@ -196,6 +196,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   activateRustSharedClassFunctionReturnAliases(modules, input.moduleResolution);
   activateRustSharedClassMethodReturnAliases(modules, input.moduleResolution);
   activateRustSharedClassConstructorRetentions(modules, input.moduleResolution);
+  activateRustSharedClassWritableFieldReplacements(modules, input.moduleResolution);
   activateRustSharedClassFieldProjections(modules, input.moduleResolution);
   activateRustSharedClassAliasGroups(modules, input.moduleResolution);
   activateRustOptionalSharedClassInitializers(modules);
@@ -1652,6 +1653,36 @@ function activateRustSharedClassFieldProjections(
   }
 }
 
+function activateRustSharedClassWritableFieldReplacements(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  for (const module of modules) {
+    for (const variable of module.sharedClasses.variablesByBindingId.values()) {
+      if (
+        variable.initializer?.kind === 'assignment' &&
+        getRustExactWritableRetainedClassFieldReplacementPlan(variable.initializer, module, modules, moduleResolution)
+      ) {
+        activateRustSharedClassBinding(module.sharedClasses, variable.binding.id);
+      }
+    }
+    analyzeIrModuleTraversal(module.module, {
+      expression(expression) {
+        if (expression.kind !== 'assignment') return;
+        const replacement = getRustExactWritableRetainedClassFieldReplacementPlan(
+          expression,
+          module,
+          modules,
+          moduleResolution,
+        );
+        if (!replacement || expression.left.kind !== 'property') return;
+        activateRustSharedClassCarrierBindingsUsedInExpression(module, expression.left.object);
+        activateRustSharedClassCarrierBindingsUsedInExpression(module, expression.right);
+      },
+    });
+  }
+}
+
 function activateRustSharedClassIdentityComparisons(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
@@ -2524,8 +2555,15 @@ function addRustSharedClassRefusals(
         return;
       }
       if (expression.kind === 'assignment') {
-        addRustSharedClassFieldBorrowConflictRefusal(module, expression, path_, refusals);
+        addRustSharedClassFieldBorrowConflictRefusal(module, modules, moduleResolution, expression, path_, refusals);
         addRustSharedClassMutatorResultRefusal(module, modules, moduleResolution, expression, path_, refusals);
+        return;
+      }
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--' || expression.operator === 'delete')
+      ) {
+        addRustRetainedClassFieldUnaryMutationRefusal(module, modules, moduleResolution, expression, path_, refusals);
         return;
       }
       if (expression.kind === 'call') {
@@ -2616,7 +2654,7 @@ function addRustSimpleClassDeclarationRefusals(
       refusals,
       'rust-reference-shared-class-field-unrepresented',
       subject,
-      `class ${declaration.binding.name} requires primitive fields or one exact readonly leaf-class field`,
+      `class ${declaration.binding.name} requires primitive fields or one exact retained leaf-class field`,
     );
   }
   if (!isRustSimpleClassConstructionSupported(declaration, module, modules, moduleResolution, new Set())) {
@@ -2639,6 +2677,17 @@ function isRustSharedClassIdentifierUseRepresented(
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
   if (final === 'expression' && isIrExpressionValue(parent) && parent.kind === 'cast') return true;
+  const assignmentRightIndex = path_.lastIndexOf('right');
+  if (assignmentRightIndex >= 0) {
+    const assignment = getIrModuleTraversalPathValue(module.module, path_.slice(0, assignmentRightIndex));
+    if (
+      isIrExpressionValue(assignment) &&
+      assignment.kind === 'assignment' &&
+      getRustExactWritableRetainedClassFieldReplacementPlan(assignment, module, modules, moduleResolution)
+    ) {
+      return true;
+    }
+  }
   const initializerIndex = path_.lastIndexOf('initializer');
   if (initializerIndex >= 0) {
     const declaration = getIrModuleTraversalPathValue(module.module, path_.slice(0, initializerIndex));
@@ -2916,10 +2965,13 @@ function isRustReferenceClassReturnIdentifierUse(
 
 function addRustSharedClassFieldBorrowConflictRefusal(
   module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
+  if (getRustExactWritableRetainedClassFieldReplacementPlan(assignment, module, modules, moduleResolution)) return;
   if (
     assignment.left.kind !== 'property' ||
     assignment.left.object.kind !== 'identifier' ||
@@ -2948,6 +3000,40 @@ function addRustSharedClassMutatorResultRefusal(
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
+  if (getRustExactWritableRetainedClassFieldReplacementPlan(assignment, module, modules, moduleResolution)) return;
+  if (assignment.left.kind === 'property') {
+    const retained = getRustReferenceRetainedClassFieldAssignmentTarget(
+      assignment.left,
+      module,
+      modules,
+      moduleResolution,
+    );
+    if (retained) {
+      addRustReferenceRefusal(
+        refusals,
+        'rust-reference-shared-class-use-unrepresented',
+        `${moduleKey(module.module)}:${retained.field.name}:${JSON.stringify(path_)}`,
+        'retained class field replacement requires one writable required slot, a direct required shared-class identifier owner, and an exact required class carrier',
+      );
+      return;
+    }
+    const structuralCarrier = getRustSharedClassCarrierTypeCandidate(
+      assignment.left.type,
+      module.module,
+      module.classBindingIds,
+    );
+    if (assignment.left.object.kind !== 'identifier' || assignment.left.object.reference.kind !== 'this') {
+      if (structuralCarrier) {
+        addRustReferenceRefusal(
+          refusals,
+          'rust-reference-shared-class-use-unrepresented',
+          `${moduleKey(module.module)}:${assignment.left.name}:${JSON.stringify(path_)}`,
+          'class-valued structural field mutation is outside direct retained-slot replacement',
+        );
+        return;
+      }
+    }
+  }
   if (
     assignment.left.kind !== 'property' ||
     assignment.left.object.kind !== 'identifier' ||
@@ -2962,15 +3048,6 @@ function addRustSharedClassMutatorResultRefusal(
     return;
   }
   const receiverId = assignment.left.object.reference.binding.id;
-  if (getRustReferenceRetainedClassFieldProjection(assignment.left, module, modules, moduleResolution)) {
-    addRustReferenceRefusal(
-      refusals,
-      'rust-reference-shared-class-use-unrepresented',
-      `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
-      'readonly class-valued field assignment is only represented during direct construction',
-    );
-    return;
-  }
   if (
     assignment.operator !== '=' &&
     !isRustSharedClassCompoundFieldAssignmentSupported(assignment, module, modules, moduleResolution)
@@ -2988,6 +3065,146 @@ function addRustSharedClassMutatorResultRefusal(
     'rust-reference-shared-class-mutator-result-unrepresented',
     `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
     'observed class field assignment result is not represented by the focused mutable field carrier',
+  );
+}
+
+function addRustRetainedClassFieldUnaryMutationRefusal(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  path_: CompilerIrTraversalPath,
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  if (expression.operand.kind !== 'property') return;
+  const retained = getRustReferenceRetainedClassFieldAssignmentTarget(
+    expression.operand,
+    module,
+    modules,
+    moduleResolution,
+  );
+  if (!retained) return;
+  addRustReferenceRefusal(
+    refusals,
+    'rust-reference-shared-class-use-unrepresented',
+    `${moduleKey(module.module)}:${retained.field.name}:${JSON.stringify(path_)}`,
+    `retained class field unary mutation ${expression.operator} is outside direct slot replacement`,
+  );
+}
+
+function getRustExactWritableRetainedClassFieldReplacementPlan(
+  assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSimpleClassRetainedFieldPlan | undefined {
+  const left = assignment.left;
+  if (
+    assignment.operator !== '=' ||
+    left.kind !== 'property' ||
+    left.optional ||
+    left.structuralAccess !== undefined ||
+    left.object.kind !== 'identifier' ||
+    left.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const ownerBindingId = left.object.reference.binding.id;
+  const owner = getRustSharedClassCarrierTypeCandidate(
+    module.bindingTypes.get(ownerBindingId),
+    module.module,
+    module.classBindingIds,
+  );
+  const ownerEvidence = module.ownership.bindings.find((candidate) => candidate.binding.id === ownerBindingId);
+  if (owner?.representation !== 'shared-ref-cell-class' || ownerEvidence?.declaration === 'parameter') {
+    return undefined;
+  }
+  const retained = getRustReferenceRetainedClassFieldAssignmentTarget(left, module, modules, moduleResolution);
+  if (
+    !retained ||
+    retained.field.readonly ||
+    retained.carrier.representation !== 'shared-ref-cell-class' ||
+    assignment.right.kind === 'assignment' ||
+    !isRustReferenceExactRequiredClassCarrierExpression(
+      assignment.right,
+      retained.carrier,
+      retained.module,
+      module,
+      modules,
+      moduleResolution,
+    )
+  ) {
+    return undefined;
+  }
+  return retained;
+}
+
+function getRustReferenceRetainedClassFieldAssignmentTarget(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSimpleClassRetainedFieldPlan | undefined {
+  const ownerType = getRustReferenceClassIdentityExpressionType(expression.object, module);
+  const ownerCarrier = getRustSharedClassCarrierTypeCandidate(ownerType, module.module, module.classBindingIds);
+  if (!ownerCarrier) return undefined;
+  const location = getRustReferenceClassDeclaration(ownerCarrier.classType, module, modules, moduleResolution);
+  if (!location) return undefined;
+  const plan = getRustSimpleClassRetainedFieldPlan(
+    location.declaration,
+    location.module,
+    modules,
+    moduleResolution,
+    new Set([`${moduleKey(location.module.module)}:${location.declaration.binding.id}`]),
+  );
+  return plan?.field.name === expression.name ? plan : undefined;
+}
+
+function isRustReferenceExactRequiredClassCarrierExpression(
+  expression: Readonly<IrExpression>,
+  expected: RustSharedClassCarrierType,
+  expectedModule: RustReferenceModuleRecord,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  if (expression.kind === 'conditional') {
+    return (
+      isRustReferenceExactRequiredClassCarrierExpression(
+        expression.whenTrue,
+        expected,
+        expectedModule,
+        module,
+        modules,
+        moduleResolution,
+      ) &&
+      isRustReferenceExactRequiredClassCarrierExpression(
+        expression.whenFalse,
+        expected,
+        expectedModule,
+        module,
+        modules,
+        moduleResolution,
+      )
+    );
+  }
+  if (expression.kind === 'assignment') return false;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const bindingId = expression.reference.binding.id;
+    const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === bindingId);
+    if (evidence?.declaration === 'parameter') return false;
+  }
+  const actual = getRustReferenceExpressionClassCarrierType(expression, module, modules, moduleResolution);
+  return (
+    actual?.representation === 'shared-ref-cell-class' &&
+    isRustReferenceClassCarrierExpressionCompatible(
+      expression,
+      expected,
+      module,
+      modules,
+      moduleResolution,
+      expectedModule,
+    )
   );
 }
 
@@ -3956,6 +4173,25 @@ function isRustReferenceClassIdentityOperandSupported(
   if (expectedCarrier.sentinel && isRustReferenceSentinelExpression(expression, expectedCarrier.sentinel)) {
     return true;
   }
+  if (expression.kind === 'assignment') {
+    const replacement = getRustExactWritableRetainedClassFieldReplacementPlan(
+      expression,
+      module,
+      modules,
+      moduleResolution,
+    );
+    return Boolean(
+      replacement &&
+      isRustReferenceSameClassCarrier(
+        replacement.carrier,
+        replacement.module,
+        expectedCarrier,
+        module,
+        modules,
+        moduleResolution,
+      ),
+    );
+  }
   if (expression.kind === 'conditional') {
     return (
       isRustReferenceClassIdentityOperandSupported(
@@ -4135,6 +4371,7 @@ function getRustReferenceClassIdentityExpressionType(
   }
   if (expression.kind === 'call') return expression.semantics.resultType;
   if (expression.kind === 'cast') return expression.type;
+  if (expression.kind === 'assignment' && expression.left.kind === 'property') return expression.left.type;
   if (expression.kind === 'property') return expression.type;
   if (expression.kind === 'object') return expression.type;
   if (expression.kind === 'literal' && expression.value === null) return { kind: 'null' };
@@ -4356,6 +4593,26 @@ function isRustReferenceClassReturnExpressionSupported(
   methodContext?: RustSimpleClassMethodReturnPlanningContext,
 ): boolean {
   if (returnCarrier.sentinel && isRustReferenceSentinelExpression(expression, returnCarrier.sentinel)) return true;
+  if (expression.kind === 'assignment') {
+    const replacement = getRustExactWritableRetainedClassFieldReplacementPlan(
+      expression,
+      module,
+      modules,
+      moduleResolution,
+    );
+    return Boolean(
+      replacement &&
+      isRustReferenceSameClassCarrier(
+        replacement.carrier,
+        replacement.module,
+        returnCarrier,
+        module,
+        modules,
+        moduleResolution,
+      ) &&
+      (returnCarrier.representation === 'shared-ref-cell-class' || returnCarrier.sentinel !== undefined),
+    );
+  }
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     const bindingId = expression.reference.binding.id;
     if (visitingBindings.has(bindingId)) return false;
@@ -4514,6 +4771,11 @@ function isRustReferencePotentialClassReturnExpression(
   visiting: ReadonlySet<string>,
 ): boolean {
   if (expression.kind === 'new') return isRustReferenceClassExpression(expression, module);
+  if (expression.kind === 'assignment') {
+    return (
+      getRustExactWritableRetainedClassFieldReplacementPlan(expression, module, modules, moduleResolution) !== undefined
+    );
+  }
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     const type = module.bindingTypes.get(expression.reference.binding.id);
     return type !== undefined && isRustReferencePotentialClassReturnType(type, module, modules, moduleResolution);
@@ -5192,6 +5454,10 @@ function getRustReferenceExpressionClassCarrierType(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): RustSharedClassCarrierType | undefined {
+  if (expression.kind === 'assignment') {
+    return getRustExactWritableRetainedClassFieldReplacementPlan(expression, module, modules, moduleResolution)
+      ?.carrier;
+  }
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     return getRustSharedClassCarrierType(
       module.bindingTypes.get(expression.reference.binding.id),
@@ -5223,6 +5489,26 @@ function isRustReferenceClassCarrierExpressionCompatible(
   expectedModule: RustReferenceModuleRecord = module,
 ): boolean {
   if (expected.sentinel && isRustReferenceSentinelExpression(expression, expected.sentinel)) return true;
+  if (expression.kind === 'assignment') {
+    const replacement = getRustExactWritableRetainedClassFieldReplacementPlan(
+      expression,
+      module,
+      modules,
+      moduleResolution,
+    );
+    return Boolean(
+      replacement &&
+      isRustReferenceSameClassCarrier(
+        replacement.carrier,
+        replacement.module,
+        expected,
+        expectedModule,
+        modules,
+        moduleResolution,
+      ) &&
+      (expected.representation === 'shared-ref-cell-class' || expected.sentinel !== undefined),
+    );
+  }
   if (expression.kind === 'conditional') {
     return (
       isRustReferenceClassCarrierExpressionCompatible(
@@ -5758,14 +6044,13 @@ function getRustSimpleClassRetainedFieldPlan(
     field.declare ||
     field.initializer ||
     field.optional ||
-    !field.readonly ||
     field.static ||
     field.parameterProperty !== undefined
   ) {
     return undefined;
   }
   const carrier = getRustDirectRetainedClassCarrierType(field.type, module);
-  if (!carrier) return undefined;
+  if (!carrier || (!field.readonly && carrier.representation !== 'shared-ref-cell-class')) return undefined;
   const location = getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution);
   if (!location) return undefined;
   const ownerKey = `${moduleKey(module.module)}:${declaration.binding.id}`;
