@@ -1,8 +1,75 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import ts from 'typescript';
 
+import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrStatement } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const rustcAvailable = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0;
+
+function captureBackendEmissionFailure(run: () => unknown) {
+  try {
+    run();
+  } catch (error) {
+    if (isBackendEmissionFailure(error)) return error;
+    throw error;
+  }
+  throw new Error('expected Rust emission to refuse and it did not');
+}
+
+function compileRustSourceAgainstRuntime(contents: string): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-task-member-'));
+  try {
+    const runtime = path.join(directory, 'libflight_runtime.rlib');
+    const runtimeBuild = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-name',
+        'flight_runtime',
+        '--crate-type=lib',
+        '-o',
+        runtime,
+        path.join(repositoryRoot, 'golden/support/rust/flight_runtime.rs'),
+      ],
+      { encoding: 'utf8' },
+    );
+    if (runtimeBuild.status !== 0) {
+      throw new Error(`${runtimeBuild.stdout ?? ''}${runtimeBuild.stderr ?? ''}`.trim());
+    }
+
+    const subject = path.join(directory, 'subject.rs');
+    writeFileSync(subject, contents);
+    const subjectBuild = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-type=lib',
+        '--emit=metadata',
+        '--extern',
+        `flight_runtime=${runtime}`,
+        '-o',
+        path.join(directory, 'subject.rmeta'),
+        subject,
+      ],
+      { encoding: 'utf8' },
+    );
+    if (subjectBuild.status !== 0) {
+      throw new Error(`${subjectBuild.stdout ?? ''}${subjectBuild.stderr ?? ''}`.trim());
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
 
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
@@ -256,9 +323,32 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('bytes: FlightUint8Array');
     expect(output).toContain('task: FlightTask<f64>');
     expect(valueOutput).toContain('std::collections::HashMap::new()');
-    expect(valueOutput).toContain('FlightTask::resolve(1.0)');
+    expect(valueOutput).toContain('FlightTask::ready(1.0)');
+    expect(valueOutput).not.toContain('FlightTask::resolve');
     expect(emitIrModuleRust(weakMap.module).contents).toContain('HashMap');
     expect(emitIrModuleRust(boundValue.module).contents).toContain('return f64::max(left, right);');
+  });
+
+  it.skipIf(!rustcAvailable)('emits Promise.resolve source accepted by the compiler-owned Rust runtime', () => {
+    const output = emitIrModuleRust(
+      lower('task-ready.ts', 'export function create(): Promise<number> { return Promise.resolve(1); }').module,
+    ).contents;
+
+    expect(output).toContain('use flight_runtime::FlightTask;');
+    expect(output).toContain('return FlightTask::ready(1.0);');
+    expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('refuses a task static member missing from the Rust runtime binding', () => {
+    const module = lower(
+      'task-member-unbound.ts',
+      'export function create(): Promise<number[]> { return Promise.all([Promise.resolve(1)]); }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-runtime-external-member-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('runtime external value Promise member all has no Rust binding');
   });
 
   it('emits a downstream-provided host type through the Rust external binding manifest', () => {

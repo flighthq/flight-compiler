@@ -1520,15 +1520,42 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           ? `${object}.as_${safeRustValueName(expression.object.narrowedMember)}().${safeRustValueName(expression.name)}`
           : `${object}.${safeRustValueName(expression.name)}()`;
       }
-      // A namespace-like ambient symbol has no target name of its own, so the member decides the
-      // whole spelling: `Math.max` is `f64::max`, not `Math::max`.
+      // An ambient static member may decide the whole target spelling: `Math.max` is `f64::max`, and
+      // the source task's `resolve` is the runtime task's `ready`. A compiler-owned runtime member
+      // without such a mapping is a contract gap, not a spelling the emitter can safely guess.
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
+        const sourceName = expression.object.reference.name;
         const member = getCompilerRuntimeExternalMemberTargetRust(
-          expression.object.reference.name,
+          sourceName,
           expression.name,
           context.options.hostBindings,
         );
-        if (member) return member;
+        const runtimeProvided = isCompilerRuntimeExternalSymbolProvidedRust(
+          sourceName,
+          'value',
+          context.options.hostBindings,
+        );
+        if (member) {
+          if (runtimeProvided) {
+            const targetName = getCompilerRuntimeExternalSymbolTargetRust(
+              sourceName,
+              'value',
+              context.options.hostBindings,
+            );
+            if (!targetName) emissionError(context, `external value ${sourceName} has no Rust binding`);
+            recordRuntimeTypeRust(targetName, context);
+          }
+          return member;
+        }
+        if (runtimeProvided) {
+          throw createBackendEmissionFailure(
+            'rust',
+            context.module,
+            `runtime external value ${sourceName} member ${expression.name} has no Rust binding`,
+            'rust-runtime-external-member-binding-incomplete',
+            { classification: 'target-runtime' },
+          );
+        }
       }
       if (
         expression.object.kind === 'identifier' &&

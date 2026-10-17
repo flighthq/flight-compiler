@@ -19,6 +19,7 @@ type RustRuntimeExternalSymbolBinding =
   | Readonly<{
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
+      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -44,8 +45,8 @@ export function createCompilerRuntimeExternalSymbolBindingPlanRust(
   };
 }
 
-// A namespace-like ambient symbol has no single target name, so its members are spelled one at a
-// time. `Math.max` is `f64::max`; there is no `Math` to name on its own.
+// An ambient static member can need a complete target spelling independent of the symbol target.
+// `Math.max` is `f64::max`, while the runtime task's source `resolve` is its target `ready`.
 export function getCompilerRuntimeExternalMemberTargetRust(
   sourceName: string,
   member: string,
@@ -55,7 +56,7 @@ export function getCompilerRuntimeExternalMemberTargetRust(
   const binding: RustRuntimeExternalSymbolBinding | undefined = getRustRuntimeExternalSymbolBindings(
     externalBindings,
   ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
-  if (!binding || binding.kind !== 'native') return undefined;
+  if (!binding) return undefined;
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
 }
 
@@ -295,7 +296,14 @@ const rustRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Map', space: 'value', targetName: 'std::collections::HashMap' },
   { kind: 'native', sourceName: 'NaN', space: 'value', targetName: 'f64::NAN' },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: 'FlightTask' },
-  { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: 'FlightTask' },
+  {
+    capability: 'task',
+    kind: 'runtime',
+    members: [{ sourceMember: 'resolve', targetName: 'FlightTask::ready' }],
+    sourceName: 'Promise',
+    space: 'value',
+    targetName: 'FlightTask',
+  },
   { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'Error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'Error' },
   { kind: 'native', sourceName: 'ReadonlyMap', space: 'type', targetName: 'std::collections::HashMap' },

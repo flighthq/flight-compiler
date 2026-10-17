@@ -167,6 +167,10 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
 });
 
 describe('getCompilerRuntimeExternalMemberTargetRust', () => {
+  it('maps source task normalization to the runtime ready constructor', () => {
+    expect(getCompilerRuntimeExternalMemberTargetRust('Promise', 'resolve')).toBe('FlightTask::ready');
+  });
+
   it('spells a namespace member whole, because the symbol has no target name of its own', () => {
     // `Math` is not a Rust type: `Math.max` is `f64::max` and there is nothing to call `Math`. A
     // binding that maps one symbol to one name cannot express that, which is why members are bound.
@@ -185,6 +189,7 @@ describe('getCompilerRuntimeExternalMemberTargetRust', () => {
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'random')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Date', 'now')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetRust('Promise', 'all')).toBeUndefined();
   });
 });
 
