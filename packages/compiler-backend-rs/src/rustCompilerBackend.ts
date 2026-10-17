@@ -3083,17 +3083,126 @@ function emitContextualCallableUnionConstructionRust(
   const owner = emitType(plan.owner, context);
   const ownedSource = emitOwnedOperandRust(expression, context);
   if (sourceStorage === targetStorage) return `${owner}::${variant.name}(${ownedSource})`;
-  if (
-    !isIrRequiredNumberParameterRust(targetParameter, context) ||
-    !isIrOptionalNumberParameterRust(sourceParameter, context)
-  ) {
-    return undefined;
-  }
+  const argumentName = getGeneratedTargetNameRust('contextual_callable_argument0', context);
+  const adaptedArgument = emitContextualCallableParameterConstructionRust(
+    argumentName,
+    targetParameter,
+    sourceParameter,
+    context,
+  );
+  if (!adaptedArgument) return undefined;
 
   context.needsRcImport.add('Rc');
   const sourceName = getGeneratedTargetNameRust('contextual_callable', context);
-  const argumentName = getGeneratedTargetNameRust('contextual_callable_argument0', context);
-  return `{ let ${sourceName} = ${ownedSource}; ${owner}::${variant.name}(Rc::new(move |${argumentName}: f64| ${sourceName}(Some(${argumentName})))) }`;
+  return `{ let ${sourceName} = ${ownedSource}; ${owner}::${variant.name}(Rc::new(move |${argumentName}: ${targetStorage}| ${sourceName}(${adaptedArgument}))) }`;
+}
+
+function emitContextualCallableParameterConstructionRust(
+  value: string,
+  target: Readonly<{ optional: boolean; rest: boolean; type: IrType }>,
+  source: Readonly<{ optional: boolean; rest: boolean; type: IrType }>,
+  context: EmitContext,
+): string | undefined {
+  if (target.optional || target.rest || source.rest) return undefined;
+  if (isIrRequiredNumberParameterRust(target, context) && isIrOptionalNumberParameterRust(source, context)) {
+    return `Some(${value})`;
+  }
+  if (source.optional) return undefined;
+
+  const named = createRustUnionRepresentationPlan(source.type, {
+    resolveAliasTarget(type) {
+      return resolveIrTypeAliasTargetRust(type, context);
+    },
+    resolveVariantName(type) {
+      return getGeneralUnionVariantNameRust(type, context);
+    },
+  });
+  if (named.kind === 'nominalEnum') {
+    if (named.sentinels.kind !== 'none') return undefined;
+    const matches = named.valueVariants.filter((candidate) =>
+      candidate.sourceAlternatives.some((alternative) =>
+        areIrContextualCallableParameterAlternativesExactRust(target.type, alternative, context),
+      ),
+    );
+    if (matches.length !== 1) return undefined;
+    const match = matches[0]!;
+    if (!isIrContextualCallableParameterPayloadRust(match.sourceAlternative, context)) return undefined;
+    return `${emitType(named.owner, context)}::${match.name}(${value})`;
+  }
+
+  if (source.type.kind !== 'union' || source.type.types.some((member) => member.kind === 'union')) {
+    return undefined;
+  }
+  const sourceTypes = source.type.types.filter((member) => member.kind !== 'never');
+  if (sourceTypes.some((member) => isIrContextualCallableParameterErasedRust(member, context))) return undefined;
+  const matches = sourceTypes.filter(
+    (member) =>
+      member.kind !== 'null' &&
+      member.kind !== 'undefined' &&
+      areIrContextualCallableParameterAlternativesExactRust(target.type, member, context),
+  );
+  if (matches.length !== 1) return undefined;
+  const match = matches[0]!;
+  if (!isIrContextualCallableParameterPayloadRust(match, context)) return undefined;
+
+  const hasNull = sourceTypes.some((member) => member.kind === 'null');
+  const hasUndefined = sourceTypes.some((member) => member.kind === 'undefined');
+  const concrete = source.type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (hasNull !== hasUndefined && concrete.filter((member) => member.kind !== 'never').length === 1) {
+    return `Some(${value})`;
+  }
+  const primitive = hasNull && hasUndefined ? undefined : getOrCreatePrimitiveUnionEnumRust(concrete, context);
+  if (primitive) {
+    const resolved = resolveIrTypeAliasValueRust(match, context, new Set());
+    if (resolved.kind !== 'primitive') return undefined;
+    const variant = primitive.variants.find((candidate) => candidate.primitiveKind === resolved.name);
+    if (!variant) return undefined;
+    const construction = `${primitive.name}::${variant.variantName}(${value})`;
+    return hasNull || hasUndefined ? `Some(${construction})` : construction;
+  }
+
+  const carrierTypes = hasNull && hasUndefined ? source.type.types : concrete;
+  const union = getOrCreateAnonymousUnionEnumRust(carrierTypes, context);
+  const matchIndex = carrierTypes.filter((member) => member.kind !== 'never').indexOf(match);
+  const unionVariant = matchIndex < 0 ? undefined : union.variants[matchIndex];
+  if (unionVariant?.kind !== 'tuple') return undefined;
+  const construction = `${union.name}::${unionVariant.name}(${value})`;
+  return hasNull !== hasUndefined ? `Some(${construction})` : construction;
+}
+
+function areIrContextualCallableParameterAlternativesExactRust(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const resolvedLeft = resolveIrTypeAliasValueRust(left, context, new Set());
+  const resolvedRight = resolveIrTypeAliasValueRust(right, context, new Set());
+  return (
+    normalizeCompilerStructuralValueCanonical(resolvedLeft) === normalizeCompilerStructuralValueCanonical(resolvedRight)
+  );
+}
+
+function isIrContextualCallableParameterErasedRust(type: Readonly<IrType>, context: EmitContext): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  return resolved.kind === 'unknown';
+}
+
+function isIrContextualCallableParameterPayloadRust(type: Readonly<IrType>, context: EmitContext): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind === 'primitive') {
+    return resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string';
+  }
+  if (
+    resolved.kind !== 'named' ||
+    resolved.reference.kind !== 'binding' ||
+    resolved.reference.binding.space !== 'type' ||
+    resolved.reference.path.length > 0 ||
+    resolved.typeArguments.length > 0
+  ) {
+    return false;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(resolved.reference.binding, context, context.module);
+  return location?.declaration.kind === 'interface' && location.declaration.typeParameters.length === 0;
 }
 
 function isIrOptionalNumberParameterRust(

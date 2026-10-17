@@ -8545,6 +8545,137 @@ describe('emitIrModuleRust', () => {
     }
   });
 
+  it('constructs wider primitive, sentinel, and nominal-reference callable parameter carriers', () => {
+    const result = lower(
+      'callable-union-wider-parameter.ts',
+      `interface Point { x: number; }
+       type NumberOrText = number | string;
+       type HandlerSlot = ((value: number) => void) | string;
+       export function storeWider(handler: (value: number | string) => void): HandlerSlot { return handler; }
+       export function storeAlias(handler: (value: NumberOrText) => void): HandlerSlot { return handler; }
+       export function storeThreeMember(handler: (value: number | string | boolean) => void): HandlerSlot {
+         return handler;
+       }
+       export function storeSentinels(
+         handler: (value: number | string | null | undefined) => void,
+       ): HandlerSlot { return handler; }
+       type PointSlot = ((value: Point) => void) | string;
+       export function storeReference(handler: (value: string | Point) => void): PointSlot { return handler; }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('contextual_callable(F64OrStr::F64(contextual_callable_argument0))');
+    expect(output).toContain('contextual_callable_2(NumberOrText::F64(contextual_callable_argument0_2))');
+    expect(output).toContain('contextual_callable_3(F64OrStrOrBool::F64(contextual_callable_argument0_3))');
+    expect(output).toContain('contextual_callable_4(AnonymousUnion::F64(contextual_callable_argument0_4))');
+    expect(output).toContain('contextual_callable_5(AnonymousUnion2::Point(contextual_callable_argument0_5))');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `let wider_value = Rc::new(std::cell::Cell::new(0.0));
+           let wider_observer = Rc::clone(&wider_value);
+           let wider: Rc<dyn Fn(F64OrStr) -> ()> = Rc::new(move |value| match value {
+             F64OrStr::F64(value) => wider_observer.set(value),
+             F64OrStr::Str(_) => panic!("wrong wider parameter variant"),
+           });
+           match store_wider(wider) {
+             HandlerSlot::Function(handler) => handler(3.0),
+             HandlerSlot::String(_) => panic!("wrong wider callable variant"),
+           }
+           assert_eq!(wider_value.get(), 3.0);
+           let alias_value = Rc::new(std::cell::Cell::new(0.0));
+           let alias_observer = Rc::clone(&alias_value);
+           let alias: Rc<dyn Fn(NumberOrText) -> ()> = Rc::new(move |value| match value {
+             NumberOrText::F64(value) => alias_observer.set(value),
+             NumberOrText::String(_) => panic!("wrong alias parameter variant"),
+           });
+           match store_alias(alias) {
+             HandlerSlot::Function(handler) => handler(5.0),
+             HandlerSlot::String(_) => panic!("wrong alias callable variant"),
+           }
+           assert_eq!(alias_value.get(), 5.0);
+           let three_value = Rc::new(std::cell::Cell::new(0.0));
+           let three_observer = Rc::clone(&three_value);
+           let three: Rc<dyn Fn(F64OrStrOrBool) -> ()> = Rc::new(move |value| match value {
+             F64OrStrOrBool::F64(value) => three_observer.set(value),
+             _ => panic!("wrong three-member parameter variant"),
+           });
+           match store_three_member(three) {
+             HandlerSlot::Function(handler) => handler(7.0),
+             HandlerSlot::String(_) => panic!("wrong three-member callable variant"),
+           }
+           assert_eq!(three_value.get(), 7.0);
+           let sentinel_value = Rc::new(std::cell::Cell::new(0.0));
+           let sentinel_observer = Rc::clone(&sentinel_value);
+           let sentinels: Rc<dyn Fn(AnonymousUnion) -> ()> = Rc::new(move |value| match value {
+             AnonymousUnion::F64(value) => sentinel_observer.set(value),
+             AnonymousUnion::Null | AnonymousUnion::Undefined => panic!("sentinel distinction was lost"),
+             AnonymousUnion::String(_) => panic!("wrong sentinel-union value variant"),
+           });
+           match store_sentinels(sentinels) {
+             HandlerSlot::Function(handler) => handler(11.0),
+             HandlerSlot::String(_) => panic!("wrong sentinel callable variant"),
+           }
+           assert_eq!(sentinel_value.get(), 11.0);
+           let reference_value = Rc::new(std::cell::Cell::new(0.0));
+           let reference_observer = Rc::clone(&reference_value);
+           let reference: Rc<dyn Fn(AnonymousUnion2) -> ()> = Rc::new(move |value| match value {
+             AnonymousUnion2::Point(value) => reference_observer.set(value.x),
+             AnonymousUnion2::String(_) => panic!("wrong reference parameter variant"),
+           });
+           match store_reference(reference) {
+             PointSlot::Function(handler) => handler(Point { x: 13.0 }),
+             PointSlot::String(_) => panic!("wrong reference callable variant"),
+           }
+           assert_eq!(reference_value.get(), 13.0);`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('evaluates a wider-union callable producer once and retains its capture', () => {
+    const result = lower(
+      'callable-union-wider-producer.ts',
+      `type HandlerSlot = ((value: number) => void) | string;
+       export function storeProduced(produce: () => (value: number | string) => void): HandlerSlot {
+         return produce();
+       }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output.match(/let contextual_callable = produce\(\)/gu)).toHaveLength(1);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `let evaluations = Rc::new(std::cell::Cell::new(0));
+           let invocations = Rc::new(std::cell::Cell::new(0.0));
+           let evaluation_observer = Rc::clone(&evaluations);
+           let invocation_observer = Rc::clone(&invocations);
+           let produce: Rc<dyn Fn() -> Rc<dyn Fn(F64OrStr) -> ()>> = Rc::new(move || {
+             evaluation_observer.set(evaluation_observer.get() + 1);
+             let invocation_observer = Rc::clone(&invocation_observer);
+             Rc::new(move |value| match value {
+               F64OrStr::F64(value) => invocation_observer.set(value),
+               F64OrStr::Str(_) => panic!("wrong produced parameter variant"),
+             })
+           });
+           let stored = store_produced(produce);
+           assert_eq!(evaluations.get(), 1);
+           match stored {
+             HandlerSlot::Function(handler) => handler(17.0),
+             HandlerSlot::String(_) => panic!("wrong produced callable variant"),
+           }
+           assert_eq!(evaluations.get(), 1);
+           assert_eq!(invocations.get(), 17.0);`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it('evaluates an adapted callable producer once and retains its one Rc owner', () => {
     const result = lower(
       'callable-union-producer.ts',
@@ -8638,6 +8769,25 @@ describe('emitIrModuleRust', () => {
         'erased.ts',
         `type Slot = ((value: number) => void) | string;
          export function store(handler: any): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'structural-parameter.ts',
+        `interface Point { x: number; }
+         type Slot = ((value: Point) => void) | string;
+         export function store(handler: (value: { x: number } | string) => void): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'narrower-source-parameter.ts',
+        `type Slot = ((value: number | string) => void) | boolean;
+         export function store(handler: (value: number) => void): Slot { return handler; }`,
+        'rust-contextual-general-union-construction-unrepresented',
+      ],
+      [
+        'erased-source-parameter.ts',
+        `type Slot = ((value: number) => void) | string;
+         export function store(handler: (value: number | unknown) => void): Slot { return handler; }`,
         'rust-contextual-general-union-construction-unrepresented',
       ],
     ] as const;
