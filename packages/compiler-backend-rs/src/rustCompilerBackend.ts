@@ -1104,6 +1104,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (sharedArrayAssignment) return sharedArrayAssignment;
       const sharedClassAssignment = emitSharedClassFieldAssignmentRust(expression, context);
       if (sharedClassAssignment) return sharedClassAssignment;
+      const closedKeyAssignment = emitClosedKeyElementWriteRust(expression, context);
+      if (closedKeyAssignment) return closedKeyAssignment;
       if (
         expression.left.kind === 'identifier' &&
         expression.left.reference.kind === 'binding' &&
@@ -3220,14 +3222,13 @@ function emitRequiredElementExpressionRust(
   return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
 }
 
-// A finite string-key domain identifies every field this access can reach. Rust records have no
-// string subscript, so select the represented field explicitly while evaluating the receiver and key
-// once, in source order. Borrowing the receiver keeps the selection from moving a source binding; the
-// selected field is cloned into the expression's owned result.
-function emitClosedKeyElementSelectionRust(
+// Both closed-key reads and writes need the same proof that the receiver has represented record storage
+// and that every finite key names a concrete member. Keeping that proof shared prevents the assignment
+// lane from accepting a place that the read lane would reject.
+function getClosedKeyElementSelectionsRust(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
-): string | undefined {
+): readonly Readonly<{ key: string; property: IrObjectTypeProperty }>[] | undefined {
   const keys = expression.semantics.closedKeys;
   if (!keys) return undefined;
 
@@ -3263,11 +3264,25 @@ function emitClosedKeyElementSelectionRust(
       'rust-closed-key-selection-unsupported',
     );
   }
+  return selections as readonly Readonly<{ key: string; property: IrObjectTypeProperty }>[];
+}
 
-  const memberTypes = selections.map(({ property }) => {
-    const emitted = emitType(property!.type, context);
-    return property!.optional ? `Option<${emitted}>` : emitted;
-  });
+function getClosedKeyElementStorageTypeRust(property: Readonly<IrObjectTypeProperty>, context: EmitContext): string {
+  const emitted = emitType(property.type, context);
+  return property.optional ? `Option<${emitted}>` : emitted;
+}
+
+// Rust records have no string subscript, so select the represented field explicitly while evaluating
+// the receiver and key once, in source order. Borrowing the receiver keeps the selection from moving a
+// source binding; the selected field is cloned into the expression's owned result.
+function emitClosedKeyElementSelectionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string | undefined {
+  const selections = getClosedKeyElementSelectionsRust(expression, context);
+  if (!selections) return undefined;
+
+  const memberTypes = selections.map(({ property }) => getClosedKeyElementStorageTypeRust(property, context));
   const distinctTypes = [...new Set(memberTypes)];
   if (distinctTypes.length !== 1) {
     emissionError(
@@ -3280,9 +3295,97 @@ function emitClosedKeyElementSelectionRust(
   const receiver = getGeneratedTargetNameRust('selection_receiver', context);
   const selectionKey = getGeneratedTargetNameRust('selection_key', context);
   const branches = selections.map(
-    ({ key, property }) => `${JSON.stringify(key)} => ${receiver}.${safeRustValueName(property!.name)}.clone(),`,
+    ({ key, property }) => `${JSON.stringify(key)} => ${receiver}.${safeRustValueName(property.name)}.clone(),`,
   );
   return `{ let ${receiver} = &${emitExpression(expression.object, context)}; let ${selectionKey} = &${emitExpression(expression.index, context)}; match ${selectionKey}.as_str() { ${branches.join(' ')} _ => unreachable!("Flight finite-key selection reached no member"), } }`;
+}
+
+// An element write through a finite key is a dispatch, not an assignment to the read selection's
+// result. The direct binding requirement is the place evidence: ownership analysis makes a local
+// binding mutable or a parameter `&mut`, and each match arm then names one real field. A Copy value is
+// evaluated once after the key and can both enter the selected field and remain the assignment result.
+function emitClosedKeyElementWriteRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.left.kind !== 'element' || !expression.left.semantics.closedKeys) {
+    return undefined;
+  }
+  if (expression.operator !== '=') {
+    emissionError(
+      context,
+      `closed-key write operator ${expression.operator} requires branchwise Rust read/modify/write lowering`,
+      'rust-closed-key-write-operator-unrepresented',
+    );
+  }
+  const selections = getClosedKeyElementSelectionsRust(expression.left, context)!;
+  const distinctStorageTypes = [
+    ...new Set(selections.map(({ property }) => getClosedKeyElementStorageTypeRust(property, context))),
+  ];
+  if (distinctStorageTypes.length !== 1) {
+    emissionError(
+      context,
+      `closed-key selection over ${String(distinctStorageTypes.length)} member types requires one Rust representation`,
+      'rust-closed-key-selection-unsupported',
+    );
+  }
+
+  const receiver = expression.left.object;
+  const binding =
+    receiver.kind === 'identifier' && receiver.reference.kind === 'binding' ? receiver.reference : undefined;
+  if (
+    !binding ||
+    (!context.referentMutatedBindingIds.has(binding.binding.id) &&
+      !context.referentMutatedParameterIds.has(binding.binding.id)) ||
+    context.cellWrappedBindingIds.has(binding.binding.id) ||
+    context.refCellWrappedBindingIds.has(binding.binding.id) ||
+    context.sharedArrayBindingIds.has(binding.binding.id) ||
+    context.sharedClassBindingIds.has(binding.binding.id) ||
+    context.sharedMapBindingIds.has(binding.binding.id) ||
+    context.sharedSetBindingIds.has(binding.binding.id)
+  ) {
+    emissionError(
+      context,
+      'closed-key write requires one direct mutable Rust object binding; the finite key set identifies members but does not make this receiver an assignable place',
+      'rust-closed-key-write-place-unrepresented',
+    );
+  }
+  const readonly = selections.find(({ property }) => property.readonly);
+  if (readonly) {
+    emissionError(
+      context,
+      `closed-key write selects readonly member ${readonly.key}`,
+      'rust-closed-key-write-place-unrepresented',
+      'source-portability',
+    );
+  }
+
+  const valueType = inferIrExpressionTypeRust(expression.right, context);
+  if (!valueType || !isIrTypeCopyValueRust(valueType)) {
+    emissionError(
+      context,
+      'closed-key write requires one Copy Rust value representation so the assigned value remains the assignment result',
+      'rust-closed-key-write-value-unrepresented',
+    );
+  }
+  const valueTarget = emitType(valueType, context);
+  const selectionKey = getGeneratedTargetNameRust('selection_key', context);
+  const assignmentValue = getGeneratedTargetNameRust('assignment_value', context);
+  const assignments = selections.map(({ key, property }) => {
+    const storageTarget = getClosedKeyElementStorageTypeRust(property, context);
+    const fieldValue =
+      valueTarget === storageTarget
+        ? assignmentValue
+        : storageTarget === `Option<${valueTarget}>`
+          ? `Some(${assignmentValue})`
+          : emissionError(
+              context,
+              `closed-key write value representation ${valueTarget} is not assignable to member ${key} storage ${storageTarget}`,
+              'rust-closed-key-write-value-unrepresented',
+            );
+    return `${JSON.stringify(key)} => ${emitIdentifierReferenceRust(binding, context)}.${safeRustValueName(property.name)} = ${fieldValue},`;
+  });
+  return `{ let ${selectionKey} = ${normalizeSourceTextGrouping(emitExpression(expression.left.index, context))}.clone(); let ${assignmentValue} = ${emitOwnedOperandRust(expression.right, context)}; match ${selectionKey}.as_str() { ${assignments.join(' ')} _ => unreachable!("Flight finite-key write reached no member"), }; ${assignmentValue} }`;
 }
 
 function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, context: EmitContext): Readonly<IrType> {

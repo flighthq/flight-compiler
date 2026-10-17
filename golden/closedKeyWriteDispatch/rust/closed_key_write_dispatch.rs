@@ -8,5 +8,5 @@ pub struct Pairs {
 }
 
 pub fn set(pairs: &mut Pairs, key: String, value: f64) -> () {
-  { let selection_receiver = &pairs; let selection_key = &key; match selection_key.as_str() { "alpha" => selection_receiver.alpha.clone(), "beta" => selection_receiver.beta.clone(), _ => unreachable!("Flight finite-key selection reached no member"), } } = value;
+  { let selection_key = key.clone(); let assignment_value = value; match selection_key.as_str() { "alpha" => pairs.alpha = Some(assignment_value), "beta" => pairs.beta = Some(assignment_value), _ => unreachable!("Flight finite-key write reached no member"), }; assignment_value };
 }

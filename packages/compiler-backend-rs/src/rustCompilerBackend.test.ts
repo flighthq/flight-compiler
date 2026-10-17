@@ -843,6 +843,89 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('load()[next() as usize]');
   });
 
+  it.skipIf(!rustcAvailable)('dispatches a finite-key write to the selected mutable field', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closed-key-write.ts',
+        `interface Pairs { alpha?: number; beta?: number }
+         export function set(pairs: Pairs, key: 'alpha' | 'beta', value: number): number {
+           return pairs[key] = value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('"alpha" => pairs.alpha = Some(assignment_value)');
+    expect(output).toContain('"beta" => pairs.beta = Some(assignment_value)');
+    expect(output).toContain('_ => unreachable!("Flight finite-key write reached no member")');
+    expect(output).not.toContain('Flight finite-key selection reached no member');
+    expect(() =>
+      runRustSource(
+        output,
+        `let mut pairs = Pairs { alpha: None, beta: None };
+         assert_eq!(set(&mut pairs, "alpha".to_owned(), 3.0), 3.0);
+         assert_eq!(pairs.alpha, Some(3.0));
+         assert_eq!(pairs.beta, None);
+         assert_eq!(set(&mut pairs, "beta".to_owned(), 5.0), 5.0);
+         assert_eq!(pairs.alpha, Some(3.0));
+         assert_eq!(pairs.beta, Some(5.0));`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'a receiver without direct mutable-place evidence',
+      `interface Pairs { alpha?: number; beta?: number }
+function create(): Pairs { return {}; }
+export function set(key: 'alpha' | 'beta', value: number): void { create()[key] = value; }`,
+      'rust-closed-key-write-place-unrepresented',
+      'one direct mutable Rust object binding',
+      3,
+    ],
+    [
+      'a non-Copy value whose assignment result cannot be retained',
+      `interface Labels { alpha: string; beta: string }
+export function set(labels: Labels, key: 'alpha' | 'beta', value: string): string { return labels[key] = value; }`,
+      'rust-closed-key-write-value-unrepresented',
+      'assigned value remains the assignment result',
+      2,
+    ],
+    [
+      'a compound operator without branchwise read/modify/write evidence',
+      `interface Pairs { alpha: number; beta: number }
+export function add(pairs: Pairs, key: 'alpha' | 'beta', value: number): void { pairs[key] += value; }`,
+      'rust-closed-key-write-operator-unrepresented',
+      'branchwise Rust read/modify/write lowering',
+      2,
+    ],
+  ])('refuses a closed-key write with %s', (_name, source, rule, message, line) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('closed-key-write-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain(message);
+    expect(failure.line).toBe(line);
+    expect(failure.column).toBe(1);
+  });
+
+  it('keeps open index-signature writes on the existing computed-access refusal', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'open-index-write.ts',
+          `interface Fields { [name: string]: number }
+export function set(fields: Fields, key: string, value: number): void { fields[key] = value; }`,
+        ).module,
+      ),
+    );
+
+    expect(failure.rule).toBe('rust-computed-object-access-unsupported');
+    expect(failure.rule).not.toBe('rust-closed-key-write-place-unrepresented');
+    expect(failure.rule).not.toBe('rust-closed-key-write-value-unrepresented');
+  });
+
   it('keeps absent, open, and heterogeneous object-key selections outside the finite selection lowering', () => {
     const emitOnly = (source: string): string =>
       emitIrModuleRust(lower('closed-key-refusal.ts', source).module).contents;
