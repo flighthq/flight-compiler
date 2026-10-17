@@ -1690,19 +1690,40 @@ function expressionUsesRustSharedArrayGroup(
   module: RustReferenceModuleRecord,
 ): boolean {
   let found = false;
+  const referencedBindings = new Set<string>();
   analyzeIrExpressionSubtreeTraversal(expression, {
     expression(candidate) {
-      if (
-        candidate.kind === 'identifier' &&
-        candidate.reference.kind === 'binding' &&
-        module.sharedArrays.groupByBindingId.get(candidate.reference.binding.id) === group
-      ) {
-        found = true;
-        return false;
+      if (candidate.kind === 'identifier' && candidate.reference.kind === 'binding') {
+        referencedBindings.add(candidate.reference.binding.id);
+        if (module.sharedArrays.groupByBindingId.get(candidate.reference.binding.id) === group) {
+          found = true;
+          return false;
+        }
       }
       return undefined;
     },
   });
+  if (found) return true;
+  for (const closure of analyzeIrModuleClosureEvidence(module.module).closures) {
+    const originBinding =
+      closure.origin.kind === 'functionExpression' || closure.origin.kind === 'functionDeclaration'
+        ? closure.origin.binding
+        : undefined;
+    const host =
+      closure.path.at(-1) === 'initializer'
+        ? getIrModuleTraversalPathValue(module.module, closure.path.slice(0, -1))
+        : undefined;
+    const hostBinding =
+      isRecord(host) && 'binding' in host && isBindingIdentity(host.binding) ? host.binding : undefined;
+    const callbackBinding = originBinding ?? hostBinding;
+    if (
+      callbackBinding &&
+      referencedBindings.has(callbackBinding.id) &&
+      closure.captures.some((capture) => module.sharedArrays.groupByBindingId.get(capture.binding.id) === group)
+    ) {
+      return true;
+    }
+  }
   return found;
 }
 
@@ -4991,6 +5012,7 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
 const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
   'concat',
+  'findIndex',
   'includes',
   'indexOf',
   'lastIndexOf',
@@ -5000,6 +5022,7 @@ const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
 const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
   'concat',
+  'findIndex',
   'includes',
   'indexOf',
   'join',

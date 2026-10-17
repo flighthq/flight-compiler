@@ -420,6 +420,7 @@ function emitIrModuleRustWithContext(
   // after erasing extra arguments.
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
+  assertArrayFindIndexInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
   assertArraySortInvocationSemanticsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -1590,6 +1591,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (isArrayCopyWithinCallRust(expression)) return emitArrayCopyWithinCallRust(expression, context);
       if (isArrayFillCallRust(expression)) return emitArrayFillCallRust(expression, context);
+      if (isArrayFindIndexCallRust(expression)) return emitArrayFindIndexCallRust(expression, context);
       if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
       if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
@@ -3472,6 +3474,17 @@ function isArraySortCallRust(
   );
 }
 
+function isArrayFindIndexCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'findIndex'
+  );
+}
+
 function isArrayFillCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3588,6 +3601,42 @@ function emitArraySearchCallRust(
   // A reference to each operand extends temporary lifetimes through the search without moving a
   // reusable source. The shared receiver borrow starts only after the candidate has been evaluated.
   return `{ let ${receiverName} = ${emittedReceiver}; let ${candidateName} = &${emitExpression(argument, context)}; ${result} }`;
+}
+
+function emitArrayFindIndexCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const callback = expression.arguments[0];
+  const signature = callback ? getRustArrayFindIndexCallbackSignatureRust(callback, context) : undefined;
+  if (!callback || !signature || signature.parameters.length > 2) {
+    return emissionError(context, 'array.findIndex emission requires one statically known fixed predicate');
+  }
+  const receiverName = getGeneratedTargetNameRust('array_find_index_receiver', context);
+  const callbackName = getGeneratedTargetNameRust('array_find_index_callback', context);
+  const valuesName = getGeneratedTargetNameRust('array_find_index_values', context);
+  const resultName = getGeneratedTargetNameRust('array_find_index_result', context);
+  const indexName = getGeneratedTargetNameRust('array_find_index_index', context);
+  const elementName = getGeneratedTargetNameRust('array_find_index_element', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const emittedReceiver = sharedBinding
+    ? `&${getBindingTargetNameRust(sharedBinding, context)}`
+    : `&${emitExpression(expression.callee.object, context)}`;
+  const receiverValues = sharedBinding ? `${receiverName}.borrow()` : receiverName;
+  const arguments_ = [
+    ...(signature.parameters.length >= 1 ? [`${elementName}.clone()`] : []),
+    ...(signature.parameters.length === 2 ? [`${indexName} as f64`] : []),
+  ];
+  const callbackInitializer =
+    callback.kind === 'function'
+      ? `let mut ${callbackName} = ${emitExpression(callback, context)};`
+      : `let ${callbackName} = &${emitExpression(callback, context)};`;
+  const search = `${valuesName}.iter().enumerate().position(|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})).map(|index| index as f64).unwrap_or(-1.0)`;
+  const release = sharedBinding ? ` drop(${valuesName});` : '';
+  // References stage both operands without consuming reusable sources. In particular, the callback
+  // is evaluated on an empty receiver, and a shared borrow starts only after both source effects.
+  return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${valuesName} = ${receiverValues}; let ${resultName} = ${search};${release} ${resultName} }`;
 }
 
 function emitArrayCopyWithinCallRust(
@@ -9356,6 +9405,7 @@ type RustArrayOperationMember =
   | 'concat'
   | 'copyWithin'
   | 'fill'
+  | 'findIndex'
   | 'reverse'
   | 'slice'
   | 'sort'
@@ -9402,6 +9452,12 @@ interface RustArrayOperationRefusal {
     | 'rust-array-fill-invocation-unrepresented'
     | 'rust-array-fill-result-carrier-unrepresented'
     | 'rust-array-fill-value-carrier-unrepresented'
+    | 'rust-array-find-index-alias-borrow-conflict'
+    | 'rust-array-find-index-callback-carrier-unrepresented'
+    | 'rust-array-find-index-element-carrier-unrepresented'
+    | 'rust-array-find-index-invocation-unrepresented'
+    | 'rust-array-find-index-predicate-result-carrier-unrepresented'
+    | 'rust-array-find-index-result-carrier-unrepresented'
     | 'rust-array-reverse-element-carrier-unrepresented'
     | 'rust-array-reverse-identity-carrier-unrepresented'
     | 'rust-array-reverse-invocation-unrepresented'
@@ -9421,6 +9477,39 @@ interface RustArrayOperationRefusal {
     | 'rust-array-sort-identity-carrier-unrepresented'
     | 'rust-array-sort-invocation-unrepresented'
     | 'rust-array-sort-result-carrier-unrepresented';
+}
+
+function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayFindIndexCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        !signature ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== 1 ||
+        expression.arguments.length !== 1 ||
+        expression.arguments[0]?.kind === 'spread'
+      ) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'array.findIndex requires a non-optional invocation with exactly one fixed non-spread callback and no thisArg',
+    'rust-array-find-index-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
 }
 
 function assertArraySearchInvocationSemanticsRust(module: Readonly<IrModule>): void {
@@ -9591,6 +9680,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
+  const findIndexCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
   const sortCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
@@ -9639,6 +9732,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           copyWithinCalls.push(expression);
         } else if (isArrayFillCallRust(expression)) {
           fillCalls.push(expression);
+        } else if (isArrayFindIndexCallRust(expression)) {
+          findIndexCalls.push(expression);
         } else if (isArraySortCallRust(expression)) {
           sortCalls.push(expression);
         } else if (searchMember) {
@@ -9683,6 +9778,116 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   const refusals: RustArrayOperationRefusal[] = [];
+  for (const expression of findIndexCalls) {
+    const callback = expression.arguments[0];
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 1 ||
+      expression.arguments.length !== 1 ||
+      !callback ||
+      callback.kind === 'spread'
+    ) {
+      refusals.push({
+        member: 'findIndex',
+        message:
+          'array.findIndex requires a non-optional invocation with exactly one fixed non-spread callback and no thisArg',
+        rule: 'rust-array-find-index-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || !receiverDomain) {
+      refusals.push({
+        member: 'findIndex',
+        message:
+          'array.findIndex elements require exact dense boolean, number, or string value carriers; union and identity-bearing carriers are not represented',
+        rule: 'rust-array-find-index-element-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const callbackSignature = getRustArrayFindIndexCallbackSignatureRust(callback, context);
+    if (
+      !callbackSignature ||
+      callbackSignature.async ||
+      callbackSignature.dynamicThisUse ||
+      callbackSignature.typeParameterCount > 0 ||
+      callbackSignature.parameters.length > 2 ||
+      callbackSignature.parameters.some((parameter, index) => {
+        if (parameter.optional || parameter.rest || parameter.initializer !== undefined) return true;
+        if (index === 1) {
+          return (
+            getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== 'number' ||
+            emitType(parameter.type, context) !== 'f64'
+          );
+        }
+        return (
+          getRustDensePrimitiveArrayCarrierDomainRust(parameter.type, context) !== receiverDomain ||
+          emitType(parameter.type, context) !== emitType(receiver.element, context)
+        );
+      })
+    ) {
+      refusals.push({
+        member: 'findIndex',
+        message:
+          'array.findIndex callback requires one statically known synchronous function with zero to two fixed exact-carrier parameters',
+        rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    if (
+      getRustDensePrimitiveArrayCarrierDomainRust(callbackSignature.returns, context) !== 'boolean' ||
+      emitType(callbackSignature.returns, context) !== 'bool'
+    ) {
+      refusals.push({
+        member: 'findIndex',
+        message:
+          'array.findIndex predicate result requires an exact Rust bool carrier; truthiness coercion is not represented',
+        rule: 'rust-array-find-index-predicate-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+    if (result.kind !== 'primitive' || result.name !== 'number' || emitType(result, context) !== 'f64') {
+      refusals.push({
+        member: 'findIndex',
+        message: 'array.findIndex result requires an exact Rust f64 carrier',
+        rule: 'rust-array-find-index-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverObject = expression.callee.object;
+    const receiverBindingId =
+      receiverObject.kind === 'identifier' && receiverObject.reference.kind === 'binding'
+        ? receiverObject.reference.binding.id
+        : undefined;
+    const callbackBody = getRustArrayFindIndexCallbackBodyRust(callback, context);
+    if (
+      receiverBindingId &&
+      (irExpressionUsesBindingRust(callback, receiverBindingId) ||
+        (callbackBody !== undefined && irExpressionUsesBindingRust(callbackBody, receiverBindingId)))
+    ) {
+      refusals.push({
+        member: 'findIndex',
+        message: 'array.findIndex callback captures the receiver while its shared borrow is active',
+        rule: 'rust-array-find-index-alias-borrow-conflict',
+      });
+    }
+  }
+
   for (const expression of copyWithinCalls) {
     const signature = expression.semantics.signature;
     if (
@@ -10379,6 +10584,83 @@ function irExpressionUsesBindingRust(expression: Readonly<IrExpression>, binding
     },
   });
   return used;
+}
+
+interface RustArrayFindIndexCallbackParameter {
+  readonly initializer?: Readonly<IrExpression> | undefined;
+  readonly optional: boolean;
+  readonly rest: boolean;
+  readonly type: Readonly<IrType>;
+}
+
+interface RustArrayFindIndexCallbackSignature {
+  readonly async: boolean;
+  readonly dynamicThisUse: boolean;
+  readonly parameters: readonly RustArrayFindIndexCallbackParameter[];
+  readonly returns: Readonly<IrType>;
+  readonly typeParameterCount: number;
+}
+
+function getRustArrayFindIndexCallbackBodyRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<Extract<IrExpression, { kind: 'function' }>> | undefined {
+  if (expression.kind === 'function') return expression;
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  let found: Readonly<Extract<IrExpression, { kind: 'function' }>> | undefined;
+  analyzeIrModuleTraversal(context.module, {
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        variable.binding.id === bindingId &&
+        variable.initializer?.kind === 'function'
+      ) {
+        found = variable.initializer;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return found;
+}
+
+function getRustArrayFindIndexCallbackSignatureRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): RustArrayFindIndexCallbackSignature | undefined {
+  const body = getRustArrayFindIndexCallbackBodyRust(expression, context);
+  if (body) {
+    return {
+      async: body.async,
+      dynamicThisUse:
+        body.thisMode === 'dynamic' && (context.closureEvidenceByExpression.get(body)?.thisUses.length ?? 0) > 0,
+      parameters: body.parameters,
+      returns: body.returns,
+      typeParameterCount: body.typeParameters.length,
+    };
+  }
+  const declaration =
+    expression.kind === 'identifier' ? getIrReferencedFunctionRust(expression.reference, context) : undefined;
+  if (declaration) {
+    return {
+      async: declaration.async,
+      dynamicThisUse: false,
+      parameters: declaration.parameters,
+      returns: declaration.returns,
+      typeParameterCount: declaration.typeParameters.length,
+    };
+  }
+  const inferred = inferIrExpressionTypeRust(expression, context);
+  const resolved = inferred ? resolveIrTypeAliasValueRust(inferred, context, new Set()) : undefined;
+  if (resolved?.kind !== 'function') return undefined;
+  return {
+    async: false,
+    dynamicThisUse: false,
+    parameters: resolved.parameters,
+    returns: resolved.returns,
+    typeParameterCount: resolved.typeParameters.length,
+  };
 }
 
 function inferRustArrayGrowthArgumentTypeRust(

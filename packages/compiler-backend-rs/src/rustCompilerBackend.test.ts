@@ -5808,8 +5808,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
     expect(output).toContain('.iter().enumerate().position(');
-    expect(output).toContain('predicate_element.clone(), predicate_index as f64');
-    expect(output).toContain('.map(|i| i as f64).unwrap_or(-1.0)');
+    expect(output).toContain('array_find_index_element.clone(), array_find_index_index as f64');
+    expect(output).toContain('.map(|index| index as f64).unwrap_or(-1.0)');
   });
 
   it('emits object type as anonymous record struct', () => {
@@ -16139,6 +16139,243 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     );
     expect(result.diagnostics).toEqual([]);
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
+  it('preserves exact findIndex callbacks across dense primitive and readonly carriers', () => {
+    const result = lower(
+      'array-find-index-exact.ts',
+      `export function zero(values: readonly boolean[]): number {
+         return values.findIndex((): boolean => true);
+       }
+       export function one(values: string[]): number {
+         return values.findIndex((value: string): boolean => value === "match");
+       }
+       export function two(values: readonly number[]): number {
+         return values.findIndex((value: number, index: number): boolean => value === index + 2);
+       }
+       export function parameter(
+         values: number[],
+         predicate: (value: number) => boolean,
+       ): number {
+         return values.findIndex(predicate);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().position(');
+    expect(output).toContain('(array_find_index_callback)()');
+    expect(output).toContain('(array_find_index_callback_2)(array_find_index_element_2.clone())');
+    expect(output).toContain(
+      '(array_find_index_callback_3)(array_find_index_element_3.clone(), array_find_index_index_3 as f64)',
+    );
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(zero(vec![false, false]), 0.0);',
+          'assert_eq!(zero(vec![]), -1.0);',
+          'assert_eq!(one(vec!["other".to_owned(), "match".to_owned()]), 1.0);',
+          'assert_eq!(two(vec![1.0, 3.0, 5.0]), 1.0);',
+          'assert_eq!(parameter(vec![1.0, 2.0], Rc::new(|value| value == 2.0)), 1.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('evaluates findIndex receiver then callback once, including when empty, and short-circuits', () => {
+    const result = lower(
+      'array-find-index-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(
+         log: number[],
+         marker: number,
+       ): (value: number, index: number) => boolean {
+         log.push(marker);
+         return (value: number, index: number): boolean => value === 2 && index === 1;
+       }
+       export function evaluated(log: number[]): number {
+         return recordReceiver(log, 1, [1, 2, 3]).findIndex(recordCallback(log, 2));
+       }
+       export function empty(log: number[]): number {
+         return recordReceiver(log, 3, []).findIndex(recordCallback(log, 4));
+       }
+       export function reusable(log: number[]): number {
+         const values = [1, 2, 3];
+         const index = values.findIndex((value: number): boolean => {
+           log.push(value);
+           return value === 2;
+         });
+         values.push(4);
+         return index * 100 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_find_index_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_find_index_callback = &record_callback(', receiver);
+    const values = output.indexOf('let array_find_index_values = array_find_index_receiver;', callback);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(callback);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut evaluated_log = vec![];',
+          'assert_eq!(evaluated(&mut evaluated_log), 1.0);',
+          'assert_eq!(evaluated_log, vec![1.0, 2.0]);',
+          'let mut empty_log = vec![];',
+          'assert_eq!(empty(&mut empty_log), -1.0);',
+          'assert_eq!(empty_log, vec![3.0, 4.0]);',
+          'let mut reusable_log = vec![];',
+          'assert_eq!(reusable(&mut reusable_log), 104.0);',
+          'assert_eq!(reusable_log, vec![1.0, 2.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('releases a shared findIndex borrow before either alias is reused', () => {
+    const result = lower(
+      'shared-array-find-index-exact.ts',
+      `export function sharedFind(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const index = alias.findIndex((value: number): boolean => value === 2);
+         values.push(4);
+         return index * 10 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_find_index_receiver = &alias;');
+    expect(output).toContain('let array_find_index_values = array_find_index_receiver.borrow();');
+    expect(output).toContain('drop(array_find_index_values);');
+    if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(shared_find(), 14.0);')).not.toThrow();
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-find-index-invocation-unrepresented',
+      source: 'export function find(values: number[]): number { return values.findIndex(); }',
+    },
+    {
+      rule: 'rust-array-find-index-invocation-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((value): boolean => value === 1, {}); }',
+    },
+    {
+      rule: 'rust-array-find-index-invocation-unrepresented',
+      source:
+        'export function find(values: number[], callbacks: [(value: number) => boolean]): number { return values.findIndex(...callbacks); }',
+    },
+    {
+      rule: 'rust-array-find-index-invocation-unrepresented',
+      source:
+        'export function find(values: number[]): number | undefined { return values.findIndex?.((value): boolean => value === 1); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((value, index, array): boolean => array[index] === value); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((value?: number): boolean => value === 1); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((value: number = 0): boolean => value === 1); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((...items: number[]): boolean => items.length > 0); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex(async (value: number): Promise<boolean> => value === 1); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex(<T>(value: T): boolean => value !== undefined); }',
+    },
+    {
+      rule: 'rust-array-find-index-callback-carrier-unrepresented',
+      source:
+        'export function find(values: number[]): number { return values.findIndex((value: number, index: string): boolean => value === 1); }',
+    },
+    {
+      rule: 'rust-array-find-index-predicate-result-carrier-unrepresented',
+      source: 'export function find(values: number[]): number { return values.findIndex((value): number => value); }',
+    },
+    {
+      rule: 'rust-array-find-index-element-carrier-unrepresented',
+      source:
+        'export function find(values: (number | string)[]): number { return values.findIndex((value): boolean => typeof value === "number"); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function find(): number { return [1, , 3].findIndex((value): boolean => value === 3); }',
+    },
+  ])('stably refuses unsupported exact array findIndex semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-find-index-refused.ts', source);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses incompatible findIndex result carriers', () => {
+    const result = lower(
+      'array-find-index-result-carrier.ts',
+      'export function find(values: number[]): number { return values.findIndex((value): boolean => value === 1); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'find',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.findIndex call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = { kind: 'primitive', name: 'boolean' };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(result.module)).rule).toBe(
+      'rust-array-find-index-result-carrier-unrepresented',
+    );
+  });
+
+  it('refuses findIndex callbacks that capture the direct or represented shared receiver group', () => {
+    const direct = lower(
+      'array-find-index-direct-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         return values.findIndex((value): boolean => value === values.length);
+       }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(direct.module))).toBe('rust-array-find-index-alias-borrow-conflict');
+
+    const shared = lower(
+      'array-find-index-shared-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         const predicate = (value: number): boolean => value === values.length;
+         const result = alias.findIndex(predicate);
+         values.push(4);
+         return result;
+       }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(shared.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
   it('preserves exact indexOf and includes equality across number, boolean, and string carriers', () => {
