@@ -27838,6 +27838,243 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
   });
 });
 
+describe('emitIrModuleRust exact string enum assertions', () => {
+  it('converts local member, parameter, call, alias, and property sources once into owned strings', () => {
+    const result = lower(
+      'string-enum-assert.ts',
+      `enum Label { A = "a", B = "b" }
+       type Alias = Label;
+       function pick(): Label { return Label.B; }
+       export function member(): string { return Label.A as string; }
+       export function parameter(value: Label): string { return value as string; }
+       export function call(): string { return pick() as string; }
+       export function alias(value: Alias): string { return value as string; }
+       export function property(): string { const box: { label: Label } = { label: Label.A }; return box.label as string; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return (Label::A).as_str().to_owned();');
+    expect(output).toContain('return (value).as_str().to_owned();');
+    expect(output).toContain('return (pick()).as_str().to_owned();');
+    expect(output).toContain('return (box_.label).as_str().to_owned();');
+    expect(output.match(/\(pick\(\)\)\.as_str\(\)\.to_owned\(\)/gu)).toHaveLength(1);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('converts imported named, aliased, barrel, and namespace members through the consumer alias', () => {
+    const api = lower('string-enum-api.ts', 'export enum Label { A = "a", B = "b" }').module;
+    const explicit = lower('string-enum-explicit.ts', "export { Label } from './string-enum-api.js';").module;
+    const star = lower('string-enum-star.ts', "export * from './string-enum-api.js';").module;
+    const consumer = lower(
+      'string-enum-consumer.ts',
+      `import { Label } from './string-enum-api.js';
+       import { Label as L } from './string-enum-api.js';
+       import { Label as ExplicitLabel } from './string-enum-explicit.js';
+       import { Label as StarLabel } from './string-enum-star.js';
+       import * as ns from './string-enum-api.js';
+       export function named(): string { return Label.A as string; }
+       export function aliased(): string { return L.B as string; }
+       export function explicit(): string { return ExplicitLabel.A as string; }
+       export function star(): string { return StarLabel.B as string; }
+       export function namespaced(): string { return ns.Label.A as string; }`,
+    ).module;
+    const output = emitRustModuleInGraph([api, explicit, star, consumer], consumer, [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './string-enum-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './string-enum-explicit.js',
+        target: getRustTestModuleIdentity(explicit),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './string-enum-star.js',
+        target: getRustTestModuleIdentity(star),
+      },
+      {
+        importer: getRustTestModuleIdentity(explicit),
+        specifier: './string-enum-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+      {
+        importer: getRustTestModuleIdentity(star),
+        specifier: './string-enum-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+    ]);
+
+    expect(output).toContain('return (Label::A).as_str().to_owned();');
+    expect(output).toContain('return (L::B).as_str().to_owned();');
+    expect(output).toContain('return (ExplicitLabel::A).as_str().to_owned();');
+    expect(output).toContain('return (StarLabel::B).as_str().to_owned();');
+    expect(output).toContain('return (ns::Label::A).as_str().to_owned();');
+  });
+
+  it.each([
+    {
+      name: 'a local numeric enum member',
+      source: 'enum Color { Red = 1 } export function wrong(): string { return Color.Red as string; }',
+    },
+    {
+      name: 'a local empty enum value',
+      source: 'enum Empty {} export function wrong(value: Empty): string { return value as string; }',
+    },
+    {
+      name: 'a reverse string-to-enum assertion',
+      source: 'enum Label { A = "a" } export function wrong(value: string): Label { return value as Label; }',
+    },
+    {
+      name: 'a generic enum-typed value',
+      source:
+        'enum Label { A = "a" } export function wrong<T extends Label>(value: T): string { return value as string; }',
+    },
+  ])('refuses $name with the deterministic cast rule', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('string-enum-refused.ts', source).module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+  });
+
+  it.each([
+    {
+      name: 'an imported mixed-domain enum',
+      source: 'export enum Mixed { A = 1, B = "b" }',
+      member: 'Mixed.A',
+    },
+    {
+      name: 'an imported string enum with a value namespace',
+      source: `export enum Namespaced { A = "a" }
+               export namespace Namespaced { export function size(): number { return 1; } }`,
+      member: 'Namespaced.A',
+    },
+  ])('refuses $name with the deterministic cast rule', ({ source, member }) => {
+    const importedName = member.slice(0, member.indexOf('.'));
+    const api = lower('string-enum-refused-api.ts', source).module;
+    const consumer = lower(
+      'string-enum-refused-consumer.ts',
+      `import { ${importedName} } from './string-enum-refused-api.js';
+       export function wrong(): string { return ${member} as string; }`,
+    ).module;
+
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([api, consumer], consumer, [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './string-enum-refused-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ]),
+      ),
+    ).toBe('rust-cast-requires-type-directed-lowering');
+  });
+
+  it('keeps the primitive string identity assertion and imported value evidence on their existing paths', () => {
+    const result = lower(
+      'string-enum-identity.ts',
+      `enum Label { A = "a" }
+       export function identity(value: string): string { return value as string; }
+       export function ordinary(value: Label): Label { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return value;');
+    expect(output).not.toContain('as_str().to_owned()');
+  });
+
+  it('salvages an unrelated declaration while keeping the string enum assertion', () => {
+    const api = lower('string-enum-salvage-api.ts', 'export enum Label { A = "a" }').module;
+    const module = lower(
+      'string-enum-salvage-consumer.ts',
+      `import { Label } from './string-enum-salvage-api.js';
+       interface Point { value: number }
+       export function text(): string { return Label.A as string; }
+       export function wrong(point: Point): number { return point as number; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(module),
+            specifier: './string-enum-salvage-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([api, module]),
+      moduleFiles: [{ file: session.emitModule(api)[0]!, module: getRustTestModuleIdentity(api) }],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'record assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'record assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('return (Label::A).as_str().to_owned();');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function text');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 4');
+  });
+
+  it.skipIf(!rustcAvailable)(
+    'compiles a two-module crate whose consumer asserts an imported member to a string',
+    () => {
+      const api = lower('string-enum-native-api.ts', 'export enum Label { A = "a", B = "b" }').module;
+      const consumer = lower(
+        'string-enum-native-consumer.ts',
+        `import { Label } from './string-enum-native-api.js';
+       export function first(): string { return Label.A as string; }
+       export function second(): string { return Label.B as string; }`,
+      ).module;
+      const session = createRustCompilerBackend().createEmissionSession!({
+        moduleResolution: {
+          edges: [
+            {
+              importer: getRustTestModuleIdentity(consumer),
+              specifier: './string-enum-native-api.js',
+              target: getRustTestModuleIdentity(api),
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+        modules: [api, consumer],
+        options: {},
+      });
+      const finalized = session.finalizePackageGraph!({
+        facade: createRustSourceTreeFacade([api, consumer]),
+        moduleFiles: [api, consumer].map((module) => ({
+          file: session.emitModule(module)[0]!,
+          module: getRustTestModuleIdentity(module),
+        })),
+      });
+      const files = [
+        ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+        ...finalized.packageFiles.map(({ file }) => file),
+      ];
+
+      runRustSourceTree(
+        files,
+        'assert_eq!(string_enum_native_consumer::first(), "a".to_owned()); assert_eq!(string_enum_native_consumer::second(), "b".to_owned());',
+      );
+    },
+  );
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(

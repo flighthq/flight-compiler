@@ -2422,7 +2422,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // convert exactly. A String, opaque host value, record, or string enum has no valid Rust cast
       // to f64 and previously produced code rustc rejects.
       if (expression.type.kind === 'primitive' && expression.type.name === 'number') {
-        const sourceType = inferRustNumericEnumAssertionSourceTypeRust(expression.expression, context);
+        const sourceType = inferRustEnumAssertionSourceTypeRust(expression.expression, context);
         const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
         if (source?.kind === 'primitive' && source.name === 'number') {
           return `(${emitExpression(expression.expression, context)} as f64)`;
@@ -2439,6 +2439,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const identityCast = emitRustIdentityCastRust(expression, context);
       if (identityCast) return identityCast;
+      // The source value of a string enum is the string itself, so the exact conversion reads the
+      // enum's own value mapping into the owned carrier. Every other string source stays on the
+      // deterministic cast refusal below.
+      if (expression.type.kind === 'primitive' && expression.type.name === 'string') {
+        const sourceType = inferRustEnumAssertionSourceTypeRust(expression.expression, context);
+        const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
+        const stringEnumAssertion = source
+          ? emitRustStringEnumAssertionRust(expression.expression, source, context)
+          : undefined;
+        if (stringEnumAssertion) return stringEnumAssertion;
+      }
       // The reverse assertion cannot validate its operand: a number carries no evidence that it is
       // one of the enum's discriminants, and Rust has no checked construction to consult.
       const resolvedTargetType = resolveIrTypeAliasValueRust(expression.type, context, new Set());
@@ -19858,8 +19869,9 @@ function getIrExpressionClassDeclarationRust(
 // An enum member read is a variant of that enum, which the member emitter already spells as a path
 // into the type, locally or through a consumer import alias. The shared expression inference has no
 // entry for it because a general member read can mean a field, so the assertion lane supplies the
-// exact evidence it needs and reuses the imported-member resolver's own declaration evidence.
-function inferRustNumericEnumAssertionSourceTypeRust(
+// exact evidence it needs and reuses the imported-member resolver's own declaration evidence. Both
+// the numeric and string conversion branches read this one evidence source.
+function inferRustEnumAssertionSourceTypeRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
@@ -19869,13 +19881,21 @@ function inferRustNumericEnumAssertionSourceTypeRust(
   const declaration =
     getIrExpressionEnumDeclarationRust(expression.object, context) ??
     resolveRustImportedEnumMemberDeclarationRust(expression, context);
-  return declaration
-    ? {
-        kind: 'named',
-        reference: { binding: declaration.binding, kind: 'binding', path: [] },
-        typeArguments: [],
-      }
-    : undefined;
+  if (declaration) {
+    return {
+      kind: 'named',
+      reference: { binding: declaration.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+  }
+  // A record property read keeps the property's declared type as exact evidence.
+  const objectType =
+    expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding'
+      ? context.bindingTypes.get(expression.object.reference.binding.id)
+      : undefined;
+  const resolvedObject = objectType ? resolveIrTypeAliasValueRust(objectType, context, new Set()) : undefined;
+  const properties = resolvedObject ? getIrObjectTypePropertiesRust(resolvedObject, context) : undefined;
+  return properties?.find((candidate) => candidate.name === expression.name)?.type;
 }
 
 // The one numeric conversion the Rust carrier represents exactly: an integer discriminant taken
@@ -19929,6 +19949,45 @@ function emitRustNumericEnumAssertionRust(
   }
   const operand = emitExpression(expression, context);
   return wrapper ? `((${operand}).0 as f64)` : `((${operand}) as i32) as f64`;
+}
+
+// The one string conversion the Rust carrier represents exactly: a string enum's value mapping read
+// once into the owned carrier. Every other source stays on the caller's deterministic cast refusal.
+function emitRustStringEnumAssertionRust(
+  expression: Readonly<IrExpression>,
+  sourceType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (sourceType.kind !== 'named' || sourceType.reference.kind !== 'binding' || sourceType.typeArguments.length > 0) {
+    return undefined;
+  }
+  const binding = sourceType.reference.binding;
+  const location = getIrEnumDeclarationLocationRust(binding, context);
+  if (!location) return undefined;
+  const values = location.declaration.members.map((member) => member.value);
+  if (values.length === 0) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has no members to assert to string`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  if (values.some((value) => typeof value !== 'string')) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has a numeric or mixed discriminant domain; a string assertion needs one exact string enum domain`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  if (getIrEnumNamespaceFunctionsRust(location.declaration, location.module).length > 0) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has a value namespace, which a string enum has no Rust carrier for; assert its members to string without one`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  const operand = emitExpression(expression, context);
+  return `(${operand}).as_str().to_owned()`;
 }
 
 // An enum declaration belongs to the module that wrote it, which may be any source module in the
