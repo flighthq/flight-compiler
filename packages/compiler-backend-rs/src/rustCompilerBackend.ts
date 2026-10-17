@@ -101,8 +101,8 @@ import {
   collectIrModuleMovedBindingIdsRust,
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
-import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
+import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
