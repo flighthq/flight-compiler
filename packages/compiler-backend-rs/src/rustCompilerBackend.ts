@@ -2367,6 +2367,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const test = `matches!(${operand}, ${typeofTest.enumName}::${typeofTest.variantName}(_))`;
         return typeofTest.negated ? `!${test}` : test;
       }
+      const typeofPresenceTest = getRustTypeofPresenceTestRust(expression, context);
+      if (typeofPresenceTest) {
+        if (typeofPresenceTest.kind === 'present') return typeofPresenceTest.negated ? 'true' : 'false';
+        const operand = emitExpression(typeofPresenceTest.operand, context);
+        return `${operand}.${typeofPresenceTest.negated ? 'is_some' : 'is_none'}()`;
+      }
       if (
         expression.operator === '**' &&
         expression.semantics.left.flow === 'number' &&
@@ -24752,6 +24758,64 @@ function getTypeofTypeTestRust(
     operand: typeofSide.operand,
     variantName: variant.variantName,
   };
+}
+
+// A `typeof` test against the source's single absence marker states presence, exactly like the
+// `=== undefined` test the IR already lowers to `Option::is_none`. It is representable only when the
+// operand is an identifier whose declared type is one present alternative plus `undefined`: the Rust
+// binding is then already an `Option`, and no kind tag, runtime kind, or carrier decision is involved.
+// A narrowed operand is already present, so the test folds. Every other `typeof` operand keeps the
+// existing runtime-representation refusal.
+function getRustTypeofPresenceTestRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+):
+  | Readonly<{ kind: 'option'; negated: boolean; operand: Readonly<Extract<IrExpression, { kind: 'identifier' }>> }>
+  | Readonly<{ kind: 'present'; negated: boolean }>
+  | undefined {
+  if (
+    expression.operator !== '===' &&
+    expression.operator !== '==' &&
+    expression.operator !== '!==' &&
+    expression.operator !== '!='
+  ) {
+    return undefined;
+  }
+  const typeofSide =
+    expression.left.kind === 'unary' && !expression.left.postfix && expression.left.operator === 'typeof'
+      ? expression.left
+      : expression.right.kind === 'unary' && !expression.right.postfix && expression.right.operator === 'typeof'
+        ? expression.right
+        : undefined;
+  const literalSide = typeofSide === expression.left ? expression.right : expression.left;
+  if (!typeofSide || literalSide.kind !== 'literal' || literalSide.value !== 'undefined') return undefined;
+  const operand = typeofSide.operand;
+  if (operand.kind !== 'identifier' || operand.reference.kind !== 'binding') return undefined;
+  if (!isIrExpressionOptionShapedRust(operand, context)) return undefined;
+  const declared = inferIrExpressionTypeRust(operand, context);
+  const resolved = declared ? resolveIrTypeAliasValueRust(declared, context, new Set()) : undefined;
+  if (!resolved || resolved.kind !== 'union' || !isRustSingleUndefinedOptionCarrier(resolved)) return undefined;
+  const present = resolved.types.filter((member) => member.kind !== 'undefined');
+  if (present.length !== 1 || !isRustTypeofPresencePayloadRust(present[0]!)) return undefined;
+  const negated = expression.operator === '!==' || expression.operator === '!=';
+  if (operand.presence === 'narrowedPresent') return { kind: 'present', negated };
+  return { kind: 'option', negated, operand };
+}
+
+function isRustTypeofPresencePayloadRust(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'array':
+    case 'literal':
+    case 'object':
+    case 'primitive':
+    case 'tuple':
+    case 'union':
+      return true;
+    case 'named':
+      return !(type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter');
+    default:
+      return false;
+  }
 }
 
 // A Rust enum plus the accessors that make the alternatives reachable: one per alternative for a

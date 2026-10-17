@@ -3397,6 +3397,81 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
   });
 
+  it('lowers typeof presence tests on a single-undefined Option to is_none and is_some', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'typeof-presence.ts',
+        `interface Texture { size: number; name: string; }
+         function read(): Texture | undefined { return undefined; }
+         export function present(text: string | undefined): boolean { return typeof text !== 'undefined'; }
+         export function absent(text: string | undefined): boolean { return typeof text === 'undefined'; }
+         export function loosePresent(text: string | undefined): boolean { return typeof text != 'undefined'; }
+         export function looseAbsent(text: string | undefined): boolean { return typeof text == 'undefined'; }
+         export function numberPresent(value: number | undefined): boolean { return typeof value !== 'undefined'; }
+         export function sizeWhenPresent(): number {
+           const texture = read();
+           if (typeof texture !== 'undefined') return texture.size;
+           return 0;
+         }
+         export function sizeWhenAbsent(): number {
+           const texture = read();
+           if (typeof texture === 'undefined') return 0;
+           return texture.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return text.is_some();');
+    expect(output).toContain('return text.is_none();');
+    expect(output).toContain('return value.is_some();');
+    expect(output).toContain('texture.as_ref().unwrap().size');
+  });
+
+  it('folds a typeof presence test whose operand is already narrowed present', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'typeof-presence-narrowed.ts',
+        'export function check(text: string | undefined): boolean { if (text === undefined) return false; return typeof text === "undefined"; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return false;');
+  });
+
+  it.each([
+    ['unknown operand', 'export function f(value: unknown): boolean { return typeof value === "undefined"; }'],
+    ['any operand', 'export function f(value: any): boolean { return typeof value === "undefined"; }'],
+    ['null sentinel', 'export function f(value: string | null): boolean { return typeof value === "undefined"; }'],
+    [
+      'dual sentinels',
+      'export function f(value: string | null | undefined): boolean { return typeof value === "undefined"; }',
+    ],
+    [
+      'callable union',
+      'export function f(value: (() => void) | undefined): boolean { return typeof value === "undefined"; }',
+    ],
+    ['host capability constant', 'export function f(): boolean { return typeof SharedArrayBuffer !== "undefined"; }'],
+    [
+      'arbitrary typeof string',
+      'interface Texture { size: number } export function f(value: Texture | undefined): boolean { return typeof value === "object"; }',
+    ],
+    [
+      'property read without stable Option representation',
+      'interface Box { label?: string } export function f(box: Box): boolean { return typeof box.label !== "undefined"; }',
+    ],
+    [
+      'constrained type parameter',
+      'export function f<T extends string | undefined>(value: T): boolean { return typeof value === "undefined"; }',
+    ],
+  ])('keeps the typeof runtime-representation refusal for %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('typeof-presence-refused.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-typeof-runtime-representation-unsupported');
+    expect(failure.message).toContain('typeof on');
+  });
+
   it('emits nullable and optional parameters but rejects bare undefined expressions', () => {
     const nullable = lower(
       'nullable.ts',
