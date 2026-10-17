@@ -11849,7 +11849,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         'optional-simple-class-parameter-checkpoint.ts',
         `class Counter {
            value: number;
-           constructor(value: number) { this.value = value; }
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
            inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
          }
          class Snapshot {
@@ -11863,8 +11864,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          }
          function forward(value?: Counter): number { return adjust(value); }
          export function optionalClassParameterCheckpoint(): boolean {
-           const receiver = new Counter(2); const receiverAlias = receiver;
-           const other = new Counter(7); const otherAlias = other;
+           const receiver = new Counter(2, "receiver"); const receiverAlias = receiver;
+           const other = new Counter(7, "other"); const otherAlias = other;
            const omittedFunction = adjust();
            const explicitFunction = adjust(undefined);
            const forwarded = forward(receiverAlias);
@@ -11874,10 +11875,25 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const omittedMethod = receiver.inspect();
            const explicitMethod = receiverAlias.inspect(undefined);
            const distinctMethod = receiver.inspect(otherAlias);
+           const compound = new Counter(2, "a"); const compoundAlias = compound;
+           const optionalCompound: Counter | undefined = compoundAlias;
+           let compoundOrder = 0;
+           const numericRhs = (marker: number, result: number): number => {
+             compoundOrder = compoundOrder * 10 + marker;
+             return result;
+           };
+           if (optionalCompound !== undefined) {
+             optionalCompound.value += numericRhs(1, 3);
+             optionalCompound.label += numericRhs(2, 0) === 0 ? "b" : "";
+           }
+           compoundAlias.value *= numericRhs(3, 2);
+           compoundAlias.label += numericRhs(4, 0) === 0 ? "c" : "";
            return omittedFunction === 0 && explicitFunction === 0 && forwarded === 3 &&
              omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
              omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
-             receiver === receiverAlias && receiver.value === 3 && other.value === 7;
+             receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
+             compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
+             compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,
       ).module,
     ).contents;
