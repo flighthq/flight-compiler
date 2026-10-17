@@ -920,6 +920,9 @@ describe('emitIrModuleRust', () => {
     expect(failure.rule).toBe('rust-runtime-external-member-binding-incomplete');
     expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain('runtime external value Promise member all has no Rust binding');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+    expect(failure.rule).not.toBe('rust-runtime-task-instance-member-binding-incomplete');
   });
 
   it('emits a downstream-provided host type through the Rust external binding manifest', () => {
@@ -2146,26 +2149,33 @@ describe('emitIrModuleRust', () => {
     [
       'argument',
       'async function inner(): Promise<number> { return 1; } function consume(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return consume(inner()); }',
+      129,
     ],
     [
       'storage',
       'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { const task: Promise<number> = inner(); return task; }',
+      55,
     ],
     [
       'sync return',
       'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { return inner(); }',
+      55,
     ],
     [
       'assignment',
       'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { let task: Promise<number> = Promise.resolve(0); task = inner(); return task; }',
+      55,
     ],
-  ])('stably refuses a native future in a FlightTask %s context', (_name, source) => {
+  ])('stably refuses a native future in a FlightTask %s context', (_name, source, column) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('native-future-task-adapter.ts', source).module),
     );
 
     expect(failure.classification).toBe('target-runtime');
     expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
+    expect(failure.message).toContain('a native Rust future cannot enter a FlightTask carrier');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(column);
   });
 
   it('stably refuses implicit bare task adoption inside a protected try region', () => {
@@ -2180,6 +2190,9 @@ describe('emitIrModuleRust', () => {
 
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.rule).toBe('rust-async-task-adoption-protected-unrepresented');
+    expect(failure.message).toContain('bare task adoption inside a protected try region');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
   });
 
   it('refuses an async function whose declared return is not a task type', () => {
@@ -2191,7 +2204,118 @@ describe('emitIrModuleRust', () => {
       declarations: [{ ...declaration, returns: { kind: 'primitive' as const, name: 'number' as const } }],
     };
 
-    expect(() => emitIrModuleRust(rewritten)).toThrow('an async function must return a task type');
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(rewritten));
+    expect(failure.rule).toBe('rust-async-task-return-carrier-invalid');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('an async function must return a task type');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+  });
+
+  it('refuses an async task return carrier without exactly one awaited type', () => {
+    const module = lower(
+      'broken-task.ts',
+      'export async function broken(value: number): Promise<number> { return value; }',
+    );
+    const declaration = module.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.returns.kind !== 'named') {
+      throw new Error('Expected an async function with a named return type');
+    }
+    const rewritten = {
+      ...module.module,
+      declarations: [{ ...declaration, returns: { ...declaration.returns, typeArguments: [] } }],
+    };
+
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(rewritten));
+    expect(failure.rule).toBe('rust-async-task-return-carrier-invalid');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('a task type requires one awaited type argument');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+  });
+
+  it('stably identifies async closures as a compiler lowering gap', () => {
+    const module = lower(
+      'async-closure-rule.ts',
+      '\nexport function create(): (value: number) => Promise<number> { return async (value: number): Promise<number> => value; }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-async-closure-lowering-required');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('async closures require Flight task lowering');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+  });
+
+  it('stably identifies async iteration as a compiler lowering gap', () => {
+    const module = lower(
+      'async-iteration-rule.ts',
+      '\nexport async function sum(values: number[]): Promise<number> { let total = 0; for await (const value of values) { total += value; } return total; }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-async-iteration-lowering-required');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('async iteration requires Flight task lowering');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+  });
+
+  it.each([
+    [
+      'then',
+      '\nexport function chain(task: Promise<number>): Promise<number> { return task.then((value) => value + 1); }',
+    ],
+    ['catch', '\nexport function recover(task: Promise<number>): Promise<number> { return task.catch(() => 0); }'],
+    ['finally', '\nexport function observe(task: Promise<number>): Promise<number> { return task.finally(() => {}); }'],
+  ])('classifies a missing task %s instance member as a target-runtime ABI gap', (member, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('task-instance-member-rule.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-runtime-task-instance-member-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(`task member ${member} has no Rust binding`);
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+    expect(failure.rule).not.toBe('rust-runtime-external-member-binding-incomplete');
+  });
+
+  it('keeps unsupported protected control flow on the existing async try completion rule', () => {
+    const module = lower(
+      'async-try-rule.ts',
+      '\nexport async function attempt(task: Promise<number>, fallback: number, enabled: boolean): Promise<number> { try { if (enabled) { const value = await task; return value; } return fallback; } catch { return fallback; } }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('async try/catch requires a recognizable await assignment or return');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+    expect(failure.rule).not.toBe('rust-runtime-task-instance-member-binding-incomplete');
+  });
+
+  it.each([
+    [
+      'assignment',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { let value = 0; try { value = await task; } catch { value = fallback; } return value; }',
+    ],
+    [
+      'return',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { return await task; } catch { return fallback; } }',
+    ],
+    [
+      'declarator',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { const value = await task; return value; } catch { return fallback; } }',
+    ],
+    [
+      'expression statement',
+      'export async function attempt(task: Promise<number>, success: number, fallback: number): Promise<number> { try { await task; return success; } catch { return fallback; } }',
+    ],
+  ])('does not leak async/task refusal metadata into the supported direct protected-await %s form', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('direct-protected-await.ts', source).module))).toBeUndefined();
   });
 
   it('elects a shared receiver for a method that only observes its own state', () => {
@@ -17516,10 +17640,9 @@ describe('emitIrModuleRust control-flow refusal diagnostics', () => {
     expect(count("'rust-statement-value-call-unsupported'")).toBe(2);
     expect(count("'C-style for loops require control-flow lowering before Rust emission'")).toBe(1);
     expect(count("'rust-c-style-for-lowering-required'")).toBe(1);
-    // Neighbouring defensive families keep their own metadata: the binding-pattern count is unchanged
-    // and the async-iteration refusal still takes no rule.
+    // The neighbouring defensive binding-pattern family keeps its own metadata count. Reachable
+    // async iteration is covered through emitted behavior rather than a source-text count.
     expect(count("'rust-binding-pattern-lowering-required'")).toBe(4);
-    expect(count("'async iteration requires Flight task lowering')")).toBe(1);
   });
 
   it('emits the supported shapes those rules guard, and keeps the reachable neighbour on its own rule', () => {

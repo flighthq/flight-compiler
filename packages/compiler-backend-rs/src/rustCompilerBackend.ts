@@ -1668,7 +1668,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     }
     case 'function': {
-      if (expression.async) emissionError(context, 'async closures require Flight task lowering');
+      if (expression.async) {
+        emissionError(context, 'async closures require Flight task lowering', 'rust-async-closure-lowering-required');
+      }
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
       const closureContext: EmitContext = {
         ...context,
@@ -1790,6 +1792,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.member);
         if (!binding) {
+          if (expression.member.receiver === 'task') {
+            emissionError(
+              context,
+              `${expression.member.receiver} member ${expression.member.name} has no Rust binding`,
+              'rust-runtime-task-instance-member-binding-incomplete',
+              'target-runtime',
+            );
+          }
           emissionError(context, `${expression.member.receiver} member ${expression.member.name} has no Rust binding`);
         }
         if (binding.kind === 'countingMethod') {
@@ -1871,12 +1881,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return member;
         }
         if (runtimeProvided) {
-          throw createBackendEmissionFailure(
-            'rust',
-            context.module,
+          emissionError(
+            context,
             `runtime external value ${sourceName} member ${expression.name} has no Rust binding`,
             'rust-runtime-external-member-binding-incomplete',
-            { classification: 'target-runtime' },
+            'target-runtime',
           );
         }
       }
@@ -2208,11 +2217,11 @@ function isIrTypeSupportedSharedHashCollectionRust(
 // emitted signature carries `T`. Anywhere else the task type has no native spelling yet.
 function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
   if (type.kind !== 'named' || type.reference.kind !== 'ambient' || type.reference.name !== 'Promise') {
-    emissionError(context, 'an async function must return a task type');
+    emissionError(context, 'an async function must return a task type', 'rust-async-task-return-carrier-invalid');
   }
   const awaited = type.typeArguments[0];
   if (type.typeArguments.length !== 1 || !awaited) {
-    emissionError(context, 'a task type requires one awaited type argument');
+    emissionError(context, 'a task type requires one awaited type argument', 'rust-async-task-return-carrier-invalid');
   }
   return awaited;
 }
@@ -5547,7 +5556,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         '}',
       ];
     case 'forOf': {
-      if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
+      if (statement.await) {
+        emissionError(
+          context,
+          'async iteration requires Flight task lowering',
+          'rust-async-iteration-lowering-required',
+        );
+      }
       if ('pattern' in statement.variable)
         emissionError(
           context,
