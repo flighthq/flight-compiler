@@ -31636,6 +31636,422 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain('return Choice::AB2(value);');
   });
 
+  it('emits one declaration-owned dual-sentinel enum across the supported contextual positions', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-construction.ts',
+      `interface Null { value: number }
+       type Undefined = { label: string };
+       export type Choice = Null | Undefined | null | undefined;
+       interface Box { choice: Choice }
+       interface Source { value: Null }
+       function makeNull(value: number): Null { return { value }; }
+       function consume(_choice: Choice): number { return 1; }
+
+       export function returned(value: Null): Choice { return value; }
+       export function returnedCall(value: number): Choice { return makeNull(value); }
+       export function stored(value: Null, other: Undefined, box: Box): Choice {
+         let choice: Choice = value;
+         choice = other;
+         box.choice = value;
+         return choice;
+       }
+       export function passed(value: Null): number { return consume(value); }
+       export function asserted(value: Null): Choice { return value as Choice; }
+       export function property(source: Source): Choice { return source.value; }
+       export function absentNull(): Choice { return null; }
+       export function absentUndefined(): Choice { return undefined; }
+       export function storedSentinels(): Choice {
+         let sentinel: Choice = null;
+         sentinel = undefined;
+         return sentinel;
+       }
+       export function assignedNull(): Choice {
+         let sentinel: Choice = undefined;
+         sentinel = null;
+         return sentinel;
+       }
+       export function passedSentinels(): number { consume(null); return consume(undefined); }
+       export function assertedNull(): Choice { return null as Choice; }
+       export function assertedUndefined(): Choice { return undefined as Choice; }
+       export function preserved(choice: Choice): Choice { return choice; }
+       export function storedChoice(choice: Choice): Choice { const local: Choice = choice; return local; }
+       export function assignedChoice(choice: Choice): Choice {
+         let local: Choice = undefined;
+         local = choice;
+         return local;
+       }
+       export function initializedLater(value: Null): Choice {
+         let local: Choice;
+         local = value;
+         return local;
+       }
+       export function passedChoice(choice: Choice): number { return consume(choice); }
+       export function assertedChoice(choice: Choice): Choice { return choice as Choice; }
+       export function isNull(choice: Choice): boolean { return choice === null; }
+       export function isUndefined(choice: Choice): boolean { return choice === undefined; }
+       export function isAbsent(choice: Choice): boolean { return choice == null; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub enum Choice {');
+    expect(output).toContain('Null2(Null),');
+    expect(output).toContain('Undefined2(Undefined),');
+    expect(output).toContain('Null,');
+    expect(output).toContain('Undefined,');
+    expect(output).toContain('return Choice::Null2(value);');
+    expect(output.match(/return Choice::Null2\(value\);/gu)).toHaveLength(2);
+    expect(output).toContain('return Choice::Null2(make_null(value));');
+    expect(output).toContain('let mut choice: Choice = Choice::Null2(value.clone());');
+    expect(output).toContain('choice = Choice::Undefined2(other)');
+    expect(output).toContain('box_.choice = Choice::Null2(value.clone())');
+    expect(output).toContain('consume(Choice::Null2(value))');
+    expect(output).toContain('return Choice::Null2(source.value);');
+    expect(output).toContain('return Choice::Null;');
+    expect(output).toContain('return Choice::Undefined;');
+    expect(output.match(/return Choice::Null;/gu)).toHaveLength(2);
+    expect(output.match(/return Choice::Undefined;/gu)).toHaveLength(2);
+    expect(output).toContain('let mut sentinel: Choice = Choice::Null;');
+    expect(output).toContain('sentinel = Choice::Undefined;');
+    expect(output).toContain('let mut sentinel: Choice = Choice::Undefined;');
+    expect(output).toContain('sentinel = Choice::Null;');
+    expect(output).toContain('consume(Choice::Null);');
+    expect(output).toContain('return consume(Choice::Undefined);');
+    expect(output).toContain('return choice;');
+    expect(output).toContain('let local: Choice = choice;');
+    expect(output).toContain('let mut local: Choice = Choice::Undefined;');
+    expect(output).toContain('local = choice;');
+    expect(output).toContain('local = Choice::Null2(value);');
+    expect(output).toContain('consume(choice)');
+    expect(output).toContain('matches!(&choice, Choice::Null)');
+    expect(output).toContain('matches!(&choice, Choice::Undefined)');
+    expect(output).toContain('matches!(&choice, Choice::Null | Choice::Undefined)');
+    expect(output.match(/\bmake_null\(/gu)).toHaveLength(2);
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it('reserves both semantic sentinel names before allocating colliding record arms', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-collision.ts',
+      `interface A_B { left: number }
+       interface AB { right: number }
+       interface Null { nullable: boolean }
+       interface Undefined { optional: boolean }
+       type Choice = A_B | AB | Null | Undefined | null | undefined;
+       export function first(value: A_B): Choice { return value; }
+       export function second(value: AB): Choice { return value; }
+       export function recordNull(value: Null): Choice { return value; }
+       export function recordUndefined(value: Undefined): Choice { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('AB(AB)');
+    expect(output).toContain('AB2(AB_2)');
+    expect(output).toContain('Null2(Null)');
+    expect(output).toContain('Undefined2(Undefined)');
+    expect(output).toContain('return Choice::AB(value);');
+    expect(output).toContain('return Choice::AB2(value);');
+    expect(output).toContain('return Choice::Null2(value);');
+    expect(output).toContain('return Choice::Undefined2(value);');
+  });
+
+  it('keeps two same-shaped dual-sentinel aliases as distinct nominal owners', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-owners.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type First = Alpha | Beta | null | undefined;
+       type Second = Alpha | Beta | null | undefined;
+       export function first(value: Alpha): First { return value; }
+       export function second(value: Alpha): Second { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('enum First {');
+    expect(output).toContain('enum Second {');
+    expect(output).toContain('return First::Alpha(value);');
+    expect(output).toContain('return Second::Alpha(value);');
+    expect(output).not.toContain('AnonymousUnion');
+
+    const crossOwner = lower(
+      'dual-sentinel-nominal-union-cross-owner.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type First = Alpha | Beta | null | undefined;
+       type Second = Alpha | Beta | null | undefined;
+       export function refused(value: Second): First { return value; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(crossOwner))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('qualifies the canonical dual-sentinel owner through imports and a type reexport', () => {
+    const recordsSource = ts.createSourceFile(
+      '/flight/packages/math/src/dual-records.ts',
+      `export interface Alpha { value: number }
+       export type Beta = { label: string };
+       export type Choice = Alpha | Beta | null | undefined;
+       export function consume(_choice: Choice): number { return 1; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/dual-facade.ts',
+      `export type { Alpha, Choice } from './dual-records.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/dual-consumer.ts',
+      `import type { Alpha, Choice } from './dual-facade.js';
+       import { consume } from './dual-records.js';
+       export function returned(alpha: Alpha): Choice { return alpha; }
+       export function passed(alpha: Alpha): number { return consume(alpha); }
+       export function absentNull(): Choice { return null; }
+       export function absentUndefined(): Choice { return undefined; }
+       export function preserved(choice: Choice): Choice { return choice; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Dual-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/dual-facade.ts',
+          },
+          specifier: './dual-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/dual-records.ts' },
+        },
+        {
+          importer: {
+            name: 'Dual-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/dual-consumer.ts',
+          },
+          specifier: './dual-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/dual-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Dual-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/dual-consumer.ts',
+          },
+          specifier: './dual-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/dual-records.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [recordsResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: recordsSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(recordsResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const records = recordsResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, facade, records],
+      options: {},
+    });
+    const providerOutput = session.emitModule(records)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub enum Choice {');
+    expect(consumerOutput).toContain('return Choice::Alpha(alpha);');
+    expect(consumerOutput).toContain('consume(crate::dual_records::Choice::Alpha(alpha))');
+    expect(consumerOutput).toContain('return Choice::Null;');
+    expect(consumerOutput).toContain('return Choice::Undefined;');
+    expect(consumerOutput).toContain('return choice;');
+    expect(consumerOutput).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
+    [
+      'a structural lookalike',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export function refused(value: { value: number }): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic owner',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice<T> = Alpha | T | null | undefined;
+       export function refused(value: Alpha): Choice<Beta> { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'class alternatives',
+      `class Alpha { value: number; constructor(value: number) { this.value = value; } }
+       class Beta { label: string; constructor(label: string) { this.label = label; } }
+       type Choice = Alpha | Beta | null | undefined;
+       export function refused(value: Alpha): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a method argument',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       class Consumer { consume(_choice: Choice): number { return 1; } }
+       export function refused(consumer: Consumer, value: Alpha): number { return consumer.consume(value); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a rest parameter',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       function consume(..._choices: Choice[]): number { return 1; }
+       export function refused(value: Alpha): number { return consume(value); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a spread argument',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       function consume(_choice: Choice): number { return 1; }
+       export function refused(value: Alpha): number { return consume(...[value]); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an element source',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export function refused(values: Alpha[]): Choice { return values[0]; }`,
+      'rust-array-index-result-absence-unrepresented',
+    ],
+    [
+      'native async emission',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export async function refused(value: Alpha): Promise<Choice> { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a manufactured assertion',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export function refused(value: number): Choice { return ({ value } as Alpha) as Choice; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('refuses dual-sentinel nominal construction from %s', (_name, source, rule) => {
+    const result = lower('dual-sentinel-nominal-union-refusal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(rule);
+  });
+
+  it('refuses duplicate exact record identities in a dual-sentinel owner', () => {
+    const module = structuredClone(
+      lower(
+        'dual-sentinel-nominal-union-duplicate.ts',
+        `interface Alpha { value: number }
+         type Beta = { label: string };
+         type Choice = Alpha | Beta | null | undefined;
+         export function refused(value: Alpha): Choice { return value; }`,
+      ).module,
+    );
+    const choice = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Choice',
+    );
+    if (choice?.kind !== 'typeAlias' || choice.type.kind !== 'union') throw new Error('expected Choice union');
+    const alpha = choice.type.types.find(
+      (member) =>
+        member.kind === 'named' && member.reference.kind === 'binding' && member.reference.binding.name === 'Alpha',
+    );
+    if (!alpha) throw new Error('expected Alpha member');
+    (choice.type.types as unknown as (typeof choice.type.types)[number][]).splice(1, 0, structuredClone(alpha));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('keeps union-source assertions on checked carrier recovery', () => {
+    const module = lower(
+      'dual-sentinel-nominal-union-cast-refusal.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export function refused(value: Alpha | Beta | null | undefined): Choice { return value as Choice; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-cast-unsupported');
+  });
+
+  it('salvages a refused dual-sentinel construction without changing its owner', () => {
+    const source = `interface Alpha { value: number }
+type Beta = { label: string };
+type Choice = Alpha | Beta | null | undefined;
+export function broken(value: { value: number }): Choice { return value; }
+export function keep(value: Alpha): Choice { return value; }
+export function absent(): Choice { return undefined; }`;
+    const module = lower('dual-sentinel-nominal-union-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-contextual-general-union-construction-unrepresented',
+          message: 'dual-sentinel nominal union construction refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      message: 'dual-sentinel nominal union construction refused',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 4');
+    expect(placeholder.contents).toContain('// refusal: rust-contextual-general-union-construction-unrepresented');
+    expect(placeholder.contents).toContain('enum Choice');
+    expect(placeholder.contents).toContain('pub fn keep(value: Alpha) -> Choice');
+    expect(placeholder.contents).toContain('return Choice::Alpha(value);');
+    expect(placeholder.contents).toContain('return Choice::Undefined;');
+    expect(placeholder.contents).not.toContain('AnonymousUnion');
+  });
+
+  it.skipIf(!rustcAvailable)('passes the dual-sentinel nominal general-union checkpoint', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-checkpoint.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | null | undefined;
+       export function returned(alpha: Alpha): Choice { return alpha; }
+       export function absentNull(): Choice { return null; }
+       export function absentUndefined(): Choice { return undefined; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => compileRustSourceAgainstRuntime(emitIrModuleRust(result.module).contents)).not.toThrow();
+  });
+
   it('emits one declaration-owned optional payload and constructs it in each supported contextual position', () => {
     const result = lower(
       'optional-nominal-union-construction.ts',

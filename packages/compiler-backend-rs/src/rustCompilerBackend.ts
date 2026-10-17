@@ -170,6 +170,30 @@ interface RustAnonymousUnionEnum {
   readonly variants: RustGeneralUnionVariant[];
 }
 
+interface RustDualSentinelNominalEnumPlan {
+  readonly kind: 'dualSentinelNominalEnum';
+  readonly nullVariantName: 'Null';
+  readonly owner: Readonly<IrTypeReference>;
+  readonly ownerIdentity: RustExactNominalTypeIdentity;
+  readonly undefinedVariantName: 'Undefined';
+  readonly valueVariants: readonly Readonly<{
+    name: string;
+    rustType: string;
+    sourceAlternative: IrType;
+    sourceAlternatives: readonly IrType[];
+  }>[];
+}
+
+interface RustDualSentinelUnionShape {
+  readonly payloadType: Readonly<Extract<IrType, { kind: 'union' }>>;
+}
+
+interface RustDualSentinelCarrierView {
+  readonly name: string;
+  readonly nullVariantName: string;
+  readonly undefinedVariantName: string;
+}
+
 interface RustOptionalGeneratedEnumAllocation {
   readonly key: string;
   readonly module: Readonly<IrModule>;
@@ -2068,14 +2092,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         // loose comparison deliberately accepts either.
         if (evidence.admitsNull && evidence.admitsUndefined) {
           const operand = getIrSharedClassSentinelExpressionRust(expression.left) ? expression.right : expression.left;
-          const union = getIrExpressionDualSentinelUnionRust(operand, context);
+          const union = getIrExpressionDualSentinelCarrierRust(operand, context);
           if (!union) {
             emissionError(context, 'dual-sentinel nullish comparison requires Rust union representation evidence');
           }
           const strict = expression.operator === '===' || expression.operator === '!==';
           const patterns = strict
-            ? [`${union.name}::${evidence.literal === 'null' ? 'Null' : 'Undefined'}`]
-            : [`${union.name}::Null`, `${union.name}::Undefined`];
+            ? [`${union.name}::${evidence.literal === 'null' ? union.nullVariantName : union.undefinedVariantName}`]
+            : [`${union.name}::${union.nullVariantName}`, `${union.name}::${union.undefinedVariantName}`];
           const test = `matches!(&${emitExpression(operand, context)}, ${patterns.join(' | ')})`;
           return expression.operator === '!=' || expression.operator === '!==' ? `!${test}` : test;
         }
@@ -2380,7 +2404,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (unionCast) return unionCast;
       const generalUnionCast = emitGeneralUnionCastRust(expression, context);
       if (generalUnionCast) return generalUnionCast;
-      if (expression.type.kind === 'union') {
+      const assertedSourceType = inferIrExpressionTypeRust(expression.expression, context);
+      if (
+        expression.type.kind === 'union' ||
+        (assertedSourceType &&
+          resolveIrCastUnionTypeRust(assertedSourceType, context).kind === 'union' &&
+          resolveIrCastUnionTypeRust(expression.type, context).kind === 'union')
+      ) {
         emissionRuleError(
           context,
           'an assertion to a union needs one canonical nominal enum owner on both sides, with every destination alternative present in the value. Rust has no inheritance carrier to downcast between classes, and a structural or erased assertion has no exact alternative to select. Assert the concrete alternative, or narrow the value where its alternative is known',
@@ -8219,6 +8249,78 @@ function createRustUnionRepresentationPlanForTypeRust(type: Readonly<IrType>, co
   });
 }
 
+// Option has only one absence channel. A named dual-sentinel union therefore owns one enum directly:
+// the two semantic unit arms reserve their exact names before record arms are allocated, and every
+// construction site can qualify the same canonical alias instead of sharing a lazy structural enum.
+function createRustDualSentinelNominalEnumPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustDualSentinelNominalEnumPlan | undefined {
+  const union = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (union.kind !== 'nominalEnum' || union.sentinels.kind !== 'distinct' || union.owner.typeArguments.length > 0) {
+    return undefined;
+  }
+  const ownerIdentity = getIrNamedTypeIdentityRust(union.owner, context);
+  const declaration = ownerIdentity?.location.declaration;
+  if (
+    !ownerIdentity ||
+    declaration?.kind !== 'typeAlias' ||
+    declaration.typeParameters.length > 0 ||
+    declaration.type.kind !== 'union'
+  ) {
+    return undefined;
+  }
+  const shape = getIrDualSentinelUnionShapeRust(declaration.type);
+  if (!shape) return undefined;
+  const members = getIrUnionTypeMemberRecordsRust(shape.payloadType, context);
+  if (!members || members.length !== union.valueVariants.length) return undefined;
+  const memberIdentities = members.map((member) =>
+    getIrExactNominalRecordIdentityRust(member.sourceAlternative, context),
+  );
+  if (
+    memberIdentities.some((identity) => identity === undefined) ||
+    new Set(memberIdentities.map((identity) => identity?.key)).size !== memberIdentities.length
+  ) {
+    return undefined;
+  }
+  const occupiedVariantNames = new Set(['Null', 'Undefined']);
+  const valueVariants = union.valueVariants.map((variant) => {
+    const identity = getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context);
+    const matches = identity
+      ? members.filter(
+          (member) => getIrExactNominalRecordIdentityRust(member.sourceAlternative, context)?.key === identity.key,
+        )
+      : [];
+    if (matches.length !== 1) return undefined;
+    const match = matches[0]!;
+    return {
+      name: allocateRustUnionVariantName(
+        getGeneralUnionVariantNameRust(match.sourceAlternative, context),
+        occupiedVariantNames,
+      ),
+      rustType: match.targetName,
+      sourceAlternative: variant.sourceAlternative,
+      sourceAlternatives: variant.sourceAlternatives,
+    };
+  });
+  if (valueVariants.some((variant) => variant === undefined)) return undefined;
+  return {
+    kind: 'dualSentinelNominalEnum',
+    nullVariantName: 'Null',
+    owner: union.owner,
+    ownerIdentity,
+    undefinedVariantName: 'Undefined',
+    valueVariants: valueVariants as RustDualSentinelNominalEnumPlan['valueVariants'],
+  };
+}
+
+function allocateRustUnionVariantName(preferredName: string, occupied: Set<string>): string {
+  let name = preferredName;
+  for (let suffix = 2; occupied.has(name); suffix += 1) name = `${preferredName}${String(suffix)}`;
+  occupied.add(name);
+  return name;
+}
+
 function createRustOptionalGeneratedEnumPlanRust(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -8314,11 +8416,15 @@ function emitExactNominalGeneralUnionConstructionRust(
   }
   if (!candidate) return undefined;
   const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  const dualSentinelNominalEnum =
+    plan.sentinels.kind === 'distinct' ? createRustDualSentinelNominalEnumPlanRust(targetType, context) : undefined;
   const optionalGeneratedEnum =
     plan.sentinels.kind === 'optional' ? createRustOptionalGeneratedEnumPlanRust(targetType, context) : undefined;
-  if (optionalGeneratedEnum && context.nativeAsyncFunction) refuseRustContextualGeneralUnionConstructionRust(context);
+  if ((dualSentinelNominalEnum || optionalGeneratedEnum) && context.nativeAsyncFunction) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
   if (
-    plan.sentinels.kind === 'distinct' ||
+    (plan.sentinels.kind === 'distinct' && !dualSentinelNominalEnum) ||
     (plan.sentinels.kind === 'optional' && !optionalGeneratedEnum) ||
     plan.owner.typeArguments.length > 0 ||
     !ownerIdentity ||
@@ -8342,6 +8448,11 @@ function emitExactNominalGeneralUnionConstructionRust(
 
   const sentinel = getIrSharedClassSentinelExpressionRust(expression);
   if (sentinel) {
+    if (dualSentinelNominalEnum) {
+      const variant =
+        sentinel === 'null' ? dualSentinelNominalEnum.nullVariantName : dualSentinelNominalEnum.undefinedVariantName;
+      return `${emitType(dualSentinelNominalEnum.owner, context)}::${variant}`;
+    }
     if (optionalGeneratedEnum?.absence === sentinel) return 'None';
     refuseRustContextualGeneralUnionConstructionRust(context);
   }
@@ -8351,7 +8462,7 @@ function emitExactNominalGeneralUnionConstructionRust(
   if (!sourceIdentity || isIrExpressionReferencePlannedRust(expression, context)) {
     refuseRustContextualGeneralUnionConstructionRust(context);
   }
-  const variants = optionalGeneratedEnum?.valueVariants ?? plan.valueVariants;
+  const variants = dualSentinelNominalEnum?.valueVariants ?? optionalGeneratedEnum?.valueVariants ?? plan.valueVariants;
   const matches = variants.filter(
     (variant) => getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === sourceIdentity.key,
   );
@@ -8360,7 +8471,7 @@ function emitExactNominalGeneralUnionConstructionRust(
   const payload = emitExactNominalGeneralUnionPayloadRust(expression, sourceIdentity, context);
   const constructed = optionalGeneratedEnum
     ? `${emitRustOptionalGeneratedEnumOwnerRust(optionalGeneratedEnum.payloadOwner, context)}::${match.name}(${payload})`
-    : `${emitType(plan.owner, context)}::${match.name}(${payload})`;
+    : `${emitType(dualSentinelNominalEnum?.owner ?? plan.owner, context)}::${match.name}(${payload})`;
   return optionalGeneratedEnum ? `Some(${constructed})` : constructed;
 }
 
@@ -8807,6 +8918,25 @@ function getIrExpressionDualSentinelUnionRust(
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   const type = context.bindingTypes.get(expression.reference.binding.id);
   return type ? resolveDualSentinelUnionEnumRust(type, context) : undefined;
+}
+
+function getIrExpressionDualSentinelCarrierRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): RustDualSentinelCarrierView | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const type = context.bindingTypes.get(expression.reference.binding.id);
+  if (!type) return undefined;
+  const nominal = createRustDualSentinelNominalEnumPlanRust(type, context);
+  if (nominal) {
+    return {
+      name: emitType(nominal.owner, context),
+      nullVariantName: nominal.nullVariantName,
+      undefinedVariantName: nominal.undefinedVariantName,
+    };
+  }
+  const anonymous = resolveDualSentinelUnionEnumRust(type, context);
+  return anonymous ? { name: anonymous.name, nullVariantName: 'Null', undefinedVariantName: 'Undefined' } : undefined;
 }
 
 function emitDualSentinelUnionConstructionRust(
@@ -12833,6 +12963,26 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     reference: { binding: declaration.binding, kind: 'binding', path: [] },
     typeArguments: [],
   };
+  const dualSentinelNominalEnum = createRustDualSentinelNominalEnumPlanRust(declaredType, context);
+  if (
+    dualSentinelNominalEnum &&
+    dualSentinelNominalEnum.ownerIdentity.location.declaration.binding.id === declaration.binding.id &&
+    isRustCompilerModuleIdentityEqual(dualSentinelNominalEnum.ownerIdentity.location.module, context.module)
+  ) {
+    return emitGeneralUnionRust(
+      getBindingTargetNameRust(declaration.binding, context),
+      [
+        ...dualSentinelNominalEnum.valueVariants.map(
+          (variant): RustGeneralUnionVariant => ({ kind: 'tuple', name: variant.name, rustType: variant.rustType }),
+        ),
+        { kind: 'unit', name: dualSentinelNominalEnum.nullVariantName },
+        { kind: 'unit', name: dualSentinelNominalEnum.undefinedVariantName },
+      ],
+      [],
+      isRustDeclarationExportedRust(declaration, context),
+      context,
+    );
+  }
   const optionalGeneratedEnum = createRustOptionalGeneratedEnumPlanRust(declaredType, context);
   if (optionalGeneratedEnum) {
     const exported = isRustDeclarationExportedRust(declaration, context);
@@ -13050,11 +13200,27 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
   }
   if (variable.initialValue === 'undefined') {
-    if (!variable.type || !isNullableType(variable.type)) {
+    if (!variable.type) {
+      emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
+    }
+    const dualSentinelNominalEnum = createRustDualSentinelNominalEnumPlanRust(variable.type, context);
+    if (!isNullableType(variable.type) && !dualSentinelNominalEnum) {
+      const plan = createRustUnionRepresentationPlanForTypeRust(variable.type, context);
+      if (
+        plan.kind === 'nominalEnum' &&
+        plan.sentinels.kind === 'distinct' &&
+        hasIrTypeContextualGeneralUnionCandidateRust(variable.type, plan, context)
+      ) {
+        refuseRustContextualGeneralUnionConstructionRust(context);
+      }
       emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
     }
     const dualSentinelUnion = resolveDualSentinelUnionEnumRust(variable.type, context);
-    const initial = dualSentinelUnion ? `${dualSentinelUnion.name}::Undefined` : 'None';
+    const initial = dualSentinelNominalEnum
+      ? `${emitType(dualSentinelNominalEnum.owner, context)}::${dualSentinelNominalEnum.undefinedVariantName}`
+      : dualSentinelUnion
+        ? `${dualSentinelUnion.name}::Undefined`
+        : 'None';
     return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${initial};`;
   }
   if (context.cellWrappedBindingIds.has(variable.binding.id)) {
@@ -20244,6 +20410,18 @@ function getIrSingleSentinelUnionShapeRust(type: Readonly<IrType>): RustSingleSe
     absence: sentinels[0]!.kind,
     payloadType: { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] },
   };
+}
+
+function getIrDualSentinelUnionShapeRust(type: Readonly<IrType>): RustDualSentinelUnionShape | undefined {
+  if (type.kind !== 'union') return undefined;
+  const members = flattenIrUnionTypesRust(type.types);
+  const nulls = members.filter((member) => member.kind === 'null');
+  const undefineds = members.filter((member) => member.kind === 'undefined');
+  const values = members.filter(
+    (member) => member.kind !== 'never' && member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (nulls.length !== 1 || undefineds.length !== 1 || values.length < 2) return undefined;
+  return { payloadType: { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] } };
 }
 
 // An alias names the carrier the assertion really talks about, so the comparison resolves through it.
