@@ -3067,6 +3067,126 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it.each([
     [
+      'assignment then declarator',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { result = await first; const secondValue: number = await second; result += secondValue; } catch (error) { error; } return result; }',
+      'Ok(__value)',
+      'let second_value: f64 = __value;',
+    ],
+    [
+      'declarator then expression statement',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { const firstValue: number = await first; result = firstValue; await second; result += 1; } catch (error) { error; } return result; }',
+      'let first_value: f64 = __value;',
+      'Ok(_)',
+    ],
+    [
+      'expression statement then assignment',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { await first; result = await second; } catch (error) { error; } return result; }',
+      'Ok(_)',
+      'result = __value;',
+    ],
+  ])('nests two direct async try suspensions for %s', (_name, source, firstEffect, secondEffect) => {
+    const output = emitIrModuleRust(lower('try-two-awaits.ts', source).module).contents;
+
+    const firstSettlement = output.indexOf('match first.settle() {');
+    const firstOk = output.indexOf(firstEffect, firstSettlement);
+    const secondSettlement = output.indexOf('match second.settle() {', firstOk);
+    const secondOk = output.indexOf(secondEffect, secondSettlement);
+    const outerError = output.lastIndexOf('Err(error) => {');
+    const finalReturn = output.lastIndexOf('return result;');
+    expect(firstSettlement).toBeGreaterThan(-1);
+    expect(firstOk).toBeGreaterThan(firstSettlement);
+    expect(secondSettlement).toBeGreaterThan(firstOk);
+    expect(secondOk).toBeGreaterThan(secondSettlement);
+    expect(output.match(/Err\(error\) => \{/g)).toHaveLength(2);
+    expect(outerError).toBeGreaterThan(secondOk);
+    expect(finalReturn).toBeGreaterThan(outerError);
+  });
+
+  it('clones both retained task operands before two direct settlements', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-two-awaits-clone.ts',
+        'function record(error: string): void { error; } export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let firstValue = 0; let secondValue = 0; try { firstValue = await first; secondValue = await second; } catch (error) { record(error); } first; second; return firstValue + secondValue; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match first.clone().settle() {');
+    expect(output).toContain('match second.clone().settle() {');
+    expect(output.match(/Err\(error\) => \{/g)).toHaveLength(2);
+  });
+
+  it.skipIf(!rustcAvailable)('runs two direct settlements in order and absorbs either rejection exactly once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-two-awaits-runtime.ts',
+        'function observed(task: Promise<number>, marker: number, log: number[]): Promise<number> { log.push(marker); return task; } function recordError(error: string, log: number[]): void { if (error === "first") { log.push(100); } else { log.push(200); } } export async function attempt(first: Promise<number>, second: Promise<number>, log: number[]): Promise<number> { let result = -1; try { result = await observed(first, 1, log); const secondValue: number = await observed(second, 2, log); result += secondValue; } catch (error) { recordError(error, log); } log.push(3); return result; }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(5.0), &mut ready_log)), 9.0);
+         assert_eq!(ready_log, vec![1.0, 2.0, 3.0]);
+         let mut first_rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("first"), flight_runtime::FlightTask::ready(5.0), &mut first_rejected_log)), -1.0);
+         assert_eq!(first_rejected_log, vec![1.0, 100.0, 3.0]);
+         let mut second_rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::<f64>::reject("second"), &mut second_rejected_log)), 4.0);
+         assert_eq!(second_rejected_log, vec![1.0, 2.0, 200.0, 3.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'three suspensions',
+      'export async function attempt(first: Promise<number>, second: Promise<number>, third: Promise<number>): Promise<number> { let result = 0; try { result = await first; result += await second; result += await third; } catch (error) { error; } return result; }',
+    ],
+    [
+      'a nested second suspension',
+      'export async function attempt(first: Promise<number>, second: Promise<number>, enabled: boolean): Promise<number> { let result = 0; try { result = await first; if (enabled) { result += await second; } } catch (error) { error; } return result; }',
+    ],
+    [
+      'a later conditional suspension',
+      'export async function attempt(first: Promise<number>, second: Promise<number>, enabled: boolean): Promise<number> { let result = 0; try { result = await first; result = enabled ? await second : result; } catch (error) { error; } return result; }',
+    ],
+    [
+      'return-await completion mixing',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { try { const value = await first; value; return await second; } catch (error) { error; } return 0; }',
+    ],
+    [
+      'break completion',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; while (true) { try { result = await first; result += await second; break; } catch (error) { error; } } return result; }',
+    ],
+    [
+      'continue completion',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; let done = false; while (!done) { try { result = await first; result += await second; done = true; continue; } catch (error) { error; } } return result; }',
+    ],
+    [
+      'source throw completion',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { result = await first; result += await second; throw new Error("no"); } catch (error) { error; } return result; }',
+    ],
+    [
+      'finally interaction',
+      'export async function attempt(first: Promise<number>, second: Promise<number>, log: number[]): Promise<number> { let result = 0; try { result = await first; result += await second; } catch (error) { error; } finally { log.push(1); } return result; }',
+    ],
+    [
+      'catch return completion',
+      'export async function attempt(first: Promise<number>, second: Promise<number>): Promise<number> { let result = 0; try { result = await first; result += await second; } catch (error) { return error.length; } return result; }',
+    ],
+  ])('stably refuses two-suspension async try/catch with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-two-awaits-refusal.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+  });
+
+  it.each([
+    [
       'multiple awaits',
       'export async function attempt(task: Promise<number>, backup: Promise<number>, success: number, fallback: number): Promise<number> { try { await task; await backup; return success; } catch { return fallback; } }',
     ],

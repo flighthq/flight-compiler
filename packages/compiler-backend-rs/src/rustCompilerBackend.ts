@@ -212,6 +212,27 @@ interface RustAsyncTryVariableAwaitPlan {
   readonly variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>;
 }
 
+type RustAsyncTryDirectAwaitStep =
+  | Readonly<{
+      assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>;
+      awaitTarget: Readonly<IrExpression>;
+      kind: 'assignment';
+    }>
+  | Readonly<{ awaitTarget: Readonly<IrExpression>; kind: 'expression' }>
+  | Readonly<{
+      awaitTarget: Readonly<IrExpression>;
+      kind: 'variable';
+      variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>;
+    }>;
+
+interface RustAsyncTryTwoAwaitPlan {
+  readonly betweenStatements: readonly Readonly<IrStatement>[];
+  readonly first: RustAsyncTryDirectAwaitStep;
+  readonly postStatements: readonly Readonly<IrStatement>[];
+  readonly preStatements: readonly Readonly<IrStatement>[];
+  readonly second: RustAsyncTryDirectAwaitStep;
+}
+
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
@@ -5312,9 +5333,10 @@ function getIrTryProtectedCompletionEvidenceRust(statement: Readonly<Extract<IrS
 function assertIrAsyncTryProtectedEvidenceRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   context: EmitContext,
+  supportsTwoSuspensions: boolean,
 ): void {
   const evidence = getIrTryProtectedCompletionEvidenceRust(statement);
-  if (evidence.suspensionCount !== 1) {
+  if (evidence.suspensionCount !== 1 && !(evidence.suspensionCount === 2 && supportsTwoSuspensions)) {
     emissionRuleError(
       context,
       'async try protection requires exactly one direct suspension and no later or neighboring suspension',
@@ -5332,6 +5354,57 @@ function assertIrAsyncTryProtectedEvidenceRust(
 
 function getIrDirectStatementsRust(statement: Readonly<IrStatement>): readonly Readonly<IrStatement>[] {
   return statement.kind === 'block' ? statement.statements : [statement];
+}
+
+function getIrAsyncTryDirectAwaitStepRust(statement: Readonly<IrStatement>): RustAsyncTryDirectAwaitStep | undefined {
+  if (statement.kind === 'expression') {
+    if (statement.expression.kind === 'await') {
+      return { awaitTarget: statement.expression.expression, kind: 'expression' };
+    }
+    if (statement.expression.kind === 'assignment' && statement.expression.right.kind === 'await') {
+      return {
+        assignment: statement.expression,
+        awaitTarget: statement.expression.right.expression,
+        kind: 'assignment',
+      };
+    }
+    return undefined;
+  }
+  if (statement.kind !== 'variable' || statement.declarations.length !== 1) return undefined;
+  const variable = statement.declarations[0]!;
+  return 'binding' in variable && variable.initializer?.kind === 'await'
+    ? { awaitTarget: variable.initializer.expression, kind: 'variable', variable }
+    : undefined;
+}
+
+function getAsyncTryTwoAwaitPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+): RustAsyncTryTwoAwaitPlan | undefined {
+  if (!statement.catchClause || statement.finallyBody) return undefined;
+  const evidence = getIrTryProtectedCompletionEvidenceRust(statement);
+  if (evidence.suspensionCount !== 2 || evidence.abruptStatements.length > 0) return undefined;
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const catchStatements = getIrDirectStatementsRust(statement.catchClause.body);
+  if (
+    !tryStatements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable') ||
+    !catchStatements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable')
+  ) {
+    return undefined;
+  }
+  const steps = tryStatements.flatMap((candidate, index) => {
+    const step = getIrAsyncTryDirectAwaitStepRust(candidate);
+    return step ? [{ index, step }] : [];
+  });
+  if (steps.length !== 2) return undefined;
+  const first = steps[0]!;
+  const second = steps[1]!;
+  return {
+    betweenStatements: tryStatements.slice(first.index + 1, second.index),
+    first: first.step,
+    postStatements: tryStatements.slice(second.index + 1),
+    preStatements: tryStatements.slice(0, first.index),
+    second: second.step,
+  };
 }
 
 function areIrAsyncTryStraightLineStatementsRust(statements: readonly Readonly<IrStatement>[]): boolean {
@@ -5489,6 +5562,56 @@ function emitAsyncTrySettledVariableRust(
   return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(type, context)} = __value;`;
 }
 
+function emitAsyncTrySettledStepRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): string[] {
+  if (step.kind === 'expression') return [];
+  if (step.kind === 'variable') return [emitAsyncTrySettledVariableRust(step.variable, context)];
+  return [
+    `${emitExpression(step.assignment.left, context)} ${emitAssignmentOperatorRust(step.assignment.operator, step.assignment.semantics, context)} __value;`,
+  ];
+}
+
+function emitAsyncTryTwoAwaitRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  plan: Readonly<RustAsyncTryTwoAwaitPlan>,
+  context: EmitContext,
+): string[] {
+  const catchClause = statement.catchClause!;
+  const catchBinding = catchClause.binding ? safeRustValueName(catchClause.binding.name) : '_';
+  const preStatements = emitStatements(plan.preStatements, context);
+  const firstTarget = emitOwnedOperandRust(plan.first.awaitTarget, context);
+  const firstSettlement = emitAsyncTrySettledStepRust(plan.first, context);
+  const betweenStatements = emitStatements(plan.betweenStatements, context);
+  const secondTarget = emitOwnedOperandRust(plan.second.awaitTarget, context);
+  const secondSettlement = emitAsyncTrySettledStepRust(plan.second, context);
+  const postStatements = emitStatements(plan.postStatements, context);
+  const catchStatements = emitStatementBody(catchClause.body, context);
+  const secondMatch = [
+    `match ${secondTarget}.settle() {`,
+    ...indentSourceLines([
+      `${plan.second.kind === 'expression' ? 'Ok(_)' : 'Ok(__value)'} => {`,
+      ...indentSourceLines([...secondSettlement, ...postStatements]),
+      '}',
+      `Err(${catchBinding}) => {`,
+      ...indentSourceLines(catchStatements),
+      '}',
+    ]),
+    '}',
+  ];
+  return [
+    ...preStatements,
+    `match ${firstTarget}.settle() {`,
+    ...indentSourceLines([
+      `${plan.first.kind === 'expression' ? 'Ok(_)' : 'Ok(__value)'} => {`,
+      ...indentSourceLines([...firstSettlement, ...betweenStatements, ...secondMatch]),
+      '}',
+      `Err(${catchBinding}) => {`,
+      ...indentSourceLines(catchStatements),
+      '}',
+    ]),
+    '}',
+  ];
+}
+
 function getDirectIrStatementRust(statement: Readonly<IrStatement>): Readonly<IrStatement> | undefined {
   if (statement.kind !== 'block') return statement;
   return statement.statements.length === 1 ? statement.statements[0] : undefined;
@@ -5540,8 +5663,10 @@ function getAsyncTryDeferredReturnPlanRust(
 }
 
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
-  assertIrAsyncTryProtectedEvidenceRust(statement, context);
+  const twoAwait = getAsyncTryTwoAwaitPlanRust(statement);
+  assertIrAsyncTryProtectedEvidenceRust(statement, context, twoAwait !== undefined);
   assertIrAsyncTaskCatchBindingUsesRust(statement, context);
+  if (twoAwait) return emitAsyncTryTwoAwaitRust(statement, twoAwait, context);
   const deferredReturn = getAsyncTryDeferredReturnPlanRust(statement, context);
   if (deferredReturn) {
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
