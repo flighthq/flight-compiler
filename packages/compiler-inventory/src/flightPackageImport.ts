@@ -93,7 +93,7 @@ export function analyzeFlightSourceImports(
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return [...records.values()].sort(comparePackageImportRecords);
+  return [...records.values()];
 }
 
 function comparePackageImportRecords(

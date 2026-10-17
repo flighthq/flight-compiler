@@ -42,8 +42,8 @@ describe('createFlightWorkspaceCompilationInput', () => {
         dependency.target.source,
       ]),
     ).toEqual([
-      ['packages/app/src/consumer.ts', './helper.js', 'packages/app/src/helper.ts'],
       ['packages/app/src/consumer.ts', '@flighthq/base', 'packages/base/src/index.ts'],
+      ['packages/app/src/consumer.ts', './helper.js', 'packages/app/src/helper.ts'],
       ['packages/app/src/index.ts', './consumer.js', 'packages/app/src/consumer.ts'],
       ['packages/base/src/index.ts', './broken.js', 'packages/base/src/broken.ts'],
       ['packages/base/src/index.ts', './stable.js', 'packages/base/src/stable.ts'],
@@ -240,7 +240,7 @@ function createWorkspaceFiles(overrides: Readonly<Record<string, string>> = {}):
   return {
     '/flight/packages/app/package.json': createPackageManifest('@flighthq/app', { '@flighthq/base': '*' }),
     '/flight/packages/app/src/consumer.ts':
-      "import { broken } from '@flighthq/base'; import { helper } from './helper.js'; export const result = broken + helper;",
+      "import { broken } from '@flighthq/base'; import { helper } from './helper.js'; import '@flighthq/base'; export const result = broken + helper;",
     '/flight/packages/app/src/helper.test.ts': 'throw new Error("not production");',
     '/flight/packages/app/src/helper.ts': 'export const helper = 3;',
     '/flight/packages/app/src/index.ts': "export { result } from './consumer.js';",

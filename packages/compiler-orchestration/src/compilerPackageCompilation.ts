@@ -857,7 +857,7 @@ function createCompilerPackageGraphInitialization(
     try {
       return createCompilerModuleEvaluationPlan({
         dependencies: reachableDependencies,
-        entries: availableEntries.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
+        entries: availableEntries.map(cloneCompilerPackageGraphIdentity),
         modules: reachableModules,
       });
     } catch (error) {
@@ -1075,25 +1075,16 @@ function createCompilerPackageGraphModuleDependencies(
       });
       dependencyByRequest.set(
         requestKey,
-        [...resolvedModules]
-          .sort((left, right) => compareTextCodeUnits(left[0], right[0]))
-          .map(([key, target]) => ({
-            importer: cloneCompilerPackageGraphIdentity(module),
-            importedNames: [...new Set(importedNamesByModule.get(key) ?? [])].sort(compareTextCodeUnits),
-            specifier,
-            target: cloneCompilerPackageGraphIdentity(target),
-          })),
+        [...resolvedModules].map(([key, target]) => ({
+          importer: cloneCompilerPackageGraphIdentity(module),
+          importedNames: [...new Set(importedNamesByModule.get(key) ?? [])],
+          specifier,
+          target: cloneCompilerPackageGraphIdentity(target),
+        })),
       );
     }
   }
-  return [...dependencyByRequest.values()]
-    .flat()
-    .sort(
-      (left, right) =>
-        compareCompilerPackageGraphModules(left.importer, right.importer) ||
-        compareTextCodeUnits(left.specifier, right.specifier) ||
-        compareCompilerPackageGraphModules(left.target, right.target),
-    );
+  return [...dependencyByRequest.values()].flat();
 }
 
 function resolveCompilerPackageGraphExportSource(

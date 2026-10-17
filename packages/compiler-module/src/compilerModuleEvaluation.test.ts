@@ -171,6 +171,74 @@ describe('createCompilerModuleEvaluationPlan', () => {
     ).toEqual([{ cyclic: true, modules: [getModuleIdentity(self)] }]);
   });
 
+  it('preserves explicit entry order independently of module array order', () => {
+    const zeta = lowerModule('zeta.ts', 'export const zeta = 1;');
+    const alpha = lowerModule('alpha.ts', 'export const alpha = 2;');
+    const plan = createCompilerModuleEvaluationPlan(createInput([alpha, zeta], [], [zeta, alpha]));
+    const permuted = createCompilerModuleEvaluationPlan(createInput([zeta, alpha], [], [zeta, alpha]));
+
+    expect(plan).toEqual(permuted);
+    expect(plan.entries).toEqual([getModuleIdentity(zeta), getModuleIdentity(alpha)]);
+    expect(plan.groups).toEqual([
+      { cyclic: false, modules: [getModuleIdentity(zeta)] },
+      { cyclic: false, modules: [getModuleIdentity(alpha)] },
+    ]);
+  });
+
+  it('orders disjoint split routes, deduplicates source repeats, and rejects overlapping routes', () => {
+    const zeta = lowerModule('zeta.ts', 'export const zeta = 1;');
+    const alpha = lowerModule('alpha.ts', 'export const alpha = 2;');
+    const entry = lowerModule(
+      'entry.ts',
+      "import { zeta, alpha } from './barrel.js'; export const value = zeta + alpha;",
+    );
+    const zetaRoute = {
+      ...createDependency(entry, './barrel.js', zeta),
+      importedNames: ['zeta'],
+    } satisfies CompilerModuleLinkDependency;
+    const alphaRoute = {
+      ...createDependency(entry, './barrel.js', alpha),
+      importedNames: ['alpha'],
+    } satisfies CompilerModuleLinkDependency;
+    const plan = createCompilerModuleEvaluationPlan(
+      createInput([alpha, entry, zeta], [zetaRoute, alphaRoute], [entry]),
+    );
+    const entryPlan = plan.modules.find((module) => module.module.source === entry.source)!;
+
+    expect(entryPlan.dependencies.map((dependency) => dependency.target)).toEqual([
+      getModuleIdentity(zeta),
+      getModuleIdentity(alpha),
+    ]);
+    expect(plan.groups).toEqual([
+      { cyclic: false, modules: [getModuleIdentity(zeta)] },
+      { cyclic: false, modules: [getModuleIdentity(alpha)] },
+      { cyclic: false, modules: [getModuleIdentity(entry)] },
+    ]);
+
+    const repeated = lowerModule('repeated.ts', "import './zeta.js'; import './zeta.js';");
+    expect(
+      createCompilerModuleEvaluationPlan(
+        createInput([repeated, zeta], [createDependency(repeated, './zeta.js', zeta)], [repeated]),
+      ).groups,
+    ).toEqual([
+      { cyclic: false, modules: [getModuleIdentity(zeta)] },
+      { cyclic: false, modules: [getModuleIdentity(repeated)] },
+    ]);
+
+    const overlappingRoute = {
+      ...createDependency(entry, './barrel.js', alpha),
+      importedNames: ['zeta', 'alpha'],
+    } satisfies CompilerModuleLinkDependency;
+    for (const dependencies of [
+      [createDependency(entry, './barrel.js', zeta), alphaRoute],
+      [zetaRoute, overlappingRoute],
+    ]) {
+      expect(() =>
+        createCompilerModuleEvaluationPlan(createInput([entry, zeta, alpha], dependencies, [entry])),
+      ).toThrowError(expect.objectContaining({ code: 'duplicate-dependency', kind: 'compiler-module-evaluation' }));
+    }
+  });
+
   it('links type-only requests without evaluating them and supports side effects or expression-only plans', () => {
     const sideEffect = lowerModule('side.ts', 'export interface RuntimeShape {} export function register(): void {}');
     const types = lowerModule('types.ts', 'export interface Shape { value: number }');
@@ -352,6 +420,22 @@ describe('filterCompilerModuleEvaluationPlan', () => {
     );
     expect(candidate).toEqual(snapshot);
     expect(isDeeplyFrozen(projected, new WeakSet())).toBe(true);
+  });
+
+  it('removes an unavailable independent entry without reordering surviving evidence', () => {
+    const zeta = lowerModule('zeta.ts', 'export const zeta = 1;');
+    const unavailable = lowerModule('middle.ts', 'export const middle = 2;');
+    const alpha = lowerModule('alpha.ts', 'export const alpha = 3;');
+    const candidate = createCompilerModuleEvaluationPlan(
+      createInput([alpha, unavailable, zeta], [], [zeta, unavailable, alpha]),
+    );
+    const projected = filterCompilerModuleEvaluationPlan(candidate, [zeta, alpha]);
+
+    expect(projected.entries).toEqual([getModuleIdentity(zeta), getModuleIdentity(alpha)]);
+    expect(projected.groups).toEqual([candidate.groups[0], candidate.groups[2]]);
+    expect(projected.modules).toEqual(
+      candidate.modules.filter((module) => module.module.source !== unavailable.source),
+    );
   });
 
   it('rejects a selection that is not dependency closed', () => {

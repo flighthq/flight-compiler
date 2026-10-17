@@ -203,6 +203,67 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(result.report.initialization.entries).toEqual([goodIdentity]);
   });
 
+  it('preserves explicit entry order and candidate evidence through refusal projection', () => {
+    const zeta = source('@local/source', 'source', 'zeta.ts', 'export const zeta = 1;');
+    const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 2;');
+    const dependent = source(
+      '@local/source',
+      'source',
+      'dependent.ts',
+      "import { bad } from './bad.js'; export const dependent = bad;",
+    );
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 3;');
+    const zetaIdentity = identity(zeta, 'Zeta');
+    const badIdentity = identity(bad, 'Bad');
+    const dependentIdentity = identity(dependent, 'Dependent');
+    const alphaIdentity = identity(alpha, 'Alpha');
+    let candidate: Readonly<CompilerModuleEvaluationPlan> | undefined;
+    let finalized: Readonly<CompilerModuleEvaluationPlan> | undefined;
+    const result = compileTypeScriptPackageGraph({
+      backend: {
+        createEmissionSession({ moduleEvaluation }) {
+          candidate = moduleEvaluation;
+          return {
+            emitModule(module) {
+              if (module.name === 'Bad') {
+                throw createBackendEmissionFailure('fixture', module, 'unsupported bad value');
+              }
+              return [{ contents: module.name, path: `${module.name}.txt` }];
+            },
+            finalizePackageGraph(finalization) {
+              finalized = finalization.moduleEvaluation;
+              return { packageFiles: [] };
+            },
+          };
+        },
+        emitModule: () => [],
+        name: 'fixture',
+      },
+      backendOptions: {},
+      graph: graph(
+        [zetaIdentity, dependentIdentity, alphaIdentity],
+        [{ importer: dependentIdentity, specifier: './bad.js', target: badIdentity }],
+        [{ dependencies: [], name: '@local/source', root: zeta.packageRoot }],
+      ),
+      sources: [dependent, alpha, zeta, bad],
+    });
+
+    expect(candidate?.entries).toEqual([zetaIdentity, dependentIdentity, alphaIdentity]);
+    expect(candidate?.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Zeta'],
+      ['Bad'],
+      ['Dependent'],
+      ['Alpha'],
+    ]);
+    expect(finalized).toBe(result.report.initialization);
+    expect(finalized?.entries).toEqual([zetaIdentity, alphaIdentity]);
+    expect(finalized?.groups.map((group) => group.modules.map((module) => module.name))).toEqual([['Zeta'], ['Alpha']]);
+    expect(finalized?.modules).toEqual(
+      candidate?.modules.filter((module) => module.module.name === 'Alpha' || module.module.name === 'Zeta'),
+    );
+    expect(result.report.entries).toEqual([alphaIdentity, dependentIdentity, zetaIdentity]);
+  });
+
   it('records every refused dependency that blocked a module, not only the first one scanned', () => {
     const badA = source('@local/source', 'source', 'badA.ts', 'export const badA = 1;');
     const badB = source('@local/source', 'source', 'badB.ts', 'export const badB = 2;');
@@ -1165,7 +1226,7 @@ describe('compileTypeScriptPackageGraph', () => {
     });
   });
 
-  it('is deterministic under source, package, entry, and dependency permutation', () => {
+  it('is deterministic under source permutation while preserving entry order', () => {
     const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
     const beta = source(
       '@local/source',
@@ -1189,7 +1250,7 @@ describe('compileTypeScriptPackageGraph', () => {
       }).report;
 
     expect(compile([alpha, beta], [alphaIdentity, betaIdentity])).toEqual(
-      compile([beta, alpha], [betaIdentity, alphaIdentity]),
+      compile([beta, alpha], [alphaIdentity, betaIdentity]),
     );
   });
 
@@ -1437,8 +1498,8 @@ describe('compileTypeScriptPackageGraph', () => {
     });
 
     expect(result.report.initialization.groups.map((group) => group.modules.map((m) => m.name))).toEqual([
-      ['Index'],
       ['Child'],
+      ['Index'],
       ['Consumer'],
     ]);
   });
@@ -1619,7 +1680,12 @@ describe('compileTypeScriptPackageGraph', () => {
     );
     const result = compileFixturePackageGraph([zetaBarrel, consumer, alpha, alphaBarrel, zeta], consumer);
 
-    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Alpha', 'Zeta']);
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Zeta', 'Alpha']);
+    expect(result.report.initialization.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Zeta'],
+      ['Alpha'],
+      ['Consumer'],
+    ]);
   });
 
   it('keeps namespace imports dependent on the barrel module', () => {
@@ -1655,18 +1721,23 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
   });
 
-  it('keeps side-effect and named imports from the same request dependent on the barrel module', () => {
+  it('evaluates repeated side-effect and named imports from one request once', () => {
     const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
     const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
     const consumer = source(
       '@local/source',
       'source',
       'consumer.ts',
-      "import './barrel.js'; import { good } from './barrel.js'; export const value = good;",
+      "import './barrel.js'; import './barrel.js'; import { good } from './barrel.js'; export const value = good;",
     );
     const result = compileFixturePackageGraph([consumer, good, barrel], consumer);
 
     expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+    expect(result.report.initialization.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Good'],
+      ['Barrel'],
+      ['Consumer'],
+    ]);
   });
 
   it('traces a named import through export-all and multiple barrel levels', () => {
@@ -1715,16 +1786,16 @@ describe('compileTypeScriptPackageGraph', () => {
       '@local/source',
       'source',
       'consumer.ts',
-      "import { alpha, beta } from './barrel.js'; export const value = alpha + beta;",
+      "import { beta, alpha } from './barrel.js'; export const value = alpha + beta;",
     );
     const result = compileFixturePackageGraph([consumer, beta, barrel, alpha], consumer);
 
-    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Alpha', 'Beta']);
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Beta', 'Alpha']);
     expect(
       result.report.initialization.modules.find((module) => module.module.name === 'Consumer')?.dependencies,
     ).toEqual([
-      expect.objectContaining({ importedNames: ['alpha'], target: expect.objectContaining({ name: 'Alpha' }) }),
       expect.objectContaining({ importedNames: ['beta'], target: expect.objectContaining({ name: 'Beta' }) }),
+      expect.objectContaining({ importedNames: ['alpha'], target: expect.objectContaining({ name: 'Alpha' }) }),
     ]);
   });
 

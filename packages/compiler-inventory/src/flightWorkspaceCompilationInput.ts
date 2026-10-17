@@ -267,11 +267,8 @@ function createFlightWorkspaceModuleDependencies(
     }
   }
   return {
-    dependencies: [...dependencies.values()].sort(
-      (left, right) =>
-        compareFlightWorkspaceModuleIdentities(left.importer, right.importer) ||
-        compareTextCodeUnits(left.specifier, right.specifier) ||
-        compareFlightWorkspaceModuleIdentities(left.target, right.target),
+    dependencies: [...dependencies.values()].sort((left, right) =>
+      compareFlightWorkspaceModuleIdentities(left.importer, right.importer),
     ),
     resolutionEdges: [...resolutionEdges.values()].sort(compareFlightWorkspaceModuleResolutionEdges),
     sources: [...reachableSources.values()].sort((left, right) =>

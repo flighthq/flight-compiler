@@ -140,10 +140,10 @@ describe('analyzeFlightPackageImports', () => {
 });
 
 describe('analyzeFlightSourceImports', () => {
-  it('analyzes one reachable source without walking the package directory', () => {
+  it('preserves first source occurrence without walking the package directory', () => {
     const source = ts.createSourceFile(
       '/flight/packages/math/src/index.ts',
-      "import type { Shape } from './shape.js';\nexport * from '@flighthq/base';\n",
+      "import './zeta.js';\nexport * from './alpha.js';\nimport './middle.js';\nimport './zeta.js';\nexport * from './alpha.js';\n",
       ts.ScriptTarget.Latest,
       true,
       ts.ScriptKind.TS,
@@ -153,13 +153,19 @@ describe('analyzeFlightSourceImports', () => {
       {
         kind: 'import',
         source: 'packages/math/src/index.ts',
-        specifier: './shape.js',
-        typeOnly: true,
+        specifier: './zeta.js',
+        typeOnly: false,
       },
       {
         kind: 'reexport',
         source: 'packages/math/src/index.ts',
-        specifier: '@flighthq/base',
+        specifier: './alpha.js',
+        typeOnly: false,
+      },
+      {
+        kind: 'import',
+        source: 'packages/math/src/index.ts',
+        specifier: './middle.js',
         typeOnly: false,
       },
     ]);

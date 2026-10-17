@@ -30,7 +30,9 @@ export interface CompilerPackageGraphPackage {
 }
 
 export interface CompilerPackageGraph {
+  /** Evaluation roots in deliberate caller order. */
   readonly entries: readonly CompilerModuleIdentity[];
+  /** Resolved links whose order for one importer is that module's source request order. */
   readonly moduleDependencies: readonly CompilerModuleLinkDependency[];
   readonly packages: readonly CompilerPackageGraphPackage[];
   readonly schema: 'flight-compiler-package-graph/1';
