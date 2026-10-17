@@ -13303,13 +13303,74 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('let forwarded_alias: Rc<RefCell<Counter>> = Rc::clone(&forwarded);');
   });
 
+  it('emits exact optional class method roots, forwarding, narrowing, and identity', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-method-return.ts',
+        `function makeNullable(empty: boolean): Counter | null { return empty ? null : new Counter(5); }
+         class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           fresh(): Counter { return new Counter(this.value); }
+           maybeNull(empty: boolean): Counter | null { return empty ? null : new Counter(this.value); }
+           maybeUndefined(value?: Counter): Counter | undefined { return value; }
+           aliasUndefined(value?: Counter): Counter | undefined { const alias = value; return alias; }
+           absentUndefined(): Counter | undefined { return undefined; }
+           aliasNull(): Counter | null {
+             const result: Counter | null = new Counter(this.value); const alias = result; return alias;
+           }
+           liftNull(): Counter | null { return this.fresh(); }
+           forwardNull(): Counter | null { return this.maybeNull(false); }
+           forwardUndefined(): Counter | undefined { return this.absentUndefined(); }
+           fromFunction(): Counter | null { return makeNullable(false); }
+         }
+         export function run(): boolean {
+           const receiver = new Counter(2); const other = new Counter(4);
+           const nullable = receiver.forwardNull(); const nullableAlias = nullable;
+           const optional = receiver.aliasUndefined(other); const optionalAlias = optional;
+           const forwardedOptional = receiver.forwardUndefined();
+           const fromFunction = receiver.fromFunction();
+           const aliasRoot = receiver.aliasNull();
+           if (nullable !== null) nullable.value += 1;
+           if (optional !== undefined) optional.value += 1;
+           return nullable === nullableAlias && optional === optionalAlias && nullable !== null && nullable.value === 3 &&
+             optional !== undefined && optional.value === 5 && forwardedOptional === undefined &&
+             fromFunction !== null && aliasRoot !== null && receiver.maybeNull(true) === null &&
+             receiver.absentUndefined() === undefined && receiver.liftNull() !== null;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn maybe_null(&self, empty: bool) -> Option<Rc<RefCell<Counter>>>');
+    expect(output).toContain('if empty { None } else { Some(Rc::new(RefCell::new(Counter::new(self.value)))) }');
+    expect(output).toContain(
+      'fn maybe_undefined(&self, value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(output).toContain('return value.clone();');
+    expect(output).toContain(
+      'fn alias_undefined(&self, value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(output).toContain('fn alias_null(&self) -> Option<Rc<RefCell<Counter>>>');
+    expect(output).toContain('let result: Option<Rc<RefCell<Counter>>> = Some(Rc::new(RefCell::new');
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(result.as_ref().unwrap());');
+    expect(output).toContain('return Some(Rc::clone(&alias));');
+    expect(output).toContain('fn lift_null(&self) -> Option<Rc<RefCell<Counter>>>');
+    expect(output).toContain('return Some(self.fresh());');
+    expect(output).toContain('return self.maybe_null(false);');
+    expect(output).toContain('return self.absent_undefined();');
+    expect(output).toContain('return make_nullable(false);');
+    expect(output).toContain('let nullable_alias: Option<Rc<RefCell<Counter>>> = nullable.clone();');
+    expect(output).toContain('nullable.as_ref().unwrap().borrow_mut().value');
+    expect(output).toContain('optional.as_ref().unwrap().borrow_mut().value');
+    expect(output).toContain('(None, None) => true');
+  });
+
   it('refuses borrowed and inexact class method return roots', () => {
     const cases = [
       `class Counter { value = 0; copy(): Counter { return this; } }`,
       `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
-      `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
       `class Counter { value = 0; }
        class Other { value = 1; }
        class Factory { copy(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); } }`,
@@ -13359,6 +13420,21 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       `class Counter { value = 0; }
        class Other { value = 1; fresh(): Other { return new Other(); } }
        class Factory { marker = 0; copy(): Counter { const receiver = new Other(); return receiver.fresh(); } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter | null { return other; } }`,
+      `class Counter {
+         value = 0;
+         maybe(): Counter | undefined { return undefined; }
+         copy(): Counter | null { return this.maybe(); }
+       }`,
+      `class Counter {
+         value = 0;
+         maybe(): Counter | null { return null; }
+         copy(): Counter { return this.maybe(); }
+       }`,
+      `class Counter { value = 0; copy(): Counter | null | undefined { return new Counter(); } }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; maybe(): Other | null { return null; } }
+       class Factory { marker = 0; copy(): Counter | null { const receiver = new Other(); return receiver.maybe(); } }`,
     ];
 
     for (const [index, declaration] of cases.entries()) {
@@ -13369,9 +13445,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule, `case ${String(index)}`).toBe(
         index === 3
           ? 'rust-reference-shared-class-use-unrepresented'
-          : index === 6
+          : index === 5
             ? 'rust-async-method-owner-carrier-unrepresented'
-            : index === 14
+            : index === 13
               ? 'rust-reference-shared-class-construction-unrepresented'
               : 'rust-reference-shared-class-return-unrepresented',
       );
@@ -13465,6 +13541,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          writeRequired(scale: number, other: Counter): void { other.value += this.value * scale; }
          snapshot(): Counter { const result = new Counter(this.value); const alias = result; return alias; }
          forwarded(): Counter { return this.snapshot(); }
+         maybeNull(empty: boolean): Counter | null { return empty ? null : new Counter(this.value); }
+         maybeUndefined(value?: Counter): Counter | undefined { return value; }
+         absentUndefined(): Counter | undefined { return undefined; }
+         forwardNull(): Counter | null { return this.maybeNull(false); }
+         forwardUndefined(): Counter | undefined { return this.absentUndefined(); }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13475,6 +13556,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
        class Factory {
          marker = 0;
          copy(): Counter { const receiver = new Counter(6); return receiver.forwarded(); }
+         copyNull(): Counter | null { const receiver = new Counter(7); return receiver.forwardNull(); }
        }
        function relay(receiver: Counter, other?: Counter): void {
          if (other === undefined) return;
@@ -13493,9 +13575,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          relayRequired(receiverAlias, 2, otherAlias);
          const returned = receiverAlias.snapshot(); const returnedAlias = returned;
          const factory = new Factory(); const forwarded = factory.copy();
+         const returnedNull = receiver.forwardNull(); const returnedNullAlias = returnedNull;
+         const returnedUndefined = receiver.forwardUndefined();
+         const importedForward = factory.copyNull();
          returnedAlias.value += 1;
+         if (returnedNull !== null) returnedNull.value += 1;
          return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null) +
-           receiverAlias.inspectRequired(3, otherAlias) + returned.value + forwarded.value;
+           receiverAlias.inspectRequired(3, otherAlias) + returned.value + forwarded.value +
+           (returnedNull === returnedNullAlias && returnedNull !== null ? returnedNull.value : 0) +
+           (returnedUndefined === undefined ? 1 : 0) + (importedForward !== null ? importedForward.value : 0);
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13545,6 +13633,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(providerOutput).toContain('fn snapshot(&self) -> Rc<RefCell<Counter>>');
     expect(providerOutput).toContain('fn forwarded(&self) -> Rc<RefCell<Counter>>');
     expect(providerOutput).toContain('return self.snapshot();');
+    expect(providerOutput).toContain('fn maybe_null(&self, empty: bool) -> Option<Rc<RefCell<Counter>>>');
+    expect(providerOutput).toContain(
+      'fn maybe_undefined(&self, value: Option<Rc<RefCell<Counter>>>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(providerOutput).toContain('fn forward_null(&self) -> Option<Rc<RefCell<Counter>>>');
+    expect(providerOutput).toContain('fn forward_undefined(&self) -> Option<Rc<RefCell<Counter>>>');
+    expect(providerOutput).toContain('return self.maybe_null(false);');
+    expect(providerOutput).toContain('return self.absent_undefined();');
     expect(providerOutput).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&result);');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
@@ -13566,6 +13662,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
     expect(consumerOutput).toMatch(/let returned_alias: Rc<RefCell<Counter(?:_\d+)?>> = Rc::clone\(&returned\)/u);
     expect(consumerOutput).toMatch(/return receiver\.borrow\(\)\.forwarded\(\);/u);
+    expect(consumerOutput).toMatch(
+      /let returned_null: Option<Rc<RefCell<Counter(?:_\d+)?>>> = receiver\.borrow\(\)\.forward_null\(\)/u,
+    );
+    expect(consumerOutput).toMatch(
+      /let returned_null_alias: Option<Rc<RefCell<Counter(?:_\d+)?>>> = returned_null\.clone\(\)/u,
+    );
+    expect(consumerOutput).toContain('returned_null.as_ref().unwrap().borrow_mut().value');
+    expect(consumerOutput).toMatch(/return receiver\.borrow\(\)\.forward_null\(\);/u);
   });
 
   it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
@@ -13788,6 +13892,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              return new Counter(this.value, this.label);
            }
            forwardedSnapshot(): Counter { return this.mutateAndSnapshot(); }
+           nullableSnapshot(empty: boolean): Counter | null {
+             return empty ? null : new Counter(this.value, this.label);
+           }
+           optionalSnapshot(empty: boolean): Counter | undefined {
+             return empty ? undefined : new Counter(this.value, this.label);
+           }
+           echoOptional(other?: Counter): Counter | undefined { return other; }
+           forwardedNullableSnapshot(): Counter | null { return this.nullableSnapshot(false); }
+           forwardedOptionalSnapshot(): Counter | undefined { return this.optionalSnapshot(false); }
          }
          class Snapshot {
            value: number;
@@ -13810,6 +13923,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const forwardedReceiver = new Counter(8, "forwarded");
            const forwardedResult = forwardedReceiver.forwardedSnapshot();
            const forwardedResultAlias = forwardedResult;
+           const nullableResult = receiver.forwardedNullableSnapshot(); const nullableResultAlias = nullableResult;
+           const optionalResult = receiver.forwardedOptionalSnapshot(); const optionalResultAlias = optionalResult;
+           const optionalEcho = receiver.echoOptional(otherAlias); const optionalEchoAlias = optionalEcho;
+           if (nullableResult !== null) nullableResult.value += 1;
+           if (optionalResult !== undefined) optionalResult.value += 2;
+           if (optionalEcho !== undefined) optionalEcho.value += 1;
            const omittedSnapshot = new Snapshot();
            const explicitSnapshot = new Snapshot(undefined);
            const presentSnapshot = new Snapshot(receiverAlias);
@@ -13840,11 +13959,15 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            return omittedFunction === 0 && explicitFunction === 0 && forwarded === 3 &&
              omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
              omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
-             receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
+             receiver === receiverAlias && receiver.value === 3 && other.value === 8 &&
              methodResult === methodResultAlias && methodResult !== receiver &&
              methodResult.value === 4 && methodResult.label === "receiver" &&
              forwardedResult === forwardedResultAlias && forwardedResult !== forwardedReceiver &&
              forwardedReceiver.value === 9 && forwardedResult.value === 9 && forwardedResult.label === "forwarded" &&
+             nullableResult === nullableResultAlias && nullableResult !== null && nullableResult.value === 4 &&
+             optionalResult === optionalResultAlias && optionalResult !== undefined && optionalResult.value === 5 &&
+             optionalEcho === optionalEchoAlias && optionalEcho === otherAlias && other.value === 8 &&
+             receiver.nullableSnapshot(true) === null && receiver.optionalSnapshot(true) === undefined &&
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
              requiredMethod === requiredMethodAlias && requiredMethod.value === 8 && requiredMethod.label === "required#" &&

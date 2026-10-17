@@ -1924,13 +1924,109 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('plans exact optional class method roots and same-sentinel forwarding locally and across modules', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-class-method-return-provider.ts',
+      `function makeNullable(empty: boolean): Counter | null { return empty ? null : new Counter(5); }
+       export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         fresh(): Counter { return new Counter(this.value); }
+         maybeNull(empty: boolean): Counter | null { return empty ? null : new Counter(this.value); }
+         maybeUndefined(value?: Counter): Counter | undefined { return value; }
+         aliasUndefined(value?: Counter): Counter | undefined { const alias = value; return alias; }
+         absentUndefined(): Counter | undefined { return undefined; }
+         aliasNull(): Counter | null {
+           const result: Counter | null = new Counter(this.value); const alias = result; return alias;
+         }
+         liftNull(): Counter | null { return this.fresh(); }
+         forwardNull(): Counter | null { return this.maybeNull(false); }
+         forwardUndefined(): Counter | undefined { return this.absentUndefined(); }
+         fromFunction(): Counter | null { return makeNullable(false); }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-class-method-return-consumer.ts',
+      `import { Counter } from './optional-class-method-return-provider.js';
+       class Factory {
+         marker = 0;
+         copy(): Counter | null { const receiver = new Counter(7); return receiver.forwardNull(); }
+       }
+       export function run(): boolean {
+         const receiver = new Counter(2); const other = new Counter(3);
+         const nullable = receiver.liftNull(); const nullableAlias = nullable;
+         const optional = receiver.forwardUndefined(); const optionalAlias = optional;
+         const parameter = receiver.aliasUndefined(other);
+         const aliasRoot = receiver.aliasNull();
+         const factory = new Factory(); const importedForward = factory.copy();
+         if (nullable !== null) nullable.value += 1;
+         if (optional !== undefined) optional.value += 1;
+         return nullable === nullableAlias && optional === optionalAlias && parameter === other &&
+           importedForward !== null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Optional-class-method-return-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-class-method-return-consumer.ts',
+          },
+          specifier: './optional-class-method-return-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-class-method-return-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const first = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [provider, consumer] });
+    const second = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [consumer, provider] });
+
+    expect(second).toEqual(first);
+    expect(getModulePlan(first, provider).refusals).toEqual([]);
+    expect(getModulePlan(first, consumer).refusals).toEqual([]);
+    expect(
+      getModulePlan(first, consumer).sharedClassBindings.map(({ binding, representation }) => [
+        binding.name,
+        representation,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ['nullable', 'optional-null-shared-ref-cell-class'],
+        ['nullableAlias', 'optional-null-shared-ref-cell-class'],
+        ['optional', 'optional-undefined-shared-ref-cell-class'],
+        ['optionalAlias', 'optional-undefined-shared-ref-cell-class'],
+        ['parameter', 'optional-undefined-shared-ref-cell-class'],
+        ['aliasRoot', 'optional-null-shared-ref-cell-class'],
+        ['importedForward', 'optional-null-shared-ref-cell-class'],
+      ]),
+    );
+  });
+
   it('refuses borrowed and inexact class method return roots', () => {
     const cases = [
       `class Counter { value = 0; copy(): Counter { return this; } }`,
       `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
-      `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
       `class Counter { value = 0; }
        class Other { value = 1; }
        class Factory { copy(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); } }`,
@@ -1980,6 +2076,21 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       `class Counter { value = 0; }
        class Other { value = 1; fresh(): Other { return new Other(); } }
        class Factory { marker = 0; copy(): Counter { const receiver = new Other(); return receiver.fresh(); } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter | null { return other; } }`,
+      `class Counter {
+         value = 0;
+         maybe(): Counter | undefined { return undefined; }
+         copy(): Counter | null { return this.maybe(); }
+       }`,
+      `class Counter {
+         value = 0;
+         maybe(): Counter | null { return null; }
+         copy(): Counter { return this.maybe(); }
+       }`,
+      `class Counter { value = 0; copy(): Counter | null | undefined { return new Counter(); } }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; maybe(): Other | null { return null; } }
+       class Factory { marker = 0; copy(): Counter | null { const receiver = new Other(); return receiver.maybe(); } }`,
     ];
 
     for (const [index, declaration] of cases.entries()) {
@@ -1994,7 +2105,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         expect.arrayContaining([
           expect.objectContaining({
             code:
-              index === 6
+              index === 5
                 ? 'rust-async-method-owner-carrier-unrepresented'
                 : 'rust-reference-shared-class-return-unrepresented',
           }),
@@ -2011,6 +2122,9 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          self(): Counter { return this.self(); }
          first(): Counter { return this.second(); }
          second(): Counter { return this.first(); }
+         optionalSelf(): Counter | null { return this.optionalSelf(); }
+         optionalFirst(): Counter | undefined { return this.optionalSecond(); }
+         optionalSecond(): Counter | undefined { return this.optionalFirst(); }
        }
        export function run(): number { return 0; }`,
     );
@@ -2023,6 +2137,9 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         expect.stringContaining(':method:self'),
         expect.stringContaining(':method:first'),
         expect.stringContaining(':method:second'),
+        expect.stringContaining(':method:optionalSelf'),
+        expect.stringContaining(':method:optionalFirst'),
+        expect.stringContaining(':method:optionalSecond'),
       ]),
     );
 
@@ -2032,7 +2149,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
        export class Counter { value = 0; }
        export class Provider {
          marker = 0;
-         forward(): Counter { const relay = new Relay(); return relay.forward(); }
+         forward(): Counter | null { const relay = new Relay(); return relay.forward(); }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -2042,7 +2159,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       `import { Counter, Provider } from './class-method-cycle-provider.js';
        export class Relay {
          marker = 0;
-         forward(): Counter { const provider = new Provider(); return provider.forward(); }
+         forward(): Counter | null { const provider = new Provider(); return provider.forward(); }
        }`,
       ts.ScriptTarget.Latest,
       true,

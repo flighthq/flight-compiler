@@ -240,7 +240,7 @@ interface IrClassMethodParameterPlanRust {
   readonly returnClass?:
     | Readonly<{
         classType: Readonly<IrType>;
-        representation: 'shared-ref-cell-class';
+        representation: RustSharedClassRepresentation;
       }>
     | undefined;
 }
@@ -8043,13 +8043,12 @@ function getIrClassMethodParameterPlanRust(
   context: EmitContext,
 ): IrClassMethodParameterPlanRust | undefined {
   const returnRepresentation = getRustSharedClassTypeRepresentationRust(method.returns, context);
-  const returnClass =
-    returnRepresentation === 'shared-ref-cell-class'
-      ? ({
-          classType: getRustSharedClassPayloadTypeRust(method.returns, returnRepresentation, context),
-          representation: returnRepresentation,
-        } as const)
-      : undefined;
+  const returnClass = returnRepresentation
+    ? ({
+        classType: getRustSharedClassPayloadTypeRust(method.returns, returnRepresentation, context),
+        representation: returnRepresentation,
+      } as const)
+    : undefined;
   if (
     method.abstract ||
     method.accessor !== undefined ||
@@ -8117,6 +8116,7 @@ function getIrClassMethodParameterPlanRust(
     method,
     requiredClassTypes,
     optionalClassParameters,
+    returnClass?.representation,
     module,
     context,
   );
@@ -8145,6 +8145,7 @@ function getIrClassMethodParameterMutationPositionsRust(
   method: Readonly<IrClassMethod>,
   requiredClassTypes: ReadonlyMap<number, Readonly<IrType>>,
   optionalClassParameters: IrClassMethodParameterPlanRust['optionalClassParameters'],
+  returnRepresentation: RustSharedClassRepresentation | undefined,
   module: Readonly<IrModule>,
   context: EmitContext,
 ): ReadonlySet<number> | undefined {
@@ -8173,6 +8174,47 @@ function getIrClassMethodParameterMutationPositionsRust(
   const allowedReferences = new WeakSet<object>();
   const references: object[] = [];
   const projected = new Set<string>();
+  const returnStatement = method.body.at(-1);
+  if (
+    isRustOptionalSharedClassRepresentation(returnRepresentation) &&
+    returnStatement?.kind === 'return' &&
+    returnStatement.expression
+  ) {
+    const localVariables = new Map(
+      method.body.flatMap((statement) =>
+        statement.kind === 'variable'
+          ? statement.declarations.flatMap((variable) =>
+              'binding' in variable && !variable.mutable && variable.initializer
+                ? [[variable.binding.id, variable.initializer] as const]
+                : [],
+            )
+          : [],
+      ),
+    );
+    const allowReturnedParameter = (
+      expression: Readonly<IrExpression>,
+      visitingBindings: ReadonlySet<string> = new Set(),
+    ): void => {
+      if (expression.kind === 'conditional') {
+        allowReturnedParameter(expression.whenTrue, visitingBindings);
+        allowReturnedParameter(expression.whenFalse, visitingBindings);
+        return;
+      }
+      if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return;
+      const bindingId = expression.reference.binding.id;
+      const record = classParametersById.get(bindingId);
+      if (record?.optional) {
+        allowedReferences.add(expression);
+        projected.add(record.parameter.binding.id);
+        return;
+      }
+      if (visitingBindings.has(bindingId)) return;
+      const initializer = localVariables.get(bindingId);
+      if (!initializer) return;
+      allowReturnedParameter(initializer, new Set(visitingBindings).add(bindingId));
+    };
+    allowReturnedParameter(returnStatement.expression);
+  }
   let supported = true;
   for (const statement of method.body) {
     analyzeIrStatementSubtreeTraversal(statement, {
