@@ -12719,7 +12719,7 @@ describe('emitIrModuleRust import emission', () => {
       '@flighthq/core',
       'ns-import.ts',
       `import * as util from './util.js'; export function run(): number { return util.helper(); }
-       export function read(): unknown { return util.Widget; }`,
+       export function read(): number { return util.Widget; }`,
     ).module;
     const moduleResolution = {
       edges: [
@@ -12753,7 +12753,7 @@ describe('emitIrModuleRust import emission', () => {
       '@flighthq/core',
       'ns-import.ts',
       `import * as util from './util.js'; export function run(): number { return util.helper(); }
-       export function read(): unknown { return util.Widget; }`,
+       export function read(): number { return util.Widget; }`,
     ).module;
     const moduleResolution = {
       edges: [
