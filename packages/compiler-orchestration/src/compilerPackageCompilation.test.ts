@@ -652,6 +652,15 @@ describe('compileTypeScriptPackageGraph', () => {
       kind: 'compiler-invariant',
     });
 
+    const swapped = compile((finalization) => [
+      replace(finalization.moduleFiles[0]!, 'b/Input.txt'),
+      replace(finalization.moduleFiles[1]!, 'a/Input.txt'),
+    ]);
+    expect(swapped.compilation.files).toEqual([
+      expect.objectContaining({ contents: 'final b', path: 'a/Input.txt' }),
+      expect.objectContaining({ contents: 'final a', path: 'b/Input.txt' }),
+    ]);
+
     expect(() => compile((finalization) => [replace(finalization.moduleFiles[0]!)])).toThrow(invalidReplacement);
     expect(() =>
       compile((finalization) => [replace(finalization.moduleFiles[0]!), replace(finalization.moduleFiles[0]!)]),

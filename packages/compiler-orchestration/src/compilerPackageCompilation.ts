@@ -507,6 +507,7 @@ function applyCompilerBackendModuleFileReplacements(
   }
 
   const seen = new Set<string>();
+  const writes: Array<{ file: EmittedFile; index: number; record: ModuleEmissionRecord }> = [];
   for (const replacement of replacements) {
     const key = getCompilerBackendModuleFileKey(replacement.module, replacement.retainedPath);
     const retained = retainedByKey.get(key);
@@ -535,7 +536,7 @@ function applyCompilerBackendModuleFileReplacements(
         `Backend replacement target is no longer present: ${key}`,
       );
     }
-    record.files[fileIndex] = replacement.file;
+    writes.push({ file: replacement.file, index: fileIndex, record });
   }
 
   if (seen.size !== retainedByKey.size) {
@@ -546,6 +547,7 @@ function applyCompilerBackendModuleFileReplacements(
       `Backend did not replace retained module file: ${missing}`,
     );
   }
+  for (const { file, index, record } of writes) record.files[index] = file;
 }
 
 function getCompilerBackendModuleFileKey(module: Readonly<CompilerModuleIdentity>, retainedPath: string): string {
