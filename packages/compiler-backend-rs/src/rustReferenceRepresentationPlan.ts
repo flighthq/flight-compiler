@@ -34,6 +34,19 @@ import {
 
 type IrCallExpression = Readonly<Extract<IrExpression, { kind: 'call' }>>;
 
+type RustSharedClassRepresentation = Extract<
+  CompilerRustReferenceRepresentation,
+  'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
+>;
+
+type RustOptionalSharedClassRepresentation = Exclude<RustSharedClassRepresentation, 'shared-ref-cell-class'>;
+
+interface RustSharedClassCarrierType {
+  readonly classType: Readonly<IrType>;
+  readonly representation: RustSharedClassRepresentation;
+  readonly sentinel?: 'null' | 'undefined' | undefined;
+}
+
 interface RustReferenceCallRecord {
   readonly call: IrCallExpression;
   readonly enclosingFunction: RustReferenceFunctionRecord;
@@ -42,7 +55,7 @@ interface RustReferenceCallRecord {
 interface RustReferenceCallableDraft {
   readonly binding: IrBindingIdentity;
   readonly parameters: Map<number, CompilerRustReferenceRepresentation>;
-  returns?: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-class'> | undefined;
+  returns?: RustSharedClassRepresentation | undefined;
 }
 
 interface RustReferenceFunctionRecord {
@@ -87,7 +100,8 @@ interface RustSharedHashCollectionAnalysis {
 
 interface RustSharedClassAnalysis {
   readonly ambiguousBindingIds: ReadonlySet<string>;
-  readonly bindingIds: Set<string>;
+  readonly bindingRepresentations: Map<string, RustSharedClassRepresentation>;
+  readonly carrierTypesByBindingId: ReadonlyMap<string, RustSharedClassCarrierType>;
   readonly groupByBindingId: ReadonlyMap<string, string>;
   readonly groupsByKey: ReadonlyMap<string, ReadonlySet<string>>;
   readonly variablesByBindingId: ReadonlyMap<string, RustSharedClassVariable>;
@@ -95,6 +109,7 @@ interface RustSharedClassAnalysis {
 
 interface RustSharedClassVariable {
   readonly binding: Readonly<IrBindingIdentity>;
+  readonly carrier: RustSharedClassCarrierType;
   readonly initializer: Readonly<IrExpression> | undefined;
   readonly mutable: boolean;
   readonly type: Readonly<IrType> | undefined;
@@ -136,6 +151,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   activateRustSharedClassReturnBindings(modules, input.moduleResolution);
   activateRustSharedClassFunctionReturnAliases(modules, input.moduleResolution);
   activateRustSharedClassAliasGroups(modules, input.moduleResolution);
+  activateRustOptionalSharedClassInitializers(modules);
   activateRustSharedClassIdentityComparisons(modules, input.moduleResolution);
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'map');
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'set');
@@ -271,12 +287,18 @@ function propagateRustReferenceClassParameterMutation(
       for (const { call, enclosingFunction } of module.calls) {
         const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
         if (target.kind !== 'function') continue;
-        for (const position of getRustReferenceClassMutationPositions(
-          target.function,
-          target.module,
-          modules,
-          moduleResolution,
-        )) {
+        const mutationPositions = new Set([
+          ...getRustReferenceClassMutationPositions(target.function, target.module, modules, moduleResolution),
+          ...[
+            ...getRustReferenceOptionalClassParameterPlans(
+              target.function,
+              target.module,
+              modules,
+              moduleResolution,
+            ).keys(),
+          ].filter((position) => target.function.mutatedParameterPositions.has(position)),
+        ]);
+        for (const position of mutationPositions) {
           const argument = call.arguments[position];
           if (argument?.kind !== 'identifier' || argument.reference.kind !== 'binding') continue;
           const argumentBindingId = argument.reference.binding.id;
@@ -287,7 +309,7 @@ function propagateRustReferenceClassParameterMutation(
           const callerParameter = enclosingFunction.declaration.parameters[callerPosition];
           if (
             !callerParameter ||
-            !isRustSharedClassTypeSupported(callerParameter.type, module, modules, moduleResolution)
+            !getRustSharedClassCarrierType(callerParameter.type, module, modules, moduleResolution)
           ) {
             continue;
           }
@@ -341,6 +363,7 @@ function createRustReferenceModulePlan(
   addRustSharedArrayRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassIdentityRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassMethodValueRefusals(module, modules, moduleResolution, refusals);
+  addRustOptionalClassCarrierBoundaryRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassReturnRefusals(module, modules, moduleResolution, refusals);
   addRustSharedHashCollectionRefusals(module, modules, moduleResolution, refusals, 'map');
@@ -349,7 +372,7 @@ function createRustReferenceModulePlan(
   for (const evidence of module.ownership.bindings) {
     if (
       (evidence.type.kind === 'array' ||
-        isRustSharedClassTypeSupported(evidence.type, module, modules, moduleResolution) ||
+        getRustSharedClassCarrierType(evidence.type, module, modules, moduleResolution) !== undefined ||
         isRustSharedHashCollectionTypeSupported(evidence.type, 'map') ||
         isRustSharedHashCollectionTypeSupported(evidence.type, 'set')) &&
       (evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent')
@@ -359,8 +382,26 @@ function createRustReferenceModulePlan(
   }
 
   for (const function_ of module.functions) {
-    if (isRustReferenceClassReturnSupported(function_, module, modules, moduleResolution, new Set())) {
-      addRustReferenceCallableReturnPlan(callables, function_.declaration.binding);
+    const returnCarrier = getRustReferenceClassReturnCarrier(function_, module, modules, moduleResolution, new Set());
+    if (returnCarrier) {
+      addRustReferenceCallableReturnPlan(callables, function_.declaration.binding, returnCarrier.representation);
+    }
+    for (const [position, carrier] of getRustReferenceOptionalClassParameterPlans(
+      function_,
+      module,
+      modules,
+      moduleResolution,
+    )) {
+      addRustReferenceCallablePlan(
+        callables,
+        function_.declaration.binding,
+        new Set([position]),
+        carrier.representation,
+      );
+      const parameter = function_.declaration.parameters[position];
+      if (parameter && function_.mutatedParameterPositions.has(position)) {
+        mutatedBindings.set(parameter.binding.id, parameter.binding);
+      }
     }
     addRustReferenceCallablePlan(
       callables,
@@ -443,7 +484,7 @@ function createRustReferenceModulePlan(
       const type = target.function.declaration.parameters[position]?.type;
       return (
         type?.kind !== 'array' &&
-        !isRustSharedClassTypeSupported(type, target.module, modules, moduleResolution) &&
+        !getRustSharedClassCarrierType(type, target.module, modules, moduleResolution) &&
         !isRustSharedHashCollectionTypeSupported(type, 'map') &&
         !isRustSharedHashCollectionTypeSupported(type, 'set')
       );
@@ -457,8 +498,15 @@ function createRustReferenceModulePlan(
       );
       continue;
     }
-    if (isRustReferenceClassReturnSupported(target.function, target.module, modules, moduleResolution, new Set())) {
-      addRustReferenceCallableReturnPlan(callables, call.callee.reference.binding);
+    const returnCarrier = getRustReferenceClassReturnCarrier(
+      target.function,
+      target.module,
+      modules,
+      moduleResolution,
+      new Set(),
+    );
+    if (returnCarrier) {
+      addRustReferenceCallableReturnPlan(callables, call.callee.reference.binding, returnCarrier.representation);
     }
     const arrayPositions = getRustReferenceArrayMutationPositions(target.function);
     addRustReferenceCallablePlan(callables, call.callee.reference.binding, arrayPositions, 'mutable-borrowed-vec');
@@ -522,10 +570,10 @@ function createRustReferenceModulePlan(
         representation: 'shared-ref-cell-vec' as const,
       }))
       .sort((left, right) => compareTextCodeUnits(left.binding.id, right.binding.id)),
-    sharedClassBindings: [...module.sharedClasses.bindingIds]
-      .map((id) => ({
+    sharedClassBindings: [...module.sharedClasses.bindingRepresentations]
+      .map(([id, representation]) => ({
         binding: module.ownership.bindings.find((evidence) => evidence.binding.id === id)!.binding,
-        representation: 'shared-ref-cell-class' as const,
+        representation,
       }))
       .sort((left, right) => compareTextCodeUnits(left.binding.id, right.binding.id)),
     sharedMapBindings: [...module.sharedMaps.bindingIds]
@@ -554,6 +602,12 @@ function addRustReferenceClassCallPlan(
   target: RustReferenceFunctionRecord,
   targetModule: RustReferenceModuleRecord,
 ): void {
+  const optionalPositions = getRustReferenceOptionalClassParameterPlans(
+    target,
+    targetModule,
+    modules,
+    moduleResolution,
+  );
   const positions = getRustReferenceClassBorrowPositions(target, targetModule, modules, moduleResolution);
   const mutablePositions = getRustReferenceClassMutationPositions(target, targetModule, modules, moduleResolution);
   const callableBinding =
@@ -567,6 +621,37 @@ function addRustReferenceClassCallPlan(
     new Set([...mutablePositions].filter((position) => positions.has(position))),
     'mutable-borrowed-class',
   );
+  for (const [position, carrier] of optionalPositions) {
+    addRustReferenceCallablePlan(callables, callableBinding, new Set([position]), carrier.representation);
+    const argument = call.arguments[position];
+    if (
+      argument &&
+      isRustReferenceClassCarrierExpressionCompatible(
+        argument,
+        carrier,
+        module,
+        modules,
+        moduleResolution,
+        targetModule,
+      )
+    ) {
+      if (
+        target.mutatedParameterPositions.has(position) &&
+        argument.kind === 'identifier' &&
+        argument.reference.kind === 'binding'
+      ) {
+        mutatedBindings.set(argument.reference.binding.id, argument.reference.binding);
+        addRustSharedClassCallBorrowConflictRefusal(module, call, position, refusals);
+      }
+      continue;
+    }
+    addRustReferenceRefusal(
+      refusals,
+      'rust-reference-shared-class-call-unrepresented',
+      `${moduleKey(module.module)}:${callableBinding.id}:${String(position)}`,
+      `argument ${String(position)} to ${target.declaration.binding.name} does not match its exact optional simple-class sentinel carrier`,
+    );
+  }
   for (const position of positions) {
     const argument = call.arguments[position];
     const parameter = target.declaration.parameters[position];
@@ -589,7 +674,7 @@ function addRustReferenceClassCallPlan(
     );
   }
   for (const position of getRustReferenceAnyClassParameterPositions(target, targetModule)) {
-    if (positions.has(position)) continue;
+    if (positions.has(position) || optionalPositions.has(position)) continue;
     const argument = call.arguments[position];
     if (!argument || !isRustReferenceClassExpression(argument, module)) continue;
     addRustReferenceRefusal(
@@ -793,6 +878,7 @@ function createRustSharedClassAnalysis(
   const parents = new Map<string, string>();
   const aliasEdges: Array<readonly [string, string]> = [];
   const ambiguousBindingIds = new Set<string>();
+  const carrierTypesByBindingId = new Map<string, RustSharedClassCarrierType>();
   const variablesByBindingId = new Map<string, RustSharedClassVariable>();
   const find = (id: string): string => {
     const parent = parents.get(id);
@@ -813,9 +899,12 @@ function createRustSharedClassAnalysis(
     variable(variable) {
       if (!('binding' in variable)) return;
       const type = bindingTypes.get(variable.binding.id);
-      if (!isRustClassLikeType(type, module)) return;
+      const carrier = getRustSharedClassCarrierTypeCandidate(type, module);
+      if (!carrier) return;
+      carrierTypesByBindingId.set(variable.binding.id, carrier);
       variablesByBindingId.set(variable.binding.id, {
         binding: variable.binding,
+        carrier,
         initializer: variable.initializer,
         mutable: variable.mutable,
         type,
@@ -825,20 +914,20 @@ function createRustSharedClassAnalysis(
           [variable.initializer.whenTrue, variable.initializer.whenFalse].flatMap((alternative) =>
             alternative.kind === 'identifier' &&
             alternative.reference.kind === 'binding' &&
-            isRustClassLikeType(bindingTypes.get(alternative.reference.binding.id), module)
+            getRustSharedClassCarrierTypeCandidate(bindingTypes.get(alternative.reference.binding.id), module)
               ? [alternative.reference.binding.id]
               : [],
           ),
         );
         if (alternatives.size > 1) ambiguousBindingIds.add(variable.binding.id);
       }
-      if (
-        variable.initializer?.kind !== 'identifier' ||
-        variable.initializer.reference.kind !== 'binding' ||
-        !isRustClassLikeType(bindingTypes.get(variable.initializer.reference.binding.id), module)
-      ) {
+      if (variable.initializer?.kind !== 'identifier' || variable.initializer.reference.kind !== 'binding') {
         return;
       }
+      const sourceId = variable.initializer.reference.binding.id;
+      const sourceCarrier = getRustSharedClassCarrierTypeCandidate(bindingTypes.get(sourceId), module);
+      if (!sourceCarrier) return;
+      carrierTypesByBindingId.set(sourceId, sourceCarrier);
       const edge = [variable.binding.id, variable.initializer.reference.binding.id] as const;
       aliasEdges.push(edge);
       union(...edge);
@@ -854,7 +943,7 @@ function createRustSharedClassAnalysis(
     groups.set(root, group);
   }
   const evidenceById = new Map(ownership.bindings.map((evidence) => [evidence.binding.id, evidence]));
-  const bindingIds = new Set<string>();
+  const bindingRepresentations = new Map<string, RustSharedClassRepresentation>();
   const groupByBindingId = new Map<string, string>();
   const groupsByKey = new Map<string, ReadonlySet<string>>();
   for (const group of groups.values()) {
@@ -867,10 +956,40 @@ function createRustSharedClassAnalysis(
         return mutation === 'referentMutated' || mutation === 'bindingAndReferent';
       })
     ) {
-      for (const id of group) bindingIds.add(id);
+      for (const id of group) {
+        const carrier = carrierTypesByBindingId.get(id);
+        if (carrier) bindingRepresentations.set(id, carrier.representation);
+      }
     }
   }
-  return { ambiguousBindingIds, bindingIds, groupByBindingId, groupsByKey, variablesByBindingId };
+  for (const [id, carrier] of carrierTypesByBindingId) {
+    if (variablesByBindingId.has(id) && carrier.representation !== 'shared-ref-cell-class') {
+      bindingRepresentations.set(id, carrier.representation);
+    }
+  }
+  return {
+    ambiguousBindingIds,
+    bindingRepresentations,
+    carrierTypesByBindingId,
+    groupByBindingId,
+    groupsByKey,
+    variablesByBindingId,
+  };
+}
+
+function activateRustSharedClassBinding(analysis: RustSharedClassAnalysis, id: string): void {
+  const carrier = analysis.carrierTypesByBindingId.get(id);
+  if (carrier && analysis.variablesByBindingId.has(id)) {
+    analysis.bindingRepresentations.set(id, carrier.representation);
+  }
+}
+
+function activateRustSharedClassGroup(analysis: RustSharedClassAnalysis, groupKey: string): void {
+  for (const id of analysis.groupsByKey.get(groupKey) ?? []) activateRustSharedClassBinding(analysis, id);
+}
+
+function hasRustSharedClassBinding(analysis: RustSharedClassAnalysis, id: string): boolean {
+  return analysis.bindingRepresentations.has(id);
 }
 
 function activateRustSharedClassAliasGroups(
@@ -886,17 +1005,46 @@ function activateRustSharedClassAliasGroups(
         const variable = module.sharedClasses.variablesByBindingId.get(id);
         return variable ? [variable] : [];
       });
-      const firstType = variables[0]?.type;
+      const parameterIds = [...group].filter((id) => {
+        if (module.sharedClasses.variablesByBindingId.has(id)) return false;
+        const function_ = module.functions.find((candidate) =>
+          candidate.declaration.parameters.some((parameter) => parameter.binding.id === id),
+        );
+        const position = function_?.declaration.parameters.findIndex((parameter) => parameter.binding.id === id);
+        return Boolean(
+          function_ &&
+          position !== undefined &&
+          position >= 0 &&
+          getRustReferenceOptionalClassParameterPlans(function_, module, modules, moduleResolution).has(position),
+        );
+      });
+      const firstCarrier = [...group].flatMap((id) => {
+        const carrier = module.sharedClasses.carrierTypesByBindingId.get(id);
+        return carrier ? [carrier] : [];
+      })[0];
       if (
-        variables.length !== group.size ||
-        !firstType ||
-        !isRustSharedClassTypeSupported(firstType, module, modules, moduleResolution) ||
+        variables.length + parameterIds.length !== group.size ||
+        !firstCarrier ||
+        !isRustSharedClassTypeSupported(firstCarrier.classType, module, modules, moduleResolution) ||
+        parameterIds.some((id) => {
+          const carrier = module.sharedClasses.carrierTypesByBindingId.get(id);
+          return (
+            !carrier ||
+            !isRustReferenceSameClassCarrier(carrier, module, firstCarrier, module, modules, moduleResolution)
+          );
+        }) ||
         variables.some((variable) => {
           const evidence = evidenceById.get(variable.binding.id);
           return (
             variable.mutable ||
-            !variable.type ||
-            !isRustReferenceSameClassType(variable.type, module, firstType, module, modules, moduleResolution) ||
+            !isRustReferenceSameClassCarrier(
+              variable.carrier,
+              module,
+              firstCarrier,
+              module,
+              modules,
+              moduleResolution,
+            ) ||
             !evidence ||
             evidence.declaration !== 'immutable' ||
             evidence.binding.scope === 'module'
@@ -905,26 +1053,33 @@ function activateRustSharedClassAliasGroups(
       ) {
         continue;
       }
-      const roots = variables.filter(
-        (variable) =>
-          isRustSimpleClassConstruction(variable.initializer, variable.type, module, modules, moduleResolution) ||
-          (variable.initializer !== undefined &&
-            isRustReferenceSharedClassReturnCall(variable.initializer, module, modules, moduleResolution)),
-      );
-      if (roots.length !== 1) continue;
+      const roots = variables.filter((variable) => {
+        const initializer = variable.initializer;
+        return !(
+          initializer?.kind === 'identifier' &&
+          initializer.reference.kind === 'binding' &&
+          group.has(initializer.reference.binding.id)
+        );
+      });
+      if (roots.length + parameterIds.length !== 1) continue;
       const represented = variables.every((variable) => {
         const initializer = variable.initializer;
         return (
           (initializer?.kind === 'identifier' &&
             initializer.reference.kind === 'binding' &&
             group.has(initializer.reference.binding.id)) ||
-          isRustSimpleClassConstruction(initializer, variable.type, module, modules, moduleResolution) ||
           (initializer !== undefined &&
-            isRustReferenceSharedClassReturnCall(initializer, module, modules, moduleResolution))
+            isRustReferenceClassCarrierExpressionCompatible(
+              initializer,
+              variable.carrier,
+              module,
+              modules,
+              moduleResolution,
+            ))
         );
       });
       if (!represented) continue;
-      for (const id of group) module.sharedClasses.bindingIds.add(id);
+      for (const id of group) activateRustSharedClassBinding(module.sharedClasses, id);
     }
   }
 }
@@ -1094,6 +1249,15 @@ function activateRustSharedClassCallMutations(
         for (const argument of call.arguments) activateRustSharedClassGroupsUsedInExpression(module, argument);
         continue;
       }
+      for (const position of getRustReferenceOptionalClassParameterPlans(
+        target.function,
+        target.module,
+        modules,
+        moduleResolution,
+      ).keys()) {
+        const argument = call.arguments[position];
+        if (argument) activateRustSharedClassCarrierBindingsUsedInExpression(module, argument);
+      }
       for (const position of getRustReferenceClassBorrowPositions(
         target.function,
         target.module,
@@ -1102,6 +1266,32 @@ function activateRustSharedClassCallMutations(
       )) {
         const argument = call.arguments[position];
         if (argument) activateRustSharedClassGroupsUsedInExpression(module, argument);
+      }
+    }
+  }
+}
+
+function activateRustSharedClassCarrierBindingsUsedInExpression(
+  module: RustReferenceModuleRecord,
+  expression: Readonly<IrExpression>,
+): void {
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (candidate.kind !== 'identifier' || candidate.reference.kind !== 'binding') return undefined;
+      const id = candidate.reference.binding.id;
+      activateRustSharedClassBinding(module.sharedClasses, id);
+      const groupKey = module.sharedClasses.groupByBindingId.get(id);
+      if (groupKey) activateRustSharedClassGroup(module.sharedClasses, groupKey);
+      return undefined;
+    },
+  });
+}
+
+function activateRustOptionalSharedClassInitializers(modules: readonly RustReferenceModuleRecord[]): void {
+  for (const module of modules) {
+    for (const variable of module.sharedClasses.variablesByBindingId.values()) {
+      if (variable.carrier.sentinel && variable.initializer) {
+        activateRustSharedClassCarrierBindingsUsedInExpression(module, variable.initializer);
       }
     }
   }
@@ -1119,10 +1309,10 @@ function activateRustSharedClassReturnBindings(
       ) {
         continue;
       }
-      module.sharedClasses.bindingIds.add(variable.binding.id);
+      activateRustSharedClassBinding(module.sharedClasses, variable.binding.id);
       const groupKey = module.sharedClasses.groupByBindingId.get(variable.binding.id);
       if (!groupKey) continue;
-      for (const id of module.sharedClasses.groupsByKey.get(groupKey) ?? []) module.sharedClasses.bindingIds.add(id);
+      activateRustSharedClassGroup(module.sharedClasses, groupKey);
     }
   }
 }
@@ -1135,7 +1325,7 @@ function activateRustSharedClassFunctionReturnAliases(
     for (const function_ of module.functions) {
       if (!isRustReferenceClassReturnSupported(function_, module, modules, moduleResolution, new Set())) continue;
       const expression = getRustReferenceClassReturnExpression(function_);
-      if (expression) activateRustSharedClassGroupsUsedInExpression(module, expression);
+      if (expression) activateRustSharedClassCarrierBindingsUsedInExpression(module, expression);
     }
   }
 }
@@ -1166,10 +1356,10 @@ function activateRustSharedClassIdentityOperand(
 ): void {
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return;
   const bindingId = expression.reference.binding.id;
-  module.sharedClasses.bindingIds.add(bindingId);
+  activateRustSharedClassBinding(module.sharedClasses, bindingId);
   const groupKey = module.sharedClasses.groupByBindingId.get(bindingId);
   if (!groupKey) return;
-  for (const id of module.sharedClasses.groupsByKey.get(groupKey) ?? []) module.sharedClasses.bindingIds.add(id);
+  activateRustSharedClassGroup(module.sharedClasses, groupKey);
 }
 
 function activateRustSharedClassUnsupportedUses(
@@ -1189,7 +1379,7 @@ function activateRustSharedClassUnsupportedUses(
         }
         const groupKey = module.sharedClasses.groupByBindingId.get(expression.reference.binding.id)!;
         for (const id of module.sharedClasses.groupsByKey.get(groupKey) ?? []) {
-          module.sharedClasses.bindingIds.add(id);
+          activateRustSharedClassBinding(module.sharedClasses, id);
         }
       },
     });
@@ -1224,7 +1414,7 @@ function activateRustSharedClassGroupsUsedInExpression(
   });
   for (const groupKey of groupKeys) {
     for (const id of module.sharedClasses.groupsByKey.get(groupKey) ?? []) {
-      module.sharedClasses.bindingIds.add(id);
+      activateRustSharedClassBinding(module.sharedClasses, id);
     }
   }
 }
@@ -1515,6 +1705,91 @@ function expressionUsesRustSharedArrayGroup(
   return found;
 }
 
+function addRustOptionalClassCarrierBoundaryRefusals(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  for (const evidence of module.ownership.bindings) {
+    if (!isRustPotentialOptionalClassCarrierType(evidence.type, module.module)) continue;
+    if (getRustOptionalSharedClassCarrierType(evidence.type, module, modules, moduleResolution)) continue;
+    addRustReferenceRefusal(
+      refusals,
+      'rust-reference-shared-class-type-unrepresented',
+      `${moduleKey(module.module)}:${evidence.binding.id}:optional-carrier`,
+      `class carrier ${evidence.binding.name} must be exactly one supported simple class plus exactly null or undefined`,
+    );
+  }
+}
+
+function isRustPotentialOptionalClassCarrierType(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  const facts = getRustPotentialOptionalClassCarrierFacts(type, module, resolving);
+  return facts.classLike && facts.sentinel;
+}
+
+function getRustPotentialOptionalClassCarrierFacts(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): Readonly<{ classLike: boolean; sentinel: boolean }> {
+  if (type.kind === 'null' || type.kind === 'undefined') return { classLike: false, sentinel: true };
+  if (type.kind === 'array') return getRustPotentialOptionalClassCarrierFacts(type.element, module, resolving);
+  if (type.kind === 'tuple') {
+    return combineRustOptionalClassCarrierFacts(
+      type.elements.map((element) => getRustPotentialOptionalClassCarrierFacts(element.type, module, resolving)),
+    );
+  }
+  if (type.kind === 'object') {
+    return combineRustOptionalClassCarrierFacts(
+      type.properties.map((property) => getRustPotentialOptionalClassCarrierFacts(property.type, module, resolving)),
+    );
+  }
+  if (type.kind === 'union' || type.kind === 'intersection') {
+    return combineRustOptionalClassCarrierFacts(
+      type.types.map((member) => getRustPotentialOptionalClassCarrierFacts(member, module, resolving)),
+    );
+  }
+  if (type.kind !== 'named') return { classLike: false, sentinel: false };
+  if (
+    type.reference.kind === 'binding' &&
+    type.reference.path.length === 0 &&
+    !resolving.has(type.reference.binding.id)
+  ) {
+    const bindingId = type.reference.binding.id;
+    const declaration = module.declarations.find(
+      (candidate) =>
+        (candidate.kind === 'class' || candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
+        candidate.binding.id === bindingId,
+    );
+    if (declaration?.kind === 'typeAlias') {
+      return getRustPotentialOptionalClassCarrierFacts(declaration.type, module, new Set(resolving).add(bindingId));
+    }
+    if (declaration?.kind === 'class' || declaration?.kind === 'interface') {
+      return { classLike: true, sentinel: false };
+    }
+    if (module.imports.some((item) => item.bindings.some((binding) => binding.binding.id === bindingId))) {
+      return { classLike: true, sentinel: false };
+    }
+  }
+  return combineRustOptionalClassCarrierFacts(
+    type.typeArguments.map((argument) => getRustPotentialOptionalClassCarrierFacts(argument, module, resolving)),
+  );
+}
+
+function combineRustOptionalClassCarrierFacts(
+  facts: readonly Readonly<{ classLike: boolean; sentinel: boolean }>[],
+): Readonly<{ classLike: boolean; sentinel: boolean }> {
+  return {
+    classLike: facts.some((fact) => fact.classLike),
+    sentinel: facts.some((fact) => fact.sentinel),
+  };
+}
+
 function addRustSharedClassRefusals(
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
@@ -1537,9 +1812,13 @@ function addRustSharedClassRefusals(
         })
       );
     });
+    if (!evidence) continue;
+    const optionalCarrier = module.sharedClasses.carrierTypesByBindingId.get(id)?.sentinel !== undefined;
     if (
-      !evidence ||
-      (!mutatedByCall && evidence.mutation !== 'referentMutated' && evidence.mutation !== 'bindingAndReferent')
+      !optionalCarrier &&
+      !mutatedByCall &&
+      evidence.mutation !== 'referentMutated' &&
+      evidence.mutation !== 'bindingAndReferent'
     ) {
       continue;
     }
@@ -1550,17 +1829,34 @@ function addRustSharedClassRefusals(
       `mutable class alias ${evidence.binding.name} has multiple possible source identity groups`,
     );
   }
-  if (module.sharedClasses.bindingIds.size === 0) return;
 
   for (const group of module.sharedClasses.groupsByKey.values()) {
-    if (![...group].some((id) => module.sharedClasses.bindingIds.has(id))) continue;
+    if (![...group].some((id) => hasRustSharedClassBinding(module.sharedClasses, id))) continue;
     const roots = [...group].filter((id) => {
       const variable = module.sharedClasses.variablesByBindingId.get(id);
-      return (
-        isRustSimpleClassConstruction(variable?.initializer, variable?.type, module, modules, moduleResolution) ||
-        (variable?.initializer !== undefined &&
-          isRustReferenceSharedClassReturnCall(variable.initializer, module, modules, moduleResolution))
-      );
+      if (!variable) {
+        return module.ownership.bindings.find((evidence) => evidence.binding.id === id)?.declaration === 'parameter';
+      }
+      const initializer = variable?.initializer;
+      if (
+        initializer?.kind === 'identifier' &&
+        initializer.reference.kind === 'binding' &&
+        group.has(initializer.reference.binding.id)
+      ) {
+        return false;
+      }
+      return variable.carrier.representation === 'shared-ref-cell-class'
+        ? isRustSimpleClassConstruction(initializer, variable.carrier.classType, module, modules, moduleResolution) ||
+            (initializer !== undefined &&
+              isRustReferenceSharedClassReturnCall(initializer, module, modules, moduleResolution))
+        : initializer !== undefined &&
+            isRustReferenceClassCarrierExpressionCompatible(
+              initializer,
+              variable.carrier,
+              module,
+              modules,
+              moduleResolution,
+            );
     });
     if (roots.length !== 1) {
       addRustReferenceRefusal(
@@ -1573,18 +1869,29 @@ function addRustSharedClassRefusals(
     const classKeys = new Set<string>();
     for (const id of group) {
       const variable = module.sharedClasses.variablesByBindingId.get(id);
+      const parameter =
+        module.ownership.bindings.find((evidence) => evidence.binding.id === id)?.declaration === 'parameter';
       const initializer = variable?.initializer;
       const aliasInitializer =
         initializer?.kind === 'identifier' &&
         initializer.reference.kind === 'binding' &&
         group.has(initializer.reference.binding.id);
-      const returnCallInitializer =
-        initializer !== undefined &&
-        isRustReferenceSharedClassReturnCall(initializer, module, modules, moduleResolution);
       if (
-        !variable ||
-        variable.mutable ||
-        (!aliasInitializer && initializer?.kind !== 'new' && !returnCallInitializer)
+        (!variable && !parameter) ||
+        variable?.mutable ||
+        (variable &&
+          !aliasInitializer &&
+          (!initializer ||
+            (variable.carrier.representation === 'shared-ref-cell-class'
+              ? initializer.kind !== 'new' &&
+                !isRustReferenceSharedClassReturnCall(initializer, module, modules, moduleResolution)
+              : !isRustReferenceClassCarrierExpressionCompatible(
+                  initializer,
+                  variable.carrier,
+                  module,
+                  modules,
+                  moduleResolution,
+                ))))
       ) {
         addRustReferenceRefusal(
           refusals,
@@ -1593,7 +1900,12 @@ function addRustSharedClassRefusals(
           `shared class binding ${variable?.binding.name ?? id} is not an initialized local const in the alias group`,
         );
       }
-      const location = getRustReferenceClassDeclaration(variable?.type, module, modules, moduleResolution);
+      const location = getRustReferenceClassDeclaration(
+        module.sharedClasses.carrierTypesByBindingId.get(id)?.classType,
+        module,
+        modules,
+        moduleResolution,
+      );
       if (location) classKeys.add(`${moduleKey(location.module.module)}:${location.declaration.binding.id}`);
     }
     if (classKeys.size > 1) {
@@ -1607,10 +1919,16 @@ function addRustSharedClassRefusals(
   }
 
   for (const evidence of module.ownership.bindings) {
-    if (!module.sharedClasses.bindingIds.has(evidence.binding.id)) continue;
+    const plannedCarrier = getRustReferencePlannedClassBindingCarrier(
+      evidence.binding.id,
+      module,
+      modules,
+      moduleResolution,
+    );
+    if (!plannedCarrier) continue;
     const subject = `${moduleKey(module.module)}:${evidence.binding.id}`;
-    const location = getRustReferenceClassDeclaration(evidence.type, module, modules, moduleResolution);
-    if (!location || evidence.type.kind !== 'named' || evidence.type.typeArguments.length > 0) {
+    const location = getRustReferenceClassDeclaration(plannedCarrier.classType, module, modules, moduleResolution);
+    if (!location) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-class-type-unrepresented',
@@ -1627,12 +1945,50 @@ function addRustSharedClassRefusals(
         refusals,
       );
     }
-    if (evidence.binding.scope === 'module' || evidence.declaration !== 'immutable') {
+    const parameterFunction =
+      evidence.declaration === 'parameter'
+        ? module.functions.find((candidate) =>
+            candidate.declaration.parameters.some((parameter) => parameter.binding.id === evidence.binding.id),
+          )
+        : undefined;
+    const parameterPosition = parameterFunction?.declaration.parameters.findIndex(
+      (parameter) => parameter.binding.id === evidence.binding.id,
+    );
+    const plannedParameter =
+      parameterFunction && parameterPosition !== undefined && parameterPosition >= 0
+        ? getRustReferenceOptionalClassParameterPlans(parameterFunction, module, modules, moduleResolution).has(
+            parameterPosition,
+          )
+        : false;
+    if (
+      evidence.declaration === 'parameter'
+        ? !plannedParameter
+        : evidence.binding.scope === 'module' || evidence.declaration !== 'immutable'
+    ) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-class-use-unrepresented',
         subject,
         `shared class binding ${evidence.binding.name} is outside the supported local const carrier`,
+      );
+    }
+    const variable = module.sharedClasses.variablesByBindingId.get(evidence.binding.id);
+    if (
+      variable?.carrier.sentinel &&
+      (!variable.initializer ||
+        !isRustReferenceClassCarrierExpressionCompatible(
+          variable.initializer,
+          variable.carrier,
+          module,
+          modules,
+          moduleResolution,
+        ))
+    ) {
+      addRustReferenceRefusal(
+        refusals,
+        'rust-reference-shared-class-construction-unrepresented',
+        subject,
+        `optional shared class binding ${evidence.binding.name} has no represented matching-sentinel construction root`,
       );
     }
     if (evidence.mutation === 'bindingReassigned' || evidence.mutation === 'bindingAndReferent') {
@@ -1654,7 +2010,10 @@ function addRustSharedClassRefusals(
   }
 
   for (const closure of analyzeIrModuleClosureEvidence(module.module).closures) {
-    const captures = closure.captures.filter((capture) => module.sharedClasses.bindingIds.has(capture.binding.id));
+    const captures = closure.captures.filter(
+      (capture) =>
+        getRustReferencePlannedClassBindingCarrier(capture.binding.id, module, modules, moduleResolution) !== undefined,
+    );
     if (captures.length === 0) continue;
     const subject = `${moduleKey(module.module)}:closure:${JSON.stringify(closure.path)}`;
     if (
@@ -1682,7 +2041,16 @@ function addRustSharedClassRefusals(
   analyzeIrModuleTraversal(module.module, {
     expression(expression, path_) {
       if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
-        if (!module.sharedClasses.bindingIds.has(expression.reference.binding.id)) return;
+        if (
+          !getRustReferencePlannedClassBindingCarrier(
+            expression.reference.binding.id,
+            module,
+            modules,
+            moduleResolution,
+          )
+        ) {
+          return;
+        }
         if (!isRustSharedClassIdentifierUseRepresented(module, modules, moduleResolution, expression, path_)) {
           const callArgument = path_.at(-2) === 'arguments' && typeof path_.at(-1) === 'number';
           addRustReferenceRefusal(
@@ -1700,7 +2068,7 @@ function addRustSharedClassRefusals(
       }
       if (expression.kind === 'assignment') {
         addRustSharedClassFieldBorrowConflictRefusal(module, expression, path_, refusals);
-        addRustSharedClassMutatorResultRefusal(module, expression, path_, refusals);
+        addRustSharedClassMutatorResultRefusal(module, modules, moduleResolution, expression, path_, refusals);
         return;
       }
       if (expression.kind === 'call') {
@@ -1777,6 +2145,36 @@ function isRustSharedClassIdentifierUseRepresented(
 ): boolean {
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
+  const initializerIndex = path_.lastIndexOf('initializer');
+  if (initializerIndex >= 0) {
+    const declaration = getIrModuleTraversalPathValue(module.module, path_.slice(0, initializerIndex));
+    if (
+      isRecord(declaration) &&
+      'binding' in declaration &&
+      isBindingIdentity(declaration.binding) &&
+      'initializer' in declaration &&
+      isIrExpressionValue(declaration.initializer)
+    ) {
+      const carrier = getRustReferencePlannedClassBindingCarrier(
+        declaration.binding.id,
+        module,
+        modules,
+        moduleResolution,
+      );
+      if (
+        carrier?.sentinel &&
+        isRustReferenceClassCarrierExpressionCompatible(
+          declaration.initializer,
+          carrier,
+          module,
+          modules,
+          moduleResolution,
+        )
+      ) {
+        return true;
+      }
+    }
+  }
   if (
     final === 'initializer' &&
     isRecord(parent) &&
@@ -1816,9 +2214,25 @@ function isRustSharedClassIdentifierUseRepresented(
     if (isCallExpression(invocation)) {
       if (invocation.optional) return false;
       const target = resolveRustReferenceCallTarget(invocation, module, modules, moduleResolution);
-      return (
-        target.kind === 'function' &&
-        getRustReferenceClassBorrowPositions(target.function, target.module, modules, moduleResolution).has(position)
+      if (target.kind !== 'function') return false;
+      const optionalCarrier = getRustReferenceOptionalClassParameterPlans(
+        target.function,
+        target.module,
+        modules,
+        moduleResolution,
+      ).get(position);
+      if (optionalCarrier) {
+        return isRustReferenceClassCarrierExpressionCompatible(
+          expression,
+          optionalCarrier,
+          module,
+          modules,
+          moduleResolution,
+          target.module,
+        );
+      }
+      return getRustReferenceClassBorrowPositions(target.function, target.module, modules, moduleResolution).has(
+        position,
       );
     }
     if (isIrExpressionValue(invocation) && invocation.kind === 'new') {
@@ -1865,12 +2279,14 @@ function isRustReferenceClassReturnIdentifierUse(
   const statement = getIrModuleTraversalPathValue(module.module, expressionPath.slice(0, -1));
   if (!isRecord(statement) || statement.kind !== 'return' || statement.expression === undefined) return false;
   const function_ = module.functions.find((candidate) => candidate.declaration.body.includes(statement as never));
+  const carrier = function_
+    ? getRustReferenceClassReturnCarrier(function_, module, modules, moduleResolution, new Set())
+    : undefined;
   return (
-    function_ !== undefined &&
-    isRustReferenceClassReturnSupported(function_, module, modules, moduleResolution, new Set()) &&
+    carrier !== undefined &&
     isRustReferenceClassReturnExpressionSupported(
       expression,
-      function_.declaration.returns,
+      carrier,
       module,
       modules,
       moduleResolution,
@@ -1906,6 +2322,8 @@ function addRustSharedClassFieldBorrowConflictRefusal(
 
 function addRustSharedClassMutatorResultRefusal(
   module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
   path_: CompilerIrTraversalPath,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
@@ -1914,7 +2332,12 @@ function addRustSharedClassMutatorResultRefusal(
     assignment.left.kind !== 'property' ||
     assignment.left.object.kind !== 'identifier' ||
     assignment.left.object.reference.kind !== 'binding' ||
-    !module.sharedClasses.bindingIds.has(assignment.left.object.reference.binding.id)
+    !getRustReferencePlannedClassBindingCarrier(
+      assignment.left.object.reference.binding.id,
+      module,
+      modules,
+      moduleResolution,
+    )
   ) {
     return;
   }
@@ -1976,7 +2399,7 @@ function addRustSharedClassMethodBorrowConflictRefusal(
   if (
     !receiver ||
     receiver.reference.kind !== 'binding' ||
-    !module.sharedClasses.bindingIds.has(receiver.reference.binding.id)
+    !getRustReferencePlannedClassBindingCarrier(receiver.reference.binding.id, module, modules, moduleResolution)
   ) {
     return;
   }
@@ -2446,13 +2869,14 @@ function addRustReferenceCallablePlan(
 function addRustReferenceCallableReturnPlan(
   callables: Map<string, RustReferenceCallableDraft>,
   binding: Readonly<IrBindingIdentity>,
+  representation: RustSharedClassRepresentation,
 ): void {
   const existing = callables.get(binding.id);
   if (existing) {
-    existing.returns = 'shared-ref-cell-class';
+    existing.returns = representation;
     return;
   }
-  callables.set(binding.id, { binding, parameters: new Map(), returns: 'shared-ref-cell-class' });
+  callables.set(binding.id, { binding, parameters: new Map(), returns: representation });
 }
 
 function addRustReferenceRefusal(
@@ -2558,52 +2982,118 @@ function isRustReferenceClassIdentityComparisonSupported(
   ) {
     return false;
   }
-  const leftType = getRustReferenceClassIdentityExpressionType(expression.left, module);
-  const rightType = getRustReferenceClassIdentityExpressionType(expression.right, module);
-  return (
-    leftType !== undefined &&
-    rightType !== undefined &&
-    isRustSharedClassTypeSupported(leftType, module, modules, moduleResolution) &&
-    isRustReferenceSameClassType(leftType, module, rightType, module, modules, moduleResolution) &&
-    isRustReferenceClassIdentityOperandSupported(
+  const left = getRustReferenceClassIdentityOperandPlan(expression.left, module, modules, moduleResolution);
+  const right = getRustReferenceClassIdentityOperandPlan(expression.right, module, modules, moduleResolution);
+  if (!left || !right) return false;
+  if (left.kind === 'sentinel' || right.kind === 'sentinel') {
+    if (expression.operator !== '===' && expression.operator !== '!==') return false;
+    const sentinel = left.kind === 'sentinel' ? left.sentinel : right.kind === 'sentinel' ? right.sentinel : undefined;
+    const carrier = left.kind === 'carrier' ? left : right.kind === 'carrier' ? right : undefined;
+    return (
+      carrier !== undefined &&
+      sentinel !== undefined &&
+      carrier.carrier.sentinel === sentinel &&
+      isRustReferenceClassIdentityOperandSupported(
+        carrier.expression,
+        carrier.carrier,
+        module,
+        modules,
+        moduleResolution,
+        new Set(),
+      )
+    );
+  }
+  if (
+    !isRustReferenceSameClassCarrier(left.carrier, module, right.carrier, module, modules, moduleResolution) ||
+    !isRustReferenceClassIdentityOperandSupported(
       expression.left,
-      leftType,
+      left.carrier,
       module,
       modules,
       moduleResolution,
       new Set(),
-    ) &&
-    isRustReferenceClassIdentityOperandSupported(
+    ) ||
+    !isRustReferenceClassIdentityOperandSupported(
       expression.right,
-      rightType,
+      right.carrier,
       module,
       modules,
       moduleResolution,
       new Set(),
     )
-  );
+  ) {
+    return false;
+  }
+  return left.carrier.sentinel === undefined && right.carrier.sentinel === undefined
+    ? true
+    : expression.operator === '===' || expression.operator === '!==';
+}
+
+type RustReferenceClassIdentityOperandPlan =
+  | Readonly<{ expression: Readonly<IrExpression>; kind: 'carrier'; carrier: RustSharedClassCarrierType }>
+  | Readonly<{ kind: 'sentinel'; sentinel: 'null' | 'undefined' }>;
+
+function getRustReferenceClassIdentityOperandPlan(
+  expression: Readonly<IrExpression>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustReferenceClassIdentityOperandPlan | undefined {
+  const type = getRustReferenceClassIdentityExpressionType(expression, module);
+  if (type?.kind === 'null' || type?.kind === 'undefined') return { kind: 'sentinel', sentinel: type.kind };
+  const carrier = getRustSharedClassCarrierType(type, module, modules, moduleResolution);
+  return carrier ? { carrier, expression, kind: 'carrier' } : undefined;
 }
 
 function isRustReferenceClassIdentityOperandSupported(
   expression: Readonly<IrExpression>,
-  expectedType: Readonly<IrType>,
+  expectedCarrier: RustSharedClassCarrierType,
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingBindings: ReadonlySet<string>,
 ): boolean {
+  if (expectedCarrier.sentinel && isRustReferenceSentinelExpression(expression, expectedCarrier.sentinel)) {
+    return true;
+  }
+  if (expression.kind === 'conditional') {
+    return (
+      isRustReferenceClassIdentityOperandSupported(
+        expression.whenTrue,
+        expectedCarrier,
+        module,
+        modules,
+        moduleResolution,
+        visitingBindings,
+      ) &&
+      isRustReferenceClassIdentityOperandSupported(
+        expression.whenFalse,
+        expectedCarrier,
+        module,
+        modules,
+        moduleResolution,
+        visitingBindings,
+      )
+    );
+  }
   if (expression.kind === 'new') {
-    return isRustSimpleClassConstruction(expression, expectedType, module, modules, moduleResolution);
+    return isRustSimpleClassConstruction(expression, expectedCarrier.classType, module, modules, moduleResolution);
   }
   if (expression.kind === 'call') {
     const target = resolveRustReferenceCallTarget(expression, module, modules, moduleResolution);
-    const returnType =
-      target.kind === 'function' ? getRustReferenceFunctionClassReturnType(target.function.declaration) : undefined;
+    if (target.kind !== 'function') return false;
+    const returned = getRustReferenceClassReturnCarrier(
+      target.function,
+      target.module,
+      modules,
+      moduleResolution,
+      new Set(),
+    );
     return (
-      target.kind === 'function' &&
-      returnType !== undefined &&
-      isRustReferenceSameClassType(returnType, target.module, expectedType, module, modules, moduleResolution) &&
-      isRustReferenceClassReturnSupported(target.function, target.module, modules, moduleResolution, new Set())
+      returned !== undefined &&
+      (returned.representation === 'shared-ref-cell-class' ||
+        returned.representation === expectedCarrier.representation) &&
+      isRustReferenceSameClassCarrier(returned, target.module, expectedCarrier, module, modules, moduleResolution)
     );
   }
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
@@ -2611,16 +3101,23 @@ function isRustReferenceClassIdentityOperandSupported(
   if (visitingBindings.has(bindingId)) return false;
   const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === bindingId);
   const variable = module.sharedClasses.variablesByBindingId.get(bindingId);
+  const actual = getRustSharedClassCarrierType(module.bindingTypes.get(bindingId), module, modules, moduleResolution);
+  if (
+    !evidence ||
+    !actual ||
+    !isRustReferenceSameClassCarrier(actual, module, expectedCarrier, module, modules, moduleResolution)
+  ) {
+    return false;
+  }
+  if (evidence.declaration === 'parameter') return actual.representation !== 'shared-ref-cell-class';
   return (
     evidence?.declaration === 'immutable' &&
     evidence.binding.scope !== 'module' &&
     variable?.initializer !== undefined &&
     variable.mutable === false &&
-    variable.type !== undefined &&
-    isRustReferenceSameClassType(variable.type, module, expectedType, module, modules, moduleResolution) &&
     isRustReferenceClassIdentityOperandSupported(
       variable.initializer,
-      expectedType,
+      actual,
       module,
       modules,
       moduleResolution,
@@ -2738,7 +3235,10 @@ function addRustSharedClassReturnRefusals(
       `function ${function_.declaration.binding.name} does not have one exact synchronous simple-class return completion`,
     );
     const type = getRustReferenceFunctionClassReturnType(function_.declaration);
-    const location = type ? getRustReferenceClassDeclaration(type, module, modules, moduleResolution) : undefined;
+    const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module);
+    const location = carrier
+      ? getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution)
+      : undefined;
     if (location) {
       addRustSimpleClassDeclarationRefusals(
         location.declaration,
@@ -2786,7 +3286,8 @@ function isRustReferencePotentialClassReturnType(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): boolean {
-  const location = getRustReferenceClassDeclaration(type, module, modules, moduleResolution);
+  const candidate = getRustSharedClassCarrierTypeCandidate(type, module.module);
+  const location = getRustReferenceClassDeclaration(candidate?.classType ?? type, module, modules, moduleResolution);
   if (location) {
     return isRustReferenceClassReturnDeclarationInScope(
       location.declaration,
@@ -2867,55 +3368,82 @@ function isRustReferenceClassReturnSupported(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingFunctions: ReadonlySet<string>,
 ): boolean {
+  return (
+    getRustReferenceClassReturnCarrier(function_, module, modules, moduleResolution, visitingFunctions) !== undefined
+  );
+}
+
+function getRustReferenceClassReturnCarrier(
+  function_: RustReferenceFunctionRecord,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  visitingFunctions: ReadonlySet<string>,
+): RustSharedClassCarrierType | undefined {
   const declaration = function_.declaration;
   const type = getRustReferenceFunctionClassReturnType(declaration);
+  const carrier = getRustSharedClassCarrierType(type, module, modules, moduleResolution);
   if (
     declaration.async ||
     declaration.overloads.length > 0 ||
     declaration.typeParameters.length > 0 ||
-    !type ||
-    !isRustSharedClassTypeSupported(type, module, modules, moduleResolution)
+    (carrier?.representation !== 'shared-ref-cell-class' &&
+      declaration.parameters.some((parameter) => parameter.initializer || parameter.optional || parameter.rest)) ||
+    !carrier
   ) {
-    return false;
+    return undefined;
   }
   const expression = getRustReferenceClassReturnExpression(function_);
-  if (!expression) return false;
+  if (!expression) return undefined;
   const key = `${moduleKey(module.module)}:${declaration.binding.id}:return`;
-  if (visitingFunctions.has(key)) return true;
+  if (visitingFunctions.has(key)) return carrier;
   return isRustReferenceClassReturnExpressionSupported(
     expression,
-    type,
+    carrier,
     module,
     modules,
     moduleResolution,
     new Set(visitingFunctions).add(key),
     new Set(),
-  );
+  )
+    ? carrier
+    : undefined;
 }
 
 function isRustReferenceClassReturnExpressionSupported(
   expression: Readonly<IrExpression>,
-  returnType: Readonly<IrType>,
+  returnCarrier: RustSharedClassCarrierType,
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingFunctions: ReadonlySet<string>,
   visitingBindings: ReadonlySet<string>,
 ): boolean {
+  if (returnCarrier.sentinel && isRustReferenceSentinelExpression(expression, returnCarrier.sentinel)) return true;
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     const bindingId = expression.reference.binding.id;
     if (visitingBindings.has(bindingId)) return false;
     const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === bindingId);
     const variable = module.sharedClasses.variablesByBindingId.get(bindingId);
+    const actual = getRustSharedClassCarrierType(module.bindingTypes.get(bindingId), module, modules, moduleResolution);
+    if (
+      !evidence ||
+      !actual ||
+      !isRustReferenceSameClassCarrier(actual, module, returnCarrier, module, modules, moduleResolution) ||
+      (actual.representation !== 'shared-ref-cell-class' && actual.representation !== returnCarrier.representation)
+    ) {
+      return false;
+    }
+    if (evidence.declaration === 'parameter') {
+      return actual.representation !== 'shared-ref-cell-class';
+    }
     return (
       evidence?.declaration === 'immutable' &&
       evidence.binding.scope !== 'module' &&
       variable?.initializer !== undefined &&
-      variable.type !== undefined &&
-      isRustReferenceSameClassType(variable.type, module, returnType, module, modules, moduleResolution) &&
       isRustReferenceClassReturnExpressionSupported(
         variable.initializer,
-        returnType,
+        returnCarrier,
         module,
         modules,
         moduleResolution,
@@ -2925,24 +3453,30 @@ function isRustReferenceClassReturnExpressionSupported(
     );
   }
   if (expression.kind === 'new') {
-    return isRustSimpleClassConstruction(expression, returnType, module, modules, moduleResolution);
+    return isRustSimpleClassConstruction(expression, returnCarrier.classType, module, modules, moduleResolution);
   }
   if (expression.kind === 'call') {
     const target = resolveRustReferenceCallTarget(expression, module, modules, moduleResolution);
-    const targetType =
-      target.kind === 'function' ? getRustReferenceFunctionClassReturnType(target.function.declaration) : undefined;
+    if (target.kind !== 'function') return false;
+    const targetCarrier = getRustReferenceClassReturnCarrier(
+      target.function,
+      target.module,
+      modules,
+      moduleResolution,
+      visitingFunctions,
+    );
     return (
-      target.kind === 'function' &&
-      targetType !== undefined &&
-      isRustReferenceSameClassType(targetType, target.module, returnType, module, modules, moduleResolution) &&
-      isRustReferenceClassReturnSupported(target.function, target.module, modules, moduleResolution, visitingFunctions)
+      targetCarrier !== undefined &&
+      isRustReferenceSameClassCarrier(targetCarrier, target.module, returnCarrier, module, modules, moduleResolution) &&
+      (targetCarrier.representation === 'shared-ref-cell-class' ||
+        targetCarrier.representation === returnCarrier.representation)
     );
   }
   return (
     expression.kind === 'conditional' &&
     isRustReferenceClassReturnExpressionSupported(
       expression.whenTrue,
-      returnType,
+      returnCarrier,
       module,
       modules,
       moduleResolution,
@@ -2951,7 +3485,7 @@ function isRustReferenceClassReturnExpressionSupported(
     ) &&
     isRustReferenceClassReturnExpressionSupported(
       expression.whenFalse,
-      returnType,
+      returnCarrier,
       module,
       modules,
       moduleResolution,
@@ -3023,6 +3557,32 @@ function getRustReferenceClassBorrowPositions(
         ? [position]
         : [],
     ),
+  );
+}
+
+function getRustReferenceOptionalClassParameterPlans(
+  function_: RustReferenceFunctionRecord,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): ReadonlyMap<
+  number,
+  RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>
+> {
+  const declaration = function_.declaration;
+  if (
+    declaration.async ||
+    declaration.overloads.length > 0 ||
+    declaration.typeParameters.length > 0 ||
+    declaration.parameters.some((parameter) => parameter.initializer || parameter.optional || parameter.rest)
+  ) {
+    return new Map();
+  }
+  return new Map(
+    declaration.parameters.flatMap((parameter, position) => {
+      const carrier = getRustOptionalSharedClassCarrierType(parameter.type, module, modules, moduleResolution);
+      return carrier ? ([[position, carrier]] as const) : [];
+    }),
   );
 }
 
@@ -3132,7 +3692,7 @@ function getRustReferenceAnyClassMutationPositions(
 ): ReadonlySet<number> {
   return new Set(
     [...function_.mutatedParameterPositions].filter((position) =>
-      isRustClassLikeType(function_.declaration.parameters[position]?.type, module.module),
+      getRustSharedClassCarrierTypeCandidate(function_.declaration.parameters[position]?.type, module.module),
     ),
   );
 }
@@ -3256,11 +3816,14 @@ function isRustReferenceClassExpression(
   ) {
     return true;
   }
-  if (expression.kind === 'cast') return isRustClassLikeType(expression.type, module.module);
+  if (expression.kind === 'cast') {
+    return getRustSharedClassCarrierTypeCandidate(expression.type, module.module) !== undefined;
+  }
   return (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
-    isRustClassLikeType(module.bindingTypes.get(expression.reference.binding.id), module.module)
+    getRustSharedClassCarrierTypeCandidate(module.bindingTypes.get(expression.reference.binding.id), module.module) !==
+      undefined
   );
 }
 
@@ -3350,6 +3913,48 @@ function isRustClassLikeType(
     : false;
 }
 
+function getRustSharedClassCarrierTypeCandidate(
+  type: Readonly<IrType> | undefined,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string> = new Set(),
+): RustSharedClassCarrierType | undefined {
+  if (!type) return undefined;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.path.length === 0 &&
+    !resolving.has(type.reference.binding.id)
+  ) {
+    const bindingId = type.reference.binding.id;
+    const alias = module.declarations.find(
+      (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
+    );
+    if (alias?.kind === 'typeAlias') {
+      return getRustSharedClassCarrierTypeCandidate(alias.type, module, new Set(resolving).add(bindingId));
+    }
+  }
+  if (isRustClassLikeType(type, module)) {
+    return { classType: type, representation: 'shared-ref-cell-class' };
+  }
+  if (type.kind !== 'union' || type.types.length !== 2) return undefined;
+  const sentinelMembers = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  if (sentinelMembers.length !== 1) return undefined;
+  const classMembers = type.types.filter((member) => member !== sentinelMembers[0]);
+  if (classMembers.length !== 1) return undefined;
+  const classCarrier = getRustSharedClassCarrierTypeCandidate(classMembers[0], module, resolving);
+  if (!classCarrier || classCarrier.representation !== 'shared-ref-cell-class') return undefined;
+  const sentinel = sentinelMembers[0]!.kind;
+  return {
+    classType: classCarrier.classType,
+    representation:
+      sentinel === 'null' ? 'optional-null-shared-ref-cell-class' : 'optional-undefined-shared-ref-cell-class',
+    sentinel,
+  };
+}
+
 function getRustReferenceClassDeclaration(
   type: Readonly<IrType> | undefined,
   module: RustReferenceModuleRecord,
@@ -3395,6 +4000,24 @@ function isRustReferenceSameClassType(
   );
 }
 
+function isRustReferenceSameClassCarrier(
+  left: RustSharedClassCarrierType,
+  leftModule: RustReferenceModuleRecord,
+  right: RustSharedClassCarrierType,
+  rightModule: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  return isRustReferenceSameClassType(
+    left.classType,
+    leftModule,
+    right.classType,
+    rightModule,
+    modules,
+    moduleResolution,
+  );
+}
+
 function isRustReferenceExactClassArgument(
   expression: Readonly<IrExpression>,
   module: RustReferenceModuleRecord,
@@ -3419,11 +4042,131 @@ function isRustReferenceExactClassArgument(
       typeArguments: expression.typeArguments,
     };
   }
-  return (
-    argumentType !== undefined &&
-    isRustSharedClassTypeSupported(argumentType, module, modules, moduleResolution) &&
-    isRustReferenceSameClassType(argumentType, module, parameterType, parameterModule, modules, moduleResolution)
+  const argumentCarrier = getRustSharedClassCarrierType(argumentType, module, modules, moduleResolution);
+  const parameterCarrier = getRustSharedClassCarrierType(parameterType, parameterModule, modules, moduleResolution);
+  return Boolean(
+    argumentCarrier &&
+    parameterCarrier?.representation === 'shared-ref-cell-class' &&
+    isRustReferenceSameClassCarrier(
+      argumentCarrier,
+      module,
+      parameterCarrier,
+      parameterModule,
+      modules,
+      moduleResolution,
+    ) &&
+    (argumentCarrier.representation === 'shared-ref-cell-class' ||
+      ('presence' in expression && expression.presence === 'narrowedPresent')),
   );
+}
+
+function isRustReferenceSentinelExpression(
+  expression: Readonly<IrExpression>,
+  sentinel: 'null' | 'undefined',
+): boolean {
+  if (sentinel === 'null') return expression.kind === 'literal' && expression.value === null;
+  return (
+    expression.kind === 'undefinedValue' ||
+    (expression.kind === 'identifier' &&
+      expression.reference.kind === 'ambient' &&
+      expression.reference.name === 'undefined')
+  );
+}
+
+function getRustReferenceExpressionClassCarrierType(
+  expression: Readonly<IrExpression>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSharedClassCarrierType | undefined {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    return getRustSharedClassCarrierType(
+      module.bindingTypes.get(expression.reference.binding.id),
+      module,
+      modules,
+      moduleResolution,
+    );
+  }
+  if (expression.kind === 'call') {
+    return getRustSharedClassCarrierType(expression.semantics.resultType, module, modules, moduleResolution);
+  }
+  if (expression.kind === 'cast') {
+    return getRustSharedClassCarrierType(expression.type, module, modules, moduleResolution);
+  }
+  if (expression.kind !== 'new') return undefined;
+  const type = getRustReferenceClassIdentityExpressionType(expression, module);
+  return getRustSharedClassCarrierType(type, module, modules, moduleResolution);
+}
+
+function isRustReferenceClassCarrierExpressionCompatible(
+  expression: Readonly<IrExpression>,
+  expected: RustSharedClassCarrierType,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  expectedModule: RustReferenceModuleRecord = module,
+): boolean {
+  if (expected.sentinel && isRustReferenceSentinelExpression(expression, expected.sentinel)) return true;
+  if (expression.kind === 'conditional') {
+    return (
+      isRustReferenceClassCarrierExpressionCompatible(
+        expression.whenTrue,
+        expected,
+        module,
+        modules,
+        moduleResolution,
+        expectedModule,
+      ) &&
+      isRustReferenceClassCarrierExpressionCompatible(
+        expression.whenFalse,
+        expected,
+        module,
+        modules,
+        moduleResolution,
+        expectedModule,
+      )
+    );
+  }
+  if (expression.kind === 'call') {
+    const target = resolveRustReferenceCallTarget(expression, module, modules, moduleResolution);
+    const returned =
+      target.kind === 'function'
+        ? getRustReferenceClassReturnCarrier(target.function, target.module, modules, moduleResolution, new Set())
+        : undefined;
+    return Boolean(
+      returned &&
+      isRustReferenceSameClassCarrier(
+        returned,
+        target.kind === 'function' ? target.module : module,
+        expected,
+        expectedModule,
+        modules,
+        moduleResolution,
+      ) &&
+      (returned.representation === 'shared-ref-cell-class' ||
+        returned.representation === expected.representation ||
+        (expected.representation === 'shared-ref-cell-class' &&
+          'presence' in expression &&
+          expression.presence === 'narrowedPresent')),
+    );
+  }
+  const actual = getRustReferenceExpressionClassCarrierType(expression, module, modules, moduleResolution);
+  if (
+    !actual ||
+    !isRustReferenceSameClassCarrier(actual, module, expected, expectedModule, modules, moduleResolution)
+  ) {
+    return false;
+  }
+  if (actual.representation !== 'shared-ref-cell-class' && actual.representation !== expected.representation) {
+    return false;
+  }
+  if (expected.representation === 'shared-ref-cell-class' && actual.representation !== 'shared-ref-cell-class') {
+    return 'presence' in expression && expression.presence === 'narrowedPresent';
+  }
+  if (expression.kind === 'new') {
+    return isRustSimpleClassConstruction(expression, actual.classType, module, modules, moduleResolution);
+  }
+  return expression.kind === 'identifier';
 }
 
 function getRustReferenceClassField(
@@ -3434,12 +4177,14 @@ function getRustReferenceClassField(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): Readonly<IrClassField> | undefined {
   if (expression.reference.kind !== 'binding') return undefined;
-  const location = getRustReferenceClassDeclaration(
+  const carrier = getRustSharedClassCarrierType(
     module.bindingTypes.get(expression.reference.binding.id),
     module,
     modules,
     moduleResolution,
   );
+  if (!carrier || (carrier.sentinel && expression.presence !== 'narrowedPresent')) return undefined;
+  const location = getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution);
   return location?.declaration.fields.find((field) => !field.static && field.name === name);
 }
 
@@ -3478,7 +4223,11 @@ function getRustReferenceClassInstanceMethod(
     }>
   | undefined {
   const type = getRustReferenceClassIdentityExpressionType(expression, module);
-  const location = getRustReferenceClassDeclaration(type, module, modules, moduleResolution);
+  const carrier = getRustSharedClassCarrierType(type, module, modules, moduleResolution);
+  if (!carrier || (carrier.sentinel && (!('presence' in expression) || expression.presence !== 'narrowedPresent'))) {
+    return undefined;
+  }
+  const location = getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution);
   const method = location?.declaration.methods.find(
     (candidate) => !candidate.static && candidate.accessor === undefined && candidate.name === name,
   );
@@ -3550,6 +4299,45 @@ function isRustSharedClassTypeSupported(
       visitingClasses,
     )
   );
+}
+
+function getRustSharedClassCarrierType(
+  type: Readonly<IrType> | undefined,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSharedClassCarrierType | undefined {
+  const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module);
+  return carrier && isRustSharedClassTypeSupported(carrier.classType, module, modules, moduleResolution)
+    ? carrier
+    : undefined;
+}
+
+function getRustOptionalSharedClassCarrierType(
+  type: Readonly<IrType> | undefined,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): (RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>) | undefined {
+  const carrier = getRustSharedClassCarrierType(type, module, modules, moduleResolution);
+  return carrier?.representation === 'optional-null-shared-ref-cell-class' ||
+    carrier?.representation === 'optional-undefined-shared-ref-cell-class'
+    ? (carrier as RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>)
+    : undefined;
+}
+
+function getRustReferencePlannedClassBindingCarrier(
+  bindingId: string,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSharedClassCarrierType | undefined {
+  if (hasRustSharedClassBinding(module.sharedClasses, bindingId)) {
+    return module.sharedClasses.carrierTypesByBindingId.get(bindingId);
+  }
+  const carrier = getRustSharedClassCarrierType(module.bindingTypes.get(bindingId), module, modules, moduleResolution);
+  if (!carrier) return undefined;
+  return carrier.representation !== 'shared-ref-cell-class' ? carrier : undefined;
 }
 
 function isRustSimpleClassDeclarationSupported(

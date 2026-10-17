@@ -9,6 +9,8 @@ export type CompilerRustReferenceRepresentation =
   | 'mutable-borrowed-hash-map'
   | 'mutable-borrowed-hash-set'
   | 'mutable-borrowed-vec'
+  | 'optional-null-shared-ref-cell-class'
+  | 'optional-undefined-shared-ref-cell-class'
   | 'shared-ref-cell-class'
   | 'shared-ref-cell-hash-map'
   | 'shared-ref-cell-hash-set'
@@ -23,7 +25,12 @@ export interface CompilerRustReferenceCallablePlan {
   /** The binding visible in this module: a declaration for local calls or an import for external calls. */
   readonly binding: IrBindingIdentity;
   readonly parameters: readonly CompilerRustReferenceParameterPlan[];
-  readonly returns?: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-class'> | undefined;
+  readonly returns?:
+    | Extract<
+        CompilerRustReferenceRepresentation,
+        'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
+      >
+    | undefined;
 }
 
 export type CompilerRustReferenceRepresentationRefusalCode =
@@ -91,7 +98,10 @@ export interface CompilerRustReferenceModulePlan {
   /** Local simple-class aliases represented by one single-threaded shared RefCell carrier. */
   readonly sharedClassBindings: readonly Readonly<{
     binding: IrBindingIdentity;
-    representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-class'>;
+    representation: Extract<
+      CompilerRustReferenceRepresentation,
+      'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
+    >;
   }>[];
   /** Local Map aliases represented by one single-threaded shared RefCell carrier. */
   readonly sharedMapBindings: readonly Readonly<{

@@ -474,6 +474,158 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('plans required, undefined, and null shared-class aliases with strict identity semantics', () => {
+    const module = lower(
+      'optional-class-local.ts',
+      `class Counter { value = 0; }
+       export function compare(): boolean {
+         const required: Counter = new Counter();
+         const requiredAlias = required;
+         const maybeUndefined: Counter | undefined = requiredAlias;
+         const undefinedAlias: Counter | undefined = maybeUndefined;
+         const maybeNull: Counter | null = requiredAlias;
+         const nullAlias: Counter | null = maybeNull;
+         requiredAlias.value = 1;
+         return maybeUndefined === undefinedAlias &&
+           maybeNull === nullAlias &&
+           maybeUndefined !== undefined &&
+           maybeNull !== null &&
+           maybeUndefined !== maybeNull &&
+           maybeUndefined === requiredAlias;
+       }`,
+    );
+    const input = { modules: [module] } as const;
+    const snapshot = structuredClone(input);
+    const first = createCompilerRustReferenceRepresentationPlan(input);
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const modulePlan = getModulePlan(first, module);
+
+    expect(first).toEqual(second);
+    expect(input).toEqual(snapshot);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(
+      modulePlan.sharedClassBindings
+        .map(({ binding, representation }) => [binding.name, representation])
+        .sort(([left], [right]) => String(left).localeCompare(String(right))),
+    ).toEqual([
+      ['maybeNull', 'optional-null-shared-ref-cell-class'],
+      ['maybeUndefined', 'optional-undefined-shared-ref-cell-class'],
+      ['nullAlias', 'optional-null-shared-ref-cell-class'],
+      ['required', 'shared-ref-cell-class'],
+      ['requiredAlias', 'shared-ref-cell-class'],
+      ['undefinedAlias', 'optional-undefined-shared-ref-cell-class'],
+    ]);
+  });
+
+  it('plans optional class parameters and returns across a module boundary', () => {
+    const provider = lower(
+      'optional-class-provider.ts',
+      `export class Counter {
+         value = 0;
+         increment(): void { this.value += 1; }
+       }
+       export function increment(value: Counter | undefined): void {
+         if (value !== undefined) value.increment();
+       }
+       export function echoUndefined(value: Counter | undefined): Counter | undefined { return value; }
+       export function echoNull(value: Counter | null): Counter | null { return value; }
+       export function make(): Counter { return new Counter(); }
+       export function compare(left: Counter | undefined, right: Counter | null): boolean {
+         return left === right;
+       }`,
+    );
+    const consumer = lower(
+      'optional-class-consumer.ts',
+      `import { Counter, compare, echoNull, echoUndefined, increment, make } from './optional-class-provider.js';
+       export function run(flag: boolean): boolean {
+         const required: Counter = new Counter();
+         const maybeUndefined: Counter | undefined = flag ? required : undefined;
+         const maybeNull: Counter | null = flag ? required : null;
+         increment(maybeUndefined);
+         const returnedUndefined: Counter | undefined = echoUndefined(maybeUndefined);
+         const returnedNull: Counter | null = echoNull(maybeNull);
+         const lifted: Counter | undefined = make();
+         return compare(returnedUndefined, returnedNull) &&
+           returnedUndefined === maybeUndefined &&
+           returnedNull === maybeNull &&
+           lifted === maybeUndefined &&
+           returnedUndefined !== returnedNull;
+       }`,
+    );
+    const moduleResolution = resolve('./optional-class-provider.js', provider, consumer);
+    const first = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+    const second = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [consumer, provider],
+    });
+    const providerPlan = getModulePlan(first, provider);
+    const consumerPlan = getModulePlan(first, consumer);
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(providerPlan.refusals).toEqual([]);
+    expect(consumerPlan.refusals).toEqual([]);
+    expect(providerPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'increment' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'echoUndefined' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+          returns: 'optional-undefined-shared-ref-cell-class',
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'echoNull' }),
+          parameters: [{ position: 0, representation: 'optional-null-shared-ref-cell-class' }],
+          returns: 'optional-null-shared-ref-cell-class',
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'compare' }),
+          parameters: [
+            { position: 0, representation: 'optional-undefined-shared-ref-cell-class' },
+            { position: 1, representation: 'optional-null-shared-ref-cell-class' },
+          ],
+        }),
+      ]),
+    );
+    expect(consumerPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'increment' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'echoUndefined' }),
+          parameters: [{ position: 0, representation: 'optional-undefined-shared-ref-cell-class' }],
+          returns: 'optional-undefined-shared-ref-cell-class',
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'echoNull' }),
+          parameters: [{ position: 0, representation: 'optional-null-shared-ref-cell-class' }],
+          returns: 'optional-null-shared-ref-cell-class',
+        }),
+      ]),
+    );
+    expect(
+      consumerPlan.sharedClassBindings.map(({ binding, representation }) => [binding.name, representation]),
+    ).toEqual(
+      expect.arrayContaining([
+        ['required', 'shared-ref-cell-class'],
+        ['maybeUndefined', 'optional-undefined-shared-ref-cell-class'],
+        ['maybeNull', 'optional-null-shared-ref-cell-class'],
+        ['returnedUndefined', 'optional-undefined-shared-ref-cell-class'],
+        ['returnedNull', 'optional-null-shared-ref-cell-class'],
+        ['lifted', 'optional-undefined-shared-ref-cell-class'],
+      ]),
+    );
+  });
+
   it('refuses unsupported class identity comparisons', () => {
     const cases = [
       lower(
@@ -614,13 +766,8 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     }
   });
 
-  it('refuses unsupported exact class return boundaries', () => {
+  it('refuses unsupported class return boundaries', () => {
     const cases = [
-      lower(
-        'return-optional.ts',
-        `class Counter { value = 0; }
-         export function make(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; }`,
-      ),
       lower(
         'return-dynamic.ts',
         `class Counter { value = 0; }
@@ -683,6 +830,107 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       ).toEqual(
         expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-return-unrepresented' })]),
       );
+    }
+  });
+
+  it('keeps optional shared-class carriers inside the stable refusal boundary', () => {
+    const cases: readonly [Readonly<IrModule>, string][] = [
+      [
+        lower(
+          'optional-class-dual-sentinel.ts',
+          `class Counter { value = 0; }
+           export function inspect(value: Counter | null | undefined): boolean { return value === null; }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-multiple-classes.ts',
+          `class Counter { value = 0; } class Other { value = 1; }
+           export function inspect(value: Counter | Other | undefined): boolean { return value === undefined; }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-nested.ts',
+          `class Counter { value = 0; }
+           export function inspect(values: Array<Counter | undefined>): number { return values.length; }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-ambiguous.ts',
+          `class Counter { value = 0; }
+           export function inspect(flag: boolean): boolean {
+             const left: Counter | undefined = new Counter();
+             const right: Counter | undefined = new Counter();
+             const value: Counter | undefined = flag ? left : right;
+             return value === left;
+           }`,
+        ),
+        'rust-reference-shared-class-alias-ambiguous',
+      ],
+      [
+        lower(
+          'optional-class-borrow-conflict.ts',
+          `class Counter { value = 0; }
+           export function update(): number {
+             const value: Counter | undefined = new Counter();
+             const alias: Counter | undefined = value;
+             if (alias !== undefined && value !== undefined) alias.value = value.value;
+             return alias === undefined ? 0 : alias.value;
+           }`,
+        ),
+        'rust-reference-shared-class-borrow-conflict',
+      ],
+      [
+        lower(
+          'optional-class-escape.ts',
+          `class Counter { value = 0; }
+           export function create(): () => number {
+             const value: Counter | null = new Counter();
+             return (): number => value === null ? 0 : value.value;
+           }`,
+        ),
+        'rust-reference-shared-class-closure-escape-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-suspension.ts',
+          `class Counter { value = 0; }
+           export async function inspect(): Promise<number> {
+             const value: Counter | undefined = new Counter();
+             await Promise.resolve();
+             return value === undefined ? 0 : value.value;
+           }`,
+        ),
+        'rust-reference-shared-class-suspension-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-call-sentinel.ts',
+          `class Counter { value = 0; }
+           function inspect(value: Counter | undefined): boolean { return value === undefined; }
+           export function run(): boolean { const value: Counter | null = null; return inspect(value as never); }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'optional-class-return-sentinel.ts',
+          `class Counter { value = 0; }
+           export function wrong(): Counter | undefined { const value: Counter | null = null; return value; }`,
+        ),
+        'rust-reference-shared-class-return-unrepresented',
+      ],
+    ];
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
     }
   });
 
