@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/stringComparison.ts: string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes

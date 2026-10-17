@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/stringCharCode.ts: string.charCodeAt requires JavaScript UTF-16 code-unit indexing, including surrogate halves; Rust chars index Unicode scalars

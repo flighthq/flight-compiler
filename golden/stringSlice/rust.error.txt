@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/stringSlice.ts: string.substring requires JavaScript UTF-16 code-unit indexing and range normalization before Rust emission

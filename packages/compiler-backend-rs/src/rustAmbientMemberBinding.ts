@@ -102,7 +102,6 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'set.delete': { kind: 'borrowedMethod', targetName: 'remove' },
   'set.has': { kind: 'borrowedMethod', targetName: 'contains' },
   'set.size': { kind: 'countingMethod', targetName: 'len' },
-  'string.length': { kind: 'countingMethod', targetName: 'len' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
   'string.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   'string.indexOf': { kind: 'sentinelSearch', targetName: 'find' },

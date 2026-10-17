@@ -638,6 +638,68 @@ describe('emitIrModuleRust', () => {
 
   it.each([
     {
+      member: 'length',
+      rule: 'rust-string-utf16-length-unrepresented',
+      source: 'export function ascii(): number { return "plain".length; }',
+    },
+    {
+      member: 'charAt',
+      rule: 'rust-string-utf16-index-unrepresented',
+      source: 'export function astral(): string { return "😀".charAt(0); }',
+    },
+    {
+      member: 'charCodeAt',
+      rule: 'rust-string-utf16-index-unrepresented',
+      source: 'export function surrogate(): number { return "\\ud800".charCodeAt(0); }',
+    },
+    {
+      member: 'slice',
+      rule: 'rust-string-utf16-range-unrepresented',
+      source: 'export function negative(): string { return "abcd".slice(-2, -1); }',
+    },
+    {
+      member: 'substring',
+      rule: 'rust-string-utf16-range-unrepresented',
+      source: 'export function reversed(): string { return "abcd".substring(3, 1); }',
+    },
+  ] as const)('preflight-refuses UTF-16-sensitive string.$member semantics', ({ member, rule, source }) => {
+    const result = lower(`string-${member}.ts`, source);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(`string.${member}`);
+    expect(failure.rule).toBe(rule);
+  });
+
+  it('chooses UTF-16 string refusals independently of source traversal order', () => {
+    const forward = lower(
+      'string-refusal-forward.ts',
+      'export function length(s: string): number { return s.length; } export function first(s: string): string { return s.charAt(0); }',
+    ).module;
+    const reverse = lower(
+      'string-refusal-reverse.ts',
+      'export function first(s: string): string { return s.charAt(0); } export function length(s: string): number { return s.length; }',
+    ).module;
+    const refusal = (module: typeof forward) => {
+      const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+      return { detail: failure.message.slice(failure.message.indexOf(': ') + 2), rule: failure.rule };
+    };
+
+    expect(refusal(forward)).toEqual(refusal(reverse));
+  });
+
+  it('preserves an equivalent native string mapping as an ASCII control', () => {
+    const output = emitIrModuleRust(
+      lower('string-ascii-control.ts', 'export function starts(s: string): boolean { return s.startsWith("ASCII"); }')
+        .module,
+    ).contents;
+
+    expect(output).toContain('.starts_with(');
+  });
+
+  it.each([
+    {
       nullability: 'non-null' as const,
       ownership: 'borrowed' as const,
       rule: 'rust-host-binding-ownership-unrepresented',
@@ -2207,26 +2269,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('extend');
   });
 
-  it('emits charAt and charCodeAt as chars().nth', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'string-char.ts',
-        'export function chars(s: string): string { const c = s.charAt(0); const n: number = s.charCodeAt(0); return c; }',
-      ).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-  });
-
-  it('emits substring as slice with range', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'string-sub.ts',
-        'export function sub(s: string, start: number, end: number): string { return s.substring(start, end); }',
-      ).module,
-    ).contents;
-    expect(output).toContain('.to_string()');
-  });
-
   it('elects numeric Rust ABI for an asserted unknown parameter', () => {
     const output = emitIrModuleRust(
       lower('cast.ts', 'export function typed(x: unknown): number { return x as number; }').module,
@@ -2636,14 +2678,6 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('.trim()');
     expect(output).toContain('.to_owned()');
-  });
-
-  it('emits string length as len() with f64 cast', () => {
-    const output = emitIrModuleRust(
-      lower('string-len.ts', 'export function size(s: string): number { return s.length; }').module,
-    ).contents;
-    expect(output).toContain('.len()');
-    expect(output).toContain('as f64');
   });
 
   it('emits string replace as replacen with count 1', () => {
@@ -3189,29 +3223,6 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('__concat');
     expect(output).toContain('.extend(');
-  });
-
-  it('emits string charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('str-charat.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('.unwrap_or_default()');
-  });
-
-  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
-    const output = emitIrModuleRust(
-      lower('str-charcodeat.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('u32 as f64');
-  });
-
-  it('emits string substring as range slice', () => {
-    const output = emitIrModuleRust(
-      lower('str-substring.ts', 'export function sub(s: string): string { return s.substring(1, 3); }').module,
-    ).contents;
-    expect(output).toContain('.to_string()');
   });
 
   it('emits closure with body statements', () => {
@@ -4264,28 +4275,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('extend');
   });
 
-  it('emits string charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-  });
-
-  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
-    const output = emitIrModuleRust(
-      lower('char-code.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
-    ).contents;
-    expect(output).toContain('as u32');
-    expect(output).toContain('f64');
-  });
-
-  it('emits string substring as range slice', () => {
-    const output = emitIrModuleRust(
-      lower('substr.ts', 'export function mid(s: string): string { return s.substring(1, 3); }').module,
-    ).contents;
-    expect(output).toContain('to_string()');
-  });
-
   it('emits labeled break as break with lifetime label', () => {
     const output = emitIrModuleRust(
       lower(
@@ -4709,14 +4698,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('as f64');
   });
 
-  it('emits string.length as .len() with f64 cast', () => {
-    const output = emitIrModuleRust(
-      lower('str-len.ts', 'export function size(s: string): number { return s.length; }').module,
-    ).contents;
-    expect(output).toContain('len()');
-    expect(output).toContain('as f64');
-  });
-
   it('emits class extending concrete base as composition', () => {
     const output = emitIrModuleRust(
       lower(
@@ -4924,14 +4905,6 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('let update_previous = x;');
     expect(output).toContain('x += 1.0; update_previous');
-  });
-
-  it('emits substring with one argument as open range', () => {
-    const output = emitIrModuleRust(
-      lower('substr1.ts', `export function tail(s: string): string { return s.substring(1); }`).module,
-    ).contents;
-    expect(output).toContain('..');
-    expect(output).toContain('to_string()');
   });
 
   it('emits transitive mutation as &mut self', () => {
@@ -5906,32 +5879,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('fn coerce');
   });
 
-  it('emits string charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-  });
-
-  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
-    const output = emitIrModuleRust(
-      lower('char-code-at.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-    expect(output).toContain('as u32');
-  });
-
-  it('emits string substring as range slice', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substring.ts',
-        `export function mid(s: string, start: number, end: number): string { return s.substring(start, end); }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize');
-    expect(output).toContain('to_string');
-  });
-
   it('emits array join with separator', () => {
     const output = emitIrModuleRust(
       lower('join.ts', `export function csv(items: string[]): string { return items.join(","); }`).module,
@@ -6379,20 +6326,6 @@ describe('emitIrModuleRust', () => {
   it('emits array slice with two arguments', () => {
     const output = emitIrModuleRust(
       lower('arr-slice.ts', `export function mid(items: number[]): number[] { return items.slice(1, 3); }`).module,
-    ).contents;
-    expect(output).toBeDefined();
-  });
-
-  it('emits string charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('chars()');
-  });
-
-  it('emits string substring with two args', () => {
-    const output = emitIrModuleRust(
-      lower('substring.ts', `export function mid(s: string): string { return s.substring(1, 3); }`).module,
     ).contents;
     expect(output).toBeDefined();
   });
@@ -7088,18 +7021,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('{');
   });
 
-  it('emits string charCodeAt as chars nth', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'char-code.ts',
-        `export function code(s: string, i: number): number {
-          return s.charCodeAt(i);
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-  });
-
   it('emits string indexOf as find search', () => {
     const output = emitIrModuleRust(
       lower(
@@ -7149,31 +7070,6 @@ describe('emitIrModuleRust', () => {
       ).module,
     ).contents;
     expect(output).toContain('as usize');
-  });
-
-  it('emits string substring with range slice', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substring.ts',
-        `export function mid(s: string, start: number, end: number): string {
-          return s.substring(start, end);
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('to_string()');
-  });
-
-  it('emits string substring with one argument as open range', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substring-one.ts',
-        `export function tail(s: string, start: number): string {
-          return s.substring(start);
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('..');
-    expect(output).toContain('to_string()');
   });
 
   it('emits module-level const variable declaration', () => {
@@ -7549,18 +7445,6 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('.len()');
     expect(output).toContain('as f64');
-  });
-
-  it('emits string length as counting method', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'str-len.ts',
-        `export function len(s: string): number {
-          return s.length;
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.len()');
   });
 
   it('emits tuple element access with positional index', () => {
@@ -8484,42 +8368,6 @@ describe('emitIrModuleRust', () => {
       ).module,
     ).contents;
     expect(output).toContain('continue;');
-  });
-
-  it('emits string charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('unwrap_or_default');
-  });
-
-  it('emits string charCodeAt as chars().nth() with f64 cast', () => {
-    const output = emitIrModuleRust(
-      lower('char-code.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('f64::NAN');
-  });
-
-  it('emits string substring as slice with to_string', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substr.ts',
-        'export function mid(s: string, start: number, end: number): string { return s.substring(start, end); }',
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize');
-    expect(output).toContain('.to_string()');
-  });
-
-  it('emits string substring with one argument as open range', () => {
-    const output = emitIrModuleRust(
-      lower('substr-one.ts', 'export function tail(s: string, start: number): string { return s.substring(start); }')
-        .module,
-    ).contents;
-    expect(output).toContain('as usize..');
-    expect(output).toContain('.to_string()');
   });
 
   it('emits array join with separator argument', () => {
@@ -9618,35 +9466,6 @@ describe('emitIrModuleRust Math spread fold', () => {
   });
 });
 
-describe('emitIrModuleRust string charAt', () => {
-  it('emits .charAt() with chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-  });
-});
-
-describe('emitIrModuleRust string charCodeAt', () => {
-  it('emits .charCodeAt() with chars().nth() and u32 cast', () => {
-    const output = emitIrModuleRust(
-      lower('char-code.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-    expect(output).toContain('as u32');
-  });
-});
-
-describe('emitIrModuleRust string substring', () => {
-  it('emits .substring(start, end) as slice', () => {
-    const output = emitIrModuleRust(
-      lower('substr.ts', `export function mid(s: string): string { return s.substring(1, 3); }`).module,
-    ).contents;
-    expect(output).toContain('as usize');
-    expect(output).toContain('.to_string()');
-  });
-});
-
 describe('emitIrModuleRust array concat', () => {
   it('emits .concat() with extend', () => {
     const output = emitIrModuleRust(
@@ -10104,15 +9923,6 @@ describe('emitIrModuleRust string concatenation', () => {
       lower('str-concat.ts', `export function combine(a: string, b: string): string { return a + b; }`).module,
     ).contents;
     expect(output).toContain('format!');
-  });
-});
-
-describe('emitIrModuleRust string methods', () => {
-  it('emits .substring(start) as open range', () => {
-    const output = emitIrModuleRust(
-      lower('substr-one.ts', `export function tail(s: string): string { return s.substring(1); }`).module,
-    ).contents;
-    expect(output).toContain('..');
   });
 });
 
@@ -10811,45 +10621,6 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     ).contents;
     expect(output).toContain('extend');
     expect(output).toContain('__concat');
-  });
-
-  it('emits string.charAt with chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'charat.ts',
-        `export function first(s: string): string {
-           return s.charAt(0);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-    expect(output).toContain('unwrap_or_default()');
-  });
-
-  it('emits string.charCodeAt with chars().nth() and NaN fallback', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'charcodeat.ts',
-        `export function code(s: string): number {
-           return s.charCodeAt(0);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('chars().nth(');
-    expect(output).toContain('f64::NAN');
-  });
-
-  it('emits string.substring with range indexing', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substring.ts',
-        `export function mid(s: string): string {
-           return s.substring(1, 5);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize');
-    expect(output).toContain('.to_string()');
   });
 
   it('emits string.replace with replacen and trailing 1', () => {
@@ -11796,21 +11567,6 @@ describe('emitIrModuleRust string method bindings', () => {
     ).contents;
     expect(output).toContain('.split(');
     expect(output).toContain('collect');
-  });
-
-  it('emits string substring with range', () => {
-    const output = emitIrModuleRust(
-      lower('str-substr.ts', `export function mid(s: string): string { return s.substring(1, 3); }`).module,
-    ).contents;
-    expect(output).toContain('as usize');
-    expect(output).toContain('.to_string()');
-  });
-
-  it('emits string charAt with nth', () => {
-    const output = emitIrModuleRust(
-      lower('str-charat.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
   });
 });
 
@@ -13026,30 +12782,6 @@ describe('emitIrModuleRust array method bindings', () => {
 });
 
 describe('emitIrModuleRust string method bindings', () => {
-  it('emits string.charAt as chars().nth()', () => {
-    const output = emitIrModuleRust(
-      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('unwrap_or_default()');
-  });
-
-  it('emits string.charCodeAt as chars().nth() with u32 cast', () => {
-    const output = emitIrModuleRust(
-      lower('char-code.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('as u32 as f64');
-  });
-
-  it('emits string.substring as slice with range bounds', () => {
-    const output = emitIrModuleRust(
-      lower('substring.ts', `export function sub(s: string): string { return s.substring(1, 3); }`).module,
-    ).contents;
-    expect(output).toContain('as usize..3');
-    expect(output).toContain('.to_string()');
-  });
-
   it('emits string.indexOf as sentinel search with find', () => {
     const output = emitIrModuleRust(
       lower('string-index.ts', `export function pos(s: string, target: string): number { return s.indexOf(target); }`)
@@ -13980,66 +13712,6 @@ describe('emitIrModuleRust array concat', () => {
     ).contents;
     expect(output).toContain('extend');
     expect(output).toContain('__concat');
-  });
-});
-
-describe('emitIrModuleRust string charAt', () => {
-  it('emits chars nth for charAt', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'char-at.ts',
-        `export function first(s: string): string {
-           return s.charAt(0);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('unwrap_or_default');
-  });
-});
-
-describe('emitIrModuleRust string charCodeAt', () => {
-  it('emits chars nth with u32 cast for charCodeAt', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'char-code.ts',
-        `export function code(s: string, i: number): number {
-           return s.charCodeAt(i);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.chars().nth(');
-    expect(output).toContain('as u32 as f64');
-  });
-});
-
-describe('emitIrModuleRust string substring one arg', () => {
-  it('emits open-ended slice for single-arg substring', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substr-one.ts',
-        `export function tail(s: string): string {
-           return s.substring(1);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize..]');
-    expect(output).toContain('.to_string()');
-  });
-});
-
-describe('emitIrModuleRust string substring two args', () => {
-  it('emits bounded slice for two-arg substring', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'substr-two.ts',
-        `export function mid(s: string): string {
-           return s.substring(1, 3);
-         }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize..3');
-    expect(output).toContain('.to_string()');
   });
 });
 

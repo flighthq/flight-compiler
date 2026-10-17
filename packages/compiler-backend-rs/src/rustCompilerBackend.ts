@@ -1,6 +1,9 @@
 import path from 'node:path';
 
-import { normalizeCompilerStructuralValueCanonical } from '../../compiler-canonical-form/src/index.js';
+import {
+  compareTextCodeUnits,
+  normalizeCompilerStructuralValueCanonical,
+} from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
@@ -289,6 +292,7 @@ function emitIrModuleRustWithContext(
   assertRuntimeExternalBindingRepresentationsRust(module, options);
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
+  assertStringMemberSemanticsRust(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
   const constantIdentities = collectRustConstantBindingIds(module);
@@ -1315,40 +1319,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const receiver = emitExpression(expression.callee.object, context);
         const other = emitExpression(expression.arguments[0]!, context);
         return `{ let mut __concat = ${receiver}; __concat.extend(${other}); __concat }`;
-      }
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'string' &&
-        expression.callee.member.name === 'charAt' &&
-        expression.arguments.length === 1
-      ) {
-        const receiver = emitExpression(expression.callee.object, context);
-        const index = emitExpression(expression.arguments[0]!, context);
-        return `${receiver}.chars().nth(${index} as usize).map(|c| c.to_string()).unwrap_or_default()`;
-      }
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'string' &&
-        expression.callee.member.name === 'charCodeAt' &&
-        expression.arguments.length === 1
-      ) {
-        const receiver = emitExpression(expression.callee.object, context);
-        const index = emitExpression(expression.arguments[0]!, context);
-        return `${receiver}.chars().nth(${index} as usize).map(|c| c as u32 as f64).unwrap_or(f64::NAN)`;
-      }
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'string' &&
-        expression.callee.member.name === 'substring'
-      ) {
-        const receiver = emitExpression(expression.callee.object, context);
-        if (expression.arguments.length === 0 || expression.arguments.length > 2) {
-          emissionError(context, 'string substring takes a start index and an optional end index');
-        }
-        const bounds = expression.arguments
-          .map((argument) => `${emitExpression(argument, context)} as usize`)
-          .join('..');
-        return `${receiver}[${expression.arguments.length === 1 ? `${bounds}..` : bounds}].to_string()`;
       }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
@@ -4925,6 +4895,63 @@ function assertRuntimeExternalSymbolBindingsRust(
     'rust-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
+}
+
+interface RustStringMemberSemanticsRefusal {
+  readonly member: 'charAt' | 'charCodeAt' | 'length' | 'slice' | 'substring';
+  readonly message: string;
+  readonly rule:
+    | 'rust-string-utf16-index-unrepresented'
+    | 'rust-string-utf16-length-unrepresented'
+    | 'rust-string-utf16-range-unrepresented';
+}
+
+function assertStringMemberSemanticsRust(module: Readonly<IrModule>): void {
+  const refusals: RustStringMemberSemanticsRefusal[] = [];
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind === 'property' &&
+        expression.member?.receiver === 'string' &&
+        expression.member.name === 'length'
+      ) {
+        refusals.push({
+          member: 'length',
+          message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
+          rule: 'rust-string-utf16-length-unrepresented',
+        });
+        return;
+      }
+      if (
+        expression.kind !== 'call' ||
+        expression.callee.kind !== 'property' ||
+        expression.callee.member?.receiver !== 'string'
+      ) {
+        return;
+      }
+      const member = expression.callee.member.name;
+      if (member === 'charAt' || member === 'charCodeAt') {
+        refusals.push({
+          member,
+          message: `string.${member} requires JavaScript UTF-16 code-unit indexing, including surrogate halves; Rust chars index Unicode scalars`,
+          rule: 'rust-string-utf16-index-unrepresented',
+        });
+      } else if (member === 'slice' || member === 'substring') {
+        refusals.push({
+          member,
+          message: `string.${member} requires JavaScript UTF-16 code-unit indexing and range normalization before Rust emission`,
+          rule: 'rust-string-utf16-range-unrepresented',
+        });
+      }
+    },
+  });
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  )[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
 }
 
 function assertRuntimeExternalBindingRepresentationsRust(
