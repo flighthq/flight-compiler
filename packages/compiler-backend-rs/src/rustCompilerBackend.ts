@@ -168,6 +168,32 @@ interface RustAnonymousUnionEnum {
   readonly variants: RustGeneralUnionVariant[];
 }
 
+interface RustOptionalGeneratedEnumAllocation {
+  readonly key: string;
+  readonly module: Readonly<IrModule>;
+  readonly name: string;
+  readonly ownerBindingId: string;
+}
+
+interface RustOptionalGeneratedEnumPlan {
+  readonly absence: 'null' | 'undefined';
+  readonly kind: 'optionalGeneratedEnum';
+  readonly owner: Readonly<IrTypeReference>;
+  readonly ownerIdentity: RustExactNominalTypeIdentity;
+  readonly payloadOwner: RustOptionalGeneratedEnumAllocation;
+  readonly payloadType: Readonly<Extract<IrType, { kind: 'union' }>>;
+  readonly valueVariants: readonly Readonly<{
+    name: string;
+    sourceAlternative: IrType;
+    sourceAlternatives: readonly IrType[];
+  }>[];
+}
+
+interface RustSingleSentinelUnionShape {
+  readonly absence: 'null' | 'undefined';
+  readonly payloadType: Readonly<Extract<IrType, { kind: 'union' }>>;
+}
+
 interface RustCallableObjectRecord {
   readonly callable: Readonly<{ parameters: readonly string[]; returns: string }>;
   readonly fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
@@ -187,6 +213,7 @@ type RustGeneralUnionVariant =
 interface RustUnionMemberRecord {
   readonly name: string;
   readonly properties: readonly IrObjectTypeProperty[];
+  readonly sourceAlternative: IrType;
   readonly targetName: string;
   readonly variantName: string;
 }
@@ -454,6 +481,7 @@ interface EmitContext {
   sharedSetBindingIds: ReadonlySet<string>;
   optionalSharedClassParameterRepresentations: ReadonlyMap<string, RustOptionalSharedClassRepresentation>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
+  optionalGeneratedEnumAllocations: ReadonlyMap<string, RustOptionalGeneratedEnumAllocation>;
   // Every module's own binding allocation, keyed by module identity. An import has to spell an exported
   // name the way its declaring module allocates it -- `WIDGET` for a constant called `Widget`, not the
   // name-shaped guess -- so the declaring allocation has to be reachable from the importing module.
@@ -946,6 +974,9 @@ function emitIrModuleRustWithContext(
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
   const denseArrayConstructorInitializers = collectRustDenseArrayConstructorInitializersRust(module);
+  const contextSourceModules = replaceIrModuleBackendContext(sourceModules, module);
+  const targetNameMaps = createRustTargetNameMaps(contextSourceModules);
+  const optionalGeneratedEnumAllocations = new Map<string, RustOptionalGeneratedEnumAllocation>();
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
@@ -998,7 +1029,6 @@ function emitIrModuleRustWithContext(
     reboundBindingIds: new Set(
       ownershipEvidence.bindings.flatMap((evidence) => (evidence.mutation !== 'none' ? [evidence.binding.id] : [])),
     ),
-    generatedNames: new Set(targetNames.values()),
     movedBindingIds,
     referentMutatedBindingIds: new Set([
       ...ownershipEvidence.bindings.flatMap((evidence) =>
@@ -1018,6 +1048,7 @@ function emitIrModuleRustWithContext(
     sharedMapBindingIds,
     sharedSetBindingIds,
     optionalSharedClassParameterRepresentations,
+    optionalGeneratedEnumAllocations,
     taggedUnionBindingNames,
     bindingTypes,
     module,
@@ -1026,7 +1057,7 @@ function emitIrModuleRustWithContext(
     adaptedNativeFutureArgumentPositions,
     adaptedNativeFutureLocalBindingIds,
     adaptedNativeFutureReturnCalls,
-    sourceModules: replaceIrModuleBackendContext(sourceModules, module),
+    sourceModules: contextSourceModules,
     sourceTreeReferences: sourceTree?.references ?? [],
     needsCellImport: new Set(),
     needsRcImport: new Set(),
@@ -1036,9 +1067,19 @@ function emitIrModuleRustWithContext(
     objectRestRecords: new Map(),
     options,
     returnsAbsent: false,
-    targetNameMaps: createRustTargetNameMaps(replaceIrModuleBackendContext(sourceModules, module)),
+    targetNameMaps,
     targetNames,
+    generatedNames: new Set(targetNames.values()),
   };
+  populateRustOptionalGeneratedEnumAllocations(
+    contextSourceModules,
+    targetNameMaps,
+    optionalGeneratedEnumAllocations,
+    context,
+  );
+  for (const allocation of optionalGeneratedEnumAllocations.values()) {
+    if (isRustCompilerModuleIdentityEqual(allocation.module, module)) context.generatedNames.add(allocation.name);
+  }
   for (const bindingPlan of moduleStateModulePlan?.bindings ?? []) {
     const targetName = targetNames.get(bindingPlan.bindingId);
     if (!targetName) {
@@ -4924,6 +4965,9 @@ function emitCallArgumentsRust(
         if (
           (referencedFunction?.typeParameters.length ?? 0) > 0 ||
           parameter.rest ||
+          (parameterPlan.kind === 'nominalEnum' &&
+            parameterPlan.sentinels.kind === 'optional' &&
+            (parameter.optional || parameter.initializer !== undefined)) ||
           argument.kind === 'spread' ||
           representation !== undefined
         ) {
@@ -8135,6 +8179,73 @@ function createRustUnionRepresentationPlanForTypeRust(type: Readonly<IrType>, co
   });
 }
 
+function createRustOptionalGeneratedEnumPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustOptionalGeneratedEnumPlan | undefined {
+  const union = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (union.kind !== 'nominalEnum' || union.sentinels.kind !== 'optional' || union.owner.typeArguments.length > 0) {
+    return undefined;
+  }
+  const ownerIdentity = getIrNamedTypeIdentityRust(union.owner, context);
+  const declaration = ownerIdentity?.location.declaration;
+  if (
+    !ownerIdentity ||
+    declaration?.kind !== 'typeAlias' ||
+    declaration.typeParameters.length > 0 ||
+    declaration.type.kind !== 'union'
+  ) {
+    return undefined;
+  }
+  const shape = getIrSingleSentinelUnionShapeRust(declaration.type);
+  if (!shape || shape.absence !== union.sentinels.sentinel) return undefined;
+  const members = getIrUnionTypeMemberRecordsRust(shape.payloadType, context);
+  if (!members || members.length !== union.valueVariants.length) return undefined;
+  const valueVariants = union.valueVariants.map((variant) => {
+    const identity = getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context);
+    const matches = identity
+      ? members.filter(
+          (member) => getIrExactNominalRecordIdentityRust(member.sourceAlternative, context)?.key === identity.key,
+        )
+      : [];
+    return matches.length === 1
+      ? {
+          name: matches[0]!.variantName,
+          sourceAlternative: variant.sourceAlternative,
+          sourceAlternatives: variant.sourceAlternatives,
+        }
+      : undefined;
+  });
+  if (valueVariants.some((variant) => variant === undefined)) return undefined;
+  const allocationKey = getRustOptionalGeneratedEnumAllocationKey(
+    ownerIdentity.location.module,
+    declaration.binding.id,
+  );
+  const payloadOwner = context.optionalGeneratedEnumAllocations.get(allocationKey);
+  if (!payloadOwner) return undefined;
+  return {
+    absence: shape.absence,
+    kind: 'optionalGeneratedEnum',
+    owner: union.owner,
+    ownerIdentity,
+    payloadOwner,
+    payloadType: shape.payloadType,
+    valueVariants: valueVariants as RustOptionalGeneratedEnumPlan['valueVariants'],
+  };
+}
+
+function emitRustOptionalGeneratedEnumOwnerRust(
+  allocation: Readonly<RustOptionalGeneratedEnumAllocation>,
+  context: EmitContext,
+): string {
+  if (isRustCompilerModuleIdentityEqual(allocation.module, context.module)) return allocation.name;
+  const base =
+    allocation.module.packageName === context.module.packageName
+      ? 'crate'
+      : convertPackageNameToRustCrateName(allocation.module.packageName).replaceAll('-', '_');
+  return `${formatRustModuleCratePathRust(getRustModulePathRust(allocation.module, context.sourceModules), base)}::${allocation.name}`;
+}
+
 interface RustExactNominalTypeIdentity {
   readonly key: string;
   readonly location: RustNamedTypeDeclarationLocation;
@@ -8157,8 +8268,12 @@ function emitExactNominalGeneralUnionConstructionRust(
   }
   if (!candidate) return undefined;
   const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  const optionalGeneratedEnum =
+    plan.sentinels.kind === 'optional' ? createRustOptionalGeneratedEnumPlanRust(targetType, context) : undefined;
+  if (optionalGeneratedEnum && context.nativeAsyncFunction) refuseRustContextualGeneralUnionConstructionRust(context);
   if (
-    plan.sentinels.kind !== 'none' ||
+    plan.sentinels.kind === 'distinct' ||
+    (plan.sentinels.kind === 'optional' && !optionalGeneratedEnum) ||
     plan.owner.typeArguments.length > 0 ||
     !ownerIdentity ||
     ownerIdentity.location.declaration.kind !== 'typeAlias' ||
@@ -8179,18 +8294,28 @@ function emitExactNominalGeneralUnionConstructionRust(
     return emitOwnedOperandRust(expression, context);
   }
 
+  const sentinel = getIrSharedClassSentinelExpressionRust(expression);
+  if (sentinel) {
+    if (optionalGeneratedEnum?.absence === sentinel) return 'None';
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+
   const sourceType = getIrExpressionExactNominalRecordTypeRust(expression, context);
   const sourceIdentity = sourceType ? getIrExactNominalRecordIdentityRust(sourceType, context) : undefined;
   if (!sourceIdentity || isIrExpressionReferencePlannedRust(expression, context)) {
     refuseRustContextualGeneralUnionConstructionRust(context);
   }
-  const matches = plan.valueVariants.filter(
+  const variants = optionalGeneratedEnum?.valueVariants ?? plan.valueVariants;
+  const matches = variants.filter(
     (variant) => getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === sourceIdentity.key,
   );
   if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
   const match = matches[0]!;
   const payload = emitExactNominalGeneralUnionPayloadRust(expression, sourceIdentity, context);
-  return `${emitType(plan.owner, context)}::${match.name}(${payload})`;
+  const constructed = optionalGeneratedEnum
+    ? `${emitRustOptionalGeneratedEnumOwnerRust(optionalGeneratedEnum.payloadOwner, context)}::${match.name}(${payload})`
+    : `${emitType(plan.owner, context)}::${match.name}(${payload})`;
+  return optionalGeneratedEnum ? `Some(${constructed})` : constructed;
 }
 
 function emitExactNominalGeneralUnionPayloadRust(
@@ -8315,7 +8440,7 @@ function isIrExpressionReferencePlannedRust(expression: Readonly<IrExpression>, 
 function refuseRustContextualGeneralUnionConstructionRust(context: EmitContext): never {
   emissionRuleError(
     context,
-    'contextual general-union construction requires one non-generic named owner and one exact declared record alternative; structural, absent, generic, reference-planned, ambiguous, and anonymous carriers do not select an enum arm',
+    'contextual general-union construction requires one non-generic named owner and one exact declared record alternative; structural, mismatched-absence, generic, reference-planned, ambiguous, and anonymous carriers do not select an enum arm',
     'rust-contextual-general-union-construction-unrepresented',
   );
 }
@@ -12657,6 +12782,25 @@ function emitStringLiteralUnionRust(declaration: Readonly<IrTypeAliasDeclaration
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   if (getIrUnionTypeStringLiteralValues(declaration.type)) return emitStringLiteralUnionRust(declaration, context);
+  const declaredType: IrTypeReference = {
+    kind: 'named',
+    reference: { binding: declaration.binding, kind: 'binding', path: [] },
+    typeArguments: [],
+  };
+  const optionalGeneratedEnum = createRustOptionalGeneratedEnumPlanRust(declaredType, context);
+  if (optionalGeneratedEnum) {
+    const exported = isRustDeclarationExportedRust(declaration, context);
+    return [
+      ...emitTaggedUnionRust(
+        optionalGeneratedEnum.payloadOwner.name,
+        optionalGeneratedEnum.payloadType,
+        exported,
+        context,
+      ),
+      '',
+      `${exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)} = Option<${optionalGeneratedEnum.payloadOwner.name}>;`,
+    ];
+  }
   if (declaration.type.kind === 'union' && getIrUnionTypeMemberRecordsRust(declaration.type, context)) {
     return emitTaggedUnionRust(
       getBindingTargetNameRust(declaration.binding, context),
@@ -13033,12 +13177,16 @@ function getBindingTargetNameRust(
 }
 
 function getGeneratedTargetNameRust(preferredName: string, context: EmitContext): string {
+  return allocateRustGeneratedTargetName(preferredName, context.generatedNames);
+}
+
+function allocateRustGeneratedTargetName(preferredName: string, occupied: Set<string>): string {
   let name = preferredName;
   const separator = /^[A-Z]/u.test(preferredName) ? '' : '_';
-  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) {
+  for (let suffix = 2; occupied.has(name); suffix += 1) {
     name = `${preferredName}${separator}${String(suffix)}`;
   }
-  context.generatedNames.add(name);
+  occupied.add(name);
   return name;
 }
 
@@ -13082,6 +13230,45 @@ function createRustTargetNameMaps(
     }
   }
   return maps;
+}
+
+function populateRustOptionalGeneratedEnumAllocations(
+  modules: readonly Readonly<IrModule>[],
+  targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  allocations: Map<string, RustOptionalGeneratedEnumAllocation>,
+  context: EmitContext,
+): void {
+  for (const module of modules) {
+    const moduleKey = getRustModuleIdentityKey(module);
+    const targetNames = targetNameMaps.get(moduleKey);
+    if (!targetNames) continue;
+    const occupied = new Set(targetNames.values());
+    for (const declaration of module.declarations) {
+      if (declaration.kind !== 'typeAlias' || declaration.typeParameters.length > 0) continue;
+      const shape = getIrSingleSentinelUnionShapeRust(declaration.type);
+      if (!shape) continue;
+      const moduleContext: EmitContext = {
+        ...context,
+        generatedNames: new Set(targetNames.values()),
+        module,
+        targetNames,
+      };
+      if (!getIrUnionTypeMemberRecordsRust(shape.payloadType, moduleContext)) continue;
+      const ownerName = targetNames.get(declaration.binding.id);
+      if (!ownerName) continue;
+      const key = getRustOptionalGeneratedEnumAllocationKey(module, declaration.binding.id);
+      allocations.set(key, {
+        key,
+        module,
+        name: allocateRustGeneratedTargetName(`${ownerName}Payload`, occupied),
+        ownerBindingId: declaration.binding.id,
+      });
+    }
+  }
+}
+
+function getRustOptionalGeneratedEnumAllocationKey(module: Readonly<IrModule>, ownerBindingId: string): string {
+  return `${getRustModuleIdentityKey(module)}\0${ownerBindingId}\0optional-payload`;
 }
 
 function getRustModuleIdentityKey(module: Readonly<IrModule>): string {
@@ -18910,6 +19097,7 @@ function getIrUnionTypeMemberRecordsRust(
     members.push({
       name,
       properties,
+      sourceAlternative: member,
       targetName: getTypeBindingTargetNameRust(member.reference.binding, context),
       variantName: occurrence === 1 ? preferredVariantName : `${preferredVariantName}${String(occurrence)}`,
     });
@@ -19606,6 +19794,23 @@ function getIrCastUnionCarrierRust(type: Readonly<IrType>, context: EmitContext)
 
 function flattenIrUnionTypesRust(types: readonly Readonly<IrType>[]): readonly Readonly<IrType>[] {
   return types.flatMap((member) => (member.kind === 'union' ? flattenIrUnionTypesRust(member.types) : [member]));
+}
+
+function getIrSingleSentinelUnionShapeRust(type: Readonly<IrType>): RustSingleSentinelUnionShape | undefined {
+  if (type.kind !== 'union') return undefined;
+  const members = flattenIrUnionTypesRust(type.types);
+  const sentinels = members.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const values = members.filter(
+    (member) => member.kind !== 'never' && member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (sentinels.length !== 1 || values.length < 2) return undefined;
+  return {
+    absence: sentinels[0]!.kind,
+    payloadType: { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] },
+  };
 }
 
 // An alias names the carrier the assertion really talks about, so the comparison resolves through it.
