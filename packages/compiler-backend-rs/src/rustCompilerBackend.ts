@@ -432,6 +432,7 @@ interface EmitContext {
   module: Readonly<IrModule>;
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   nativeAsyncFunction: boolean;
+  adaptedNativeFutureArgumentPositions: ReadonlyMap<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>;
   adaptedNativeFutureLocalBindingIds: ReadonlySet<string>;
   adaptedNativeFutureReturnCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   sourceModules: readonly Readonly<IrModule>[];
@@ -836,6 +837,7 @@ function emitIrModuleRustWithContext(
     ),
   );
   const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
+  const adaptedNativeFutureArgumentPositions = new Map<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>();
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
   const context: EmitContext = {
@@ -909,6 +911,7 @@ function emitIrModuleRustWithContext(
     module,
     moduleResolution,
     nativeAsyncFunction: false,
+    adaptedNativeFutureArgumentPositions,
     adaptedNativeFutureLocalBindingIds,
     adaptedNativeFutureReturnCalls,
     sourceModules: replaceIrModuleBackendContext(sourceModules, module),
@@ -1024,6 +1027,9 @@ function emitIrModuleRustWithContext(
   }
   for (const bindingId of collectIrModuleAdaptedNativeFutureLocalBindingIdsRust(module, context)) {
     adaptedNativeFutureLocalBindingIds.add(bindingId);
+  }
+  for (const [call, position] of collectIrModuleAdaptedNativeFutureArgumentPositionsRust(module, context)) {
+    adaptedNativeFutureArgumentPositions.set(call, position);
   }
   for (const call of collectIrModuleAdaptedNativeFutureReturnCallsRust(module, context)) {
     adaptedNativeFutureReturnCalls.add(call);
@@ -3365,6 +3371,101 @@ function collectIrModuleAdaptedNativeFutureReturnCallsRust(
   return calls;
 }
 
+function collectIrModuleAdaptedNativeFutureArgumentPositionsRust(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlyMap<Readonly<Extract<IrExpression, { kind: 'call' }>>, number> {
+  // An adapted future may cross a call boundary only when ownership flows straight back out of the
+  // enclosing synchronous wrapper. Keeping the task argument last ensures no later argument can
+  // unwind and drop the ABI/3 future after its eager poll but before the identity receiver owns it.
+  const positions = new Map<Readonly<Extract<IrExpression, { kind: 'call' }>>, number>();
+  for (const declaration of module.declarations) {
+    if (
+      declaration.kind !== 'function' ||
+      declaration.async ||
+      declaration.typeParameters.length > 0 ||
+      declaration.overloads.length > 0 ||
+      declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+      !isIrTaskTypeRust(declaration.returns) ||
+      declaration.body.length !== 1
+    ) {
+      continue;
+    }
+    const statement = declaration.body[0]!;
+    const call =
+      statement.kind === 'return' && statement.expression?.kind === 'call' ? statement.expression : undefined;
+    if (
+      !call ||
+      call.optional ||
+      call.typeArguments.length > 0 ||
+      call.arguments.some((argument) => argument.kind === 'spread') ||
+      call.callee.kind !== 'identifier' ||
+      call.callee.reference.kind !== 'binding'
+    ) {
+      continue;
+    }
+    const receiver = getIrReferencedFunctionRust(call.callee.reference, context);
+    if (
+      !receiver ||
+      receiver.async ||
+      receiver.typeParameters.length > 0 ||
+      receiver.overloads.length > 0 ||
+      receiver.parameters.length !== call.arguments.length ||
+      receiver.parameters.length === 0 ||
+      receiver.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+      !isIrTaskTypeRust(receiver.returns) ||
+      receiver.body.length !== 1 ||
+      getIrCallBorrowedRepresentationsRust(call, context).size > 0 ||
+      call.arguments.some((_argument, position) => isIrLocalCallReferentMutatedParameterRust(call, position, context))
+    ) {
+      continue;
+    }
+    const taskPositions = receiver.parameters.flatMap((parameter, position) =>
+      isIrTaskTypeRust(parameter.type) ? [position] : [],
+    );
+    const taskPosition = taskPositions.length === 1 ? taskPositions[0] : undefined;
+    if (
+      taskPosition === undefined ||
+      taskPosition !== receiver.parameters.length - 1 ||
+      receiver.parameters.slice(0, -1).some((parameter) => !isIrImmediateAsyncClosureSendTypeRust(parameter.type))
+    ) {
+      continue;
+    }
+    const taskParameter = receiver.parameters[taskPosition]!;
+    const receiverReturn = receiver.body[0]!;
+    if (
+      receiverReturn.kind !== 'return' ||
+      !receiverReturn.expression ||
+      !isIrExactBindingReferenceRust(receiverReturn.expression, taskParameter.binding.id)
+    ) {
+      continue;
+    }
+    const argument = call.arguments[taskPosition]!;
+    if (
+      argument.kind !== 'call' ||
+      call.arguments.filter(
+        (candidate): candidate is Readonly<Extract<IrExpression, { kind: 'call' }>> =>
+          candidate.kind === 'call' && isIrNativeAsyncFunctionCallRust(candidate, context),
+      ).length !== 1 ||
+      !isIrExactNamedNativeFutureCallRust(argument, declaration.typeParameters, context)
+    ) {
+      continue;
+    }
+    const awaitedType = getIrExactNativeFutureTaskAdapterAwaitedTypeRust(argument, taskParameter.type, context);
+    const receiverAwaitedType = receiver.returns.typeArguments[0]!;
+    const wrapperAwaitedType = declaration.returns.typeArguments[0]!;
+    if (
+      !awaitedType ||
+      !hasSameIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType, receiverAwaitedType) ||
+      !hasSameIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType, wrapperAwaitedType)
+    ) {
+      continue;
+    }
+    positions.set(call, taskPosition);
+  }
+  return positions;
+}
+
 function getIrExactNativeFutureTaskAdapterAwaitedTypeRust(
   call: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   taskType: Readonly<IrType> | undefined,
@@ -4479,6 +4580,12 @@ function emitCallArgumentsRust(
   const borrowed = getIrCallBorrowedRepresentationsRust(expression, context);
   const emitPlannedArgument = (argument: Readonly<IrExpression>, index: number): string => {
     const representation = borrowed.get(index);
+    if (context.adaptedNativeFutureArgumentPositions.get(expression) === index) {
+      if (argument.kind !== 'call' || representation) {
+        emissionError(context, 'adapted native-future argument lost its exact owned call position');
+      }
+      return emitExactNativeFutureTaskAdapterRust(argument, context);
+    }
     return isRustOptionalSharedClassRepresentation(representation)
       ? emitSharedClassCarrierExpressionRust(argument, representation, context)
       : representation === 'borrowed-class'

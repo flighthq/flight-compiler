@@ -2940,12 +2940,54 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output.match(/FlightTask::from_future\(load\(value\)\)/gu)).toHaveLength(1);
   });
 
+  it('eagerly adapts an exact native future at the final argument of a synchronous identity forwarder', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'sync-native-future-argument.ts',
+        `function prefix(value: number): number { return value + 1; }
+         async function load(value: number): Promise<number> { return value; }
+         function forward(_prefix: number, task: Promise<number>): Promise<number> { return task; }
+         export function start(value: number): Promise<number> { return forward(prefix(value), load(value)); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn start(value: f64) -> FlightTask<f64> {');
+    expect(output).toContain('return forward(prefix(value), FlightTask::from_future(load(value)));');
+    expect(output.match(/FlightTask::from_future\(load\(value\)\)/gu)).toHaveLength(1);
+  });
+
+  it('eagerly adapts imported exact producer and identity-forwarder calls at the final task argument', () => {
+    const provider = lower(
+      'provider.ts',
+      `export async function load(value: number): Promise<number> { return value; }
+       export function forward(_prefix: number, task: Promise<number>): Promise<number> { return task; }`,
+    ).module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { forward, load } from './provider.js';
+       export function start(value: number): Promise<number> { return forward(value, load(value)); }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, provider],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('return forward(value, FlightTask::from_future(load(value)));');
+    expect(output.match(/FlightTask::from_future\(load\(value\)\)/gu)).toHaveLength(1);
+  });
+
   it.each([
-    [
-      'argument',
-      'async function inner(): Promise<number> { return 1; } function consume(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return consume(inner()); }',
-      129,
-    ],
     [
       'storage',
       'async function inner(): Promise<number> { return 1; } export function broken(): Promise<number> { const task: Promise<number> = inner(); return task; }',
@@ -2966,6 +3008,105 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.message).toContain('a native Rust future cannot enter a FlightTask carrier');
     expect(failure.line).toBe(1);
     expect(failure.column).toBe(column);
+  });
+
+  it.each([
+    [
+      'an arbitrary task receiver',
+      'async function load(): Promise<number> { return 1; } function consume(task: Promise<number>): Promise<number> { task; return Promise.resolve(0); } export function broken(): Promise<number> { return consume(load()); }',
+    ],
+    [
+      'a non-final task argument',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>, marker: number): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load(), 0); }',
+    ],
+    [
+      'multiple task parameters',
+      'async function load(): Promise<number> { return 1; } function forward(first: Promise<number>, second: Promise<number>): Promise<number> { return first; } export function broken(): Promise<number> { return forward(Promise.resolve(0), load()); }',
+    ],
+    [
+      'a receiver alias',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } const alias = forward; export function broken(): Promise<number> { return alias(load()); }',
+    ],
+    [
+      'an async receiver',
+      'async function load(): Promise<number> { return 1; } async function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a nonidentity receiver',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { const alias = task; return alias; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a borrowed receiver prefix',
+      'async function load(): Promise<number> { return 1; } function forward(values: number[], task: Promise<number>): Promise<number> { values.push(1); return task; } export function broken(values: number[]): Promise<number> { return forward(values, load()); }',
+    ],
+    [
+      'a generic receiver',
+      'async function load(): Promise<number> { return 1; } function forward<T>(_value: T, task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(0, load()); }',
+    ],
+    [
+      'a defaulted receiver parameter',
+      'async function load(): Promise<number> { return 1; } function forward(_value = 0, task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(0, load()); }',
+    ],
+    [
+      'a rest receiver parameter',
+      'async function load(): Promise<number> { return 1; } function forward(...tasks: Promise<number>[]): Promise<number> { tasks; return Promise.resolve(0); } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a task parameter alias',
+      'type NumberTask = Promise<number>; async function load(): Promise<number> { return 1; } function forward(task: NumberTask): NumberTask { return task; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a widened producer payload',
+      'async function load(): Promise<1> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a widened wrapper payload',
+      'async function load(): Promise<1> { return 1; } function forward(task: Promise<1>): Promise<1> { return task; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'an identity-bearing payload',
+      'async function load(): Promise<number[]> { return [1]; } function forward(task: Promise<number[]>): Promise<number[]> { return task; } export function broken(): Promise<number[]> { return forward(load()); }',
+    ],
+    [
+      'a generic producer',
+      'async function load<T>(value: T): Promise<T> { return value; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load<number>(1)); }',
+    ],
+    [
+      'a defaulted producer parameter',
+      'async function load(value = 1): Promise<number> { return value; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a rest producer parameter',
+      'async function load(...values: number[]): Promise<number> { return values.length; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(): Promise<number> { return forward(load(1)); }',
+    ],
+    [
+      'a spread producer argument',
+      'async function load(value: number): Promise<number> { return value; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(values: [number]): Promise<number> { return forward(load(...values)); }',
+    ],
+    [
+      'a borrowed producer argument',
+      'async function load(values: number[]): Promise<number> { values.push(1); return values.length; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(values: number[]): Promise<number> { return forward(load(values)); }',
+    ],
+    [
+      'a generic wrapper',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken<T>(_value: T): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a defaulted wrapper parameter',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } export function broken(_value = 0): Promise<number> { return forward(load()); }',
+    ],
+    [
+      'a nonterminal enclosing return',
+      'async function load(): Promise<number> { return 1; } function forward(task: Promise<number>): Promise<number> { return task; } function mark(): void {} export function broken(): Promise<number> { mark(); return forward(load()); }',
+    ],
+  ])('keeps synchronous native-future argument adaptation closed for %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('sync-native-future-argument-refusal.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
+    expect(failure.message).toContain('flight-rust-runtime-abi/3 FlightTask::from_future');
   });
 
   it.each([
@@ -5704,6 +5845,18 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            export function syncNative(task: Promise<number>): Promise<number> {
              return nativePrimary(task);
            }
+           function forwardNative(_prefix: number, task: Promise<number>): Promise<number> {
+             return task;
+           }
+           function failNativePrefix(): number {
+             throw new Error("argument-prefix-error");
+           }
+           export function passedNative(task: Promise<number>): Promise<number> {
+             return forwardNative(0, nativePrimary(task));
+           }
+           export function orderedNative(task: Promise<number>): Promise<number> {
+             return forwardNative(failNativePrefix(), nativePrimary(task));
+           }
            export async function bareNative(primary: Promise<number>, log: string[]): Promise<number> {
              try { mark("bare-native-try", log); return nativeBarePrimary(primary); }
              catch (error) { mark(error, log); return 9; }
@@ -5750,8 +5903,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
       expect(output).toContain('let pending: FlightTask<f64> = FlightTask::from_future(native_value(4.0));');
       expect(output).toContain('let value: f64 = pending.await;');
-      expect(output.match(/FlightTask::from_future\(native_primary\(task\)\)/gu)).toHaveLength(2);
+      expect(output.match(/FlightTask::from_future\(native_primary\(task\)\)/gu)).toHaveLength(4);
       expect(output).toContain('return FlightTask::from_future(native_primary(task));');
+      expect(output).toContain('return forward_native(0.0, FlightTask::from_future(native_primary(task)));');
+      expect(output).toContain(
+        'return forward_native(fail_native_prefix(), FlightTask::from_future(native_primary(task)));',
+      );
       expect(output).toContain(
         'fn advance(async_receiver: Rc<RefCell<Self>>, task: FlightTask<f64>) -> FlightTask<f64>',
       );
@@ -5795,6 +5952,35 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(sync_polls.get(), 2, "returned task clones must share one settlement");
            let sync_rejected = sync_native(flight_runtime::FlightTask::<f64>::reject("sync-return-error"));
            assert_eq!(sync_rejected.settle(), Err("sync-return-error".to_owned()));
+           let argument_polls = std::rc::Rc::new(std::cell::Cell::new(0));
+           let argument_future_polls = argument_polls.clone();
+           let argument_input = flight_runtime::FlightTask::from_future(std::future::poll_fn(move |_| {
+             let poll = argument_future_polls.get();
+             argument_future_polls.set(poll + 1);
+             if poll == 0 { std::task::Poll::Pending } else { std::task::Poll::Ready(5.0) }
+           }));
+           assert_eq!(argument_polls.get(), 1, "the argument input task must start eagerly");
+           let argument_returned = passed_native(argument_input);
+           assert_eq!(argument_polls.get(), 2, "the inline argument adapter must start its native future eagerly");
+           let argument_returned_clone = argument_returned.clone();
+           assert_eq!(argument_returned.settle(), Ok(5.0));
+           assert_eq!(argument_returned_clone.settle(), Ok(5.0));
+           assert_eq!(argument_polls.get(), 2, "argument task clones must share one settlement");
+           let argument_rejected = passed_native(flight_runtime::FlightTask::<f64>::reject("task-argument-error"));
+           assert_eq!(argument_rejected.settle(), Err("task-argument-error".to_owned()));
+           let ordered_polls = std::rc::Rc::new(std::cell::Cell::new(0));
+           let ordered_future_polls = ordered_polls.clone();
+           let ordered_input = flight_runtime::FlightTask::from_future(std::future::poll_fn(move |_| {
+             let poll = ordered_future_polls.get();
+             ordered_future_polls.set(poll + 1);
+             if poll == 0 { std::task::Poll::Pending } else { std::task::Poll::Ready(6.0) }
+           }));
+           assert_eq!(ordered_polls.get(), 1, "the ordered input task must start eagerly");
+           let ordered_failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ordered_native(ordered_input)));
+           assert_eq!(ordered_polls.get(), 1, "prefix arguments must run before the final adapter is created");
+           let ordered_payload = ordered_failure.expect_err("the prefix argument must fail before final-argument adaptation");
+           let ordered_message = flight_runtime::task_rejection_message(ordered_payload.as_ref());
+           assert_eq!(ordered_message, Some("argument-prefix-error"));
            let mut native_log = Vec::new();
            assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
            assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
