@@ -28,7 +28,10 @@ export interface CompilerRustReferenceCallablePlan {
   readonly returns?:
     | Extract<
         CompilerRustReferenceRepresentation,
-        'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
+        | 'optional-null-shared-ref-cell-class'
+        | 'optional-undefined-shared-ref-cell-class'
+        | 'shared-ref-cell-class'
+        | 'shared-ref-cell-vec'
       >
     | undefined;
 }
@@ -97,6 +100,8 @@ export type CompilerRustReferenceRepresentationRefusalCode =
 export interface CompilerRustReferenceRepresentationRefusal {
   readonly code: CompilerRustReferenceRepresentationRefusalCode;
   readonly message: string;
+  /** The module declaration whose omission owns this refusal, when it is declaration-local. */
+  readonly owner?: IrBindingIdentity | undefined;
   readonly subject: string;
 }
 

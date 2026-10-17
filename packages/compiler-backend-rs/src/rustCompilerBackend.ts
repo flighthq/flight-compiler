@@ -842,7 +842,13 @@ function emitIrModuleRustWithContext(
   const borrowedParameterRepresentations = new Map<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>(
     referenceModulePlan?.callables.map((callable) => [
       callable.binding.id,
-      new Map(callable.parameters.map((parameter) => [parameter.position, parameter.representation])),
+      new Map(
+        callable.parameters.flatMap((parameter) =>
+          parameter.representation === 'shared-ref-cell-vec'
+            ? []
+            : [[parameter.position, parameter.representation] as const],
+        ),
+      ),
     ]) ?? [],
   );
   const optionalSharedClassParameterRepresentations = new Map<string, RustOptionalSharedClassRepresentation>();
@@ -923,7 +929,9 @@ function emitIrModuleRustWithContext(
   const retainedClassParameterRepresentations = new Map<string, RustSharedClassRepresentation>();
   const sharedClassReturnRepresentations = new Map<string, RustSharedClassRepresentation>(
     referenceModulePlan?.callables.flatMap((callable) =>
-      callable.returns ? [[callable.binding.id, callable.returns] as const] : [],
+      callable.returns && callable.returns !== 'shared-ref-cell-vec'
+        ? [[callable.binding.id, callable.returns] as const]
+        : [],
     ) ?? [],
   );
   const sharedClassReturnBindingIds = new Set(

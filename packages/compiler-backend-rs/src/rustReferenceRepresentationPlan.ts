@@ -42,6 +42,10 @@ type RustSharedClassRepresentation = Extract<
   'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
 >;
 
+type RustSharedArrayRepresentation = Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-vec'>;
+
+type RustReferenceCallableReturnRepresentation = RustSharedArrayRepresentation | RustSharedClassRepresentation;
+
 type RustOptionalSharedClassRepresentation = Exclude<RustSharedClassRepresentation, 'shared-ref-cell-class'>;
 
 interface RustSharedClassCarrierType {
@@ -58,7 +62,7 @@ interface RustReferenceCallRecord {
 interface RustReferenceCallableDraft {
   readonly binding: IrBindingIdentity;
   readonly parameters: Map<number, CompilerRustReferenceRepresentation>;
-  returns?: RustSharedClassRepresentation | undefined;
+  returns?: RustReferenceCallableReturnRepresentation | undefined;
 }
 
 interface RustReferenceFunctionRecord {
@@ -123,10 +127,16 @@ interface RustReferenceModuleRecord {
   readonly module: Readonly<IrModule>;
   readonly ownership: ReturnType<typeof analyzeIrModuleOwnershipEvidenceRust>;
   readonly sharedArrays: RustSharedArrayAnalysis;
+  readonly sharedArrayCallables: RustSharedArrayCallableAnalysis;
   readonly sharedArrayTuples: RustSharedArrayTupleAnalysis;
   sharedClasses: RustSharedClassAnalysis;
   readonly sharedMaps: RustSharedHashCollectionAnalysis;
   readonly sharedSets: RustSharedHashCollectionAnalysis;
+}
+
+interface RustSharedArrayCallableAnalysis {
+  readonly parameterPositionsByFunctionId: Map<string, Set<number>>;
+  readonly returnFunctionIds: Set<string>;
 }
 
 interface RustSharedArrayAnalysis {
@@ -137,8 +147,8 @@ interface RustSharedArrayAnalysis {
 }
 
 interface RustSharedArrayTupleAnalysis {
-  readonly bindingPlans: readonly CompilerRustSharedArrayTupleBindingPlan[];
-  readonly refusals: readonly CompilerRustReferenceRepresentationRefusal[];
+  bindingPlans: CompilerRustSharedArrayTupleBindingPlan[];
+  readonly refusals: CompilerRustReferenceRepresentationRefusal[];
 }
 
 interface RustSharedArrayTupleShape {
@@ -193,6 +203,62 @@ type RustReferenceCallTarget =
   | Readonly<{ kind: 'unrepresented'; imported: RustReferenceImportRecord }>
   | Readonly<{ kind: 'unresolved'; imported: RustReferenceImportRecord }>;
 
+type RustSharedArrayPrimitiveName = 'boolean' | 'number' | 'string';
+
+type RustSharedArrayIdentityNode =
+  | Readonly<{
+      binding: IrBindingIdentity;
+      key: string;
+      kind: 'binding';
+      module: RustReferenceModuleRecord;
+      owner: IrBindingIdentity;
+      primitiveName: RustSharedArrayPrimitiveName;
+      variable: Readonly<IrNamedVariable>;
+    }>
+  | Readonly<{
+      binding: IrBindingIdentity;
+      function: RustReferenceFunctionRecord;
+      key: string;
+      kind: 'parameter';
+      module: RustReferenceModuleRecord;
+      owner: IrBindingIdentity;
+      position: number;
+      primitiveName: RustSharedArrayPrimitiveName;
+    }>
+  | Readonly<{
+      function: RustReferenceFunctionRecord;
+      key: string;
+      kind: 'return';
+      module: RustReferenceModuleRecord;
+      owner: IrBindingIdentity;
+      primitiveName: RustSharedArrayPrimitiveName;
+    }>;
+
+interface RustSharedArrayIdentityIssue {
+  readonly module: RustReferenceModuleRecord;
+  readonly refusal: CompilerRustReferenceRepresentationRefusal;
+}
+
+interface RustSharedArrayIdentityVariableRecord {
+  readonly module: RustReferenceModuleRecord;
+  readonly owner: IrBindingIdentity;
+  readonly variable: Readonly<IrNamedVariable>;
+}
+
+interface RustSharedArrayIdentityGraph {
+  readonly bindingNodes: Map<string, RustSharedArrayIdentityNode>;
+  readonly edges: Map<string, Set<string>>;
+  readonly issues: Map<string, RustSharedArrayIdentityIssue[]>;
+  readonly modules: readonly RustReferenceModuleRecord[];
+  readonly nodes: Map<string, RustSharedArrayIdentityNode>;
+  readonly variables: Map<string, RustSharedArrayIdentityVariableRecord>;
+}
+
+type RustSharedArrayIdentitySource =
+  | Readonly<{ kind: 'leaf' }>
+  | Readonly<{ kind: 'node'; node: RustSharedArrayIdentityNode }>
+  | Readonly<{ issue: RustSharedArrayIdentityIssue; kind: 'unsupported' }>;
+
 export function createCompilerRustReferenceRepresentationPlan(
   input: Readonly<CompilerRustReferenceRepresentationPlanInput>,
 ): CompilerRustReferenceRepresentationPlan {
@@ -200,6 +266,7 @@ export function createCompilerRustReferenceRepresentationPlan(
     throw new TypeError('Rust reference representation planning requires flight-compiler-module-resolution/1');
   }
   const modules = createRustReferenceModuleRecords(input.modules, input.moduleResolution);
+  activateRustSharedArrayTupleIdentityClosure(modules, input.moduleResolution);
   collectRustReferenceClassMethodParameterMutations(modules, input.moduleResolution);
   propagateRustReferenceArrayParameterMutation(modules, input.moduleResolution);
   propagateRustReferenceClassParameterMutation(modules, input.moduleResolution);
@@ -290,6 +357,7 @@ function createRustReferenceModuleRecords(
       module,
       ownership,
       sharedArrays,
+      sharedArrayCallables: { parameterPositionsByFunctionId: new Map(), returnFunctionIds: new Set() },
       sharedArrayTuples,
       sharedClasses,
       sharedMaps,
@@ -542,7 +610,7 @@ function createRustReferenceModulePlan(
   const refusals = new Map<string, CompilerRustReferenceRepresentationRefusal>();
 
   for (const refusal of module.sharedArrayTuples.refusals) {
-    addRustReferenceRefusal(refusals, refusal.code, refusal.subject, refusal.message);
+    addRustReferenceRefusal(refusals, refusal.code, refusal.subject, refusal.message, refusal.owner);
   }
 
   addRustAsyncClassMethodDeclarationRefusals(module, modules, moduleResolution, refusals);
@@ -574,6 +642,9 @@ function createRustReferenceModulePlan(
     if (returnCarrier) {
       addRustReferenceCallableReturnPlan(callables, function_.declaration.binding, returnCarrier.representation);
     }
+    if (module.sharedArrayCallables.returnFunctionIds.has(function_.declaration.binding.id)) {
+      addRustReferenceCallableReturnPlan(callables, function_.declaration.binding, 'shared-ref-cell-vec');
+    }
     for (const [position, carrier] of getRustReferenceOptionalClassParameterPlans(
       function_,
       module,
@@ -596,6 +667,12 @@ function createRustReferenceModulePlan(
       function_.declaration.binding,
       getRustReferenceArrayMutationPositions(function_),
       'mutable-borrowed-vec',
+    );
+    addRustReferenceCallablePlan(
+      callables,
+      function_.declaration.binding,
+      module.sharedArrayCallables.parameterPositionsByFunctionId.get(function_.declaration.binding.id) ?? new Set(),
+      'shared-ref-cell-vec',
     );
     const classPositions = getRustReferenceClassBorrowPositions(function_, module, modules, moduleResolution);
     addRustReferenceCallablePlan(callables, function_.declaration.binding, classPositions, 'borrowed-class');
@@ -696,8 +773,18 @@ function createRustReferenceModulePlan(
     if (returnCarrier) {
       addRustReferenceCallableReturnPlan(callables, call.callee.reference.binding, returnCarrier.representation);
     }
+    if (target.module.sharedArrayCallables.returnFunctionIds.has(target.function.declaration.binding.id)) {
+      addRustReferenceCallableReturnPlan(callables, call.callee.reference.binding, 'shared-ref-cell-vec');
+    }
     const arrayPositions = getRustReferenceArrayMutationPositions(target.function);
     addRustReferenceCallablePlan(callables, call.callee.reference.binding, arrayPositions, 'mutable-borrowed-vec');
+    addRustReferenceCallablePlan(
+      callables,
+      call.callee.reference.binding,
+      target.module.sharedArrayCallables.parameterPositionsByFunctionId.get(target.function.declaration.binding.id) ??
+        new Set(),
+      'shared-ref-cell-vec',
+    );
     for (const position of arrayPositions) {
       const argument = call.arguments[position];
       if (argument?.kind === 'array') continue;
@@ -1101,6 +1188,7 @@ function createRustSharedArrayTupleAnalysis(
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
 ): RustSharedArrayTupleAnalysis {
   const variablesByBindingId = new Map<string, Readonly<IrNamedVariable>>();
+  const ownersByBindingId = new Map<string, Readonly<IrBindingIdentity>>();
   const candidateCallsByBindingId = new Map<string, IrCallExpression[]>();
   analyzeIrModuleTraversal(module, {
     expression(expression) {
@@ -1114,8 +1202,12 @@ function createRustSharedArrayTupleAnalysis(
       }
       return undefined;
     },
-    variable(variable) {
-      if ('binding' in variable) variablesByBindingId.set(variable.binding.id, variable);
+    variable(variable, path_) {
+      if ('binding' in variable) {
+        variablesByBindingId.set(variable.binding.id, variable);
+        const owner = getRustReferenceDeclarationOwnerBinding(module, path_);
+        if (owner) ownersByBindingId.set(variable.binding.id, owner);
+      }
     },
   });
 
@@ -1135,6 +1227,7 @@ function createRustSharedArrayTupleAnalysis(
         isRustSharedArrayTupleConcatCarrierShape(call, shape.primitiveName, module, bindingTypes),
       );
     const variable = variablesByBindingId.get(bindingId);
+    const owner = ownersByBindingId.get(bindingId);
     const uses = evidence.uses.filter((use) => use.kind === 'read');
     const unsupportedUses = uses.filter((use) => !isRustSharedArrayTupleConcatSpreadUse(module, bindingId, use.path));
     const abiUnsupported =
@@ -1155,18 +1248,21 @@ function createRustSharedArrayTupleAnalysis(
       ? {
           code: 'rust-reference-shared-array-tuple-shape-unrepresented' as const,
           message: `array tuple binding ${evidence.binding.name} does not have one closed homogeneous required tuple of exact dense primitive arrays`,
+          ...(owner ? { owner } : {}),
           subject,
         }
       : flowUnsupported
         ? {
             code: 'rust-reference-shared-array-tuple-flow-unrepresented' as const,
             message: `array tuple binding ${evidence.binding.name} escapes the exact immutable local concat-spread flow`,
+            ...(owner ? { owner } : {}),
             subject,
           }
         : abiUnsupported
           ? {
               code: 'rust-reference-shared-array-tuple-abi-unrepresented' as const,
               message: `array tuple binding ${evidence.binding.name} crosses a callable or module ABI without tuple-pack propagation`,
+              ...(owner ? { owner } : {}),
               subject,
             }
           : undefined;
@@ -1362,6 +1458,738 @@ function isRustSharedArrayTupleCallableBoundaryUse(
     if (isRecord(parent) && parent.kind === 'return') return true;
   }
   return false;
+}
+
+function activateRustSharedArrayTupleIdentityClosure(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  const graph = createRustSharedArrayIdentityGraph(modules, moduleResolution);
+  for (const module of [...modules].sort((left, right) =>
+    compareTextCodeUnits(moduleKey(left.module), moduleKey(right.module)),
+  )) {
+    const accepted: CompilerRustSharedArrayTupleBindingPlan[] = [];
+    for (const plan of module.sharedArrayTuples.bindingPlans) {
+      const variable = graph.variables.get(getRustSharedArrayIdentityBindingKey(module, plan.binding.id));
+      const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === plan.binding.id);
+      const tuple = evidence
+        ? resolveRustClosedLocalTypeAliasShape(evidence.type, module.module, new Set())
+        : undefined;
+      const shape = tuple?.kind === 'tuple' ? getRustSharedArrayTupleShape(tuple, module.module) : undefined;
+      const initializer = variable?.variable.initializer;
+      if (!variable || !shape || initializer?.kind !== 'tuple') {
+        const owner = variable?.owner ?? plan.binding;
+        module.sharedArrayTuples.refusals.push({
+          code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+          message: `array tuple binding ${plan.binding.name} lacks a canonical local component initializer`,
+          owner,
+          subject: `${moduleKey(module.module)}:${plan.binding.id}:identity`,
+        });
+        continue;
+      }
+
+      const selectedNodes = new Map<string, RustSharedArrayIdentityNode>();
+      let failure: RustSharedArrayIdentityIssue | undefined;
+      for (const component of plan.components) {
+        const expression = initializer.elements[component.position]?.expression;
+        if (!expression) {
+          failure = createRustSharedArrayIdentityIssue(
+            module,
+            variable.owner,
+            'rust-reference-shared-array-tuple-abi-unrepresented',
+            `${moduleKey(module.module)}:${plan.binding.id}:component:${String(component.position)}`,
+            `array tuple binding ${plan.binding.name} component ${String(component.position)} lacks one exact identity source`,
+          );
+          break;
+        }
+        const source = resolveRustSharedArrayIdentitySource(
+          graph,
+          module,
+          expression,
+          shape.primitiveName,
+          variable.owner,
+          `${moduleKey(module.module)}:${plan.binding.id}:component:${String(component.position)}`,
+          'rust-reference-shared-array-tuple-abi-unrepresented',
+          moduleResolution,
+        );
+        if (source.kind === 'unsupported') {
+          failure = source.issue;
+          break;
+        }
+        if (source.kind === 'leaf') continue;
+        const closure = collectRustSharedArrayIdentityComponent(graph, source.node);
+        if (closure.issue) {
+          failure = closure.issue;
+          break;
+        }
+        for (const node of closure.nodes) selectedNodes.set(node.key, node);
+      }
+
+      if (failure) {
+        failure.module.sharedArrayTuples.refusals.push(failure.refusal);
+        continue;
+      }
+      accepted.push(plan);
+      commitRustSharedArrayIdentityNodes(selectedNodes.values());
+    }
+    module.sharedArrayTuples.bindingPlans = accepted;
+  }
+}
+
+function createRustSharedArrayIdentityGraph(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSharedArrayIdentityGraph {
+  const nodes = new Map<string, RustSharedArrayIdentityNode>();
+  const bindingNodes = new Map<string, RustSharedArrayIdentityNode>();
+  const variables = new Map<string, RustSharedArrayIdentityVariableRecord>();
+  const edges = new Map<string, Set<string>>();
+  const issues = new Map<string, RustSharedArrayIdentityIssue[]>();
+
+  for (const module of modules) {
+    for (const function_ of module.functions) {
+      const owner = function_.declaration.binding;
+      for (const [position, parameter] of function_.declaration.parameters.entries()) {
+        const primitiveName = getRustSharedArrayIdentityPrimitiveName(parameter.type, module.module);
+        if (!primitiveName) continue;
+        const node: RustSharedArrayIdentityNode = {
+          binding: parameter.binding,
+          function: function_,
+          key: getRustSharedArrayIdentityParameterKey(module, function_, position),
+          kind: 'parameter',
+          module,
+          owner,
+          position,
+          primitiveName,
+        };
+        nodes.set(node.key, node);
+        bindingNodes.set(getRustSharedArrayIdentityBindingKey(module, parameter.binding.id), node);
+      }
+      const primitiveName = getRustSharedArrayIdentityPrimitiveName(function_.declaration.returns, module.module);
+      if (primitiveName) {
+        const node: RustSharedArrayIdentityNode = {
+          function: function_,
+          key: getRustSharedArrayIdentityReturnKey(module, function_),
+          kind: 'return',
+          module,
+          owner,
+          primitiveName,
+        };
+        nodes.set(node.key, node);
+      }
+    }
+    analyzeIrModuleTraversal(module.module, {
+      variable(variable, path_) {
+        if (!('binding' in variable)) return;
+        const owner = getRustReferenceDeclarationOwnerBinding(module.module, path_);
+        if (!owner) return;
+        const bindingKey = getRustSharedArrayIdentityBindingKey(module, variable.binding.id);
+        variables.set(bindingKey, { module, owner, variable });
+        const primitiveName = getRustSharedArrayIdentityPrimitiveName(
+          module.bindingTypes.get(variable.binding.id),
+          module.module,
+        );
+        if (!primitiveName) return;
+        const node: RustSharedArrayIdentityNode = {
+          binding: variable.binding,
+          key: bindingKey,
+          kind: 'binding',
+          module,
+          owner,
+          primitiveName,
+          variable,
+        };
+        nodes.set(node.key, node);
+        bindingNodes.set(bindingKey, node);
+      },
+    });
+  }
+
+  const graph: RustSharedArrayIdentityGraph = { bindingNodes, edges, issues, modules, nodes, variables };
+  for (const node of nodes.values()) {
+    if (node.kind === 'binding') {
+      addRustSharedArrayIdentityBindingRelations(graph, node, moduleResolution);
+    } else if (node.kind === 'parameter') {
+      addRustSharedArrayIdentityParameterRelations(graph, node, modules, moduleResolution);
+    } else {
+      addRustSharedArrayIdentityReturnRelations(graph, node, modules, moduleResolution);
+    }
+  }
+  for (const module of modules) {
+    for (const group of module.sharedArrays.groupsByKey.values()) {
+      const members = [...group]
+        .map((id) => bindingNodes.get(getRustSharedArrayIdentityBindingKey(module, id)))
+        .filter((node): node is RustSharedArrayIdentityNode => node !== undefined);
+      for (const [index, node] of members.entries()) {
+        for (const candidate of members.slice(index + 1)) {
+          if (candidate.primitiveName === node.primitiveName) addRustSharedArrayIdentityEdge(edges, node, candidate);
+        }
+      }
+    }
+  }
+  return graph;
+}
+
+function addRustSharedArrayIdentityBindingRelations(
+  graph: RustSharedArrayIdentityGraph,
+  node: Extract<RustSharedArrayIdentityNode, { kind: 'binding' }>,
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  const evidence = node.module.ownership.bindings.find((candidate) => candidate.binding.id === node.binding.id);
+  if (
+    !evidence ||
+    evidence.binding.scope === 'module' ||
+    evidence.mutation === 'bindingReassigned' ||
+    evidence.mutation === 'bindingAndReferent' ||
+    evidence.boundaries.some(
+      (boundary) => boundary === 'closureCapture' || boundary === 'structuralRecord' || boundary === 'suspension',
+    )
+  ) {
+    addRustSharedArrayIdentityIssue(
+      graph,
+      node,
+      createRustSharedArrayIdentityIssue(
+        node.module,
+        node.owner,
+        'rust-reference-shared-array-tuple-abi-unrepresented',
+        `${moduleKey(node.module.module)}:${node.binding.id}:binding`,
+        `array identity binding ${node.binding.name} crosses reassignment, aggregate storage, closure capture, module storage, or suspension outside the owned tuple-pack ABI`,
+      ),
+    );
+    return;
+  }
+  if (!node.variable.initializer) {
+    addRustSharedArrayIdentityIssue(
+      graph,
+      node,
+      createRustSharedArrayIdentityIssue(
+        node.module,
+        node.owner,
+        'rust-reference-shared-array-tuple-abi-unrepresented',
+        `${moduleKey(node.module.module)}:${node.binding.id}:initializer`,
+        `array identity binding ${node.binding.name} has no exact initializer`,
+      ),
+    );
+    return;
+  }
+  addRustSharedArrayIdentitySourceRelation(
+    graph,
+    node,
+    node.variable.initializer,
+    node.owner,
+    `${moduleKey(node.module.module)}:${node.binding.id}:initializer`,
+    'rust-reference-shared-array-tuple-abi-unrepresented',
+    moduleResolution,
+  );
+}
+
+function addRustSharedArrayIdentityParameterRelations(
+  graph: RustSharedArrayIdentityGraph,
+  node: Extract<RustSharedArrayIdentityNode, { kind: 'parameter' }>,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  const shapeReason = getRustSharedArrayIdentityFunctionShapeReason(node.function.declaration);
+  if (shapeReason) {
+    addRustSharedArrayIdentityIssue(
+      graph,
+      node,
+      createRustSharedArrayIdentityIssue(
+        node.module,
+        node.owner,
+        'rust-reference-shared-array-tuple-abi-unrepresented',
+        `${moduleKey(node.module.module)}:${node.owner.id}:parameter:${String(node.position)}`,
+        `array identity parameter ${node.binding.name} ${shapeReason}`,
+      ),
+    );
+    return;
+  }
+  addRustSharedArrayIdentityFunctionValueIssues(graph, node, modules, moduleResolution);
+  for (const callerModule of modules) {
+    for (const { call, enclosingFunction } of callerModule.calls) {
+      const target = resolveRustReferenceCallTarget(call, callerModule, modules, moduleResolution);
+      if (
+        target.kind !== 'function' ||
+        target.module !== node.module ||
+        target.function.declaration.binding.id !== node.function.declaration.binding.id
+      ) {
+        continue;
+      }
+      const subject = getRustSharedArrayIdentityCallSubject(callerModule, call, node.position);
+      const callReason = getRustSharedArrayIdentityCallShapeReason(call, node.function.declaration);
+      if (callReason) {
+        addRustSharedArrayIdentityIssue(
+          graph,
+          node,
+          createRustSharedArrayIdentityIssue(
+            callerModule,
+            enclosingFunction.declaration.binding,
+            'rust-reference-shared-array-tuple-abi-unrepresented',
+            subject,
+            `call to ${node.function.declaration.binding.name} ${callReason}`,
+          ),
+        );
+        continue;
+      }
+      const argument = call.arguments[node.position];
+      if (!argument || argument.kind === 'spread') {
+        addRustSharedArrayIdentityIssue(
+          graph,
+          node,
+          createRustSharedArrayIdentityIssue(
+            callerModule,
+            enclosingFunction.declaration.binding,
+            'rust-reference-array-argument-unrepresented',
+            subject,
+            `argument ${String(node.position)} to ${node.function.declaration.binding.name} lacks one exact owned array identity`,
+          ),
+        );
+        continue;
+      }
+      addRustSharedArrayIdentitySourceRelation(
+        graph,
+        node,
+        argument,
+        enclosingFunction.declaration.binding,
+        subject,
+        'rust-reference-array-argument-unrepresented',
+        moduleResolution,
+        callerModule,
+      );
+    }
+  }
+}
+
+function addRustSharedArrayIdentityReturnRelations(
+  graph: RustSharedArrayIdentityGraph,
+  node: Extract<RustSharedArrayIdentityNode, { kind: 'return' }>,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  const shapeReason = getRustSharedArrayIdentityFunctionShapeReason(node.function.declaration);
+  const expression = getRustReferenceClassReturnExpression(node.function);
+  if (shapeReason || !expression) {
+    addRustSharedArrayIdentityIssue(
+      graph,
+      node,
+      createRustSharedArrayIdentityIssue(
+        node.module,
+        node.owner,
+        'rust-reference-shared-array-tuple-abi-unrepresented',
+        `${moduleKey(node.module.module)}:${node.owner.id}:return`,
+        `array identity return from ${node.owner.name} ${shapeReason ?? 'does not have one exact final return expression'}`,
+      ),
+    );
+    return;
+  }
+  addRustSharedArrayIdentityFunctionValueIssues(graph, node, modules, moduleResolution);
+  addRustSharedArrayIdentitySourceRelation(
+    graph,
+    node,
+    expression,
+    node.owner,
+    `${moduleKey(node.module.module)}:${node.owner.id}:return`,
+    'rust-reference-shared-array-tuple-abi-unrepresented',
+    moduleResolution,
+  );
+  for (const callerModule of modules) {
+    for (const { call, enclosingFunction } of callerModule.calls) {
+      const target = resolveRustReferenceCallTarget(call, callerModule, modules, moduleResolution);
+      if (
+        target.kind !== 'function' ||
+        target.module !== node.module ||
+        target.function.declaration.binding.id !== node.function.declaration.binding.id
+      ) {
+        continue;
+      }
+      const reason = getRustSharedArrayIdentityCallShapeReason(call, node.function.declaration);
+      if (!reason) continue;
+      addRustSharedArrayIdentityIssue(
+        graph,
+        node,
+        createRustSharedArrayIdentityIssue(
+          callerModule,
+          enclosingFunction.declaration.binding,
+          'rust-reference-shared-array-tuple-abi-unrepresented',
+          getRustSharedArrayIdentityCallSubject(callerModule, call),
+          `call to ${node.function.declaration.binding.name} ${reason}`,
+        ),
+      );
+    }
+  }
+}
+
+function addRustSharedArrayIdentityFunctionValueIssues(
+  graph: RustSharedArrayIdentityGraph,
+  node: Extract<RustSharedArrayIdentityNode, { kind: 'parameter' | 'return' }>,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  for (const consumerModule of modules) {
+    const bindingIds = new Set<string>();
+    if (consumerModule === node.module) bindingIds.add(node.function.declaration.binding.id);
+    for (const imported of consumerModule.importsByBindingId.values()) {
+      if (imported.binding.imported === '*' || imported.binding.typeOnly) continue;
+      const targets = resolveRustReferenceImportModules(imported, consumerModule.module, modules, moduleResolution);
+      if (
+        targets.length === 1 &&
+        targets[0] === node.module &&
+        imported.binding.imported === node.function.declaration.binding.name
+      ) {
+        bindingIds.add(imported.binding.binding.id);
+      }
+    }
+    if (bindingIds.size === 0) continue;
+    analyzeIrModuleTraversal(consumerModule.module, {
+      expression(expression, path_) {
+        if (
+          expression.kind !== 'identifier' ||
+          expression.reference.kind !== 'binding' ||
+          !bindingIds.has(expression.reference.binding.id)
+        ) {
+          return undefined;
+        }
+        const parent =
+          path_.length > 0 ? getIrModuleTraversalPathValue(consumerModule.module, path_.slice(0, -1)) : undefined;
+        if (path_.at(-1) === 'callee' && isCallExpression(parent)) return undefined;
+        const owner =
+          getRustReferenceDeclarationOwnerBinding(consumerModule.module, path_) ?? expression.reference.binding;
+        addRustSharedArrayIdentityIssue(
+          graph,
+          node,
+          createRustSharedArrayIdentityIssue(
+            consumerModule,
+            owner,
+            'rust-reference-shared-array-tuple-abi-unrepresented',
+            `${moduleKey(consumerModule.module)}:${expression.reference.binding.id}:function-value:${JSON.stringify(path_)}`,
+            `array identity provider ${node.function.declaration.binding.name} escapes its exact first-order call ABI`,
+          ),
+        );
+        return undefined;
+      },
+    });
+  }
+}
+
+function addRustSharedArrayIdentitySourceRelation(
+  graph: RustSharedArrayIdentityGraph,
+  node: RustSharedArrayIdentityNode,
+  expression: Readonly<IrExpression>,
+  owner: Readonly<IrBindingIdentity>,
+  subject: string,
+  unrepresentedCode: CompilerRustReferenceRepresentationRefusal['code'],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  expressionModule = node.module,
+): void {
+  const source = resolveRustSharedArrayIdentitySource(
+    graph,
+    expressionModule,
+    expression,
+    node.primitiveName,
+    owner,
+    subject,
+    unrepresentedCode,
+    moduleResolution,
+  );
+  if (source.kind === 'unsupported') {
+    addRustSharedArrayIdentityIssue(graph, node, source.issue);
+  } else if (source.kind === 'node') {
+    addRustSharedArrayIdentityEdge(graph.edges, node, source.node);
+  }
+}
+
+function resolveRustSharedArrayIdentitySource(
+  graph: RustSharedArrayIdentityGraph,
+  module: RustReferenceModuleRecord,
+  expression: Readonly<IrExpression>,
+  primitiveName: RustSharedArrayPrimitiveName,
+  owner: Readonly<IrBindingIdentity>,
+  subject: string,
+  unrepresentedCode: CompilerRustReferenceRepresentationRefusal['code'],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustSharedArrayIdentitySource {
+  if (expression.kind === 'array') {
+    const actual = expression.type
+      ? getRustSharedArrayIdentityPrimitiveName(expression.type, module.module)
+      : primitiveName;
+    return actual === primitiveName &&
+      expression.elements.every((element) => element !== undefined && element.kind !== 'spread')
+      ? { kind: 'leaf' }
+      : {
+          issue: createRustSharedArrayIdentityIssue(
+            module,
+            owner,
+            unrepresentedCode,
+            subject,
+            `array identity source requires one exact dense ${primitiveName}[] literal`,
+          ),
+          kind: 'unsupported',
+        };
+  }
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const node = graph.bindingNodes.get(getRustSharedArrayIdentityBindingKey(module, expression.reference.binding.id));
+    return node?.primitiveName === primitiveName
+      ? { kind: 'node', node }
+      : {
+          issue: createRustSharedArrayIdentityIssue(
+            module,
+            owner,
+            unrepresentedCode,
+            subject,
+            `array identity source ${expression.reference.binding.name} lacks one exact ${primitiveName}[] carrier`,
+          ),
+          kind: 'unsupported',
+        };
+  }
+  if (expression.kind === 'call') {
+    const target = resolveRustReferenceCallTarget(expression, module, graph.modules, moduleResolution);
+    if (target.kind !== 'function') {
+      const code =
+        target.kind === 'ambiguous'
+          ? 'rust-reference-array-call-target-ambiguous'
+          : target.kind === 'unresolved'
+            ? 'rust-reference-array-call-target-unresolved'
+            : unrepresentedCode;
+      return {
+        issue: createRustSharedArrayIdentityIssue(
+          module,
+          owner,
+          code,
+          subject,
+          `array identity call target is ${target.kind} and has no exact represented Rust provider`,
+        ),
+        kind: 'unsupported',
+      };
+    }
+    const functionReason = getRustSharedArrayIdentityFunctionShapeReason(target.function.declaration);
+    if (functionReason) {
+      return {
+        issue: createRustSharedArrayIdentityIssue(
+          target.module,
+          target.function.declaration.binding,
+          'rust-reference-shared-array-tuple-abi-unrepresented',
+          `${moduleKey(target.module.module)}:${target.function.declaration.binding.id}:abi`,
+          `array identity provider ${target.function.declaration.binding.name} ${functionReason}`,
+        ),
+        kind: 'unsupported',
+      };
+    }
+    const reason = getRustSharedArrayIdentityCallShapeReason(expression, target.function.declaration);
+    const node = graph.nodes.get(getRustSharedArrayIdentityReturnKey(target.module, target.function));
+    return !reason && node?.primitiveName === primitiveName
+      ? { kind: 'node', node }
+      : {
+          issue: createRustSharedArrayIdentityIssue(
+            reason ? module : target.module,
+            reason ? owner : target.function.declaration.binding,
+            unrepresentedCode,
+            subject,
+            reason
+              ? `array identity call to ${target.function.declaration.binding.name} ${reason}`
+              : `array identity provider ${target.function.declaration.binding.name} lacks one exact ${primitiveName}[] return`,
+          ),
+          kind: 'unsupported',
+        };
+  }
+  return {
+    issue: createRustSharedArrayIdentityIssue(
+      module,
+      owner,
+      unrepresentedCode,
+      subject,
+      `array identity source kind ${expression.kind} is outside the exact synchronous free-function ABI`,
+    ),
+    kind: 'unsupported',
+  };
+}
+
+function collectRustSharedArrayIdentityComponent(
+  graph: RustSharedArrayIdentityGraph,
+  seed: RustSharedArrayIdentityNode,
+): Readonly<{ issue?: RustSharedArrayIdentityIssue | undefined; nodes: readonly RustSharedArrayIdentityNode[] }> {
+  const visited = new Set<string>();
+  const pending = [seed.key];
+  const nodes: RustSharedArrayIdentityNode[] = [];
+  const issues: RustSharedArrayIdentityIssue[] = [];
+  while (pending.length > 0) {
+    pending.sort(compareTextCodeUnits);
+    const key = pending.shift()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const node = graph.nodes.get(key);
+    if (!node) continue;
+    nodes.push(node);
+    issues.push(...(graph.issues.get(key) ?? []));
+    for (const adjacent of graph.edges.get(key) ?? []) {
+      if (!visited.has(adjacent)) pending.push(adjacent);
+    }
+  }
+  issues.sort((left, right) =>
+    compareTextCodeUnits(
+      `${moduleKey(left.module.module)}\0${left.refusal.subject}\0${left.refusal.code}`,
+      `${moduleKey(right.module.module)}\0${right.refusal.subject}\0${right.refusal.code}`,
+    ),
+  );
+  return { ...(issues[0] ? { issue: issues[0] } : {}), nodes };
+}
+
+function commitRustSharedArrayIdentityNodes(nodes: Iterable<RustSharedArrayIdentityNode>): void {
+  for (const node of nodes) {
+    if (node.kind === 'binding') {
+      node.module.sharedArrays.bindingIds.add(node.binding.id);
+    } else if (node.kind === 'parameter') {
+      const positions = node.module.sharedArrayCallables.parameterPositionsByFunctionId.get(
+        node.function.declaration.binding.id,
+      );
+      if (positions) positions.add(node.position);
+      else
+        node.module.sharedArrayCallables.parameterPositionsByFunctionId.set(
+          node.function.declaration.binding.id,
+          new Set([node.position]),
+        );
+    } else {
+      node.module.sharedArrayCallables.returnFunctionIds.add(node.function.declaration.binding.id);
+    }
+  }
+}
+
+function getRustSharedArrayIdentityPrimitiveName(
+  type: Readonly<IrType> | undefined,
+  module: Readonly<IrModule>,
+): RustSharedArrayPrimitiveName | undefined {
+  if (!type) return undefined;
+  const array = resolveRustClosedLocalTypeAliasShape(type, module, new Set());
+  if (array?.kind !== 'array' || array.readonly) return undefined;
+  const element = resolveRustClosedLocalTypeAliasShape(array.element, module, new Set());
+  return element?.kind === 'primitive' &&
+    (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
+    ? element.name
+    : undefined;
+}
+
+function getRustSharedArrayIdentityFunctionShapeReason(
+  declaration: Readonly<IrFunctionDeclaration>,
+): string | undefined {
+  if (declaration.async) return 'is async';
+  if (declaration.overloads.length > 0) return 'has overloads';
+  if (declaration.typeParameters.length > 0) return 'is generic';
+  return declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer)
+    ? 'has optional, defaulted, or rest parameters'
+    : undefined;
+}
+
+function getRustSharedArrayIdentityCallShapeReason(
+  call: IrCallExpression,
+  declaration: Readonly<IrFunctionDeclaration>,
+): string | undefined {
+  const signature = call.semantics.signature;
+  if (
+    call.optional ||
+    call.semantics.optionalChain !== undefined ||
+    call.typeArguments.length > 0 ||
+    call.callee.kind !== 'identifier' ||
+    call.callee.reference.kind !== 'binding'
+  ) {
+    return 'is not one direct non-optional identifier call';
+  }
+  if (
+    call.semantics.defaultParameters !== undefined ||
+    call.semantics.optionalParameters !== undefined ||
+    call.semantics.overloadImplementation !== undefined ||
+    (signature !== undefined &&
+      (signature.restParameter !== undefined ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== call.arguments.length ||
+        signature.parameterCount !== declaration.parameters.length)) ||
+    call.arguments.length !== declaration.parameters.length
+  ) {
+    return 'does not have one exact fixed-arity ABI';
+  }
+  return undefined;
+}
+
+function getRustSharedArrayIdentityBindingKey(module: RustReferenceModuleRecord, bindingId: string): string {
+  return `${moduleKey(module.module)}:binding:${bindingId}`;
+}
+
+function getRustSharedArrayIdentityParameterKey(
+  module: RustReferenceModuleRecord,
+  function_: RustReferenceFunctionRecord,
+  position: number,
+): string {
+  return `${moduleKey(module.module)}:function:${function_.declaration.binding.id}:parameter:${String(position)}`;
+}
+
+function getRustSharedArrayIdentityReturnKey(
+  module: RustReferenceModuleRecord,
+  function_: RustReferenceFunctionRecord,
+): string {
+  return `${moduleKey(module.module)}:function:${function_.declaration.binding.id}:return`;
+}
+
+function getRustSharedArrayIdentityCallSubject(
+  module: RustReferenceModuleRecord,
+  call: IrCallExpression,
+  position?: number,
+): string {
+  const ordinal = module.calls.findIndex((candidate) => candidate.call === call);
+  const binding =
+    call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding'
+      ? call.callee.reference.binding.id
+      : 'unrepresented';
+  return `${moduleKey(module.module)}:call:${String(ordinal)}:${binding}${position === undefined ? '' : `:argument:${String(position)}`}`;
+}
+
+function createRustSharedArrayIdentityIssue(
+  module: RustReferenceModuleRecord,
+  owner: Readonly<IrBindingIdentity>,
+  code: CompilerRustReferenceRepresentationRefusal['code'],
+  subject: string,
+  message: string,
+): RustSharedArrayIdentityIssue {
+  return { module, refusal: { code, message, owner, subject } };
+}
+
+function addRustSharedArrayIdentityIssue(
+  graph: RustSharedArrayIdentityGraph,
+  node: RustSharedArrayIdentityNode,
+  issue: RustSharedArrayIdentityIssue,
+): void {
+  const issues = graph.issues.get(node.key);
+  if (issues) issues.push(issue);
+  else graph.issues.set(node.key, [issue]);
+}
+
+function addRustSharedArrayIdentityEdge(
+  edges: Map<string, Set<string>>,
+  left: RustSharedArrayIdentityNode,
+  right: RustSharedArrayIdentityNode,
+): void {
+  const leftEdges = edges.get(left.key) ?? new Set<string>();
+  leftEdges.add(right.key);
+  edges.set(left.key, leftEdges);
+  const rightEdges = edges.get(right.key) ?? new Set<string>();
+  rightEdges.add(left.key);
+  edges.set(right.key, rightEdges);
+}
+
+function getRustReferenceDeclarationOwnerBinding(
+  module: Readonly<IrModule>,
+  path_: CompilerIrTraversalPath,
+): Readonly<IrBindingIdentity> | undefined {
+  for (let length = path_.length; length >= 0; length -= 1) {
+    const candidate = getIrModuleTraversalPathValue(module, path_.slice(0, length));
+    const declaration = module.declarations.find((item) => item === candidate);
+    if (
+      declaration &&
+      'binding' in declaration &&
+      declaration.kind !== 'interface' &&
+      declaration.kind !== 'typeAlias'
+    ) {
+      return declaration.binding;
+    }
+  }
+  return undefined;
 }
 
 function activateRustSharedArrayCallMutations(
@@ -2181,6 +3009,16 @@ function isRustSharedArrayIdentifierUseRepresented(
   expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
   path_: CompilerIrTraversalPath,
 ): boolean {
+  if (isRustSharedArrayTupleIdentityComponentReference(module, expression)) return true;
+  if (
+    module.functions.some(
+      (function_) =>
+        module.sharedArrayCallables.returnFunctionIds.has(function_.declaration.binding.id) &&
+        getRustReferenceClassReturnExpression(function_) === expression,
+    )
+  ) {
+    return true;
+  }
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
   if (
@@ -2232,9 +3070,38 @@ function isRustSharedArrayIdentifierUseRepresented(
       return true;
     }
     const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
-    return target.kind === 'function' && getRustReferenceArrayMutationPositions(target.function).has(position);
+    return (
+      target.kind === 'function' &&
+      (getRustReferenceArrayMutationPositions(target.function).has(position) ||
+        (target.module.sharedArrayCallables.parameterPositionsByFunctionId
+          .get(target.function.declaration.binding.id)
+          ?.has(position) ??
+          false))
+    );
   }
   return false;
+}
+
+function isRustSharedArrayTupleIdentityComponentReference(
+  module: RustReferenceModuleRecord,
+  expression: Readonly<IrExpression>,
+): boolean {
+  const selected = new Set(module.sharedArrayTuples.bindingPlans.map((plan) => plan.binding.id));
+  let represented = false;
+  analyzeIrModuleTraversal(module.module, {
+    variable(variable) {
+      if (
+        !represented &&
+        'binding' in variable &&
+        selected.has(variable.binding.id) &&
+        variable.initializer?.kind === 'tuple' &&
+        variable.initializer.elements.some((element) => element.expression === expression)
+      ) {
+        represented = true;
+      }
+    },
+  });
+  return represented;
 }
 
 function addRustSharedArrayMemberBorrowConflictRefusal(
@@ -4080,7 +4947,12 @@ function addRustReferenceCallablePlan(
   if (positions.size === 0) return;
   const existing = callables.get(binding.id);
   if (existing) {
-    for (const position of positions) existing.parameters.set(position, representation);
+    for (const position of positions) {
+      existing.parameters.set(
+        position,
+        getRustReferencePreferredParameterRepresentation(existing.parameters.get(position), representation),
+      );
+    }
     return;
   }
   callables.set(binding.id, {
@@ -4092,7 +4964,7 @@ function addRustReferenceCallablePlan(
 function addRustReferenceCallableReturnPlan(
   callables: Map<string, RustReferenceCallableDraft>,
   binding: Readonly<IrBindingIdentity>,
-  representation: RustSharedClassRepresentation,
+  representation: RustReferenceCallableReturnRepresentation,
 ): void {
   const existing = callables.get(binding.id);
   if (existing) {
@@ -4107,8 +4979,22 @@ function addRustReferenceRefusal(
   code: CompilerRustReferenceRepresentationRefusal['code'],
   subject: string,
   message: string,
+  owner?: Readonly<IrBindingIdentity> | undefined,
 ): void {
-  refusals.set(`${code}\0${subject}`, { code, message, subject });
+  refusals.set(`${code}\0${subject}`, { code, message, ...(owner ? { owner } : {}), subject });
+}
+
+function getRustReferencePreferredParameterRepresentation(
+  existing: CompilerRustReferenceRepresentation | undefined,
+  candidate: CompilerRustReferenceRepresentation,
+): CompilerRustReferenceRepresentation {
+  if (
+    (existing === 'shared-ref-cell-vec' && candidate === 'mutable-borrowed-vec') ||
+    (existing === 'mutable-borrowed-vec' && candidate === 'shared-ref-cell-vec')
+  ) {
+    return 'shared-ref-cell-vec';
+  }
+  return candidate;
 }
 
 function getRustReferenceArrayMutationPositions(function_: RustReferenceFunctionRecord): ReadonlySet<number> {

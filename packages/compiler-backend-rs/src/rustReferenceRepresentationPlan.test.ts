@@ -173,6 +173,256 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('closes selected tuple components through owned local parameters and returns', () => {
+    const module = lower(
+      'array-tuple-owned-local.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[]): number[] { return values; }
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [identity(values), [2]];
+         return values.concat(...pack);
+       }`,
+    );
+    const first = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] });
+    const modulePlan = getModulePlan(first, module);
+    const identityPlan = modulePlan.callables.find(({ binding }) => binding.name === 'identity');
+    const mergePlan = modulePlan.callables.find(({ binding }) => binding.name === 'merge');
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(identityPlan).toEqual(
+      expect.objectContaining({
+        parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+        returns: 'shared-ref-cell-vec',
+      }),
+    );
+    expect(mergePlan).toEqual(
+      expect.objectContaining({ parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }] }),
+    );
+  });
+
+  it('closes shared array identity through multiple local free functions', () => {
+    const module = lower(
+      'array-tuple-owned-multihop.ts',
+      `type Pack = readonly [number[], number[]];
+       function inner(values: number[]): number[] { return values; }
+       function outer(values: number[]): number[] { return inner(values); }
+       export function merge(): number[] {
+         const source = [1];
+         const pack: Pack = [outer(source), [2]];
+         return source.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedArrayBindings).toEqual([
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'source' }) }),
+    ]);
+    for (const name of ['inner', 'outer']) {
+      expect(modulePlan.callables.find(({ binding }) => binding.name === name)).toEqual(
+        expect.objectContaining({
+          parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+          returns: 'shared-ref-cell-vec',
+        }),
+      );
+    }
+  });
+
+  it('gives owned shared Vec parameters precedence over mutable Vec borrows', () => {
+    const module = lower(
+      'array-tuple-owned-precedence.ts',
+      `type Pack = readonly [number[], number[]];
+       function mutate(values: number[]): number[] { values.push(2); return values; }
+       export function merge(): number[] {
+         const source = [1];
+         const pack: Pack = [mutate(source), [3]];
+         return source.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+    const callable = modulePlan.callables.find(({ binding }) => binding.name === 'mutate');
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(callable).toEqual(
+      expect.objectContaining({
+        parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+        returns: 'shared-ref-cell-vec',
+      }),
+    );
+    expect(callable?.parameters).not.toContainEqual({ position: 0, representation: 'mutable-borrowed-vec' });
+  });
+
+  it('agrees on owned shared array signatures across exact named imports', () => {
+    const provider = lower(
+      'array-tuple-owned-provider.ts',
+      'export function identity(values: number[]): number[] { return values; }',
+    );
+    const consumer = lower(
+      'array-tuple-owned-consumer.ts',
+      `import { identity } from './array-tuple-owned-provider.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(values: number[]): number[] {
+         const pack: Pack = [identity(values), [2]];
+         return values.concat(...pack);
+       }`,
+    );
+    const moduleResolution = resolve('./array-tuple-owned-provider.js', provider, consumer);
+    const first = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [provider, consumer] });
+    const second = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [consumer, provider] });
+    const providerCallable = getModulePlan(first, provider).callables.find(
+      ({ binding }) => binding.name === 'identity',
+    );
+    const consumerCallable = getModulePlan(first, consumer).callables.find(
+      ({ binding }) => binding.name === 'identity',
+    );
+
+    expect(second).toEqual(first);
+    expect(getModulePlan(first, provider).refusals).toEqual([]);
+    expect(getModulePlan(first, consumer).refusals).toEqual([]);
+    expect(providerCallable).toEqual(
+      expect.objectContaining({
+        parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+        returns: 'shared-ref-cell-vec',
+      }),
+    );
+    expect(consumerCallable).toEqual(
+      expect.objectContaining({
+        parameters: [{ position: 0, representation: 'shared-ref-cell-vec' }],
+        returns: 'shared-ref-cell-vec',
+      }),
+    );
+  });
+
+  it('commits no partial shared array state when one tuple component is unsupported', () => {
+    const module = lower(
+      'array-tuple-owned-transaction.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[]): number[] { return values; }
+       export function merge(): number[] {
+         const source = [1];
+         const holder = { values: source };
+         const pack: Pack = [identity(source), holder.values];
+         return source.concat(...pack);
+       }`,
+    );
+    const plan = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const modulePlan = getModulePlan(plan, module);
+
+    expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.sharedArrayBindings).toEqual([]);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'identity')).toBeUndefined();
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+        owner: expect.objectContaining({ name: 'merge' }),
+      }),
+    ]);
+  });
+
+  it('owns unsupported provider ABI refusals on the provider declaration', () => {
+    const module = lower(
+      'array-tuple-owned-provider-refusal.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[] = []): number[] { return values; }
+       export function merge(): number[] {
+         const values = [0];
+         const pack: Pack = [identity(), [2]];
+         return values.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+        owner: expect.objectContaining({ name: 'identity' }),
+      }),
+    ]);
+  });
+
+  it('owns unresolved tuple component calls on the enclosing consumer declaration', () => {
+    const module = lower(
+      'array-tuple-owned-unresolved.ts',
+      `import { load } from './missing.js';
+       type Pack = readonly [number[], number[]];
+       export function merge(): number[] {
+         const values = [0];
+         const pack: Pack = [load(), [2]];
+         return values.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-array-call-target-unresolved',
+        owner: expect.objectContaining({ name: 'merge' }),
+      }),
+    ]);
+  });
+
+  it('validates every exact call site before committing an owned array signature', () => {
+    const module = lower(
+      'array-tuple-owned-all-calls.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[]): number[] { return values; }
+       function incompatible(): void {
+         const holder = { values: [3] };
+         identity(holder.values);
+       }
+       export function merge(): number[] {
+         const source = [1];
+         const pack: Pack = [identity(source), [2]];
+         return source.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.sharedArrayBindings).toEqual([]);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'identity')).toBeUndefined();
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-array-argument-unrepresented',
+        owner: expect.objectContaining({ name: 'incompatible' }),
+      }),
+    ]);
+  });
+
+  it('refuses function-value escape from an otherwise exact owned array ABI', () => {
+    const module = lower(
+      'array-tuple-owned-function-escape.ts',
+      `type Pack = readonly [number[], number[]];
+       function identity(values: number[]): number[] { return values; }
+       function escape(): void {
+         const alias = identity;
+         void alias;
+       }
+       export function merge(): number[] {
+         const source = [1];
+         const pack: Pack = [identity(source), [2]];
+         return source.concat(...pack);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
+    expect(modulePlan.sharedArrayBindings).toEqual([]);
+    expect(modulePlan.callables.find(({ binding }) => binding.name === 'identity')).toBeUndefined();
+    expect(modulePlan.refusals).toEqual([
+      expect.objectContaining({
+        code: 'rust-reference-shared-array-tuple-abi-unrepresented',
+        owner: expect.objectContaining({ name: 'escape' }),
+      }),
+    ]);
+  });
+
   it('keeps array-tuple component planning all-or-nothing for unsupported shapes', () => {
     const module = lower(
       'array-tuple-pack-shape.ts',
@@ -189,6 +439,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       expect.objectContaining({
         code: 'rust-reference-shared-array-tuple-shape-unrepresented',
         message: expect.stringContaining('pack'),
+        owner: expect.objectContaining({ name: 'merge' }),
         subject: expect.stringContaining(
           module.declarations.flatMap((declaration) =>
             declaration.kind === 'function'
