@@ -3043,6 +3043,145 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).not.toContain('catch_unwind');
   });
 
+  it('preserves Option storage across protected direct-binding settlement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-assignment-storage.ts',
+        'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { let result: number | undefined = undefined; try { result = await task; } catch { result = fallback; } return result ?? 0; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('result = Some(__value);');
+    expect(output).toContain('result = Some(fallback);');
+  });
+
+  it('does not double-wrap an Option-valued protected settlement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-assignment-option-task.ts',
+        'export async function attempt(task: Promise<number | undefined>): Promise<number> { let result: number | undefined = undefined; try { result = await task; } catch {} return result ?? 0; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('result = __value;');
+    expect(output).not.toContain('result = Some(__value);');
+  });
+
+  it.skipIf(!rustcAvailable)('runs protected direct-binding assignment for fulfillment and rejection', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-assignment-runtime.ts',
+        'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { let result = 0; try { result = await task; } catch { result = fallback; } return result; }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), 9.0)), 4.0);
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("no"), 9.0)), 9.0);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'Cell',
+      'function apply(set: (value: number) => void, value: number): void { set(value); } export async function attempt(task: Promise<number>, fallback: number): Promise<number> { let result = 0; const set = (next: number): void => { result = next; }; try { result = await task; } catch { result = fallback; } apply(set, result); return result; }',
+      'result.set(__value);',
+    ],
+    [
+      'RefCell',
+      'function apply(set: (value: string) => void, value: string): void { set(value); } export async function attempt(task: Promise<string>, fallback: string): Promise<string> { let result = ""; const set = (next: string): void => { result = next; }; try { result = await task; } catch { result = fallback; } apply(set, result); return result; }',
+      'result.replace(__value);',
+    ],
+  ])('writes a protected fulfilled value through an elected %s binding carrier', (_name, source, write) => {
+    const output = emitIrModuleRust(lower('try-catch-assignment-captured.ts', source).module).contents;
+
+    expect(output).toContain(write);
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it.each([
+    [
+      'member target',
+      'interface Box { value: number; } export async function attempt(box: Box, task: Promise<number>): Promise<number> { try { box.value = await task; } catch {} return box.value; }',
+    ],
+    [
+      'index target',
+      'export async function attempt(values: number[], task: Promise<number>): Promise<number> { try { values[0] = await task; } catch {} return 0; }',
+    ],
+    [
+      'compound binding target',
+      'export async function attempt(task: Promise<number>): Promise<number> { let value = 1; try { value += await task; } catch {} return value; }',
+    ],
+    [
+      'immutable binding target',
+      'export async function attempt(task: Promise<number>): Promise<number> { const value = 1; try { value = await task; } catch {} return value; }',
+    ],
+    [
+      'binding target requiring union variant dispatch',
+      'export async function attempt(task: Promise<number>): Promise<string | number> { let value: string | number = ""; try { value = await task; } catch {} return value; }',
+    ],
+    [
+      'binding without an exact elected wrapper',
+      'function apply(set: (value: number | undefined) => void): void { set(undefined); } export async function attempt(task: Promise<number>): Promise<number> { let value: number | undefined = undefined; const set = (next: number | undefined): void => { value = next; }; try { value = await task; } catch {} apply(set); return 0; }',
+    ],
+    [
+      'optional member target',
+      'interface Box { value: number; } export async function attempt(box: Box | undefined, task: Promise<number>): Promise<number> { try { box?.value = await task; } catch {} return 0; }',
+    ],
+    [
+      'dynamic key target',
+      'export async function attempt(values: number[], key: number, task: Promise<number>): Promise<number> { try { values[key] = await task; } catch {} return 0; }',
+    ],
+    [
+      'setter target',
+      'class Box { stored = 0; set value(next: number) { this.stored = next; } } export async function attempt(box: Box, task: Promise<number>): Promise<number> { try { box.value = await task; } catch {} return 0; }',
+    ],
+    [
+      'second assignment in a two-suspension sequence',
+      'interface Box { value: number; } export async function attempt(first: Promise<number>, second: Promise<number>, box: Box): Promise<number> { let value = 0; try { value = await first; box.value = await second; } catch {} return value; }',
+    ],
+    [
+      'try/finally assignment',
+      'interface Box { value: number; } export async function attempt(box: Box, task: Promise<number>, log: number[]): Promise<number> { try { box.value = await task; } finally { log.push(1); } return box.value; }',
+    ],
+  ])('stably refuses protected awaited assignment with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-catch-assignment-place-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-async-protected-assignment-place-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('protected awaited assignment');
+  });
+
+  it.each([
+    [
+      'an overlapping target/RHS array read',
+      'function observe(value: number, task: Promise<number>): Promise<number> { value; return task; } export async function attempt(values: number[], task: Promise<number>): Promise<number> { try { values[0] = await observe(values[0], task); } catch {} return 0; }',
+      'rust-array-index-result-absence-unrepresented',
+      'target-runtime',
+    ],
+    [
+      'a destructuring target',
+      'export async function attempt(task: Promise<[number, number]>): Promise<number> { let first = 0; let second = 0; try { [first, second] = await task; } catch {} return first + second; }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+  ])(
+    'keeps protected awaited assignment with %s on a stable backend refusal',
+    (_name, source, rule, classification) => {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower('try-catch-assignment-existing-refusal.ts', source).module),
+      );
+
+      expect(failure.rule).toBe(rule);
+      expect(failure.classification).toBe(classification);
+    },
+  );
+
   it.each([
     [
       'member projection',

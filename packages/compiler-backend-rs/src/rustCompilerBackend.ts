@@ -237,6 +237,7 @@ interface RustAsyncTryTwoAwaitPlan {
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
+  assignableBindingIds: ReadonlySet<string>;
   // The declaration currently being emitted. A refusal names where in the source to look, and the
   // declaration is the granularity the IR retains an origin at.
   currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
@@ -456,6 +457,7 @@ function emitIrModuleRustWithContext(
   }
   const ownershipEvidence = analyzeIrModuleOwnershipEvidenceRust(module);
   const bindingTypes = collectIrModuleBindingTypesRust(module);
+  const assignableBindingIds = collectIrModuleAssignableBindingIdsRust(module);
   const sharedArrayBindingIds = new Set(
     referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
   );
@@ -548,6 +550,7 @@ function emitIrModuleRustWithContext(
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
     assertedUnknownBindingTypes: collectAssertedUnknownBindingTypesRust(module, bindingTypes),
+    assignableBindingIds,
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     anonymousUnionEnums: new Map(),
@@ -2333,7 +2336,7 @@ function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext):
   return awaited;
 }
 
-function isIrTaskTypeRust(type: Readonly<IrType> | undefined): boolean {
+function isIrTaskTypeRust(type: Readonly<IrType> | undefined): type is Readonly<Extract<IrType, { kind: 'named' }>> {
   return (
     type?.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -5068,6 +5071,19 @@ function collectIrModuleBindingTypesRust(module: Readonly<IrModule>): ReadonlyMa
   return result;
 }
 
+function collectIrModuleAssignableBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  const result = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      result.add(parameter.binding.id);
+    },
+    variable(variable) {
+      if ('binding' in variable && variable.mutable) result.add(variable.binding.id);
+    },
+  });
+  return result;
+}
+
 // `unknown` has no single native Rust representation. A binding used exclusively through one
 // explicit source assertion does, however: the Rust API can expose that asserted type directly and
 // erase the assertion. Any unasserted use or disagreement leaves the binding opaque, so this never
@@ -6236,12 +6252,100 @@ function emitAsyncTrySettledVariableRust(
   return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(type, context)} = __value;`;
 }
 
+function getIrAsyncTrySettledValueTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind === 'cast') {
+    return isIrTaskTypeRust(expression.type) ? expression.type.typeArguments[0] : undefined;
+  }
+  const type = inferIrExpressionTypeRust(expression, context);
+  return isIrTaskTypeRust(type) ? type.typeArguments[0] : undefined;
+}
+
+function getIrSingleAbsentValueTypeRust(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  if (type.kind !== 'union' || (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type))) {
+    return undefined;
+  }
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return concrete.length === 1 && concrete.length !== type.types.length ? concrete[0] : undefined;
+}
+
+// Settling separates the RHS task evaluation from the write. Only a binding remains the same Rust
+// place across that split without evaluating a receiver or key late, and only its elected storage
+// carrier tells us whether the fulfilled value is assigned, wrapped, or written through a cell.
+function emitAsyncTrySettledAssignmentRust(
+  assignment: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string {
+  const left = assignment.left;
+  if (
+    assignment.operator !== '=' ||
+    left.kind !== 'identifier' ||
+    left.reference.kind !== 'binding' ||
+    assignment.right.kind !== 'await'
+  ) {
+    emissionRuleError(
+      context,
+      'protected awaited assignment requires one direct binding target and the simple assignment operator',
+      'rust-async-protected-assignment-place-unrepresented',
+    );
+  }
+
+  const binding = left.reference.binding;
+  const targetType = context.bindingTypes.get(binding.id);
+  const valueType = getIrAsyncTrySettledValueTypeRust(assignment.right.expression, context);
+  const cellWrapped = context.cellWrappedBindingIds.has(binding.id);
+  const refCellWrapped = context.refCellWrappedBindingIds.has(binding.id);
+  const exactWrappedCarrier =
+    (!cellWrapped && !refCellWrapped) ||
+    (binding.kind === 'variable' &&
+      ((cellWrapped &&
+        targetType?.kind === 'primitive' &&
+        (targetType.name === 'boolean' || targetType.name === 'number')) ||
+        (refCellWrapped && targetType?.kind === 'primitive' && targetType.name === 'string')));
+  if (
+    !targetType ||
+    !valueType ||
+    !context.assignableBindingIds.has(binding.id) ||
+    !exactWrappedCarrier ||
+    context.sharedArrayBindingIds.has(binding.id) ||
+    context.sharedClassBindingIds.has(binding.id) ||
+    context.sharedMapBindingIds.has(binding.id) ||
+    context.sharedSetBindingIds.has(binding.id)
+  ) {
+    emissionRuleError(
+      context,
+      'protected awaited assignment requires an exact direct Rust binding carrier',
+      'rust-async-protected-assignment-place-unrepresented',
+    );
+  }
+
+  const targetRepresentation = emitType(targetType, context);
+  const valueRepresentation = emitType(valueType, context);
+  let value = '__value';
+  if (targetRepresentation !== valueRepresentation) {
+    const presentType = getIrSingleAbsentValueTypeRust(targetType);
+    if (!presentType || emitType(presentType, context) !== valueRepresentation) {
+      emissionRuleError(
+        context,
+        'protected awaited assignment requires an exact represented value or single-absence Option wrapping',
+        'rust-async-protected-assignment-place-unrepresented',
+      );
+    }
+    value = 'Some(__value)';
+  }
+
+  const name = emitIdentifierReferenceRust(left.reference, context);
+  if (cellWrapped) return `${name}.set(${value});`;
+  if (refCellWrapped) return `${name}.replace(${value});`;
+  return `${name} = ${value};`;
+}
+
 function emitAsyncTrySettledStepRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): string[] {
   if (step.kind === 'expression') return [];
   if (step.kind === 'variable') return [emitAsyncTrySettledVariableRust(step.variable, context)];
-  return [
-    `${emitExpression(step.assignment.left, context)} ${emitAssignmentOperatorRust(step.assignment.operator, step.assignment.semantics, context)} __value;`,
-  ];
+  return [emitAsyncTrySettledAssignmentRust(step.assignment, context)];
 }
 
 function emitAsyncTryTwoAwaitRust(
@@ -6252,11 +6356,11 @@ function emitAsyncTryTwoAwaitRust(
   const catchClause = statement.catchClause!;
   const catchBinding = catchClause.binding ? safeRustValueName(catchClause.binding.name) : '_';
   const preStatements = emitStatements(plan.preStatements, context);
-  const firstTarget = emitOwnedOperandRust(plan.first.awaitTarget, context);
   const firstSettlement = emitAsyncTrySettledStepRust(plan.first, context);
+  const secondSettlement = emitAsyncTrySettledStepRust(plan.second, context);
+  const firstTarget = emitOwnedOperandRust(plan.first.awaitTarget, context);
   const betweenStatements = emitStatements(plan.betweenStatements, context);
   const secondTarget = emitOwnedOperandRust(plan.second.awaitTarget, context);
-  const secondSettlement = emitAsyncTrySettledStepRust(plan.second, context);
   const postStatements = emitStatements(plan.postStatements, context);
   const catchStatements = emitStatementBody(catchClause.body, context);
   const secondMatch = [
@@ -6431,6 +6535,9 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     );
     return [];
   }
+  const settledAssignment = assignmentExpression
+    ? emitAsyncTrySettledAssignmentRust(assignmentExpression, context)
+    : undefined;
   const settleExpr = `${emitOwnedOperandRust(awaitTarget, context)}.settle()`;
   const lines: string[] = [];
   lines.push(...emitStatements(preStatements, context));
@@ -6447,11 +6554,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
       );
     } else {
       const okBody: string[] = [];
-      if (assignmentExpression) {
-        okBody.push(
-          `${emitExpression(assignmentExpression.left, context)} ${emitAssignmentOperatorRust(assignmentExpression.operator, assignmentExpression.semantics, context)} __value;`,
-        );
-      }
+      if (settledAssignment) okBody.push(settledAssignment);
       okBody.push(...emitStatements(postStatements, context));
       lines.push(...indentSourceLines(['Ok(__value) => {', ...indentSourceLines(okBody), '}']));
     }
@@ -6481,11 +6584,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     } else {
       lines.push('match __try_result {');
       const okBody: string[] = [];
-      if (assignmentExpression) {
-        okBody.push(
-          `${emitExpression(assignmentExpression.left, context)} ${emitAssignmentOperatorRust(assignmentExpression.operator, assignmentExpression.semantics, context)} __value;`,
-        );
-      }
+      if (settledAssignment) okBody.push(settledAssignment);
       okBody.push(...emitStatements(postStatements, context));
       lines.push(
         ...indentSourceLines([
