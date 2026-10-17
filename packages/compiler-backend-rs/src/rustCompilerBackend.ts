@@ -3146,6 +3146,14 @@ function emitReturnedUnionArrayElementReadRust(
       'rust-union-array-element-read-result-unrepresented',
     );
   }
+  if (!result.absence) {
+    emissionError(
+      context,
+      'ordinary array element read can be absent, but this use has no Rust Option carrier',
+      'rust-array-index-result-absence-unrepresented',
+      'target-runtime',
+    );
+  }
 
   const matched = receiver.variants.map((variant) => {
     const matches = result.variants.filter((candidate) =>
@@ -3187,7 +3195,7 @@ function emitReturnedUnionArrayElementReadRust(
     ? `match ${receiverName}.as_ref() { Some(${valueName}) => { let ${indexName}: f64 = ${index}; ${guarded} } None => None, }`
     : `{ let ${valueName} = ${receiverName}; let ${indexName}: f64 = ${index}; ${guarded} }`;
   const read = `{ let ${receiverName} = &${emitExpression(expression.object, context)}; ${projected} }`;
-  return result.absence ? read : `${read}.expect("union-array index is outside represented bounds")`;
+  return read;
 }
 
 function hasIrUnionArrayElementReadCandidateRust(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -6049,7 +6057,20 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
       elementPlaces.add(expression);
       continue;
     }
-    if (hasMultipleOrdinaryArrayReceiverAlternativesRust(expression, bindingTypes, module)) continue;
+    if (hasMultipleOrdinaryArrayReceiverAlternativesRust(expression, bindingTypes, module)) {
+      if (
+        use?.kind === 'return' &&
+        expression.semantics.key === 'number' &&
+        !hasRustUnionArrayElementUndefinedResultCarrierRust(use.type, module)
+      ) {
+        refusals.push({
+          member: 'index',
+          message: 'ordinary array element read can be absent, but this use has no Rust Option carrier',
+          rule: 'rust-array-index-result-absence-unrepresented',
+        });
+      }
+      continue;
+    }
     if (expression.semantics.key !== 'number') {
       refusals.push({
         member: 'index',
@@ -6368,6 +6389,46 @@ function hasMultipleOrdinaryArrayReceiverAlternativesRust(
     return declaration?.kind === 'typeAlias' ? countArrays(declaration.type, new Set(resolving).add(bindingId)) : 0;
   };
   return type !== undefined && countArrays(type, new Set()) > 1;
+}
+
+function hasRustUnionArrayElementUndefinedResultCarrierRust(
+  type: Readonly<IrType> | undefined,
+  module: Readonly<IrModule>,
+): boolean {
+  const resolve = (candidate: Readonly<IrType>, resolving: ReadonlySet<string>): Readonly<IrType> => {
+    if (
+      candidate.kind !== 'named' ||
+      candidate.reference.kind !== 'binding' ||
+      candidate.reference.path.length > 0 ||
+      candidate.reference.binding.space !== 'type' ||
+      candidate.typeArguments.length > 0 ||
+      resolving.has(candidate.reference.binding.id)
+    ) {
+      return candidate;
+    }
+    const bindingId = candidate.reference.binding.id;
+    const declaration = module.declarations.find(
+      (item) => item.kind === 'typeAlias' && item.binding.id === bindingId && item.typeParameters.length === 0,
+    );
+    return declaration?.kind === 'typeAlias' ? resolve(declaration.type, new Set(resolving).add(bindingId)) : candidate;
+  };
+  if (!type) return false;
+  const resolved = resolve(type, new Set());
+  if (resolved.kind !== 'union') return false;
+  const members: Readonly<IrType>[] = [];
+  const collect = (candidate: Readonly<IrType>): void => {
+    const member = resolve(candidate, new Set());
+    if (member.kind === 'union') {
+      member.types.forEach(collect);
+    } else {
+      members.push(member);
+    }
+  };
+  resolved.types.forEach(collect);
+  return (
+    members.filter((member) => member.kind === 'undefined').length === 1 &&
+    !members.some((member) => member.kind === 'null')
+  );
 }
 
 function isRustTraversalPathPrefix(prefix: CompilerIrTraversalPath, path_: CompilerIrTraversalPath): boolean {

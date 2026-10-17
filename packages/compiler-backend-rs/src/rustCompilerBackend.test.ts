@@ -12746,16 +12746,13 @@ describe('emitIrModuleRust array element access with coalescing', () => {
        ): number | string | undefined {
          return values?.[index];
        }
-       export function readPlain(values: number[] | string[], index: number): number | string {
+       export function readPresent(values: number[] | string[], index: number): number | string | undefined {
          return values[index];
        }
        type Values = number[] | string[];
        type Scalar = number | string;
        export function readNamed(values: Values | undefined, index: number): Scalar | undefined {
          return values?.[index];
-       }
-       export function readNamedPlain(values: Values, index: number): Scalar {
-         return values[index];
        }
        export function readCounted(
          values: number[] | string[] | undefined,
@@ -12788,18 +12785,21 @@ describe('emitIrModuleRust array element access with coalescing', () => {
          assert!(read_optional(None, 0.0).is_none());
          assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), -1.0).is_none());
          assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), 0.5).is_none());
+         assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), f64::NAN).is_none());
+         assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), f64::INFINITY).is_none());
          assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), 9.0).is_none());
-         match read_plain(AnonymousUnion::Array2(vec!["plain".to_owned()]), 0.0) {
-           F64OrStr::Str(value) => assert_eq!(value, "plain"),
-           _ => panic!("wrong plain array alternative"),
+         match read_present(AnonymousUnion::Array2(vec!["present".to_owned()]), 0.0) {
+           Some(F64OrStr::Str(value)) => assert_eq!(value, "present"),
+           _ => panic!("wrong present array alternative"),
          }
+         assert!(read_present(AnonymousUnion::Array(vec![7.0]), -1.0).is_none());
+         assert!(read_present(AnonymousUnion::Array(vec![7.0]), 0.5).is_none());
+         assert!(read_present(AnonymousUnion::Array(vec![7.0]), f64::NAN).is_none());
+         assert!(read_present(AnonymousUnion::Array(vec![7.0]), f64::INFINITY).is_none());
+         assert!(read_present(AnonymousUnion::Array(vec![7.0]), 9.0).is_none());
          match read_named(Some(Values::Array2(vec!["named".to_owned()])), 0.0) {
            Some(Scalar::String(value)) => assert_eq!(value, "named"),
            _ => panic!("wrong named array alternative"),
-         }
-         match read_named_plain(Values::Array(vec![13.0]), 0.0) {
-           Scalar::F64(value) => assert_eq!(value, 13.0),
-           _ => panic!("wrong named plain array alternative"),
          }
          let absent_evaluations = Rc::new(std::cell::Cell::new(0));
          let absent_observer = Rc::clone(&absent_evaluations);
@@ -12822,6 +12822,42 @@ describe('emitIrModuleRust array element access with coalescing', () => {
          assert_eq!(present_evaluations.get(), 1);`,
       );
     }
+  });
+
+  it.each([
+    ['negative', '-1'],
+    ['fractional', '0.5'],
+    ['NaN', '0 / 0'],
+    ['infinite', '1 / 0'],
+    ['out-of-bounds', '9'],
+  ])('preflight-refuses a nonoptional union-array read at a %s index', (_label, index) => {
+    const result = lower(
+      'union-array-nonoptional.ts',
+      `export function readPlain(values: number[] | string[]): number | string {
+         return values[${index}];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-index-result-absence-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('selects the nonoptional union-array bounds refusal independently of declaration order', () => {
+    const declarations = [
+      'export function readPlain(values: number[] | string[], index: number): number | string { return values[index]; }',
+      'export function take(values: (number | null)[]): number | null | undefined { return values.shift(); }',
+    ];
+    const first = lower('union-array-bounds-order-a.ts', declarations.join('\n')).module;
+    const second = lower('union-array-bounds-order-b.ts', [...declarations].reverse().join('\n')).module;
+    const capture = (module: Readonly<Parameters<typeof emitIrModuleRust>[0]>) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(capture(first).rule).toBe('rust-array-index-result-absence-unrepresented');
+    expect(capture(second).rule).toBe('rust-array-index-result-absence-unrepresented');
+    expect(capture(first).classification).toBe('target-runtime');
+    expect(capture(second).classification).toBe('target-runtime');
   });
 
   it.each([
