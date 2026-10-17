@@ -13,6 +13,7 @@ import {
   getIrUnionTypeStringLiteralValues,
   hasIrTypeAbsentMember,
   indentSourceLines,
+  isBackendEmissionFailure,
   normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
@@ -32,6 +33,7 @@ import {
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
+  isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
@@ -59,6 +61,7 @@ import type {
   CompilerLoweringPass,
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
+  CompilerRefusalClassification,
   CompilerRefusalPlaceholderRequest,
   CompilerRuntimeExternalConstructorInvocation,
   CompilerRustReferenceRepresentation,
@@ -140,6 +143,7 @@ import {
 } from './rustRuntimeExternalSymbolBinding.js';
 import {
   createCompilerRustSourceTreeFinalization,
+  emitEmittedFileSourceFragmentRust,
   isCompilerRustSourceTreeFinalizationFailure,
 } from './rustSourceTreeFinalization.js';
 import { isCompilerRustSourceTreePlanningFailure } from './rustSourceTreePlan.js';
@@ -446,7 +450,17 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       // modules its file must declare. A refusal placeholder is written after finalization, so both
       // facts are taken from that plan rather than recomputed from a module set that no longer
       // contains the refused module.
-      let placeholderFiles: ReadonlyMap<string, Readonly<{ filePath: string; sourceFragment: string }>> | undefined;
+      let placeholderFiles:
+        | ReadonlyMap<
+            string,
+            Readonly<{
+              filePath: string;
+              references: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
+              sourceFile: Readonly<CompilerRustSourceTreeFilePlan>;
+              sourceFragment: string;
+            }>
+          >
+        | undefined;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
@@ -462,7 +476,31 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
               `Rust refusal placeholder for ${formatRustPlaceholderModule(module)} was requested without a path in the finalized source-tree plan`,
             );
           }
-          return emitRustRefusalPlaceholderFile(module, refusal, planned.filePath, planned.sourceFragment);
+          // Salvage first: the module usually lowered and failed on one declaration, so the useful
+          // answer is the rest of the module with that declaration marked missing. Every pre-map or
+          // post-map refusal has nothing declaration-local to keep and falls back to the comment stub;
+          // an unexpected defect is not a policy outcome and keeps its identity.
+          const salvage: RustSalvageRequest = {
+            failures: [],
+            ...(refusal.sourceText === undefined ? {} : { sourceText: refusal.sourceText }),
+          };
+          try {
+            return emitEmittedFileSourceFragmentRust(
+              emitIrModuleRustWithContext(
+                module,
+                modules,
+                moduleResolution,
+                options,
+                referenceRepresentationPlan,
+                { references: planned.references, sourceFile: planned.sourceFile },
+                salvage,
+              ),
+              planned.sourceFragment,
+            );
+          } catch (error) {
+            if (!isBackendEmissionFailure(error) && !isCompilerLoweringFailure(error)) throw error;
+            return emitRustRefusalPlaceholderFile(module, refusal, planned.filePath, planned.sourceFragment);
+          }
         },
         finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
           try {
@@ -477,7 +515,19 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                     if (file.ownership.kind !== 'placeholder') return [];
                     const key = getRustPlaceholderModuleKey(file.ownership.module);
                     if (!keys.has(key)) return [];
-                    return [[key, { filePath: file.filePath, sourceFragment: file.sourceFragment }] as const];
+                    return [
+                      [
+                        key,
+                        {
+                          filePath: file.filePath,
+                          references: Object.freeze(
+                            plan.references.filter((reference) => getRustPlaceholderModuleKey(reference.from) === key),
+                          ),
+                          sourceFile: file,
+                          sourceFragment: file.sourceFragment,
+                        },
+                      ] as const,
+                    ];
                   }),
                 );
               },
@@ -544,6 +594,7 @@ function emitIrModuleRustWithContext(
   options: Readonly<RustCompilerBackendOptions>,
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
+  salvage?: RustSalvageRequest | undefined,
 ): EmittedFile {
   // Invocation shape must be refused before the shared extra-argument pass, whose target ABI cannot
   // preserve copyWithin/fill bounds, sort comparator requirements, or search fromIndex semantics
@@ -938,7 +989,16 @@ function emitIrModuleRustWithContext(
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
   const declarations = module.declarations
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
-    .map((declaration) => emitDeclaration(declaration, context));
+    .map((declaration) =>
+      salvage === undefined
+        ? emitDeclaration(declaration, context)
+        : emitSalvagedDeclarationRust(declaration, context, salvage),
+    );
+  if (salvage !== undefined && salvage.failures.length > 0) {
+    // The banner follows the generated header and the crate's inner attribute, before anything that
+    // could compile. A partial file must announce itself before a reader trusts it.
+    lines.splice(2, 0, '', ...renderRustSalvageBannerRust(salvage.failures));
+  }
   // The runtime contract's types are named bare in emitted source, so the module has to bring them
   // into scope. Which ones it needs is only known once everything is emitted, which is why the use
   // line is assembled here rather than beside the source's own imports.
@@ -14651,6 +14711,182 @@ function emissionRuleError(context: EmitContext, message: string, rule: string):
 // message, so naming them changes no emitted text and no pinned fixture.
 // The run-level identity of a recognized finalization failure: the backend and its own code, the message
 // unchanged, the subjects in the backend's deterministic order, and the original failure as the cause.
+// One declaration the emitter refused while the rest of its module was being salvaged.
+interface RustSalvageFailure {
+  readonly classification?: CompilerRefusalClassification | undefined;
+  readonly declaration: Readonly<IrDeclaration>;
+  readonly message: string;
+  readonly rule?: string | undefined;
+  /** The source lines of the declaration that failed, when the caller supplied the module's text. */
+  readonly sourceLines?: readonly string[] | undefined;
+}
+
+/**
+ * What a salvaging caller hands the emitter: where to record failures, and what to quote from.
+ * A caller that passes this accepts a partial module; every other caller keeps today's fail-loudly
+ * behavior because the declaration map throws exactly as before.
+ */
+interface RustSalvageRequest {
+  readonly failures: RustSalvageFailure[];
+  readonly sourceText?: string | undefined;
+}
+
+// Every collection declaration emission can mutate. A failed declaration must leave no record,
+// enum, import need, or generated name behind: the surviving declarations then emit exactly the
+// bytes they would have emitted without the failure, and no helper is published for an omitted item.
+interface RustSalvageContextSnapshot {
+  readonly anonymousObjectRecords: ReadonlyMap<
+    string,
+    Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>
+  >;
+  readonly anonymousUnionEnums: ReadonlyMap<string, RustAnonymousUnionEnum>;
+  readonly arrayCopyWithinObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
+  readonly arrayFillObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
+  readonly arrayReverseObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
+  readonly arraySortObservedCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
+  readonly callableObjectRecords: ReadonlyMap<string, RustCallableObjectRecord>;
+  readonly generatedNames: ReadonlySet<string>;
+  readonly needsCellImport: ReadonlySet<'Cell'>;
+  readonly needsRcImport: ReadonlySet<'Rc'>;
+  readonly needsRefCellImport: ReadonlySet<'RefCell'>;
+  readonly objectRestRecords: ReadonlyMap<
+    string,
+    Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>
+  >;
+  readonly primitiveUnionEnums: ReadonlyMap<string, PrimitiveUnionEnum>;
+  readonly primitiveUnionBindingIds: ReadonlyMap<string, string>;
+  readonly runtimeTypeNames: ReadonlySet<string>;
+}
+
+function emitSalvagedDeclarationRust(
+  declaration: Readonly<IrDeclaration>,
+  context: EmitContext,
+  salvage: RustSalvageRequest,
+): string[] {
+  const snapshot = createRustSalvageContextSnapshotRust(context);
+  try {
+    return emitDeclaration(declaration, context);
+  } catch (error) {
+    // Only a declared refusal is salvage policy. Anything else -- an invariant, a contract
+    // TypeError, a defect -- is not a shape the target cannot represent and keeps its identity.
+    if (!isBackendEmissionFailure(error)) throw error;
+    const failure: RustSalvageFailure = {
+      ...(error.classification === undefined ? {} : { classification: error.classification }),
+      declaration,
+      message: error.message,
+      ...(error.rule === undefined ? {} : { rule: error.rule }),
+      ...(salvage.sourceText === undefined
+        ? {}
+        : { sourceLines: sliceRustSalvagedDeclarationSource(declaration, context.module, salvage.sourceText) }),
+    };
+    salvage.failures.push(failure);
+    restoreRustSalvageContextRust(context, snapshot);
+    return renderRustSalvagedDeclarationRust(failure);
+  }
+}
+
+// The IR records where a declaration STARTS and nothing about where it ends, so the end is the line
+// before the next declaration begins. Over-long spans fail safe by quoting more source, never less.
+function sliceRustSalvagedDeclarationSource(
+  declaration: Readonly<IrDeclaration>,
+  module: Readonly<IrModule>,
+  sourceText: string,
+): readonly string[] {
+  const start = declaration.origin.line;
+  if (!Number.isInteger(start) || start < 1) return [];
+  const sourceLines = sourceText.split('\n');
+  if (start > sourceLines.length) return [];
+  const nextLine = module.declarations
+    .map((entry) => entry.origin.line)
+    .filter((line) => line > start)
+    .sort((left, right) => left - right)[0];
+  const end = nextLine === undefined ? sourceLines.length : Math.min(nextLine - 1, sourceLines.length);
+  return sourceLines.slice(start - 1, end).map((line) => line.trimEnd());
+}
+
+// What a salvaged module says in place of a declaration it could not emit. Rust cannot name an
+// incomplete shape, so the marker is the comment alone: no type, body, or forward declaration claims
+// anything the emitter refused to produce.
+function renderRustSalvagedDeclarationRust(failure: Readonly<RustSalvageFailure>): string[] {
+  const { declaration, message } = failure;
+  const name = declaration.kind === 'variable' ? '(binding)' : declaration.binding.name;
+  return [
+    '',
+    `// NOT GENERATED: ${declaration.kind} ${name} -- source line ${String(declaration.origin.line)}`,
+    ...(failure.rule === undefined
+      ? []
+      : [`// refusal: ${failure.rule}${failure.classification === undefined ? '' : ` [${failure.classification}]`}`]),
+    ...(failure.sourceLines === undefined || failure.sourceLines.length === 0
+      ? []
+      : ['//', '// The source it stood for:', ...failure.sourceLines.map((line) => `//   ${line}`)]),
+    ...message
+      .split('\n')
+      .flatMap((line) => wrapRustPlaceholderCommentLine(line))
+      .map((line) => `// ${line}`.trimEnd()),
+  ];
+}
+
+function renderRustSalvageBannerRust(failures: readonly Readonly<RustSalvageFailure>[]): string[] {
+  return [
+    '// PARTIAL: the Rust emitter refused declarations in this module. Everything else emitted, and each',
+    '// omission is marked NOT GENERATED below with the reason. This file is NOT complete.',
+    ...failures.map(
+      (failure) =>
+        `//   missing: ${failure.declaration.kind} ${
+          failure.declaration.kind === 'variable' ? '(binding)' : failure.declaration.binding.name
+        } -- source line ${String(failure.declaration.origin.line)}`,
+    ),
+  ];
+}
+
+function createRustSalvageContextSnapshotRust(context: EmitContext): RustSalvageContextSnapshot {
+  return {
+    anonymousObjectRecords: new Map(context.anonymousObjectRecords),
+    anonymousUnionEnums: new Map(context.anonymousUnionEnums),
+    arrayCopyWithinObservedCalls: new Set(context.arrayCopyWithinObservedCalls),
+    arrayFillObservedCalls: new Set(context.arrayFillObservedCalls),
+    arrayReverseObservedCalls: new Set(context.arrayReverseObservedCalls),
+    arraySortObservedCalls: new Set(context.arraySortObservedCalls),
+    callableObjectRecords: new Map(context.callableObjectRecords),
+    generatedNames: new Set(context.generatedNames),
+    needsCellImport: new Set(context.needsCellImport),
+    needsRcImport: new Set(context.needsRcImport),
+    needsRefCellImport: new Set(context.needsRefCellImport),
+    objectRestRecords: new Map(context.objectRestRecords),
+    primitiveUnionEnums: new Map(context.primitiveUnionEnums),
+    primitiveUnionBindingIds: new Map(context.primitiveUnionBindingIds),
+    runtimeTypeNames: new Set(context.runtimeTypeNames),
+  };
+}
+
+function restoreRustSalvageContextRust(context: EmitContext, snapshot: Readonly<RustSalvageContextSnapshot>): void {
+  replaceRustSalvageMapRust(context.anonymousObjectRecords, snapshot.anonymousObjectRecords);
+  replaceRustSalvageMapRust(context.anonymousUnionEnums, snapshot.anonymousUnionEnums);
+  replaceRustSalvageSetRust(context.arrayCopyWithinObservedCalls, snapshot.arrayCopyWithinObservedCalls);
+  replaceRustSalvageSetRust(context.arrayFillObservedCalls, snapshot.arrayFillObservedCalls);
+  replaceRustSalvageSetRust(context.arrayReverseObservedCalls, snapshot.arrayReverseObservedCalls);
+  replaceRustSalvageSetRust(context.arraySortObservedCalls, snapshot.arraySortObservedCalls);
+  replaceRustSalvageMapRust(context.callableObjectRecords, snapshot.callableObjectRecords);
+  replaceRustSalvageSetRust(context.generatedNames, snapshot.generatedNames);
+  replaceRustSalvageSetRust(context.needsCellImport, snapshot.needsCellImport);
+  replaceRustSalvageSetRust(context.needsRcImport, snapshot.needsRcImport);
+  replaceRustSalvageSetRust(context.needsRefCellImport, snapshot.needsRefCellImport);
+  replaceRustSalvageMapRust(context.objectRestRecords, snapshot.objectRestRecords);
+  replaceRustSalvageMapRust(context.primitiveUnionEnums, snapshot.primitiveUnionEnums);
+  replaceRustSalvageMapRust(context.primitiveUnionBindingIds, snapshot.primitiveUnionBindingIds);
+  replaceRustSalvageSetRust(context.runtimeTypeNames, snapshot.runtimeTypeNames);
+}
+
+function replaceRustSalvageMapRust<Key, Value>(target: Map<Key, Value>, source: ReadonlyMap<Key, Value>): void {
+  target.clear();
+  for (const [key, value] of source) target.set(key, value);
+}
+
+function replaceRustSalvageSetRust<Value>(target: Set<Value>, source: ReadonlySet<Value>): void {
+  target.clear();
+  for (const value of source) target.add(value);
+}
+
 // A best-effort refusal placeholder. Rust has no forward declaration and no body that would leave a
 // source construct unrepresented, so the honest floor is the declared surface as comments: naming an
 // item here would either claim a shape the emitter refused to produce or compile into behavior the

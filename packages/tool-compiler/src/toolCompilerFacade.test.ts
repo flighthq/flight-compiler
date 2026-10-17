@@ -527,10 +527,11 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     const files = 'result' in first ? first.result.compilation.files : [];
     expect(files.map((file) => file.path)).toEqual(['consumer.rs', 'lib.rs', 'provider.rs']);
     const placeholder = files.find((file) => file.path === 'provider.rs');
-    expect(placeholder?.contents).toContain('BEST-EFFORT PLACEHOLDER');
-    expect(placeholder?.contents).toContain('refusal: rust-cast-requires-type-directed-lowering');
+    expect(placeholder?.contents).toContain('// PARTIAL:');
+    expect(placeholder?.contents).toContain('// NOT GENERATED: function convert -- source line 1');
+    expect(placeholder?.contents).toContain('// refusal: rust-cast-requires-type-directed-lowering');
     expect(placeholder?.contents).toContain('cast to object requires Rust type-directed');
-    expect(placeholder?.contents).toContain('//   function convert(');
+    expect(placeholder?.contents).not.toContain('pub fn convert');
     expect(placeholder?.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
     const skeleton = files.find((file) => file.path === 'lib.rs');
     expect(skeleton?.contents).toContain('mod consumer;');
@@ -567,6 +568,34 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
       sources,
     });
 
+  it('salvages a supported sibling beside a refused declaration in a best-effort module', () => {
+    const mixedProvider = {
+      packageName: '@scope/math',
+      packageRoot: '/flight/packages/math',
+      sourceFile: parseTypeScriptSource(
+        '/flight/packages/math/src/provider.ts',
+        `export function convert(value: unknown): { value: number } { return value as { value: number }; }
+         export function keep(value: number): number { return value + 1; }`,
+      ),
+      upstreamDirectory: '/flight',
+    };
+    const first = rustBestEffortRun([consumer, mixedProvider]);
+    const second = rustBestEffortRun([mixedProvider, consumer]);
+
+    expect('error' in first ? first.error : undefined).toBeUndefined();
+    const files = 'result' in first ? first.result.compilation.files : [];
+    const placeholder = files.find((file) => file.path === 'provider.rs');
+    expect(placeholder?.contents).toContain('// PARTIAL:');
+    expect(placeholder?.contents).toContain('//   missing: function convert -- source line 1');
+    expect(placeholder?.contents).toContain('// NOT GENERATED: function convert -- source line 1');
+    expect(placeholder?.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder?.contents).not.toContain('pub fn convert');
+    expect('result' in second ? second.result.compilation.files : []).toEqual(files);
+    expect('result' in first ? first.result.report.bestEffort?.modules : []).toContainEqual(
+      expect.objectContaining({ path: 'provider.rs', status: 'refused-placeholder' }),
+    );
+  });
+
   it('declares emitted children inside a refused directory-index placeholder', () => {
     const first = compileDirectoryIndexPlaceholder([directoryIndex, directoryChild]);
     const second = compileDirectoryIndexPlaceholder([directoryChild, directoryIndex]);
@@ -579,6 +608,8 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     ]);
     const placeholder = first.compilation.files.find((file) => file.path === 'geometry/mod.rs');
     expect(placeholder?.contents).toContain('pub mod tools;');
+    expect(placeholder?.contents).toContain('// PARTIAL:');
+    expect(placeholder?.contents).toContain('// NOT GENERATED: function convert');
     expect(placeholder?.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
     expect(first.report.bestEffort?.modules).toContainEqual(
       expect.objectContaining({ path: 'geometry/mod.rs', status: 'refused-placeholder' }),

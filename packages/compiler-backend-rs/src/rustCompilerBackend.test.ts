@@ -382,7 +382,10 @@ describe('createRustCompilerBackend', () => {
   });
 
   it('writes a refusal placeholder at the finalized plan path and rejects an unplanned request', () => {
-    const provider = lower('provider.ts', 'export function convert(value: unknown): unknown { return value; }').module;
+    const provider = lower(
+      'provider.ts',
+      'export function convert(value: unknown): { value: number } { return value as { value: number }; }',
+    ).module;
     const consumer = lower('consumer.ts', "import { convert } from './provider.js'; export { convert };").module;
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
@@ -421,17 +424,18 @@ describe('createRustCompilerBackend', () => {
       message: 'provider refused for the witness',
       refusedDependencies: ['./dependency.js'],
       rule: 'rust-placeholder-test',
+      sourceText: 'export function convert(value: unknown): { value: number } { return value as { value: number }; }',
     };
     const placeholder = emitPlaceholder(provider, refusal);
     if (!placeholder) throw new Error('expected a placeholder file for the refused provider');
 
     expect(placeholder.path).toBe('provider.rs');
-    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
-    expect(placeholder.contents).toContain('refusal: rust-placeholder-test [compiler-restriction]');
-    expect(placeholder.contents).toContain('blocked by: ./dependency.js');
-    expect(placeholder.contents).toContain('stopped at:');
-    expect(placeholder.contents).toContain('provider.ts:1:1');
-    expect(placeholder.contents).toContain('//   function convert(value: unknown): unknown -- :1');
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function convert -- source line 1');
+    expect(placeholder.contents).toContain('// refusal: rust-cast-requires-type-directed-lowering');
+    expect(placeholder.contents).toContain('// The source it stood for:');
+    expect(placeholder.contents).toContain('//   export function convert(');
+    expect(placeholder.contents).toContain('return value as { value: number };');
     expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
     expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?mod\s/mu);
     expect(emitPlaceholder(provider, refusal)).toEqual(placeholder);
@@ -441,7 +445,10 @@ describe('createRustCompilerBackend', () => {
   });
 
   it('keeps the finalized child module declarations in a refused directory-index placeholder', () => {
-    const index = lower('geometry/index.ts', "export { answer } from './tools.js';").module;
+    const index = lower(
+      'geometry/index.ts',
+      "export { answer } from './tools.js';\nexport function convert(value: unknown): { value: number } { return value as { value: number }; }",
+    ).module;
     const tools = lower('geometry/tools.ts', 'export const answer = 1;').module;
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
@@ -475,18 +482,98 @@ describe('createRustCompilerBackend', () => {
     if (!placeholder) throw new Error('expected a placeholder file for the refused index module');
 
     expect(placeholder.path).toBe('geometry/mod.rs');
-    expect(placeholder.contents).toContain(
-      '// Child modules planned for this file, which this run emitted separately:',
-    );
     expect(placeholder.contents).toContain('pub mod tools;');
-    const stoppedAt = placeholder.contents.indexOf('// stopped at:');
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function convert -- source line 2');
     const declarations = placeholder.contents.indexOf('pub mod tools;');
-    const surface = placeholder.contents.indexOf('// This module declared nothing');
-    expect(stoppedAt).toBeGreaterThan(-1);
-    expect(declarations).toBeGreaterThan(stoppedAt);
-    expect(surface).toBeGreaterThan(declarations);
+    const banner = placeholder.contents.indexOf('// PARTIAL:');
+    const marker = placeholder.contents.indexOf('// NOT GENERATED:');
+    expect(declarations).toBeGreaterThan(-1);
+    expect(banner).toBeGreaterThan(declarations);
+    expect(marker).toBeGreaterThan(banner);
     expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
     expect(emitPlaceholder(index, { message: 'index refused for the witness' })).toEqual(placeholder);
+  });
+
+  it('salvages emittable declarations and rolls back everything the refused one registered', () => {
+    const mixed = lower(
+      'mixed.ts',
+      `export function broken(value: unknown): { length: number } { return value as { length: number }; }
+       export function keep(value: number): number { return value + 1; }`,
+    ).module;
+    const control = lower('control.ts', 'export function keep(value: number): number { return value + 1; }').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [mixed],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([mixed]),
+      moduleFiles: [],
+      placeholderModules: [mixed],
+      refusals: [
+        {
+          code: 'rust-placeholder-test',
+          message: 'mixed refused for the witness',
+          module: getRustTestModuleIdentity(mixed),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(mixed, {
+      message: 'mixed refused for the witness',
+      sourceText: `export function broken(value: unknown): { length: number } { return value as { length: number }; }
+       export function keep(value: number): number { return value + 1; }`,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('//   missing: function broken -- source line 1');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 1');
+    expect(placeholder.contents).toContain('// refusal: rust-cast-requires-type-directed-lowering');
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).not.toContain('pub fn broken');
+    // The failed declaration's anonymous return record and any generated name it allocated are gone.
+    expect(placeholder.contents).not.toMatch(/\bstruct\b/u);
+    const controlContents = emitIrModuleRust(control).contents;
+    const controlKeep = controlContents.slice(controlContents.indexOf('pub fn keep'));
+    const salvagedKeep = placeholder.contents.slice(placeholder.contents.indexOf('pub fn keep'));
+    expect(salvagedKeep.trimEnd()).toBe(controlKeep.trimEnd());
+  });
+
+  it('falls back to the comment stub for a module-wide refusal that leaves nothing declaration-local', () => {
+    const module = lower(
+      'string-wide.ts',
+      `export function lengthOf(value: string): number { return value.length; }
+       export function keep(value: number): number { return value + 1; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-string-utf16-length-unrepresented',
+          message: 'string.length requires JavaScript UTF-16 code-unit counting',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      classification: 'compiler-restriction',
+      message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
+      rule: 'rust-string-utf16-length-unrepresented',
+    });
+    if (!placeholder) throw new Error('expected a comment stub for the module-wide refusal');
+
+    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder.contents).toContain('refusal: rust-string-utf16-length-unrepresented [compiler-restriction]');
+    expect(placeholder.contents).toContain('//   function keep(value: number): number -- :2');
+    expect(placeholder.contents).not.toContain('pub fn keep');
+    expect(placeholder.contents).not.toContain('// PARTIAL:');
   });
 
   it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {
