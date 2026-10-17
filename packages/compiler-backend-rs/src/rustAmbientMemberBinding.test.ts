@@ -17,7 +17,7 @@ describe('createCompilerRustAmbientMemberBindingPlan', () => {
     expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(82);
+    expect(second.bindings).toHaveLength(81);
   });
 });
 
@@ -106,12 +106,8 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
-  it('spells array shift as remove at index zero', () => {
-    expect(getCompilerRustAmbientMemberBinding({ name: 'shift', receiver: 'array' })).toEqual({
-      kind: 'method',
-      leadingArguments: ['0'],
-      targetName: 'remove',
-    });
+  it('does not advertise array shift as panic-prone remove at index zero', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'shift', receiver: 'array' })).toBeUndefined();
   });
 
   it('spells array unshift as insert at index zero', () => {

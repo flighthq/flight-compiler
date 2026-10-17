@@ -7,7 +7,7 @@ pub fn total(values: Vec<f64>) -> f64 {
     let mut index: f64 = 0.0;
     while index < (values.len() as f64) {
       {
-        sum += values.get(index as usize).cloned().unwrap_or_else(|| 0.0);
+        sum += { let array_values = &values; { let array_index: f64 = index; if array_index.is_finite() && array_index >= 0.0 && array_index.fract() == 0.0 && array_index < 4294967295.0 { array_values.get(array_index as usize).cloned() } else { None } } }.unwrap_or_else(|| 0.0);
       }
       index += 1.0;
     }

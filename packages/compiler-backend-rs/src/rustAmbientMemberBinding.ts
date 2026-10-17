@@ -53,7 +53,6 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'array.push': { kind: 'method', targetName: 'push' },
   'array.reduce': { argumentOrder: [1, 0], collect: false, kind: 'iterator', targetName: 'fold' },
   'array.reverse': { kind: 'method', targetName: 'reverse' },
-  'array.shift': { kind: 'method', leadingArguments: ['0'], targetName: 'remove' },
   // `slice` is emitted as a range rather than bound to a name: Rust reaches a subrange through
   // indexing, and the source's optional bounds decide which range it is.
   'array.slice': { kind: 'method', targetName: 'slice' },

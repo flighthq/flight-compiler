@@ -167,6 +167,8 @@ interface EmitContext {
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   anonymousUnionEnums: Map<string, RustAnonymousUnionEnum>;
   arrayElementBindingIds: ReadonlySet<string>;
+  arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   asyncTryStatements: ReadonlySet<object>;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
@@ -317,6 +319,7 @@ function emitIrModuleRustWithContext(
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
   assertStringMemberSemanticsRust(module);
+  const arrayBoundsPlan = createRustArrayBoundsPlan(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
   const constantIdentities = collectRustConstantBindingIds(module);
@@ -421,6 +424,8 @@ function emitIrModuleRustWithContext(
     anonymousUnionEnums: new Map(),
     apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module),
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
+    arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
+    arrayElementPlaces: arrayBoundsPlan.elementPlaces,
     asyncTryStatements,
     cellWrappedBindingIds,
     refCellWrappedBindingIds,
@@ -1327,6 +1332,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const offset = expression.arguments[1] ? emitExpression(expression.arguments[1], context) : '0.0';
         return `${receiver}.copy_from(${source}, ${offset})`;
       }
+      if (isArrayShiftCallRust(expression)) return emitArrayShiftCallRust(expression, context);
       // An ordinary array slice is a Rust range copied back into an owned Vec.
       if (
         expression.callee.kind === 'property' &&
@@ -1495,6 +1501,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (hasOnlyIrTypedArrayReceiversRust(expression.semantics.receivers)) {
         assertOneIrTypedArrayReceiverRust(expression.semantics.receivers, context);
         return `${emitExpression(expression.object, context)}.get_index(${emitNumericEnumOperandRust(expression.index, context)})`;
+      }
+      if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
+        if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
+        if (!context.arrayElementPlaces.has(expression)) {
+          emissionError(
+            context,
+            'ordinary array element read can be absent, but this use has no Rust Option carrier',
+            'rust-array-index-result-absence-unrepresented',
+            'target-runtime',
+          );
+        }
       }
       assertRustElementReceiverIsNotUnionRust(expression, context);
       // A written index is already a whole number; sending it through the neutral numeric type and
@@ -2475,6 +2492,74 @@ function emitOptionalCallExpressionRust(
   return `${callee}.as_ref().${operation}(|optional_chain_value| optional_chain_value(${arguments_}))`;
 }
 
+function hasOnlyOrdinaryArrayReceiverRust(expression: Readonly<Extract<IrExpression, { kind: 'element' }>>): boolean {
+  return expression.semantics.receivers.length === 1 && expression.semantics.receivers[0] === 'array';
+}
+
+function emitGuardedArrayGetRust(receiver: string, index: Readonly<IrExpression>, context: EmitContext): string {
+  const indexName = getGeneratedTargetNameRust('array_index', context);
+  const emittedIndex = emitNumericEnumOperandRust(index, context);
+  return `{ let ${indexName}: f64 = ${emittedIndex}; if ${indexName}.is_finite() && ${indexName} >= 0.0 && ${indexName}.fract() == 0.0 && ${indexName} < 4294967295.0 { ${receiver}.get(${indexName} as usize).cloned() } else { None } }`;
+}
+
+function emitArrayElementOptionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string {
+  const receiverName = getGeneratedTargetNameRust('array_values', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.object, context);
+  const receiver = sharedBinding
+    ? `${getBindingTargetNameRust(sharedBinding, context)}.borrow()`
+    : `&${emitExpression(expression.object, context)}`;
+  return `{ let ${receiverName} = ${receiver}; ${emitGuardedArrayGetRust(receiverName, expression.index, context)} }`;
+}
+
+function isArrayShiftCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'shift'
+  );
+}
+
+function emitArrayShiftCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  if (expression.arguments.length !== 0) {
+    emissionError(
+      context,
+      'array.shift with arguments has no exact Rust invocation',
+      'rust-array-shift-invocation-unrepresented',
+      'target-runtime',
+    );
+  }
+  if (!isRustSingleUndefinedOptionCarrier(expression.semantics.resultType)) {
+    emissionError(
+      context,
+      'array.shift result does not have one undefined-admitting Rust Option carrier',
+      'rust-array-shift-result-carrier-unrepresented',
+      'target-runtime',
+    );
+  }
+  const receiverName = getGeneratedTargetNameRust('shift_values', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const borrowedParameter =
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'binding' &&
+    context.referentMutatedParameterIds.has(expression.callee.object.reference.binding.id);
+  const receiver = sharedBinding
+    ? `${getBindingTargetNameRust(sharedBinding, context)}.borrow_mut()`
+    : borrowedParameter
+      ? emitExpression(expression.callee.object, context)
+      : `&mut ${emitExpression(expression.callee.object, context)}`;
+  return `{ let ${sharedBinding ? 'mut ' : ''}${receiverName} = ${receiver}; if ${receiverName}.is_empty() { None } else { Some(${receiverName}.remove(0)) } }`;
+}
+
 function emitOptionalElementExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
@@ -2493,7 +2578,7 @@ function emitOptionalElementExpressionRust(
     return `${object}.as_ref().${operation}(|${value}| ${value}.${String(index)}.clone())`;
   }
   if (receiver.kind === 'array') {
-    return `${object}.as_ref().and_then(|${value}| ${value}.get(${emitExpression(expression.index, context)} as usize).cloned())`;
+    return `${object}.as_ref().and_then(|${value}| ${emitGuardedArrayGetRust(value, expression.index, context)})`;
   }
   emissionError(context, 'optional element access requires array or fixed-tuple receiver evidence');
 }
@@ -2528,6 +2613,17 @@ function emitRequiredElementExpressionRust(
   if (expression.semantics.receivers.includes('tuple')) {
     const index = getElementAccessTupleIndexRust(expression, context);
     return `${emitExpression(expression.object, context)}.${String(index)}`;
+  }
+  if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
+    if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
+    if (!context.arrayElementPlaces.has(expression)) {
+      emissionError(
+        context,
+        'ordinary array element read can be absent, but this use has no Rust Option carrier',
+        'rust-array-index-result-absence-unrepresented',
+        'target-runtime',
+      );
+    }
   }
   assertRustElementReceiverIsNotUnionRust(expression, context);
   return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
@@ -2871,7 +2967,12 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
     }
     return `${source}.clone()`;
   }
-  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
+  if (
+    expression.kind === 'element' &&
+    !expression.optional &&
+    expression.semantics.receivers.includes('array') &&
+    !context.arrayElementOptionReads.has(expression)
+  )
     return `${source}.clone()`;
   return source;
 }
@@ -2890,7 +2991,12 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
     }
   }
   const source = emitExpression(expression, context);
-  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
+  if (
+    expression.kind === 'element' &&
+    !expression.optional &&
+    expression.semantics.receivers.includes('array') &&
+    !context.arrayElementOptionReads.has(expression)
+  )
     return `${source}.clone()`;
   if (context.enclosingReturnType?.kind === 'function' && expression.kind === 'function') {
     context.needsRcImport.add('Rc');
@@ -5056,6 +5162,212 @@ function assertRuntimeExternalSymbolBindingsRust(
   );
 }
 
+type RustArrayBoundsValueUse =
+  | Readonly<{
+      expression: Readonly<Extract<IrExpression, { kind: 'assignment' | 'binary' | 'undefinedDefault' }>>;
+      kind: 'expression';
+      position: 'fallback' | 'left' | 'right' | 'value';
+    }>
+  | Readonly<{ kind: 'discarded' }>
+  | Readonly<{ kind: 'return'; type: Readonly<IrType> | undefined }>
+  | Readonly<{ bindingId: string | undefined; kind: 'variable'; type: Readonly<IrType> | undefined }>;
+
+interface RustArrayBoundsPlan {
+  readonly elementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  readonly optionElementReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+}
+
+interface RustArrayBoundsRefusal {
+  readonly member: 'index' | 'shift';
+  readonly message: string;
+  readonly rule:
+    | 'rust-array-index-key-domain-unrepresented'
+    | 'rust-array-index-result-absence-unrepresented'
+    | 'rust-array-shift-invocation-unrepresented'
+    | 'rust-array-shift-result-carrier-unrepresented'
+    | 'rust-array-shift-result-observation-unrepresented';
+}
+
+function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsPlan {
+  const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
+  const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
+  const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
+  const elementReads: Array<Readonly<Extract<IrExpression, { kind: 'element' }>>> = [];
+  const shiftCalls: Array<Readonly<Extract<IrExpression, { kind: 'call' }>>> = [];
+
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'assignment') {
+        uses.set(expression.left, { expression, kind: 'expression', position: 'left' });
+        uses.set(expression.right, { expression, kind: 'expression', position: 'right' });
+      } else if (expression.kind === 'binary') {
+        uses.set(expression.left, { expression, kind: 'expression', position: 'left' });
+        uses.set(expression.right, { expression, kind: 'expression', position: 'right' });
+      } else if (expression.kind === 'undefinedDefault') {
+        uses.set(expression.value, { expression, kind: 'expression', position: 'value' });
+        uses.set(expression.fallback, { expression, kind: 'expression', position: 'fallback' });
+      } else if (expression.kind === 'function' && expression.expression) {
+        uses.set(expression.expression, { kind: 'return', type: expression.returns });
+      }
+
+      if (expression.kind === 'element' && hasOnlyOrdinaryArrayReceiverRust(expression)) {
+        elementReads.push(expression);
+      } else if (expression.kind === 'call' && isArrayShiftCallRust(expression)) {
+        shiftCalls.push(expression);
+      }
+    },
+    functionSignature(signature, path_) {
+      signatures.push({ path: path_, returns: signature.returns });
+    },
+    statement(statement, path_) {
+      if (statement.kind === 'return' && statement.expression) {
+        pendingReturns.push({ expression: statement.expression, path: path_ });
+      } else if (statement.kind === 'expression') {
+        uses.set(statement.expression, { kind: 'discarded' });
+      }
+    },
+    variable(variable) {
+      if (variable.initializer) {
+        uses.set(variable.initializer, {
+          bindingId: 'binding' in variable ? variable.binding.id : undefined,
+          kind: 'variable',
+          type: variable.type,
+        });
+      }
+    },
+  });
+
+  for (const returned of pendingReturns) {
+    const owner = signatures
+      .filter(({ path: signaturePath }) => isRustTraversalPathPrefix(signaturePath, returned.path))
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    uses.set(returned.expression, { kind: 'return', type: owner?.returns });
+  }
+
+  const bindingTypes = collectIrModuleBindingTypesRust(module);
+  const arrayElementBindingIds = collectIrModuleArrayElementBindingIdsRust(module);
+  const elementPlaces = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
+  const optionElementReads = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
+  const refusals: RustArrayBoundsRefusal[] = [];
+
+  for (const expression of elementReads) {
+    const use = uses.get(expression);
+    if (
+      use?.kind === 'expression' &&
+      use.expression.kind === 'assignment' &&
+      use.position === 'left' &&
+      use.expression.operator === '='
+    ) {
+      elementPlaces.add(expression);
+      continue;
+    }
+    if (hasMultipleOrdinaryArrayReceiverAlternativesRust(expression, bindingTypes)) continue;
+    if (expression.semantics.key !== 'number') {
+      refusals.push({
+        member: 'index',
+        message:
+          'ordinary array element access requires a numeric JavaScript index domain; property-like keys have no Vec representation',
+        rule: 'rust-array-index-key-domain-unrepresented',
+      });
+      continue;
+    }
+    if (isRustArrayAbsenceRepresentedUse(use, bindingTypes, arrayElementBindingIds)) {
+      optionElementReads.add(expression);
+      continue;
+    }
+    refusals.push({
+      member: 'index',
+      message: 'ordinary array element read can be absent, but this use has no Rust Option carrier',
+      rule: 'rust-array-index-result-absence-unrepresented',
+    });
+  }
+
+  for (const expression of shiftCalls) {
+    if (expression.arguments.length !== 0) {
+      refusals.push({
+        member: 'shift',
+        message: 'array.shift with arguments has no exact Rust invocation',
+        rule: 'rust-array-shift-invocation-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustSingleUndefinedOptionCarrier(expression.semantics.resultType)) {
+      refusals.push({
+        member: 'shift',
+        message: 'array.shift result does not have one undefined-admitting Rust Option carrier',
+        rule: 'rust-array-shift-result-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (!isRustArrayAbsenceRepresentedUse(uses.get(expression), bindingTypes, arrayElementBindingIds)) {
+      refusals.push({
+        member: 'shift',
+        message:
+          'array.shift can return undefined for an empty array, but this observed result has no Rust Option carrier',
+        rule: 'rust-array-shift-result-observation-unrepresented',
+      });
+    }
+  }
+
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  )[0];
+  if (refusal) {
+    throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+      classification: 'target-runtime',
+    });
+  }
+  return { elementPlaces, optionElementReads };
+}
+
+function hasMultipleOrdinaryArrayReceiverAlternativesRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): boolean {
+  if (expression.object.kind !== 'identifier' || expression.object.reference.kind !== 'binding') return false;
+  const type = bindingTypes.get(expression.object.reference.binding.id);
+  return type?.kind === 'union' && type.types.filter((member) => member.kind === 'array').length > 1;
+}
+
+function isRustTraversalPathPrefix(prefix: CompilerIrTraversalPath, path_: CompilerIrTraversalPath): boolean {
+  return prefix.length <= path_.length && prefix.every((part, index) => path_[index] === part);
+}
+
+function isRustArrayAbsenceRepresentedUse(
+  use: RustArrayBoundsValueUse | undefined,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  arrayElementBindingIds: ReadonlySet<string>,
+): boolean {
+  if (!use) return false;
+  if (use.kind === 'discarded') return true;
+  if (use.kind === 'return') return isRustSingleUndefinedOptionCarrier(use.type);
+  if (use.kind === 'variable') {
+    return (
+      isRustSingleUndefinedOptionCarrier(use.type) ||
+      (use.bindingId !== undefined && arrayElementBindingIds.has(use.bindingId))
+    );
+  }
+  const parent = use.expression;
+  if (parent.kind === 'undefinedDefault') return use.position === 'value';
+  if (parent.kind === 'binary') {
+    if (parent.operator === '??') return use.position === 'left';
+    if (!parent.semantics.nullishComparison) return false;
+    const operand =
+      parent.left.kind === 'identifier' && parent.left.reference.kind === 'ambient' ? parent.right : parent.left;
+    return operand === (use.position === 'left' ? parent.left : parent.right);
+  }
+  if (
+    parent.kind === 'assignment' &&
+    use.position === 'right' &&
+    parent.operator === '=' &&
+    parent.left.kind === 'identifier' &&
+    parent.left.reference.kind === 'binding'
+  ) {
+    return isRustSingleUndefinedOptionCarrier(bindingTypes.get(parent.left.reference.binding.id));
+  }
+  return false;
+}
+
 interface RustStringMemberSemanticsRefusal {
   readonly member: 'charAt' | 'charCodeAt' | 'length' | 'slice' | 'substring';
   readonly message: string;
@@ -5393,12 +5705,12 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
     if (expression.optionalChain?.receiverNullish === 'excluded') return false;
     return expression.optional || expression.absent === 'optionalMember';
   }
-  if (expression.kind === 'call') return expression.optional;
+  if (expression.kind === 'call') return expression.optional || isArrayShiftCallRust(expression);
   // An array index is absent-admitting in the source language whatever the index is, which is why
   // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
   // through `get`, which is both the Option the operator needs and the faithful behaviour.
   if (expression.kind === 'element') {
-    return expression.optional || (expression.semantics.receivers.includes('array') && !expression.optional);
+    return expression.optional || context.arrayElementOptionReads.has(expression);
   }
   if (
     expression.kind === 'identifier' &&
@@ -5411,9 +5723,6 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
 }
 
 function emitOptionShapedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
-  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array')) {
-    return `${emitExpression(expression.object, context)}.get(${emitIndexOperandRust(expression.index, context)}).cloned()`;
-  }
   return emitExpression(expression, context);
 }
 
@@ -5480,6 +5789,13 @@ function hasIrTypeUndefinedMemberRust(type: Readonly<IrType>): boolean {
   return (
     type.kind === 'undefined' || (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
   );
+}
+
+function isRustSingleUndefinedOptionCarrier(type: Readonly<IrType> | undefined): boolean {
+  if (!type || type.kind !== 'union' || !hasIrTypeUndefinedMemberRust(type) || hasIrTypeNullMemberRust(type)) {
+    return false;
+  }
+  return type.types.filter((member) => member.kind !== 'undefined').length === 1;
 }
 
 function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {

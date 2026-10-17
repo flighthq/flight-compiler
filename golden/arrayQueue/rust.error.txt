@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/arrayQueue.ts: array.shift can return undefined for an empty array, but this observed result has no Rust Option carrier

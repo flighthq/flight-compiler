@@ -1345,7 +1345,7 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('emits optional property, element, and call projections from neutral type evidence', () => {
+  it('emits optional projections from neutral evidence and refuses a redundant non-optional array chain', () => {
     const property = lower(
       'optional-property.ts',
       'interface Value { count: number } export function count(value: Value | undefined): number | undefined { return value?.count; }',
@@ -1366,13 +1366,16 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(property.module).contents).toContain(
       'value.as_ref().map(|optional_chain_value| optional_chain_value.count.clone())',
     );
-    expect(emitIrModuleRust(element.module).contents).toContain(
-      'values.as_ref().and_then(|optional_chain_value| optional_chain_value.get(index as usize).cloned())',
-    );
+    const elementOutput = emitIrModuleRust(element.module).contents;
+    expect(elementOutput).toContain('values.as_ref().and_then(|optional_chain_value|');
+    expect(elementOutput).toContain('array_index.is_finite()');
+    expect(elementOutput).toContain('optional_chain_value.get(array_index as usize).cloned()');
     expect(emitIrModuleRust(call.module).contents).toContain(
       'callback.as_ref().map(|optional_chain_value| optional_chain_value(1.0))',
     );
-    expect(emitIrModuleRust(staticallyPresent.module).contents).toContain('return values[0.0 as usize];');
+    expect(getEmissionRule(() => emitIrModuleRust(staticallyPresent.module))).toBe(
+      'rust-array-index-result-absence-unrepresented',
+    );
   });
 
   it('represents observable entry undefined only inside a nullable Rust domain', () => {
@@ -2143,13 +2146,14 @@ describe('emitIrModuleRust', () => {
     expect(threeOutput).toContain('*value.as_bool()');
   });
 
-  it('clones array element access in variable initializers to prevent move-out', () => {
+  it('refuses a non-optional array element variable initializer', () => {
     const module = lower(
       'array-init.ts',
       'export function first(items: string[]): string { if (items.length === 0) { return ""; } const head: string = items[0]!; return head; }',
     );
-    const output = emitIrModuleRust(module.module).contents;
-    expect(output).toContain('items[0].clone()');
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module.module));
+    expect(failure.rule).toBe('rust-array-index-result-absence-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
   });
 
   it('reads an array length as len and an indexed element through get', () => {
@@ -2163,7 +2167,9 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(module.module).contents;
 
     expect(output).toContain('return values.len() as f64;');
-    expect(output).toContain('values.get(index as usize).cloned().unwrap_or_else(|| 0.0)');
+    expect(output).toContain('array_index.is_finite()');
+    expect(output).toContain('array_values.get(array_index as usize).cloned()');
+    expect(output).toContain('unwrap_or_else(|| 0.0)');
   });
 
   it('wraps returned closures in Rc::new with move and emits function types as Rc<dyn Fn>', () => {
@@ -2181,7 +2187,7 @@ describe('emitIrModuleRust', () => {
   it('wraps variable-assigned closures in Rc::new with move when typed as function', () => {
     const result = lower(
       'callback-var.ts',
-      'export function apply(values: number[]): number { const double: (x: number) => number = (x: number): number => x * 2; return double(values[0]!); }',
+      'export function apply(values: number[]): number { const double: (x: number) => number = (x: number): number => x * 2; return double(values[0] ?? 0); }',
     );
     const output = emitIrModuleRust(result.module).contents;
 
@@ -2315,7 +2321,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('Option<Value>');
-    expect(output).toContain('values.get(0).cloned()');
+    expect(output).toContain('array_values.get(array_index as usize).cloned()');
     expect(output).toContain('unwrap_or_else');
   });
 
@@ -3042,11 +3048,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.reverse()');
   });
 
-  it('emits array shift as remove(0)', () => {
+  it('emits discarded array shift as an empty-safe Option', () => {
     const output = emitIrModuleRust(
       lower('array-shift.ts', 'export function dequeue(items: number[]): void { items.shift(); }').module,
     ).contents;
-    expect(output).toContain('.remove(0)');
+    expect(output).toContain('if shift_values.is_empty() { None }');
+    expect(output).toContain('Some(shift_values.remove(0))');
   });
 
   it('emits string lastIndexOf as rfind', () => {
@@ -3654,11 +3661,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('Rc::new(');
   });
 
-  it('emits element access with expression index as usize cast', () => {
-    const output = emitIrModuleRust(
-      lower('elem-expr-idx.ts', 'export function at(items: number[], i: number): number { return items[i]; }').module,
-    ).contents;
-    expect(output).toContain('as usize');
+  it('refuses element access with a non-optional expression result', () => {
+    const module = lower(
+      'elem-expr-idx.ts',
+      'export function at(items: number[], i: number): number { return items[i]; }',
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits owned operand clone for multi-use binding', () => {
@@ -3896,11 +3904,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('use crate::');
   });
 
-  it('emits array element return as clone', () => {
-    const output = emitIrModuleRust(
-      lower('elem-return.ts', 'export function first(items: string[]): string { return items[0]; }').module,
-    ).contents;
-    expect(output).toContain('.clone()');
+  it('refuses array element return without an absence carrier', () => {
+    const module = lower(
+      'elem-return.ts',
+      'export function first(items: string[]): string { return items[0]; }',
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits function with returned closure as Rc', () => {
@@ -4623,11 +4632,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('format!');
   });
 
-  it('emits array index as usize cast', () => {
-    const output = emitIrModuleRust(
-      lower('arr-index.ts', `export function get(items: number[], i: number): number { return items[i]; }`).module,
-    ).contents;
-    expect(output).toContain('as usize');
+  it('refuses array index reads whose result cannot be absent', () => {
+    const module = lower(
+      'arr-index.ts',
+      `export function get(items: number[], i: number): number { return items[i]; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits closure with body as multi-line lambda', () => {
@@ -6050,11 +6060,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('as i32');
   });
 
-  it('emits array element access with computed index', () => {
-    const output = emitIrModuleRust(
-      lower('arr-index.ts', `export function nth(items: number[], i: number): number { return items[i]; }`).module,
-    ).contents;
-    expect(output).toContain('as usize');
+  it('refuses array element access with a computed non-optional result', () => {
+    const module = lower(
+      'arr-index.ts',
+      `export function nth(items: number[], i: number): number { return items[i]; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits cast expression', () => {
@@ -7245,16 +7256,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('impl std::fmt::Display');
   });
 
-  it('emits element access with runtime index as usize cast', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'dynamic-index.ts',
-        `export function at(items: number[], i: number): number {
-          return items[i];
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('as usize');
+  it('refuses a runtime index without an Option-compatible use', () => {
+    const module = lower(
+      'dynamic-index.ts',
+      `export function at(items: number[], i: number): number {
+        return items[i];
+      }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits module-level const variable declaration', () => {
@@ -8568,16 +8577,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('enum Shape');
   });
 
-  it('emits element access on property chain with clone', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'elem-prop.ts',
-        `export function get(items: number[][], i: number): number {
-          return items[0][0];
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('[');
+  it('refuses nested element access without an absence carrier', () => {
+    const module = lower(
+      'elem-prop.ts',
+      `export function get(items: number[][], i: number): number {
+        return items[0][0];
+      }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits callback variable with Rc wrapper', () => {
@@ -8672,16 +8679,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('FlightSymbol');
   });
 
-  it('emits returned array element with clone', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'return-element.ts',
-        `export function head(items: string[]): string {
-          return items[0];
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.clone()');
+  it('refuses returned array element without an absence carrier', () => {
+    const module = lower(
+      'return-element.ts',
+      `export function head(items: string[]): string {
+        return items[0];
+      }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 
   it('emits undefinedValue as None with Option payload', () => {
@@ -10035,11 +10040,12 @@ describe('emitIrModuleRust abstract class with concrete method', () => {
 });
 
 describe('emitIrModuleRust array element access', () => {
-  it('emits arr[i] with usize cast', () => {
-    const output = emitIrModuleRust(
-      lower('arr-elem.ts', `export function get(items: number[], i: number): number { return items[i]; }`).module,
-    ).contents;
-    expect(output).toContain('as usize');
+  it('refuses arr[i] without an absence carrier', () => {
+    const module = lower(
+      'arr-elem.ts',
+      `export function get(items: number[], i: number): number { return items[i]; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 });
 
@@ -10463,12 +10469,9 @@ describe('emitIrModuleRust object rest expression', () => {
 });
 
 describe('emitIrModuleRust integer literal index', () => {
-  it('emits literal integer array index without usize cast', () => {
-    const output = emitIrModuleRust(
-      lower('lit-idx.ts', `export function first(items: number[]): number { return items[0]; }`).module,
-    ).contents;
-    expect(output).toContain('[0]');
-    expect(output).not.toContain('as usize');
+  it('refuses a literal index when the result cannot represent absence', () => {
+    const module = lower('lit-idx.ts', `export function first(items: number[]): number { return items[0]; }`).module;
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-array-index-result-absence-unrepresented');
   });
 });
 
@@ -11305,7 +11308,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('.to_string()');
   });
 
-  it('emits array.shift as .remove(0)', () => {
+  it('emits array.shift with an optional result carrier', () => {
     const output = emitIrModuleRust(
       lower(
         'shift.ts',
@@ -11314,7 +11317,8 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('.remove(0');
+    expect(output).toContain('if shift_values.is_empty() { None }');
+    expect(output).toContain('Some(shift_values.remove(0))');
   });
 
   it('emits array.unshift as .insert(0, ...)', () => {
@@ -12219,6 +12223,146 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       ).module,
     ).contents;
     expect(output).toContain('unwrap_or');
+  });
+
+  it('guards the complete numeric index domain and preserves fallback behavior', () => {
+    const result = lower(
+      'array-bounds.ts',
+      `export function at(items: number[], index: number, fallback: number): number {
+         return items[index] ?? fallback;
+       }
+       export function maybe(items: number[], index: number): number | undefined {
+         return items[index];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('array_index.is_finite()');
+    expect(output).toContain('array_index >= 0.0');
+    expect(output).toContain('array_index.fract() == 0.0');
+    expect(output).toContain('array_index < 4294967295.0');
+    expect(output).toContain('array_values.get(array_index as usize).cloned()');
+    expect(output).toContain('unwrap_or_else(|| fallback)');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(at(vec![11.0, 22.0], 1.0, -1.0), 22.0);',
+          'assert_eq!(at(vec![11.0], -0.0, -1.0), 11.0);',
+          'assert_eq!(at(vec![11.0], -1.0, -1.0), -1.0);',
+          'assert_eq!(at(vec![11.0], 0.5, -1.0), -1.0);',
+          'assert_eq!(at(vec![11.0], f64::NAN, -1.0), -1.0);',
+          'assert_eq!(at(vec![11.0], f64::INFINITY, -1.0), -1.0);',
+          'assert_eq!(at(vec![11.0], 9.0, -1.0), -1.0);',
+          'assert_eq!(maybe(vec![11.0], 0.0), Some(11.0));',
+          'assert_eq!(maybe(vec![11.0], -1.0), None);',
+          'assert_eq!(maybe(vec![11.0], 0.5), None);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('returns an empty-safe Option from shift and preserves shift coalescing', () => {
+    const result = lower(
+      'array-shift-bounds.ts',
+      `export function take(items: number[]): number | undefined { return items.shift(); }
+       export function takeOr(items: number[], fallback: number): number { return items.shift() ?? fallback; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('if shift_values.is_empty() { None }');
+    expect(output).toContain('Some(shift_values.remove(0))');
+    expect(output).toContain('unwrap_or_else(|| fallback)');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut empty = vec![];',
+          'assert_eq!(take(&mut empty), None);',
+          'let mut present = vec![3.0, 4.0];',
+          'assert_eq!(take(&mut present), Some(3.0));',
+          'assert_eq!(present, vec![4.0]);',
+          'let mut fallback_empty = vec![];',
+          'assert_eq!(take_or(&mut fallback_empty, 8.0), 8.0);',
+          'let mut fallback_present = vec![5.0];',
+          'assert_eq!(take_or(&mut fallback_present, 8.0), 5.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('keeps an empty-safe shift exact through a represented shared-array alias', () => {
+    const result = lower(
+      'shared-array-shift-bounds.ts',
+      `export function takeShared(empty: boolean): number | undefined {
+         const values = [7];
+         const alias = values;
+         if (empty) alias.pop();
+         return values.shift();
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let mut shift_values = values.borrow_mut()');
+    if (rustcAvailable) {
+      runRustSource(output, 'assert_eq!(take_shared(false), Some(7.0)); assert_eq!(take_shared(true), None);');
+    }
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-index-result-absence-unrepresented',
+      source: 'export function read(values: number[], index: number): number { return values[index]; }',
+    },
+    {
+      rule: 'rust-array-index-key-domain-unrepresented',
+      source: 'export function read(values: number[]): number { return values["0"] ?? 0; }',
+    },
+    {
+      rule: 'rust-array-shift-result-observation-unrepresented',
+      source: 'export function take(values: number[]): number { return values.shift()!; }',
+    },
+    {
+      rule: 'rust-array-shift-result-carrier-unrepresented',
+      source: 'export function take(values: (number | null)[]): number | null | undefined { return values.shift(); }',
+    },
+  ])('preflight-refuses incompatible array bounds case with $rule', ({ rule, source }) => {
+    const result = lower('array-bounds-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('preserves the existing shared-array borrow-conflict refusal for nested shift mutation', () => {
+    const result = lower(
+      'array-shift-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1];
+         const alias = values;
+         alias.push(values.shift() ?? 0);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
+  it('selects array bounds refusal rules independently of declaration order', () => {
+    const declarations = [
+      'export function take(values: number[]): number { return values.shift()!; }',
+      'export function read(values: number[]): number { return values["0"] ?? 0; }',
+    ];
+    const first = lower('array-bounds-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-bounds-order-b.ts', [...declarations].reverse().join('\n')).module;
+    const capture = (module: Readonly<Parameters<typeof emitIrModuleRust>[0]>) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(capture(first).rule).toBe('rust-array-index-key-domain-unrepresented');
+    expect(capture(second).rule).toBe('rust-array-index-key-domain-unrepresented');
   });
 });
 
@@ -13253,12 +13397,10 @@ describe('emitIrModuleRust element mutation through this', () => {
            data: number[];
            constructor() { this.data = []; }
            set(index: number, value: number): void { this.data[index] = value; }
-           get(index: number): number { return this.data[index]!; }
          }`,
       ).module,
     ).contents;
     expect(output).toContain('fn set(&mut self');
-    expect(output).toContain('fn get(&self');
   });
 });
 
@@ -14052,7 +14194,8 @@ describe('emitIrModuleRust try catch without binding', () => {
         'try-anon.ts',
         `export function safe(arr: number[]): number {
            try {
-             return arr[0]!;
+             if (arr.length === 0) { throw "empty"; }
+             return arr.length;
            } catch {
              return -1;
            }

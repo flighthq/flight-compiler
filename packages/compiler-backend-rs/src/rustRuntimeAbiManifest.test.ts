@@ -63,10 +63,15 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     );
     if (!firstPromise?.members) throw new Error('expected the first Promise value member binding');
     (firstPromise.members as unknown[]).pop();
-    expect(second.ambientMembers.bindings).toHaveLength(82);
+    expect(second.ambientMembers.bindings).toHaveLength(81);
     expect(
       second.ambientMembers.bindings.some(
         ({ receiver, sourceMember }) => receiver === 'string' && sourceMember === 'length',
+      ),
+    ).toBe(false);
+    expect(
+      second.ambientMembers.bindings.some(
+        ({ receiver, sourceMember }) => receiver === 'array' && sourceMember === 'shift',
       ),
     ).toBe(false);
     expect(

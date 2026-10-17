@@ -11,7 +11,7 @@ pub fn unwrap<Value: Clone>(box_: Box<Value>) -> Value {
 }
 
 pub fn first_of<Value: Clone>(values: Vec<Value>, fallback: Value) -> Value {
-  let first: Option<Value> = values.get(0).cloned();
+  let first: Option<Value> = { let array_values = &values; { let array_index: f64 = 0.0; if array_index.is_finite() && array_index >= 0.0 && array_index.fract() == 0.0 && array_index < 4294967295.0 { array_values.get(array_index as usize).cloned() } else { None } } };
   return first.unwrap_or_else(|| fallback);
 }
 

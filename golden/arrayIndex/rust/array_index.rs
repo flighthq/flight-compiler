@@ -2,9 +2,9 @@
 #![forbid(unsafe_code)]
 
 pub fn at(values: Vec<f64>, index: f64) -> f64 {
-  return values.get(index as usize).cloned().unwrap_or_else(|| 0.0);
+  return { let array_values = &values; { let array_index: f64 = index; if array_index.is_finite() && array_index >= 0.0 && array_index.fract() == 0.0 && array_index < 4294967295.0 { array_values.get(array_index as usize).cloned() } else { None } } }.unwrap_or_else(|| 0.0);
 }
 
 pub fn head(values: Vec<f64>) -> f64 {
-  return values.get(0).cloned().unwrap_or_else(|| 0.0);
+  return { let array_values_2 = &values; { let array_index_2: f64 = 0.0; if array_index_2.is_finite() && array_index_2 >= 0.0 && array_index_2.fract() == 0.0 && array_index_2 < 4294967295.0 { array_values_2.get(array_index_2 as usize).cloned() } else { None } } }.unwrap_or_else(|| 0.0);
 }
