@@ -6330,12 +6330,37 @@ function getAsyncTryTwoAwaitPlanRust(
   };
 }
 
-function areIrAsyncTryStraightLineStatementsRust(statements: readonly Readonly<IrStatement>[]): boolean {
+function getIrAsyncTrySourceThrowMessageRust(
+  statement: Readonly<IrStatement>,
+  context: EmitContext,
+): Readonly<IrExpression> | undefined {
+  if (
+    statement.kind !== 'throw' ||
+    statement.expression.kind !== 'new' ||
+    statement.expression.callee.kind !== 'identifier' ||
+    statement.expression.callee.reference.kind !== 'ambient' ||
+    statement.expression.callee.reference.name !== 'Error' ||
+    statement.expression.arguments.length !== 1 ||
+    statement.expression.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const message = statement.expression.arguments[0]!;
+  const type = inferIrExpressionTypeRust(message, context);
+  const resolved = type ? resolveIrTypeAliasValueRust(type, context, new Set()) : undefined;
+  return resolved?.kind === 'primitive' && resolved.name === 'string' ? message : undefined;
+}
+
+function areIrAsyncTryStraightLineStatementsRust(
+  statements: readonly Readonly<IrStatement>[],
+  allowTerminalSourceThrow = false,
+): boolean {
   return statements.every(
     (statement, index) =>
       statement.kind === 'expression' ||
       statement.kind === 'variable' ||
-      (statement.kind === 'return' && index === statements.length - 1),
+      ((statement.kind === 'return' || (allowTerminalSourceThrow && statement.kind === 'throw')) &&
+        index === statements.length - 1),
   );
 }
 
@@ -6360,20 +6385,26 @@ function getAsyncTryFinallyCompletionPlanRust(
     const step = getIrAsyncTryDirectAwaitStepRust(candidate);
     return step ? [step] : [];
   });
+  const tryTail = tryStatements.at(-1);
+  const protectedThrowMessage = tryTail ? getIrAsyncTrySourceThrowMessageRust(tryTail, context) : undefined;
   const permittedReturns = new Set(
     [tryStatements.at(-1), catchStatements?.at(-1)].filter(
       (candidate): candidate is Readonly<IrStatement> => candidate?.kind === 'return',
     ),
   );
+  const permittedTryCompletions = new Set([
+    ...permittedReturns,
+    ...(tryTail?.kind === 'throw' && protectedThrowMessage ? [tryTail] : []),
+  ]);
   const flatBodies =
     !(statement.tryBody.kind === 'block' && statement.tryBody.label) &&
     !(statement.catchClause?.body.kind === 'block' && statement.catchClause.body.label) &&
     !(statement.finallyBody.kind === 'block' && statement.finallyBody.label) &&
-    areIrAsyncTryStraightLineStatementsRust(tryStatements) &&
+    areIrAsyncTryStraightLineStatementsRust(tryStatements, true) &&
     (catchStatements === undefined || areIrAsyncTryStraightLineStatementsRust(catchStatements)) &&
     finallyStatements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable');
   const exactCompletions =
-    tryEvidence.abruptStatements.every((candidate) => permittedReturns.has(candidate)) &&
+    tryEvidence.abruptStatements.every((candidate) => permittedTryCompletions.has(candidate)) &&
     (catchEvidence?.abruptStatements.every((candidate) => permittedReturns.has(candidate)) ?? true) &&
     finallyEvidence.abruptStatements.length === 0;
   const exactSuspensions =
@@ -6384,7 +6415,7 @@ function getAsyncTryFinallyCompletionPlanRust(
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms, direct try awaits, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms or one terminal protected Error(String) throw, direct try awaits, and a non-abrupt finally',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -6753,6 +6784,18 @@ function emitAsyncTryFinallyTryCompletionRust(
       }
       return lines;
     }
+    if (statement.kind === 'throw') {
+      const message = getIrAsyncTrySourceThrowMessageRust(statement, context);
+      if (!message) {
+        emissionRuleError(
+          context,
+          'protected source throw requires one terminal new Error with an exact owned String message',
+          'rust-async-try-completion-unrepresented',
+        );
+      }
+      lines.push(`break '${label} Err(${normalizeSourceTextGrouping(emitOwnedOperandRust(message, context))});`);
+      return lines;
+    }
     lines.push(...emitStatement(statement, context));
   }
   lines.push(`break '${label} Ok(None);`);
@@ -6814,7 +6857,8 @@ function emitAsyncTryFinallyCompletionRust(
   }
   lines.push(...emitStatements(plan.finallyStatements, context));
   const value = getGeneratedTargetNameRust('try_return_value', context);
-  const tryCanCompleteNormally = plan.tryStatements.at(-1)?.kind !== 'return';
+  const tryCanCompleteNormally =
+    plan.tryStatements.at(-1)?.kind !== 'return' && plan.tryStatements.at(-1)?.kind !== 'throw';
   const catchCanCompleteNormally = plan.catchStatements?.at(-1)?.kind !== 'return';
   if (plan.catchStatements) {
     lines.push(

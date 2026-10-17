@@ -3769,6 +3769,103 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ).not.toThrow();
   });
 
+  it.skipIf(!rustcAvailable)('catches a terminal protected source throw before one finally cleanup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-source-throw-catch-finally-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, log: string[]): Promise<number> { let result = 0; try { await task; record("try", log); throw new Error("source"); } catch (error) { record(error, log); result = 7; } finally { record("finally", log); } return result; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Err("source".to_owned())');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), &mut log)), 7.0);
+         assert_eq!(log, vec!["try".to_owned(), "source".to_owned(), "finally".to_owned()]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('keeps task rejection and terminal source-throw messages distinct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-source-throw-message-runtime.ts',
+        'function record(value: string, log: string[]): void { log.push(value); } export async function attempt(task: Promise<number>, message: string, log: string[]): Promise<number> { try { await task; throw new Error(message); } catch (error) { record(error, log); return 1; } finally { record(message, log); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Err(message.clone())');
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut source_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(1.0), "source".to_owned(), &mut source_log)), 1.0);
+         assert_eq!(source_log, vec!["source".to_owned(), "source".to_owned()]);
+         let mut rejection_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("task"), "source".to_owned(), &mut rejection_log)), 1.0);
+         assert_eq!(rejection_log, vec!["task".to_owned(), "source".to_owned()]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.skipIf(!rustcAvailable)('runs finally before re-panicking an uncaught terminal source throw', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-source-throw-repanic-runtime.ts',
+        'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; throw new Error("source"); } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut log = Vec::new();
+         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(1.0), &mut log))));
+         assert_eq!(log, vec![1.0]);
+         let payload = panic.expect_err("source throw must panic after cleanup");
+         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
+         assert_eq!(message, Some("unhandled task rejection: source"));`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'a non-tail source throw',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; throw new Error("source"); log.push(0); } finally { log.push(1); } }',
+    ],
+    [
+      'a nested source throw',
+      'export async function attempt(task: Promise<number>, enabled: boolean, log: number[]): Promise<void> { try { await task; if (enabled) throw new Error("source"); } finally { log.push(1); } }',
+    ],
+    [
+      'an arbitrary thrown value',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; throw "source"; } finally { log.push(1); } }',
+    ],
+    [
+      'a non-string Error message',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<void> { try { await task; throw new Error(1 as never); } finally { log.push(1); } }',
+    ],
+    [
+      'a catch throw',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch (error) { throw error; } finally { log.push(1); } }',
+    ],
+    [
+      'a throwing finally',
+      'export async function attempt(task: Promise<number>): Promise<void> { try { await task; } finally { throw new Error("cleanup"); } }',
+    ],
+  ])('stably refuses terminal protected source-throw expansion with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('unsupported-source-throw-completion.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+    expect(failure.message).toContain('terminal protected Error(String)');
+  });
+
   it.each([
     [
       'multiple returns',
@@ -3785,10 +3882,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     [
       'continue completion',
       'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let done: boolean = false; while (!done) { try { return await task; } catch { done = true; continue; } finally { log.push(1); } } return fallback; }',
-    ],
-    [
-      'throw completion',
-      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch (error) { throw error; } finally { log.push(1); } }',
     ],
     [
       'an abrupt finally',
