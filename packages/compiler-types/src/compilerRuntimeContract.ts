@@ -198,12 +198,53 @@ export interface CompilerRustRuntimeRepresentationPlan {
   readonly schema: 'flight-rust-runtime-representation/1';
 }
 
+export type CompilerRustRuntimeRequirement =
+  | Readonly<{ kind: 'function'; targetName: string }>
+  | Readonly<{ kind: 'member'; memberName: string; targetName: string }>
+  | Readonly<{ kind: 'trait'; targetName: string; traitName: string }>
+  | Readonly<{ kind: 'type'; targetName: string }>;
+
+export interface CompilerRustRuntimeTaskRequirements {
+  readonly awaitBoundary: Readonly<{
+    cloneTrait: 'Clone';
+    futureTrait: 'Future';
+    repeatedAwait: 'clone-before-await';
+  }>;
+  readonly readyMember: 'ready';
+  readonly schema: 'flight-rust-runtime-task-requirements/1';
+  readonly settlement: Readonly<{
+    rejectionCarrier: 'String';
+    result: 'Result<T, String>';
+    settleMember: 'settle';
+    unhandledRejection: 'panic';
+  }>;
+  readonly taskType: 'FlightTask';
+}
+
+export type CompilerRustRuntimeUnsupportedCapability = Readonly<{
+  capability: 'typed-error-carrier' | 'utf16-code-unit-index' | 'utf16-code-unit-length' | 'utf16-code-unit-range';
+  rule:
+    | 'rust-runtime-error-carrier-incomplete'
+    | 'rust-string-utf16-index-unrepresented'
+    | 'rust-string-utf16-length-unrepresented'
+    | 'rust-string-utf16-range-unrepresented';
+  subjects: readonly string[];
+}>;
+
+export interface CompilerRustRuntimeRequirementsPlan {
+  readonly requirements: readonly CompilerRustRuntimeRequirement[];
+  readonly schema: 'flight-rust-runtime-requirements/1';
+  readonly tasks: CompilerRustRuntimeTaskRequirements;
+  readonly unsupportedCapabilities: readonly CompilerRustRuntimeUnsupportedCapability[];
+}
+
 export interface CompilerRustRuntimeAbiManifest {
   readonly ambientMembers: CompilerRustAmbientMemberBindingPlan;
   readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
   readonly externalSymbols: CompilerRustRuntimeExternalSymbolBindingPlan;
   readonly representation: CompilerRustRuntimeRepresentationPlan;
-  readonly schema: 'flight-rust-runtime-abi/1';
+  readonly requirements: CompilerRustRuntimeRequirementsPlan;
+  readonly schema: 'flight-rust-runtime-abi/2';
 }
 
 export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest | CompilerRustRuntimeAbiManifest;

@@ -36,10 +36,31 @@ describe('CompilerRuntimeAbiManifest', () => {
         ownership: { nonCopyReuse: 'clone', runtimeWrapperCarrier: 'owned', temporaryAccess: 'borrow' },
         schema: 'flight-rust-runtime-representation/1',
       },
-      schema: 'flight-rust-runtime-abi/1',
+      requirements: {
+        requirements: [],
+        schema: 'flight-rust-runtime-requirements/1',
+        tasks: {
+          awaitBoundary: {
+            cloneTrait: 'Clone',
+            futureTrait: 'Future',
+            repeatedAwait: 'clone-before-await',
+          },
+          readyMember: 'ready',
+          schema: 'flight-rust-runtime-task-requirements/1',
+          settlement: {
+            rejectionCarrier: 'String',
+            result: 'Result<T, String>',
+            settleMember: 'settle',
+            unhandledRejection: 'panic',
+          },
+          taskType: 'FlightTask',
+        },
+        unsupportedCapabilities: [],
+      },
+      schema: 'flight-rust-runtime-abi/2',
     } as const satisfies CompilerRustRuntimeAbiManifest;
 
-    expect(manifest.schema).toBe('flight-rust-runtime-abi/1');
+    expect(manifest.schema).toBe('flight-rust-runtime-abi/2');
     expectTypeOf(manifest).toMatchTypeOf<CompilerRuntimeAbiManifest>();
   });
 });

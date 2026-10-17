@@ -111,7 +111,10 @@ import {
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
-import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
+import {
+  assertCompilerRustRuntimeAbiManifestComplete,
+  createCompilerRustRuntimeAbiManifest,
+} from './rustRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   collectCompilerRustExternalBindingRepresentationRefusals,
@@ -319,6 +322,7 @@ function emitIrModuleRustWithContext(
     replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
   );
+  assertCompilerRustRuntimeAbiManifestComplete(module, createCompilerRustRuntimeAbiManifest());
   assertRuntimeExternalBindingRepresentationsRust(module, options);
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
@@ -5365,10 +5369,10 @@ function getPreferredBindingNameRust(
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
-    if (type.reference.name === 'Error') {
+    if (rustPanicErrorConstructorNames.has(type.reference.name)) {
       emissionError(
         context,
-        'typed ambient Error requires a represented Rust carrier and member API',
+        `typed ambient ${type.reference.name} requires a represented Rust error carrier and member API`,
         'rust-runtime-error-carrier-incomplete',
         'target-runtime',
       );
