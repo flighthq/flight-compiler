@@ -75,3 +75,14 @@ export type CompilerRustAmbientMemberBinding =
   | Readonly<{ kind: 'positionSearch'; targetName: string }>
   | Readonly<{ kind: 'sentinelSearch'; targetName: string }>
   | Readonly<{ kind: 'splitCollect'; targetName: string }>;
+
+export interface CompilerRustAmbientMemberBindingRecord {
+  readonly binding: CompilerRustAmbientMemberBinding;
+  readonly receiver: IrResolvedMemberReceiver;
+  readonly sourceMember: string;
+}
+
+export interface CompilerRustAmbientMemberBindingPlan {
+  readonly bindings: readonly CompilerRustAmbientMemberBindingRecord[];
+  readonly schema: 'flight-rust-ambient-member-bindings/1';
+}

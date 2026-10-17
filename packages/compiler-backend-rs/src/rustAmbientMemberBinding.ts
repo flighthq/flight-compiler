@@ -1,4 +1,10 @@
-import type { CompilerRustAmbientMemberBinding, IrResolvedMember } from '../../compiler-types/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import type {
+  CompilerRustAmbientMemberBinding,
+  CompilerRustAmbientMemberBindingPlan,
+  IrResolvedMember,
+  IrResolvedMemberReceiver,
+} from '../../compiler-types/src/index.js';
 
 // How Rust spells a member of the ambient surface.
 //
@@ -6,6 +12,22 @@ import type { CompilerRustAmbientMemberBinding, IrResolvedMember } from '../../c
 // so `map` is a chain that has to be collected back and `length` is a call that counts in `usize`.
 // Those are shapes, not renames, which is why the binding says which shape rather than only a name.
 // A member absent from this table has no agreed Rust spelling and is refused rather than guessed at.
+
+export function createCompilerRustAmbientMemberBindingPlan(): CompilerRustAmbientMemberBindingPlan {
+  return {
+    bindings: Object.entries(rustAmbientMemberBindings)
+      .sort(([left], [right]) => compareTextCodeUnits(left, right))
+      .map(([identity, binding]) => {
+        const separator = identity.indexOf('.');
+        return {
+          binding: structuredClone(binding),
+          receiver: identity.slice(0, separator) as IrResolvedMemberReceiver,
+          sourceMember: identity.slice(separator + 1),
+        };
+      }),
+    schema: 'flight-rust-ambient-member-bindings/1',
+  };
+}
 
 export function getCompilerRustAmbientMemberBinding(
   member: Readonly<IrResolvedMember>,

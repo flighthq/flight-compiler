@@ -1,5 +1,6 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
+  createCompilerRustRuntimeExternalSymbolBindingPlan,
   getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
   isCompilerRuntimeExternalSymbolProvidedRust,
@@ -109,6 +110,72 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
         schema: 'flight-rust-external-bindings/1',
       }),
     ).toThrow('Rust external binding 0 is malformed');
+  });
+});
+
+describe('createCompilerRustRuntimeExternalSymbolBindingPlan', () => {
+  it('publishes exact target and task-member spellings in deterministic symbol order', () => {
+    const plan = createCompilerRustRuntimeExternalSymbolBindingPlan();
+    const identities = plan.bindings.map(
+      ({ externalSymbol }) => `${externalSymbol.sourceName}\u0000${externalSymbol.space}`,
+    );
+
+    expect(plan.contract).toBe('flight-runtime-contract/2');
+    expect(plan.schema).toBe('flight-rust-runtime-external-symbol-bindings/1');
+    expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
+    expect(plan.bindings).toContainEqual({
+      capability: 'task',
+      externalSymbol: { sourceName: 'Promise', space: 'value' },
+      kind: 'runtime',
+      members: [{ sourceMember: 'resolve', targetName: 'FlightTask::ready' }],
+      targetName: 'FlightTask',
+    });
+  });
+
+  it('retains explicit downstream ownership and nullability decisions without mutating the input', () => {
+    const externalBindings = {
+      bindings: [
+        {
+          members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
+          nullability: 'nullable' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLImageElement',
+          space: 'value' as const,
+          targetName: 'host::Image',
+        },
+      ],
+      schema: 'flight-rust-external-bindings/1' as const,
+    };
+    const plan = createCompilerRustRuntimeExternalSymbolBindingPlan(externalBindings);
+
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'HTMLImageElement', space: 'value' },
+      kind: 'native',
+      members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
+      nullability: 'nullable',
+      ownership: 'shared',
+      targetName: 'host::Image',
+    });
+    expect(externalBindings.bindings[0]!.members).toEqual([
+      { sourceMember: 'create', targetName: 'host::Image::create' },
+    ]);
+  });
+
+  it('returns independent nested manifest records', () => {
+    const first = createCompilerRustRuntimeExternalSymbolBindingPlan();
+    const second = createCompilerRustRuntimeExternalSymbolBindingPlan();
+    const firstPromise = first.bindings.find(
+      ({ externalSymbol }) => externalSymbol.sourceName === 'Promise' && externalSymbol.space === 'value',
+    );
+    const secondPromise = second.bindings.find(
+      ({ externalSymbol }) => externalSymbol.sourceName === 'Promise' && externalSymbol.space === 'value',
+    );
+    if (!firstPromise?.members) throw new Error('expected the first Promise value member binding');
+
+    (first.bindings as unknown[]).pop();
+    (firstPromise.members as unknown[]).pop();
+    expect(second.bindings).toHaveLength(50);
+    expect(secondPromise?.members).toEqual([{ sourceMember: 'resolve', targetName: 'FlightTask::ready' }]);
   });
 });
 

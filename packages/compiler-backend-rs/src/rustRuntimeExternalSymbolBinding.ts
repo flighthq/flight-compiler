@@ -1,9 +1,11 @@
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
   CompilerRuntimeCapabilityName,
   CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
+  CompilerRustRuntimeExternalSymbolBindingPlan,
   RustCompilerExternalBinding,
   RustCompilerExternalBindingManifest,
 } from '../../compiler-types/src/index.js';
@@ -12,6 +14,8 @@ type RustRuntimeExternalSymbolBinding =
   | Readonly<{
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+      nullability?: RustCompilerExternalBinding['nullability'] | undefined;
+      ownership?: RustCompilerExternalBinding['ownership'] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -20,6 +24,8 @@ type RustRuntimeExternalSymbolBinding =
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+      nullability?: RustCompilerExternalBinding['nullability'] | undefined;
+      ownership?: RustCompilerExternalBinding['ownership'] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -28,20 +34,52 @@ type RustRuntimeExternalSymbolBinding =
 export function createCompilerRuntimeExternalSymbolBindingPlanRust(
   externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
 ): CompilerRuntimeExternalSymbolBindingPlan {
+  const targetPlan = createCompilerRustRuntimeExternalSymbolBindingPlan(externalBindings);
   return {
-    bindings: getRustRuntimeExternalSymbolBindings(externalBindings).map((binding) =>
+    bindings: targetPlan.bindings.map((binding) =>
       binding.kind === 'runtime'
         ? {
             capability: binding.capability,
-            externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+            externalSymbol: { ...binding.externalSymbol },
             kind: binding.kind,
           }
         : {
-            externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+            externalSymbol: { ...binding.externalSymbol },
             kind: binding.kind,
           },
     ),
+    contract: targetPlan.contract,
+  };
+}
+
+export function createCompilerRustRuntimeExternalSymbolBindingPlan(
+  externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
+): CompilerRustRuntimeExternalSymbolBindingPlan {
+  return {
+    bindings: [...getRustRuntimeExternalSymbolBindings(externalBindings)]
+      .sort((left, right) =>
+        compareTextCodeUnits(`${left.sourceName}\u0000${left.space}`, `${right.sourceName}\u0000${right.space}`),
+      )
+      .map((binding) => {
+        const common = {
+          externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+          ...(binding.members
+            ? {
+                members: [...binding.members]
+                  .sort((left, right) => compareTextCodeUnits(left.sourceMember, right.sourceMember))
+                  .map((member) => ({ ...member })),
+              }
+            : {}),
+          ...(binding.nullability ? { nullability: binding.nullability } : {}),
+          ...(binding.ownership ? { ownership: binding.ownership } : {}),
+          targetName: binding.targetName,
+        };
+        return binding.kind === 'runtime'
+          ? { ...common, capability: binding.capability, kind: binding.kind }
+          : { ...common, kind: binding.kind };
+      }),
     contract: 'flight-runtime-contract/2',
+    schema: 'flight-rust-runtime-external-symbol-bindings/1',
   };
 }
 
@@ -96,6 +134,8 @@ function getRustRuntimeExternalSymbolBindings(
       (binding): RustRuntimeExternalSymbolBinding => ({
         kind: 'native',
         ...(binding.members ? { members: binding.members } : {}),
+        nullability: binding.nullability,
+        ownership: binding.ownership,
         sourceName: binding.sourceName,
         space: binding.space,
         targetName: binding.targetName,

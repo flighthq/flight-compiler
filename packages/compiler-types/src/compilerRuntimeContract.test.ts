@@ -1,4 +1,8 @@
-import type { CompilerRuntimeExternalMemberBinding } from './compilerRuntimeContract.js';
+import type {
+  CompilerRuntimeAbiManifest,
+  CompilerRuntimeExternalMemberBinding,
+  CompilerRustRuntimeAbiManifest,
+} from './compilerRuntimeContract.js';
 
 describe('CompilerRuntimeExternalMemberBinding', () => {
   it('carries optional exact call-result evidence independently from its target spelling', () => {
@@ -14,5 +18,28 @@ describe('CompilerRuntimeExternalMemberBinding', () => {
       targetName: 'flight::Symbol::for_key',
     });
     expectTypeOf(binding).toMatchTypeOf<CompilerRuntimeExternalMemberBinding>();
+  });
+});
+
+describe('CompilerRuntimeAbiManifest', () => {
+  it('distinguishes the versioned Rust manifest and its representation decisions', () => {
+    const manifest = {
+      ambientMembers: { bindings: [], schema: 'flight-rust-ambient-member-bindings/1' },
+      constructors: { constructors: [], contract: 'flight-runtime-constructor-abi/1' },
+      externalSymbols: {
+        bindings: [],
+        contract: 'flight-runtime-contract/2',
+        schema: 'flight-rust-runtime-external-symbol-bindings/1',
+      },
+      representation: {
+        nullability: { nonNull: 'direct', nullableTargetName: 'Option' },
+        ownership: { nonCopyReuse: 'clone', temporaryAccess: 'borrow' },
+        schema: 'flight-rust-runtime-representation/1',
+      },
+      schema: 'flight-rust-runtime-abi/1',
+    } as const satisfies CompilerRustRuntimeAbiManifest;
+
+    expect(manifest.schema).toBe('flight-rust-runtime-abi/1');
+    expectTypeOf(manifest).toMatchTypeOf<CompilerRuntimeAbiManifest>();
   });
 });

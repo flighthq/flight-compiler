@@ -2,6 +2,8 @@ export { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBacke
 export { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 export { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceSyntax.js';
 export { createRustCompilerTargetCompilationSmoke } from './rustCompilerTargetCompilationSmoke.js';
+export { createCompilerRustAmbientMemberBindingPlan } from './rustAmbientMemberBinding.js';
+export { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
 export {
   createCompilerRustPublicBindingPlan,
   isCompilerRustPublicBindingPlanningFailure,
@@ -14,5 +16,6 @@ export {
 export { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 export {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
+  createCompilerRustRuntimeExternalSymbolBindingPlan,
   getCompilerRuntimeExternalSymbolTargetRust,
 } from './rustRuntimeExternalSymbolBinding.js';

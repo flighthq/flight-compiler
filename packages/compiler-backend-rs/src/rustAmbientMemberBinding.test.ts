@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
-import { getCompilerRustAmbientMemberBinding } from './rustAmbientMemberBinding.js';
+import {
+  createCompilerRustAmbientMemberBindingPlan,
+  getCompilerRustAmbientMemberBinding,
+} from './rustAmbientMemberBinding.js';
+
+describe('createCompilerRustAmbientMemberBindingPlan', () => {
+  it('creates independent records in deterministic identity order', () => {
+    const first = createCompilerRustAmbientMemberBindingPlan();
+    const second = createCompilerRustAmbientMemberBindingPlan();
+    const identities = first.bindings.map(({ receiver, sourceMember }) => `${receiver}.${sourceMember}`);
+
+    expect(first.schema).toBe('flight-rust-ambient-member-bindings/1');
+    expect(first.bindings).toEqual(second.bindings);
+    expect(first.bindings).not.toBe(second.bindings);
+    expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
+
+    (first.bindings as unknown[]).pop();
+    expect(second.bindings).toHaveLength(83);
+  });
+});
 
 describe('getCompilerRustAmbientMemberBinding', () => {
   it('answers the shape a member reaches its result through, not only its name', () => {

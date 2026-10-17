@@ -1,4 +1,7 @@
-import type { CompilerHaxeAmbientMemberBindingPlan } from './compilerAmbientMemberBindingContract.js';
+import type {
+  CompilerHaxeAmbientMemberBindingPlan,
+  CompilerRustAmbientMemberBindingPlan,
+} from './compilerAmbientMemberBindingContract.js';
 import type { CompilerRuntimeTaskCapabilityPlan } from './compilerRuntimeTaskCapabilityContract.js';
 
 // Runtime capabilities name what the ambient runtime surface must provide. Host concerns do not
@@ -150,6 +153,23 @@ export interface CompilerHaxeRuntimeExternalSymbolBindingPlan {
   readonly schema: 'flight-haxe-runtime-external-symbol-bindings/1';
 }
 
+interface CompilerRustRuntimeExternalSymbolBindingCommon {
+  readonly externalSymbol: CompilerRuntimeExternalSymbolIdentity;
+  readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+  readonly nullability?: 'non-null' | 'nullable' | undefined;
+  readonly ownership?: 'borrowed' | 'owned' | 'shared' | 'value' | undefined;
+  readonly targetName: string;
+}
+
+export type CompilerRustRuntimeExternalSymbolBinding = CompilerRustRuntimeExternalSymbolBindingCommon &
+  (Readonly<{ capability: CompilerRuntimeCapabilityName; kind: 'runtime' }> | Readonly<{ kind: 'native' }>);
+
+export interface CompilerRustRuntimeExternalSymbolBindingPlan {
+  readonly bindings: readonly CompilerRustRuntimeExternalSymbolBinding[];
+  readonly contract: CompilerRuntimeContractVersion;
+  readonly schema: 'flight-rust-runtime-external-symbol-bindings/1';
+}
+
 export interface CompilerHaxeRuntimeIntrinsicRequirement {
   readonly capability: CompilerRuntimeCapabilityName;
   readonly members: readonly string[];
@@ -170,7 +190,21 @@ export interface CompilerHaxeRuntimeAbiManifest {
   readonly tasks: CompilerRuntimeTaskCapabilityPlan;
 }
 
-export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest;
+export interface CompilerRustRuntimeRepresentationPlan {
+  readonly nullability: Readonly<{ nonNull: 'direct'; nullableTargetName: 'Option' }>;
+  readonly ownership: Readonly<{ nonCopyReuse: 'clone'; temporaryAccess: 'borrow' }>;
+  readonly schema: 'flight-rust-runtime-representation/1';
+}
+
+export interface CompilerRustRuntimeAbiManifest {
+  readonly ambientMembers: CompilerRustAmbientMemberBindingPlan;
+  readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
+  readonly externalSymbols: CompilerRustRuntimeExternalSymbolBindingPlan;
+  readonly representation: CompilerRustRuntimeRepresentationPlan;
+  readonly schema: 'flight-rust-runtime-abi/1';
+}
+
+export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest | CompilerRustRuntimeAbiManifest;
 
 export interface CompilerRuntimeContractMismatchFailure extends Error {
   readonly expected: CompilerRuntimeContractVersion;

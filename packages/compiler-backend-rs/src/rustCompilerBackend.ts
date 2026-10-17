@@ -100,6 +100,7 @@ import {
   collectIrModuleMovedBindingIdsRust,
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
+import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
@@ -203,6 +204,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       return [emitIrModuleRustWithContext(module, modules, moduleResolution, options)];
     },
     name: 'rust',
+    runtimeAbi: createCompilerRustRuntimeAbiManifest,
   };
 }
 

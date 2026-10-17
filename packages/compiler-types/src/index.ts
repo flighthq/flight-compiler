@@ -18,6 +18,8 @@ export type {
   CompilerHaxeAmbientMemberBindingPlan,
   CompilerHaxeAmbientMemberBindingRecord,
   CompilerRustAmbientMemberBinding,
+  CompilerRustAmbientMemberBindingPlan,
+  CompilerRustAmbientMemberBindingRecord,
 } from './compilerAmbientMemberBindingContract.js';
 export type * from './compilerAccessSemanticIntermediateRepresentation.js';
 export type * from './compilerAsyncStateMachineContract.js';
