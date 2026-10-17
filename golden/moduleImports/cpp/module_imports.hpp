@@ -10,7 +10,7 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline double use(double value) {
-  return helper(value);
+  return flighthq_golden::helper(value);
 }
 
 } // namespace flighthq_golden
