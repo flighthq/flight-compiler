@@ -15141,6 +15141,315 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
+  it('preserves exact indexOf and includes equality across number, boolean, and string carriers', () => {
+    const result = lower(
+      'array-search-exact.ts',
+      `export function numberIndex(values: number[], candidate: number): number {
+         return values.indexOf(candidate);
+       }
+       export function numberIncludes(values: number[], candidate: number): boolean {
+         return values.includes(candidate);
+       }
+       export function booleanIndex(values: boolean[], candidate: boolean): number {
+         return values.indexOf(candidate);
+       }
+       export function booleanIncludes(values: boolean[]): boolean {
+         return values.includes(true);
+       }
+       export function stringIndex(values: string[], candidate: string): number {
+         return values.indexOf(candidate);
+       }
+       export function stringIncludes(values: string[]): boolean {
+         return values.includes("present");
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('array_includes_value.is_nan() && array_includes_candidate.is_nan()');
+    expect(output).toContain('.position(|array_index_of_value| *array_index_of_value == *array_index_of_candidate)');
+    expect(output).toContain('.map(|index| index as f64).unwrap_or(-1.0)');
+    expect(output).toContain('.contains(array_includes_candidate_2)');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(number_index(vec![f64::NAN, 7.0, 7.0], f64::NAN), -1.0);',
+          'assert_eq!(number_index(vec![9.0, 7.0, 7.0], 7.0), 1.0);',
+          'assert_eq!(number_index(vec![-0.0, 0.0], 0.0), 0.0);',
+          'assert_eq!(number_index(vec![1.0, 2.0], 3.0), -1.0);',
+          'assert!(number_includes(vec![f64::NAN], f64::NAN));',
+          'assert!(number_includes(vec![-0.0], 0.0));',
+          'assert!(!number_includes(vec![1.0, 2.0], 3.0));',
+          'assert_eq!(boolean_index(vec![false, true, true], true), 1.0);',
+          'assert_eq!(boolean_index(vec![false], true), -1.0);',
+          'assert!(boolean_includes(vec![false, true]));',
+          'assert!(!boolean_includes(vec![false]));',
+          'assert_eq!(string_index(vec!["a".to_owned(), "b".to_owned(), "b".to_owned()], "b".to_owned()), 1.0);',
+          'assert_eq!(string_index(vec!["a".to_owned()], "b".to_owned()), -1.0);',
+          'assert!(string_includes(vec!["present".to_owned()]));',
+          'assert!(!string_includes(vec!["absent".to_owned()]));',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('borrows reusable search sources and evaluates receiver then candidate exactly once', () => {
+    const result = lower(
+      'array-search-evaluation.ts',
+      `function recordValues(log: number[], marker: number): number[] {
+         log.push(marker);
+         return [0 / 0, 2, 2];
+       }
+       function recordCandidate(log: number[], marker: number, candidate: number): number {
+         log.push(marker);
+         return candidate;
+       }
+       export function reusable(): number {
+         const values = [1, 2, 1];
+         const candidate = 1;
+         const index = values.indexOf(candidate);
+         const present = values.includes(candidate);
+         values.push(3);
+         return index * 100 + (present ? 10 : 0) + values.length + candidate;
+       }
+       export function reusableString(): string {
+         const values = ["a", "b"];
+         const candidate = "b";
+         const present = values.includes(candidate);
+         values.push("c");
+         return present ? candidate : "missing";
+       }
+       export function evaluatedIncludes(log: number[]): boolean {
+         return recordValues(log, 1).includes(recordCandidate(log, 2, 0 / 0));
+       }
+       export function evaluatedIndex(log: number[]): number {
+         return recordValues(log, 3).indexOf(recordCandidate(log, 4, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const includesReceiver = output.indexOf(' = &record_values(');
+    const includesCandidate = output.indexOf(' = &record_candidate(', includesReceiver);
+    const indexReceiver = output.indexOf(' = &record_values(', includesCandidate);
+    const indexCandidate = output.indexOf(' = &record_candidate(', indexReceiver);
+    expect(includesReceiver).toBeGreaterThan(-1);
+    expect(includesCandidate).toBeGreaterThan(includesReceiver);
+    expect(indexReceiver).toBeGreaterThan(includesCandidate);
+    expect(indexCandidate).toBeGreaterThan(indexReceiver);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(reusable(), 15.0);',
+          'assert_eq!(reusable_string(), "b".to_owned());',
+          'let mut includes_log = vec![];',
+          'assert!(evaluated_includes(&mut includes_log));',
+          'assert_eq!(includes_log, vec![1.0, 2.0]);',
+          'let mut index_log = vec![];',
+          'assert_eq!(evaluated_index(&mut index_log), 1.0);',
+          'assert_eq!(index_log, vec![3.0, 4.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('searches a shared receiver through an immutable borrow and keeps aliases reusable', () => {
+    const result = lower(
+      'shared-array-search-exact.ts',
+      `export function sharedSearch(): number {
+         const values = [0 / 0, 1, 1];
+         const alias = values;
+         const present = alias.includes(0 / 0);
+         const index = values.indexOf(1);
+         alias.push(3);
+         return (present ? 100 : 0) + index * 10 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_includes_receiver = &alias;');
+    expect(output).toContain('array_includes_receiver.borrow().iter().any(');
+    expect(output).toContain('let array_index_of_receiver = &values;');
+    expect(output).toContain('array_index_of_receiver.borrow().iter().position(');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_search(), 114.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-index-of-invocation-unrepresented',
+      source:
+        'export function find(values: number[], candidate: number): number { return values.indexOf(candidate, 1); }',
+    },
+    {
+      rule: 'rust-array-includes-invocation-unrepresented',
+      source:
+        'export function has(values: number[], candidate: number): boolean { return values.includes(candidate, 1); }',
+    },
+    {
+      rule: 'rust-array-index-of-invocation-unrepresented',
+      source:
+        'export function find(values: number[], candidate: number): number | undefined { return values.indexOf?.(candidate); }',
+    },
+    {
+      rule: 'rust-array-includes-invocation-unrepresented',
+      source:
+        'export function has(values: number[], candidate: number): boolean | undefined { return values.includes?.(candidate); }',
+    },
+    {
+      rule: 'rust-array-index-of-invocation-unrepresented',
+      source:
+        'export function find(values: number[], candidate: [number]): number { return values.indexOf(...candidate); }',
+    },
+    {
+      rule: 'rust-array-index-of-element-carrier-unrepresented',
+      source:
+        'export function find(values: (number | string)[], candidate: number | string): number { return values.indexOf(candidate); }',
+    },
+    {
+      rule: 'rust-array-includes-element-carrier-unrepresented',
+      source: 'export function has(values: any[], candidate: any): boolean { return values.includes(candidate); }',
+    },
+    {
+      rule: 'rust-array-index-of-element-carrier-unrepresented',
+      source:
+        'export function find(values: number[][], candidate: number[]): number { return values.indexOf(candidate); }',
+    },
+    {
+      rule: 'rust-array-includes-element-carrier-unrepresented',
+      source:
+        'class Point { x: number = 0; } export function has(values: Point[], candidate: Point): boolean { return values.includes(candidate); }',
+    },
+    {
+      rule: 'rust-array-index-of-element-carrier-unrepresented',
+      source:
+        'interface Point { x: number } export function find(values: Point[], candidate: Point): number { return values.indexOf(candidate); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function find(): number { const values = [1, , 3]; return values.indexOf(3); }',
+    },
+  ])('stably refuses unsupported exact array search semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-search-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses dynamic and zero-argument array searches', () => {
+    const getSearchCall = (module: IrModule, functionName: string) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === functionName,
+      );
+      const returned =
+        declaration?.kind === 'function'
+          ? declaration.body.find((statement) => statement.kind === 'return')
+          : undefined;
+      if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected returned array search call');
+      }
+      return returned.expression;
+    };
+
+    const dynamic = lower(
+      'array-search-dynamic.ts',
+      'export function find(values: number[], candidate: [number]): number { return values.indexOf(...candidate); }',
+    );
+    expect(getSearchCall(dynamic.module, 'find').semantics.signature?.providedArgumentCount).toBe('dynamic');
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(dynamic.module)).rule).toBe(
+      'rust-array-index-of-invocation-unrepresented',
+    );
+
+    for (const [member, rule, resultType] of [
+      ['indexOf', 'rust-array-index-of-invocation-unrepresented', 'number'],
+      ['includes', 'rust-array-includes-invocation-unrepresented', 'boolean'],
+    ] as const) {
+      const zero = lower(
+        `array-${member}-zero.ts`,
+        `export function search(values: number[], candidate: number): ${resultType} { return values.${member}(candidate); }`,
+      );
+      const call = getSearchCall(zero.module, 'search');
+      (call.arguments as unknown as unknown[]).splice(0);
+      delete (call.semantics as { signature?: unknown }).signature;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(zero.module)).rule).toBe(rule);
+    }
+  });
+
+  it('stably refuses incompatible array search candidate and result carriers', () => {
+    const getSearch = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'search',
+      );
+      const returned =
+        declaration?.kind === 'function'
+          ? declaration.body.find((statement) => statement.kind === 'return')
+          : undefined;
+      if (declaration?.kind !== 'function' || returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected returned array search call');
+      }
+      return { call: returned.expression, declaration };
+    };
+
+    for (const [member, candidateRule, resultRule, sourceResult, wrongResult] of [
+      [
+        'indexOf',
+        'rust-array-index-of-candidate-carrier-unrepresented',
+        'rust-array-index-of-result-carrier-unrepresented',
+        'number',
+        { kind: 'primitive', name: 'boolean' },
+      ],
+      [
+        'includes',
+        'rust-array-includes-candidate-carrier-unrepresented',
+        'rust-array-includes-result-carrier-unrepresented',
+        'boolean',
+        { kind: 'primitive', name: 'number' },
+      ],
+    ] as const) {
+      const source = `export function search(values: number[], candidate: number): ${sourceResult} { return values.${member}(candidate); }`;
+      const mismatchedCandidate = lower(`array-${member}-candidate.ts`, source);
+      const candidate = getSearch(mismatchedCandidate.module);
+      (candidate.declaration.parameters[1] as { type: unknown }).type = { kind: 'primitive', name: 'string' };
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedCandidate.module)).rule).toBe(
+        candidateRule,
+      );
+
+      const mismatchedResult = lower(`array-${member}-result.ts`, source);
+      const result = getSearch(mismatchedResult.module);
+      (result.call.semantics as { resultType: unknown }).resultType = wrongResult;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedResult.module)).rule).toBe(resultRule);
+    }
+  });
+
+  it.each([
+    {
+      member: 'includes',
+      result: 'boolean',
+      rule: 'rust-reference-shared-array-borrow-conflict',
+    },
+    {
+      member: 'indexOf',
+      result: 'number',
+      rule: 'rust-reference-shared-array-borrow-conflict',
+    },
+  ])('uses the shared-array borrow-conflict rule for nested $member candidate reads', ({ member, result, rule }) => {
+    const lowered = lower(
+      `array-${member}-borrow-conflict.ts`,
+      `export function conflict(): ${result} {
+         const values = [1, 2, 3];
+         const alias = values;
+         const found = alias.${member}(values[0] ?? 0);
+         values.push(4);
+         return found;
+       }`,
+    );
+    expect(lowered.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(lowered.module))).toBe(rule);
+  });
+
   it('preserves efficient discarded reverse mutation and forwards an owned returned carrier', () => {
     const result = lower(
       'array-reverse-exact.ts',

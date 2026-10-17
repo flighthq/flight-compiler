@@ -4194,6 +4194,8 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
 const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,
   'concat',
+  'includes',
+  'indexOf',
   'slice',
 ]);
 

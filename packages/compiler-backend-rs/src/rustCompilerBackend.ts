@@ -376,6 +376,9 @@ function emitIrModuleRustWithContext(
   referenceRepresentationPlan: Readonly<CompilerRustReferenceRepresentationPlan>,
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
 ): EmittedFile {
+  // Search arity must be refused before the shared extra-argument pass, whose target ABI cannot
+  // preserve JavaScript's optional fromIndex semantics for these methods.
+  assertArraySearchInvocationSemanticsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
@@ -1485,6 +1488,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
       if (isArrayReverseCallRust(expression)) return emitArrayReverseCallRust(expression, context);
       if (isArraySliceCallRust(expression)) return emitArraySliceCallRust(expression, context);
@@ -3009,6 +3013,41 @@ function getArrayGrowthMemberRust(
   return expression.callee.member.name;
 }
 
+type RustArraySearchMember = 'includes' | 'indexOf';
+
+function getArraySearchMemberRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): RustArraySearchMember | undefined {
+  if (
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'array' ||
+    (expression.callee.member.name !== 'includes' && expression.callee.member.name !== 'indexOf')
+  ) {
+    return undefined;
+  }
+  return expression.callee.member.name;
+}
+
+function isRustArraySearchInvocationRepresentedRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): boolean {
+  const signature = expression.semantics.signature;
+  const argument = expression.arguments[0];
+  return (
+    !expression.optional &&
+    expression.semantics.optionalChain === undefined &&
+    expression.callee.kind === 'property' &&
+    !expression.callee.optional &&
+    expression.callee.optionalChain === undefined &&
+    signature !== undefined &&
+    signature.providedArgumentCount !== 'dynamic' &&
+    signature.providedArgumentCount === 1 &&
+    expression.arguments.length === 1 &&
+    argument !== undefined &&
+    argument.kind !== 'spread'
+  );
+}
+
 function isArrayReverseCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3072,6 +3111,45 @@ function emitArrayGrowthCallRust(
   const lengthReceiver = emitSharedReferenceReceiverRust(expression.callee.object, false, context);
   const initializers = arguments_.map(({ emitted, name }) => `let ${name} = ${emitted};`);
   return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
+}
+
+function emitArraySearchCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const member = getArraySearchMemberRust(expression);
+  const argument = expression.arguments[0];
+  if (!member || expression.callee.kind !== 'property' || !argument || expression.arguments.length !== 1) {
+    return emissionError(context, 'array search emission requires indexOf or includes with exactly one argument');
+  }
+  const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+  const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+  if (receiver?.kind !== 'array') return emissionError(context, 'array search emission requires an array receiver');
+  const domain = getRustArraySearchCarrierDomainRust(receiver.element, context);
+  if (!domain) return emissionError(context, 'array search emission requires an exact primitive value carrier');
+
+  const generatedMember = member === 'indexOf' ? 'index_of' : 'includes';
+  const receiverName = getGeneratedTargetNameRust(`array_${generatedMember}_receiver`, context);
+  const candidateName = getGeneratedTargetNameRust(`array_${generatedMember}_candidate`, context);
+  const valueName = getGeneratedTargetNameRust(`array_${generatedMember}_value`, context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const emittedReceiver = sharedBinding
+    ? `&${getBindingTargetNameRust(sharedBinding, context)}`
+    : `&${emitExpression(expression.callee.object, context)}`;
+  const receiverValues = sharedBinding ? `${receiverName}.borrow()` : receiverName;
+  const strictEquality = `*${valueName} == *${candidateName}`;
+  const equality =
+    domain === 'number' && member === 'includes'
+      ? `(${strictEquality} || (${valueName}.is_nan() && ${candidateName}.is_nan()))`
+      : strictEquality;
+  const search =
+    member === 'includes' && domain !== 'number'
+      ? `${receiverValues}.contains(${candidateName})`
+      : `${receiverValues}.iter().${member === 'includes' ? 'any' : 'position'}(|${valueName}| ${equality})`;
+  const result = member === 'indexOf' ? `${search}.map(|index| index as f64).unwrap_or(-1.0)` : search;
+  // A reference to each operand extends temporary lifetimes through the search without moving a
+  // reusable source. The shared receiver borrow starts only after the candidate has been evaluated.
+  return `{ let ${receiverName} = ${emittedReceiver}; let ${candidateName} = &${emitExpression(argument, context)}; ${result} }`;
 }
 
 function emitArrayConcatCallRust(
@@ -7904,7 +7982,13 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
 }
 
 type RustArrayGrowthMember = 'push' | 'unshift';
-type RustArrayOperationMember = RustArrayGrowthMember | 'concat' | 'reverse' | 'slice' | 'splice';
+type RustArrayOperationMember =
+  | RustArrayGrowthMember
+  | RustArraySearchMember
+  | 'concat'
+  | 'reverse'
+  | 'slice'
+  | 'splice';
 
 interface RustArrayOperationRefusal {
   readonly member: RustArrayOperationMember;
@@ -7922,6 +8006,14 @@ interface RustArrayOperationRefusal {
     | 'rust-array-concat-element-carrier-unrepresented'
     | 'rust-array-concat-invocation-unrepresented'
     | 'rust-array-concat-result-carrier-unrepresented'
+    | 'rust-array-includes-candidate-carrier-unrepresented'
+    | 'rust-array-includes-element-carrier-unrepresented'
+    | 'rust-array-includes-invocation-unrepresented'
+    | 'rust-array-includes-result-carrier-unrepresented'
+    | 'rust-array-index-of-candidate-carrier-unrepresented'
+    | 'rust-array-index-of-element-carrier-unrepresented'
+    | 'rust-array-index-of-invocation-unrepresented'
+    | 'rust-array-index-of-result-carrier-unrepresented'
     | 'rust-array-reverse-element-carrier-unrepresented'
     | 'rust-array-reverse-identity-carrier-unrepresented'
     | 'rust-array-reverse-invocation-unrepresented'
@@ -7934,6 +8026,33 @@ interface RustArrayOperationRefusal {
     | 'rust-array-slice-index-domain-unrepresented'
     | 'rust-array-slice-invocation-unrepresented'
     | 'rust-array-slice-result-carrier-unrepresented';
+}
+
+function assertArraySearchInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  const refusals: RustArrayOperationRefusal[] = [];
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || expression.callee.kind !== 'property') return;
+      const member = getArraySearchMemberRust(expression);
+      if (!member) return;
+      if (isRustArraySearchInvocationRepresentedRust(expression)) return;
+      refusals.push({
+        member,
+        message: `array.${member} currently requires a non-optional receiver and exactly one fixed non-spread argument; fromIndex is not represented`,
+        rule:
+          member === 'indexOf'
+            ? 'rust-array-index-of-invocation-unrepresented'
+            : 'rust-array-includes-invocation-unrepresented',
+      });
+    },
+  });
+  const refusal = refusals.sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  )[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
 }
 
 function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
@@ -7953,6 +8072,13 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   const concatCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
+  const searchCalls: Array<
+    Readonly<{
+      callee: Readonly<Extract<IrExpression, { kind: 'property' }>>;
+      expression: Readonly<Extract<IrExpression, { kind: 'call' }>>;
+      member: RustArraySearchMember;
+    }>
   > = [];
   const spliceCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -7978,16 +8104,22 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         uses.set(expression.expression, { kind: 'return', type: expression.returns });
       }
 
-      if (expression.kind === 'call' && expression.callee.kind === 'property' && getArrayGrowthMemberRust(expression)) {
-        growthCalls.push({ callee: expression.callee, expression });
-      } else if (expression.kind === 'call' && isArrayConcatCallRust(expression)) {
-        concatCalls.push(expression);
-      } else if (expression.kind === 'call' && isArrayReverseCallRust(expression)) {
-        reverseCalls.push(expression);
-      } else if (expression.kind === 'call' && isArraySliceCallRust(expression)) {
-        sliceCalls.push(expression);
-      } else if (expression.kind === 'call' && isArraySpliceCallRust(expression)) {
-        spliceCalls.push(expression);
+      if (expression.kind === 'call' && expression.callee.kind === 'property') {
+        const growthMember = getArrayGrowthMemberRust(expression);
+        const searchMember = getArraySearchMemberRust(expression);
+        if (growthMember) {
+          growthCalls.push({ callee: expression.callee, expression });
+        } else if (searchMember) {
+          searchCalls.push({ callee: expression.callee, expression, member: searchMember });
+        } else if (isArrayConcatCallRust(expression)) {
+          concatCalls.push(expression);
+        } else if (isArrayReverseCallRust(expression)) {
+          reverseCalls.push(expression);
+        } else if (isArraySliceCallRust(expression)) {
+          sliceCalls.push(expression);
+        } else if (isArraySpliceCallRust(expression)) {
+          spliceCalls.push(expression);
+        }
       }
     },
     functionSignature(signature, path_) {
@@ -8019,6 +8151,60 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   const refusals: RustArrayOperationRefusal[] = [];
+  for (const { callee, expression, member } of searchCalls) {
+    const argumentExpression = expression.arguments[0];
+    const ruleMember = member === 'indexOf' ? 'index-of' : 'includes';
+    if (!isRustArraySearchInvocationRepresentedRust(expression) || !argumentExpression) {
+      refusals.push({
+        member,
+        message: `array.${member} currently requires a non-optional receiver and exactly one fixed non-spread argument; fromIndex is not represented`,
+        rule: `rust-array-${ruleMember}-invocation-unrepresented`,
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustArraySearchCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || !receiverDomain) {
+      refusals.push({
+        member,
+        message: `array.${member} elements require exact boolean, number, or string value carriers; union and identity-bearing carriers are not represented`,
+        rule: `rust-array-${ruleMember}-element-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    const candidateType = inferRustArrayGrowthArgumentTypeRust(argumentExpression, context);
+    const candidateDomain = candidateType ? getRustArraySearchCarrierDomainRust(candidateType, context) : undefined;
+    if (
+      !candidateType ||
+      candidateDomain !== receiverDomain ||
+      emitType(candidateType, context) !== emitType(receiver.element, context)
+    ) {
+      refusals.push({
+        member,
+        message: `array.${member} candidate does not have the exact primitive Rust carrier of the receiver element`,
+        rule: `rust-array-${ruleMember}-candidate-carrier-unrepresented`,
+      });
+      continue;
+    }
+
+    const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+    const exactResult =
+      member === 'includes'
+        ? result.kind === 'primitive' && result.name === 'boolean'
+        : result.kind === 'primitive' && result.name === 'number';
+    if (!exactResult) {
+      refusals.push({
+        member,
+        message: `array.${member} result does not have its exact Rust ${member === 'includes' ? 'bool' : 'f64'} carrier`,
+        rule: `rust-array-${ruleMember}-result-carrier-unrepresented`,
+      });
+    }
+  }
+
   for (const expression of concatCalls) {
     const signature = expression.semantics.signature;
     const argumentExpression = expression.arguments[0];
@@ -8468,6 +8654,22 @@ function isRustArrayConcatElementCarrierRust(type: Readonly<IrType>, context: Em
     (resolved.kind === 'literal' &&
       (typeof resolved.value === 'boolean' || typeof resolved.value === 'number' || typeof resolved.value === 'string'))
   );
+}
+
+function getRustArraySearchCarrierDomainRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): 'boolean' | 'number' | 'string' | undefined {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind === 'primitive') {
+    return resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string'
+      ? resolved.name
+      : undefined;
+  }
+  if (resolved.kind !== 'literal') return undefined;
+  if (typeof resolved.value === 'boolean') return 'boolean';
+  if (typeof resolved.value === 'number') return 'number';
+  return typeof resolved.value === 'string' ? 'string' : undefined;
 }
 
 function isRustArrayConcatArgumentCarrierRust(
