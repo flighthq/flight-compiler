@@ -13115,6 +13115,134 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('preserves two-argument splice deletion, normalization, return order, and evaluation order', () => {
+    const result = lower(
+      'array-splice.ts',
+      `function record(log: number[], value: number): number { log.push(value); return value; }
+       export function cut(items: number[], start: number, deleteCount: number): number[] {
+         return items.splice(start, deleteCount);
+       }
+       export function discard(items: number[], start: number, deleteCount: number): void {
+         items.splice(start, deleteCount);
+       }
+       export function tracked(items: number[], log: number[]): number[] {
+         return items.splice(record(log, -2.8), record(log, 1.9));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('array_splice_start.is_nan()');
+    expect(output).toContain('array_splice_start.trunc()');
+    expect(output).toContain('array_splice_delete_count.trunc()');
+    expect(output).toContain('.drain(array_splice_start_index..array_splice_end).collect::<Vec<_>>()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut middle = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(cut(&mut middle, 1.0, 2.0), vec![2.0, 3.0]);',
+          'assert_eq!(middle, vec![1.0, 4.0]);',
+          'let mut negative = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(cut(&mut negative, -2.8, 1.9), vec![3.0]);',
+          'assert_eq!(negative, vec![1.0, 2.0, 4.0]);',
+          'let mut nan = vec![1.0, 2.0, 3.0];',
+          'assert_eq!(cut(&mut nan, f64::NAN, 1.0), vec![1.0]);',
+          'let mut positive_infinity = vec![1.0, 2.0];',
+          'assert_eq!(cut(&mut positive_infinity, f64::INFINITY, 1.0), Vec::<f64>::new());',
+          'assert_eq!(positive_infinity, vec![1.0, 2.0]);',
+          'let mut negative_infinity = vec![1.0, 2.0];',
+          'assert_eq!(cut(&mut negative_infinity, f64::NEG_INFINITY, 1.0), vec![1.0]);',
+          'let mut unbounded_delete = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(cut(&mut unbounded_delete, 1.0, f64::INFINITY), vec![2.0, 3.0, 4.0]);',
+          'assert_eq!(unbounded_delete, vec![1.0]);',
+          'let mut no_delete = vec![1.0, 2.0];',
+          'assert_eq!(cut(&mut no_delete, 0.0, -1.0), Vec::<f64>::new());',
+          'assert_eq!(cut(&mut no_delete, 0.0, f64::NAN), Vec::<f64>::new());',
+          'discard(&mut no_delete, 0.0, 1.0);',
+          'assert_eq!(no_delete, vec![2.0]);',
+          'let mut ordered = vec![1.0, 2.0, 3.0, 4.0];',
+          'let mut log = vec![];',
+          'assert_eq!(tracked(&mut ordered, &mut log), vec![3.0]);',
+          'assert_eq!(ordered, vec![1.0, 2.0, 4.0]);',
+          'assert_eq!(log, vec![-2.8, 1.9]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves two-argument splice return and mutation through a shared alias', () => {
+    const result = lower(
+      'shared-array-splice.ts',
+      `export function cutShared(): number {
+         const values = [1, 2, 3, 4];
+         const alias = values;
+         const removed = alias.splice(1, 2);
+         return removed.length * 10 + values.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let mut array_splice_values = alias.borrow_mut()');
+    expect(output).toContain('values.borrow().len() as f64');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(cut_shared(), 22.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-splice-invocation-unrepresented',
+      source: 'export function cut(values: number[], start: number): number[] { return values.splice(start); }',
+    },
+    {
+      rule: 'rust-array-splice-invocation-unrepresented',
+      source:
+        'export function insert(values: number[], start: number, value: number): number[] { return values.splice(start, 0, value); }',
+    },
+    {
+      rule: 'rust-array-splice-invocation-unrepresented',
+      source:
+        'export function cut(values: number[], range: [number, number]): number[] { return values.splice(...range); }',
+    },
+    {
+      rule: 'rust-array-splice-invocation-unrepresented',
+      source: 'export function cut(values: number[]): number[] | undefined { return values.splice?.(0, 1); }',
+    },
+    {
+      rule: 'rust-array-splice-index-domain-unrepresented',
+      source: 'export function cut(values: number[], start: any): number[] { return values.splice(start, 1); }',
+    },
+  ])('stably refuses unsupported two-argument splice semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-splice-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses a splice result without the receiver element carrier', () => {
+    const result = lower(
+      'array-splice-result-carrier.ts',
+      'export function cut(values: number[]): number[] { return values.splice(0, 1); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'cut',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.splice call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-splice-result-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
   it('keeps an empty-safe shift exact through a represented shared-array alias', () => {
     const result = lower(
       'shared-array-shift-bounds.ts',
@@ -13254,6 +13382,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
   });
 
+  it('uses the shared-array borrow-conflict plan for splice arguments that read an alias', () => {
+    const result = lower(
+      'array-splice-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         alias.splice(values.length, 1);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('selects array bounds refusal rules independently of declaration order', () => {
     const declarations = [
       'export function take(values: number[]): number { return values.shift()!; }',
@@ -13294,6 +13436,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
 
     expect(capture(first).rule).toBe('rust-array-push-invocation-unrepresented');
     expect(capture(second).rule).toBe('rust-array-push-invocation-unrepresented');
+  });
+
+  it('selects array mutation refusal rules independently of declaration order', () => {
+    const declarations = [
+      'export function coercive(values: number[], start: any): number[] { return values.splice(start, 1); }',
+      'export function dynamic(values: number[], range: [number, number]): number[] { return values.splice(...range); }',
+    ];
+    const first = lower('array-mutation-order-a.ts', declarations.join('\n')).module;
+    const second = lower('array-mutation-order-b.ts', [...declarations].reverse().join('\n')).module;
+    const capture = (module: Readonly<Parameters<typeof emitIrModuleRust>[0]>) =>
+      captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(capture(first).rule).toBe('rust-array-splice-index-domain-unrepresented');
+    expect(capture(second).rule).toBe('rust-array-splice-index-domain-unrepresented');
   });
 });
 

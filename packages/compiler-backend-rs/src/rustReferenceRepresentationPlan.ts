@@ -2952,7 +2952,14 @@ function freezeRustReferenceRepresentationPlanValue(value: unknown, seen: WeakSe
   Object.freeze(value);
 }
 
-const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set(['pop', 'push', 'reverse', 'shift', 'unshift']);
+const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'pop',
+  'push',
+  'reverse',
+  'shift',
+  'splice',
+  'unshift',
+]);
 
 const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([
   ...RUST_SHARED_ARRAY_MUTATING_METHODS,

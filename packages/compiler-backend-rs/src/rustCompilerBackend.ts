@@ -556,7 +556,7 @@ function emitIrModuleRustWithContext(
     if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
   }
   collectPrimitiveUnionBindingsRust(module, context);
-  assertArrayGrowthSemanticsRust(module, context);
+  assertArrayMutationSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
   const declarations = module.declarations
@@ -1325,6 +1325,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (isArraySpliceCallRust(expression)) return emitArraySpliceCallRust(expression, context);
       if (getArrayGrowthMemberRust(expression)) return emitArrayGrowthCallRust(expression, context);
       // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
       // one. The separator is the only argument, so the borrow is decided here rather than by a
@@ -2610,6 +2611,17 @@ function getArrayGrowthMemberRust(
   return expression.callee.member.name;
 }
 
+function isArraySpliceCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'splice'
+  );
+}
+
 function emitArrayGrowthCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -2629,6 +2641,38 @@ function emitArrayGrowthCallRust(
   const lengthReceiver = emitSharedReferenceReceiverRust(expression.callee.object, false, context);
   const initializers = arguments_.map(({ emitted, name }) => `let ${name} = ${emitted};`);
   return `{ ${[...initializers, ...mutations, `${lengthReceiver}.len() as f64`].join(' ')} }`;
+}
+
+function emitArraySpliceCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const [start, deleteCount] = expression.arguments;
+  if (!start || !deleteCount || expression.arguments.length !== 2) {
+    return emissionError(context, 'array.splice deletion emission requires start and deleteCount');
+  }
+  const startName = getGeneratedTargetNameRust('array_splice_start', context);
+  const deleteName = getGeneratedTargetNameRust('array_splice_delete_count', context);
+  const receiverName = getGeneratedTargetNameRust('array_splice_values', context);
+  const lengthName = getGeneratedTargetNameRust('array_splice_length', context);
+  const normalizedStartName = getGeneratedTargetNameRust('array_splice_normalized_start', context);
+  const startIndexName = getGeneratedTargetNameRust('array_splice_start_index', context);
+  const availableName = getGeneratedTargetNameRust('array_splice_available', context);
+  const normalizedDeleteName = getGeneratedTargetNameRust('array_splice_normalized_delete_count', context);
+  const actualDeleteName = getGeneratedTargetNameRust('array_splice_actual_delete_count', context);
+  const endName = getGeneratedTargetNameRust('array_splice_end', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const borrowedParameter =
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'binding' &&
+    context.referentMutatedParameterIds.has(expression.callee.object.reference.binding.id);
+  const receiver = sharedBinding
+    ? `${getBindingTargetNameRust(sharedBinding, context)}.borrow_mut()`
+    : borrowedParameter
+      ? `&mut *${emitExpression(expression.callee.object, context)}`
+      : `&mut ${emitExpression(expression.callee.object, context)}`;
+  return `{ let ${startName}: f64 = ${emitExpression(start, context)}; let ${deleteName}: f64 = ${emitExpression(deleteCount, context)}; let ${sharedBinding ? 'mut ' : ''}${receiverName} = ${receiver}; let ${lengthName} = ${receiverName}.len(); let ${normalizedStartName} = if ${startName}.is_nan() { 0.0 } else { ${startName}.trunc() }; let ${startIndexName}: usize = if ${normalizedStartName} < 0.0 { ${lengthName} - ((-${normalizedStartName}).min(${lengthName} as f64) as usize) } else { ${normalizedStartName}.min(${lengthName} as f64) as usize }; let ${availableName} = ${lengthName} - ${startIndexName}; let ${normalizedDeleteName} = if ${deleteName}.is_nan() { 0.0 } else { ${deleteName}.trunc() }; let ${actualDeleteName}: usize = if ${normalizedDeleteName} <= 0.0 { 0 } else { ${normalizedDeleteName}.min(${availableName} as f64) as usize }; let ${endName} = ${startIndexName} + ${actualDeleteName}; ${receiverName}.drain(${startIndexName}..${endName}).collect::<Vec<_>>() }`;
 }
 
 function emitArrayShiftCallRust(
@@ -6173,9 +6217,10 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
 }
 
 type RustArrayGrowthMember = 'push' | 'unshift';
+type RustArrayMutationMember = RustArrayGrowthMember | 'splice';
 
-interface RustArrayGrowthRefusal {
-  readonly member: RustArrayGrowthMember;
+interface RustArrayMutationRefusal {
+  readonly member: RustArrayMutationMember;
   readonly message: string;
   readonly rule:
     | 'rust-array-push-element-carrier-unrepresented'
@@ -6185,18 +6230,25 @@ interface RustArrayGrowthRefusal {
     | 'rust-array-unshift-element-carrier-unrepresented'
     | 'rust-array-unshift-invocation-unrepresented'
     | 'rust-array-unshift-result-carrier-unrepresented'
-    | 'rust-array-unshift-result-observation-unrepresented';
+    | 'rust-array-unshift-result-observation-unrepresented'
+    | 'rust-array-splice-index-domain-unrepresented'
+    | 'rust-array-splice-invocation-unrepresented'
+    | 'rust-array-splice-result-carrier-unrepresented';
 }
 
-function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
+function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
-  const calls: Array<
+  const growthCalls: Array<
     Readonly<{
       callee: Readonly<Extract<IrExpression, { kind: 'property' }>>;
       expression: Readonly<Extract<IrExpression, { kind: 'call' }>>;
     }>
+  > = [];
+  const spliceCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
 
   analyzeIrModuleTraversal(module, {
@@ -6215,7 +6267,9 @@ function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: Emi
       }
 
       if (expression.kind === 'call' && expression.callee.kind === 'property' && getArrayGrowthMemberRust(expression)) {
-        calls.push({ callee: expression.callee, expression });
+        growthCalls.push({ callee: expression.callee, expression });
+      } else if (expression.kind === 'call' && isArraySpliceCallRust(expression)) {
+        spliceCalls.push(expression);
       }
     },
     functionSignature(signature, path_) {
@@ -6246,8 +6300,8 @@ function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: Emi
     uses.set(returned.expression, { kind: 'return', type: owner?.returns });
   }
 
-  const refusals: RustArrayGrowthRefusal[] = [];
-  for (const { callee, expression } of calls) {
+  const refusals: RustArrayMutationRefusal[] = [];
+  for (const { callee, expression } of growthCalls) {
     const member = getArrayGrowthMemberRust(expression)!;
     const signature = expression.semantics.signature;
     if (
@@ -6260,7 +6314,7 @@ function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: Emi
       signature.providedArgumentCount !== expression.arguments.length ||
       signature.restParameter !== 0 ||
       expression.arguments.some((argument) => argument.kind === 'spread') ||
-      !isRustStableArrayGrowthReceiverRust(callee.object)
+      !isRustStableArrayMutationReceiverRust(callee.object)
     ) {
       refusals.push({
         member,
@@ -6304,6 +6358,54 @@ function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: Emi
     }
   }
 
+  for (const expression of spliceCalls) {
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== 2 ||
+      expression.arguments.length !== 2 ||
+      expression.arguments.some((argument) => argument.kind === 'spread') ||
+      !isRustStableArrayMutationReceiverRust(expression.callee.object)
+    ) {
+      refusals.push({
+        member: 'splice',
+        message: 'array.splice currently requires a non-optional stable receiver and exactly two non-spread arguments',
+        rule: 'rust-array-splice-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    const [start, deleteCount] = expression.arguments;
+    if (
+      !start ||
+      !deleteCount ||
+      !isRustExactNumberExpressionRust(start, context) ||
+      !isRustExactNumberExpressionRust(deleteCount, context)
+    ) {
+      refusals.push({
+        member: 'splice',
+        message:
+          'array.splice start and deleteCount require exact numeric values; coercive or dynamic index domains are not represented',
+        rule: 'rust-array-splice-index-domain-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    if (!receiverType || !isRustArraySpliceResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
+      refusals.push({
+        member: 'splice',
+        message: 'array.splice removed values do not have the exact mutable Rust Vec element carrier of the receiver',
+        rule: 'rust-array-splice-result-carrier-unrepresented',
+      });
+    }
+  }
+
   const refusal = refusals.sort((left, right) =>
     compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
   )[0];
@@ -6313,7 +6415,7 @@ function assertArrayGrowthSemanticsRust(module: Readonly<IrModule>, context: Emi
   });
 }
 
-function isRustStableArrayGrowthReceiverRust(expression: Readonly<IrExpression>): boolean {
+function isRustStableArrayMutationReceiverRust(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding';
 }
 
@@ -6345,6 +6447,29 @@ function isRustArrayGrowthElementRepresentedRust(
   const target = resolveIrTypeAliasValueRust(elementType, context, new Set());
   if (analyzeIrTypeStructuralAssignability(source, target).status !== 'compatible') return false;
   return emitType(source, context) === emitType(target, context);
+}
+
+function isRustExactNumberExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const sourceType = inferRustArrayGrowthArgumentTypeRust(expression, context);
+  if (!sourceType) return false;
+  const source = resolveIrTypeAliasValueRust(sourceType, context, new Set());
+  return (
+    (source.kind === 'primitive' && source.name === 'number') ||
+    (source.kind === 'literal' && typeof source.value === 'number')
+  );
+}
+
+function isRustArraySpliceResultCarrierRust(
+  receiverType: Readonly<IrType>,
+  resultType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const receiver = resolveIrTypeAliasValueRust(receiverType, context, new Set());
+  const result = resolveIrTypeAliasValueRust(resultType, context, new Set());
+  if (receiver.kind !== 'array' || receiver.readonly || result.kind !== 'array' || result.readonly) return false;
+  if (analyzeIrTypeStructuralAssignability(receiver.element, result.element).status !== 'compatible') return false;
+  if (analyzeIrTypeStructuralAssignability(result.element, receiver.element).status !== 'compatible') return false;
+  return emitType(receiver.element, context) === emitType(result.element, context);
 }
 
 function isRustArrayGrowthLengthCarrierRust(type: Readonly<IrType> | undefined, context: EmitContext): boolean {
@@ -8136,7 +8261,14 @@ const rustMathSpreadFoldTargets: Readonly<Record<string, { folder: string; ident
   min: { folder: 'f64::min', identity: 'f64::INFINITY' },
 };
 
-const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set(['pop', 'push', 'reverse', 'shift', 'unshift']);
+const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'pop',
+  'push',
+  'reverse',
+  'shift',
+  'splice',
+  'unshift',
+]);
 
 const RUST_SHARED_MAP_MUTATING_METHODS: ReadonlySet<string> = new Set(['clear', 'delete', 'set']);
 
