@@ -39455,3 +39455,588 @@ export function wrong(box: Box<Source9>): Slot { return box; }`;
     );
   });
 });
+
+describe('emitIrModuleRust exact zero-argument callable record-return union construction', () => {
+  it('constructs one exact callable arm in every contextual position through closed alias chains', () => {
+    const result = lower(
+      'callable-record-return-contexts.ts',
+      `interface Point { value: number }
+       type PointAlias = Point;
+       type TargetResult = PointAlias;
+       type SourceResult = PointAlias;
+       type Callback = () => TargetResult;
+       type SourceCallback = () => SourceResult;
+       type Slot = Callback | string;
+       interface Holder { slot: Slot }
+       class Sink { take(_slot: Slot): number { return 1; } }
+       function consume(_slot: Slot): number { return 1; }
+
+       export function returned(handler: SourceCallback): Slot { return handler; }
+       export function passed(handler: SourceCallback): number { return consume(handler); }
+       export function throughMethod(sink: Sink, handler: SourceCallback): number { return sink.take(handler); }
+       export function initialized(handler: SourceCallback): number { const slot: Slot = handler; return 0; }
+       export function assigned(initial: SourceCallback, handler: SourceCallback): number {
+         let slot: Slot = initial;
+         slot = handler;
+         return 0;
+       }
+       export function stored(holder: Holder, handler: SourceCallback): number { holder.slot = handler; return 1; }
+       export function asserted(handler: SourceCallback): Slot { return handler as Slot; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::Callback(handler);');
+    expect(output).toContain('consume(Slot::Callback(handler))');
+    expect(output).toContain('sink.take(Slot::Callback(handler))');
+    expect(output).toContain('let slot: Slot = Slot::Callback(handler);');
+    expect(output).toContain('let mut slot: Slot = Slot::Callback(initial);');
+    expect(output).toContain('slot = Slot::Callback(handler)');
+    expect(output).toContain('holder.slot = Slot::Callback(handler)');
+    expect(output.match(/Slot::Callback\(/gu)).toHaveLength(8);
+    expect(output).not.toContain('contextual_callable');
+    expect(output).not.toContain('Rc::new(move ||');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('preserves callable and return identity through imports and a type reexport', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-provider.ts',
+      `export interface Point { value: number }
+       export type PointAlias = Point;
+       export type Callback = () => PointAlias;
+       export type Slot = Callback | string;
+       export function consume(_slot: Slot): number { return 1; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-facade.ts',
+      `export type { Point, PointAlias, Callback, Slot } from './callable-provider.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-consumer.ts',
+      `import type { Point, PointAlias, Callback, Slot } from './callable-facade.js';
+       import { consume } from './callable-provider.js';
+       type SourceCallback = () => Point;
+       type AliasCallback = () => PointAlias;
+       export function returned(handler: SourceCallback): Slot { return handler; }
+       export function passed(handler: AliasCallback): number { return consume(handler); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Callable-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-facade.ts',
+          },
+          specifier: './callable-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-provider.ts' },
+        },
+        {
+          importer: {
+            name: 'Callable-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-consumer.ts',
+          },
+          specifier: './callable-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Callable-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-consumer.ts',
+          },
+          specifier: './callable-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = emitRustModuleInGraph([consumer, facade, provider], consumer, [...moduleResolution.edges]);
+
+    expect(output.match(/Slot::Callback\(/gu)).toHaveLength(2);
+    expect(output).not.toContain('contextual_callable');
+  });
+
+  it('moves once, Rc-clones repeated uses, and preserves a callable own captured state', () => {
+    const result = lower(
+      'callable-record-return-ownership.ts',
+      `interface Point { value: number }
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       export function moved(handler: Callback): Slot { return handler; }
+       export function repeated(handler: Callback): Slot { handler(); return handler; }
+       export function captured(value: number): Slot {
+         const handler: () => Point = (): Point => ({ value });
+         return handler;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn moved(handler: Callback) -> Slot {\n  return Slot::Callback(handler);');
+    expect(output).toContain('return Slot::Callback(handler.clone());');
+    expect(output).toContain('let handler: Rc<dyn Fn() -> Point> = Rc::new(move || Point { value: value, });');
+    expect(output.match(/return Slot::Callback\(handler(?:\.clone\(\))?\);/gu)).toHaveLength(3);
+    expect(output).not.toContain('contextual_callable');
+  });
+
+  it('selects one declaration-identified return among distinct zero-argument callable arms', () => {
+    const result = lower(
+      'callable-record-return-distinct-arms.ts',
+      `interface Point { value: number }
+       interface Label { value: string }
+       type PointCallback = () => Point;
+       type LabelCallback = () => Label;
+       type Slot = PointCallback | LabelCallback | string;
+       export function point(handler: () => Point): Slot { return handler; }
+       export function label(handler: () => Label): Slot { return handler; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::PointCallback(handler);');
+    expect(output).toContain('return Slot::LabelCallback(handler);');
+  });
+
+  it.each([
+    [
+      'a required parameter',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: (value: number) => Point): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an optional parameter',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: (value?: number) => Point): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a rest parameter',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: (...values: number[]) => Point): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic callable',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: <Value>() => Point): Slot { return handler; }`,
+      'rust-generic-callable-representation-unrepresented',
+    ],
+    [
+      'an overloaded callable',
+      `type Callback = () => PointAlias;
+       type Overloaded = (() => Point) & ((value: number) => Point);
+       type Slot = Callback | string;
+       export function wrong(handler: Overloaded): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a derived return',
+      `interface Derived extends Point { label: string }
+       type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Derived): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a distinct same-shaped return',
+      `interface Twin { value: number }
+       type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Twin): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a distinct structural alias return',
+      `type Shape = { value: number };
+       type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Shape): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an anonymous structural return',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => { value: number }): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a union return',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Point | undefined): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic-application return',
+      `interface Box<Value> { value: Value }
+       type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Box<Point>): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an async task return',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Promise<Point>): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a parameterized callable alias',
+      `type Source<Value> = () => Value;
+       type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong(handler: Source<Point>): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an active enclosing type parameter',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string;
+       export function wrong<Value>(handler: () => Point): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an optional owner',
+      `type Callback = () => PointAlias;
+       type Slot = Callback | string | undefined;
+       export function wrong(handler: () => Point): Slot { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic owner',
+      `type Slot<Value> = (() => Value) | string;
+       export function wrong(handler: () => Point): Slot<PointAlias> { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an anonymous owner',
+      `export function wrong(handler: () => Point): (() => PointAlias) | string { return handler; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('keeps %s outside the exact callable lane', (_name, body, rule) => {
+    const source = `interface Point { value: number }
+type PointAlias = Point;
+${body}`;
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('callable-record-return-type-refusal.ts', source).module)),
+    ).toBe(rule);
+  });
+
+  it.each([
+    [
+      'a producer call',
+      `function make(handler: Callback): Callback { return handler; }
+       export function wrong(handler: Callback): Slot { return make(handler); }`,
+    ],
+    [
+      'a property read',
+      `interface Holder { handler: Callback }
+       export function wrong(holder: Holder): Slot { return holder.handler; }`,
+    ],
+    ['an element read', `export function wrong(handlers: readonly [Callback]): Slot { return handlers[0]; }`],
+    [
+      'a conditional',
+      `export function wrong(left: Callback, right: Callback, flag: boolean): Slot {
+         return flag ? left : right;
+       }`,
+    ],
+    [
+      'an assignment expression',
+      `export function wrong(handler: Callback, replacement: Callback): Slot {
+         return (handler = replacement);
+       }`,
+    ],
+    ['an inline closure', `export function wrong(point: Point): Slot { return (): Point => point; }`],
+    ['a manufactured callable cast', `export function wrong(handler: Callback): Slot { return handler as Callback; }`],
+    [
+      'a narrowed union source',
+      `export function wrong(handler: Callback | undefined): Slot {
+         if (handler !== undefined) return handler;
+         return "missing";
+       }`,
+    ],
+  ])('rejects %s rather than evaluating it to select a callable arm', (_name, body) => {
+    const source = `interface Point { value: number }
+type Callback = () => Point;
+type Slot = Callback | string;
+${body}`;
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('callable-record-return-operand-refusal.ts', source).module)),
+    ).toBe('rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it.each([
+    [
+      'an optional parameter',
+      `function consume(_slot?: Slot): number { return 1; }
+       export function wrong(handler: Callback): number { return consume(handler); }`,
+    ],
+    [
+      'a default parameter',
+      `function consume(_slot: Slot = "fallback"): number { return 1; }
+       export function wrong(handler: Callback): number { return consume(handler); }`,
+    ],
+    [
+      'a rest parameter',
+      `function consume(..._slots: Slot[]): number { return 1; }
+       export function wrong(handler: Callback): number { return consume(handler); }`,
+    ],
+    [
+      'a spread argument',
+      `function consume(_slot: Slot): number { return 1; }
+       export function wrong(handler: Callback): number { return consume(...[handler]); }`,
+    ],
+    [
+      'a generic callee',
+      `function consume<Value>(_slot: Slot): number { return 1; }
+       export function wrong(handler: Callback): number { return consume<Point>(handler); }`,
+    ],
+    [
+      'a generic method',
+      `class Sink { take<Value>(_slot: Slot): number { return 1; } }
+       export function wrong(sink: Sink, handler: Callback): number { return sink.take<Point>(handler); }`,
+    ],
+    [
+      'an optional method parameter',
+      `class Sink { take(_slot?: Slot): number { return 1; } }
+       export function wrong(sink: Sink, handler: Callback): number { return sink.take(handler); }`,
+    ],
+    [
+      'a rest method parameter',
+      `class Sink { take(..._slots: Slot[]): number { return 1; } }
+       export function wrong(sink: Sink, handler: Callback): number { return sink.take(handler); }`,
+    ],
+    [
+      'a spread method argument',
+      `class Sink { take(_slot: Slot): number { return 1; } }
+       export function wrong(sink: Sink, handler: Callback): number { return sink.take(...[handler]); }`,
+    ],
+  ])('rejects the exact callable at %s boundaries', (_name, body) => {
+    const source = `interface Point { value: number }
+type Callback = () => Point;
+type Slot = Callback | string;
+${body}`;
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('callable-record-return-boundary-refusal.ts', source).module)),
+    ).toBe('rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it('rejects module, reference-planned, source-captured, and native-async bindings', () => {
+    const cases = [
+      `interface Point { value: number }
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       const handler: Callback = (): Point => ({ value: 1 });
+       export function wrong(): Slot { return handler; }`,
+      `interface Point { value: number }
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       export function wrong(handler: Callback, replacement: Callback): Slot {
+         handler = replacement;
+         return handler;
+       }`,
+      `interface Point { value: number }
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       export function wrong(handler: Callback): Slot {
+         const invoke = () => handler();
+         invoke();
+         return handler;
+       }`,
+      `interface Point { value: number }
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       export async function wrong(handler: Callback): Promise<Slot> { return handler; }`,
+    ];
+
+    expect(
+      cases.map((source) =>
+        getEmissionRule(() => emitIrModuleRust(lower('callable-record-return-binding-refusal.ts', source).module)),
+      ),
+    ).toEqual([
+      'rust-module-constant-initializer-unsupported',
+      'rust-contextual-general-union-construction-unrepresented',
+      'rust-contextual-general-union-construction-unrepresented',
+      'rust-contextual-general-union-construction-unrepresented',
+    ]);
+  });
+
+  it('requires one and only one exact callable-arm identity match', () => {
+    const module = structuredClone(
+      lower(
+        'callable-record-return-duplicate-arm-refusal.ts',
+        `interface Point { value: number }
+         type PointAlias = Point;
+         type Callback = () => PointAlias;
+         type Slot = Callback | string;
+         export function wrong(handler: () => Point): Slot { return handler; }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const callable = slot.type.types.find((member) => member.kind === 'named');
+    if (!callable) throw new Error('expected callable arm');
+    (slot.type.types as unknown as IrType[]).splice(1, 0, structuredClone(callable));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('rejects an ambiguous record declaration reached through reexports', () => {
+    const firstSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-first.ts',
+      'export interface Point { value: number }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const secondSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-second.ts',
+      'export interface Point { value: number }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-ambiguous.ts',
+      `export * from './callable-first.js';
+       export * from './callable-second.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/callable-ambiguous-consumer.ts',
+      `import type { Point } from './callable-ambiguous.js';
+       type Callback = () => Point;
+       type Slot = Callback | string;
+       export function wrong(handler: () => Point): Slot { return handler; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Callable-ambiguous',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-ambiguous.ts',
+          },
+          specifier: './callable-first.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-first.ts' },
+        },
+        {
+          importer: {
+            name: 'Callable-ambiguous',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-ambiguous.ts',
+          },
+          specifier: './callable-second.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-second.ts' },
+        },
+        {
+          importer: {
+            name: 'Callable-ambiguous-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/callable-ambiguous-consumer.ts',
+          },
+          specifier: './callable-ambiguous.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/callable-ambiguous.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [firstResult, secondResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: firstSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: secondSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const first = firstResult!.module;
+    const second = secondResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([consumer, facade, first, second], consumer, [...moduleResolution.edges]),
+      ),
+    ).toBe('rust-export-name-ambiguous');
+  });
+
+  it('rejects cyclic and over-depth callable and return alias chains deterministically', () => {
+    const overDepth = `interface Point { value: number }
+type Result0 = Point;
+type Result1 = Result0;
+type Result2 = Result1;
+type Result3 = Result2;
+type Result4 = Result3;
+type Result5 = Result4;
+type Result6 = Result5;
+type Result7 = Result6;
+type Result8 = Result7;
+type Result9 = Result8;
+type Callback = () => Point;
+type Slot = Callback | string;
+export function wrong(handler: () => Result9): Slot { return handler; }`;
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('callable-record-return-depth-refusal.ts', overDepth).module)),
+    ).toBe('rust-contextual-general-union-construction-unrepresented');
+
+    const cyclic = structuredClone(
+      lower(
+        'callable-record-return-cycle-refusal.ts',
+        `interface Point { value: number }
+         type Source = () => Point;
+         type Callback = () => Point;
+         type Slot = Callback | string;
+         export function wrong(handler: Source): Slot { return handler; }`,
+      ).module,
+    );
+    const source = cyclic.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Source',
+    );
+    if (source?.kind !== 'typeAlias') throw new Error('expected Source alias');
+    (source as { type: IrType }).type = {
+      kind: 'named',
+      reference: { binding: source.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+});

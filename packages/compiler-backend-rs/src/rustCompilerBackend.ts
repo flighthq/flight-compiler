@@ -5806,7 +5806,14 @@ function emitCallArgumentsRust(
       const parameterType = parameter.rest && parameter.type.kind === 'array' ? parameter.type.element : parameter.type;
       const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
       const singlePayloadOption = getIrSinglePayloadOptionShapeRust(parameterType, context);
-      const generalUnionCandidate = hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context);
+      const generalUnionCandidate =
+        hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context) ||
+        (parameterPlan.kind === 'nominalEnum' &&
+          hasRustExactZeroArgumentCallableUnionArmRust(
+            argument.kind === 'spread' ? argument.expression : argument,
+            parameterPlan,
+            context,
+          ));
       if (
         !optionalSharedClass &&
         singlePayloadOption &&
@@ -5854,11 +5861,19 @@ function emitCallArgumentsRust(
       if (constructed) return constructed;
     }
     if (!optionalSharedClass && methodParameter) {
-      const methodUnionPlan = createRustUnionRepresentationPlanForTypeRust(methodParameter.type, context);
+      const methodParameterType =
+        methodParameter.rest && methodParameter.type.kind === 'array'
+          ? methodParameter.type.element
+          : methodParameter.type;
+      const methodUnionPlan = createRustUnionRepresentationPlanForTypeRust(methodParameterType, context);
       if (
-        hasIrTypeContextualGeneralUnionCandidateRust(methodParameter.type, methodUnionPlan, context) &&
         methodUnionPlan.kind === 'nominalEnum' &&
-        hasRustExactGenericApplicationUnionArmRust(argument, methodUnionPlan, context)
+        (hasRustExactGenericApplicationUnionArmRust(argument, methodUnionPlan, context) ||
+          hasRustExactZeroArgumentCallableUnionArmRust(
+            argument.kind === 'spread' ? argument.expression : argument,
+            methodUnionPlan,
+            context,
+          ))
       ) {
         if (
           (referencedMethod?.method.typeParameters.length ?? 0) > 0 ||
@@ -5870,10 +5885,10 @@ function emitCallArgumentsRust(
         ) {
           refuseRustContextualGeneralUnionConstructionRust(context);
         }
-        const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameter.type, context);
+        const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameterType, context);
         if (constructed) return constructed;
       }
-      if (hasIrTypeContextualGeneralUnionCandidateRust(methodParameter.type, methodUnionPlan, context)) {
+      if (hasIrTypeContextualGeneralUnionCandidateRust(methodParameterType, methodUnionPlan, context)) {
         refuseRustContextualGeneralUnionConstructionRust(context);
       }
     }
@@ -9625,6 +9640,11 @@ interface RustExactAliasTransparentRecordArrayIdentity {
   readonly kind: 'arrayRecord';
 }
 
+interface RustExactAliasTransparentZeroArgumentCallableIdentity {
+  readonly kind: 'zeroArgumentCallableRecordReturn';
+  readonly returnDeclarationKey: string;
+}
+
 interface RustExactGenericApplicationIdentity {
   readonly arguments: readonly RustExactGenericArgumentIdentity[];
   readonly declarationKey: string;
@@ -9699,10 +9719,11 @@ function emitExactContextualGeneralUnionConstructionRust(
     if (candidate) refuseRustContextualGeneralUnionConstructionRust(context);
     return undefined;
   }
-  if (!candidate) return undefined;
+  const callableCandidate = hasRustExactZeroArgumentCallableUnionArmRust(expression, plan, context);
+  if (!candidate && !callableCandidate) return undefined;
   // A returned union whose arms are all outside this constructor remains owned by the established
-  // return-level refusal. In particular, accepting an earlier record-array function must not change
-  // the diagnostic at the next unsupported Map/callable/generic alternative in the same module.
+  // return-level refusal. In particular, accepting an earlier exact composite must not change the
+  // diagnostic at a later unsupported Map or nonmatching callable/generic return in the same module.
   if (
     deferUnsupportedCompositeRefusal &&
     !plan.valueVariants.some(
@@ -9710,7 +9731,8 @@ function emitExactContextualGeneralUnionConstructionRust(
         getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context) !== undefined ||
         getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context) !== undefined,
     ) &&
-    !hasRustExactGenericApplicationUnionArmRust(expression, plan, context)
+    !hasRustExactGenericApplicationUnionArmRust(expression, plan, context) &&
+    !callableCandidate
   ) {
     return undefined;
   }
@@ -9763,6 +9785,9 @@ function emitExactContextualGeneralUnionConstructionRust(
 
   const genericApplication = emitExactGenericApplicationUnionConstructionRust(expression, plan, context);
   if (genericApplication) return genericApplication;
+
+  const callable = emitExactAliasTransparentZeroArgumentCallableUnionConstructionRust(expression, plan, context);
+  if (callable) return callable;
 
   const sourceType = getIrExpressionExactNominalRecordTypeRust(expression, context);
   const sourceIdentity = sourceType ? getIrExactNominalRecordIdentityRust(sourceType, context) : undefined;
@@ -9820,6 +9845,50 @@ function emitExactAliasTransparentRecordArrayUnionConstructionRust(
     const identity = getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context);
     return identity?.elementDeclarationKey === sourceIdentity.elementDeclarationKey;
   });
+  if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
+  const operand = emitOwnedOperandRust(expression, context);
+  return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
+}
+
+// A callable payload selects an arm only from its exact zero-parameter signature and the canonical
+// declaration identity of its record return. The source is already the Rc callable carrier, so this
+// path moves or Rc-clones it directly and never creates an adapter closure or invokes the callback.
+function emitExactAliasTransparentZeroArgumentCallableUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    expression.presence === 'narrowedPresent' ||
+    context.moduleStateBindings.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!sourceType || sourceType.kind === 'union') return undefined;
+  const sourceIdentity = getRustExactAliasTransparentZeroArgumentCallableIdentityRust(sourceType, context);
+  if (!sourceIdentity) return undefined;
+  const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  if (
+    context.nativeAsyncFunction ||
+    context.activeTypeParameters.length > 0 ||
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    ownerIdentity?.location.declaration.kind !== 'typeAlias' ||
+    ownerIdentity.location.declaration.typeParameters.length > 0 ||
+    ownerIdentity.location.declaration.type.kind !== 'union' ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const matches = plan.valueVariants.filter(
+    (variant) =>
+      getRustExactAliasTransparentZeroArgumentCallableIdentityRust(variant.sourceAlternative, context)
+        ?.returnDeclarationKey === sourceIdentity.returnDeclarationKey,
+  );
   if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
   const operand = emitOwnedOperandRust(expression, context);
   return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
@@ -10242,6 +10311,66 @@ function resolveRustExactAliasTransparentRecordArrayIdentityRust(
   );
 }
 
+function getRustExactAliasTransparentZeroArgumentCallableIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactAliasTransparentZeroArgumentCallableIdentity | undefined {
+  const returnDeclarationKey = resolveRustExactAliasTransparentZeroArgumentCallableIdentityRust(
+    type,
+    'callable',
+    context,
+    new Set(),
+    0,
+  );
+  return returnDeclarationKey ? { kind: 'zeroArgumentCallableRecordReturn', returnDeclarationKey } : undefined;
+}
+
+function resolveRustExactAliasTransparentZeroArgumentCallableIdentityRust(
+  type: Readonly<IrType>,
+  position: 'callable' | 'record',
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): string | undefined {
+  if (depth > 8) return undefined;
+  if (position === 'callable' && type.kind === 'function') {
+    return type.parameters.length === 0 && type.typeParameters.length === 0
+      ? resolveRustExactAliasTransparentZeroArgumentCallableIdentityRust(
+          type.returns,
+          'record',
+          context,
+          resolving,
+          depth + 1,
+        )
+      : undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+  if (resolving.has(declarationKey) || declaration.typeParameters.length > 0) return undefined;
+  if (declaration.kind === 'interface') return position === 'record' ? declarationKey : undefined;
+  if (position === 'record' && declaration.type.kind === 'object') return declarationKey;
+  return resolveRustExactAliasTransparentZeroArgumentCallableIdentityRust(
+    declaration.type,
+    position,
+    context,
+    new Set(resolving).add(declarationKey),
+    depth + 1,
+  );
+}
+
 // A source generic application is identified by its declaration and by the declarations its concrete
 // arguments reach, never by a rendered spelling: a type alias and its target spell differently, a
 // source declaration determines the target name, and Rust's own prelude `Box` is not a source
@@ -10362,6 +10491,30 @@ function hasRustExactGenericApplicationUnionArmRust(
           getRustExactGenericApplicationIdentityRust(variant.sourceAlternative, context),
           sourceIdentity,
         ),
+      )
+    : false;
+}
+
+function hasRustExactZeroArgumentCallableUnionArmRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): boolean {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    expression.presence === 'narrowedPresent'
+  ) {
+    return false;
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!sourceType || sourceType.kind === 'union') return false;
+  const sourceIdentity = getRustExactAliasTransparentZeroArgumentCallableIdentityRust(sourceType, context);
+  return sourceIdentity !== undefined
+    ? plan.valueVariants.some(
+        (variant) =>
+          getRustExactAliasTransparentZeroArgumentCallableIdentityRust(variant.sourceAlternative, context)
+            ?.returnDeclarationKey === sourceIdentity.returnDeclarationKey,
       )
     : false;
 }
