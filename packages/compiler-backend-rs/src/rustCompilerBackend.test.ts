@@ -28532,6 +28532,165 @@ describe('emitIrModuleRust exact string enum assertions', () => {
   );
 });
 
+describe('emitIrModuleRust proven-bounds array element reads', () => {
+  it('reads under conjunctive while and if guards in both operand orders', () => {
+    const result = lower(
+      'bounds-proven.ts',
+      `export function sum(values: readonly number[], limit: number): number {
+        let total = 0;
+        let index = 0;
+        while (index >= 0 && index < values.length) {
+          total = total + values[index];
+          if (total > limit) { break; }
+          index = index + 1;
+        }
+        return total;
+      }
+      export function first(values: readonly number[]): number {
+        let index = 0;
+        if (0 <= index && values.length > index) { return values[index]; }
+        return 0;
+      }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('while (index >= 0.0) && (index < (values.len() as f64)) {');
+    expect(output).toContain('total = total + values[index as usize];');
+    expect(output).toContain('return values[index as usize].clone();');
+    expect(output).not.toContain('.get(');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('accepts reads nested in an inner branch and after a non-mutating expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-nested.ts',
+        `export function pick(values: readonly number[], limit: number): number {
+          let index = 0;
+          let total = 1;
+          while (index >= 0 && index < values.length) {
+            total = total * 2;
+            if (total > limit) { return values[index]; }
+            index = index + 1;
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return values[index as usize].clone();');
+  });
+
+  it.each([
+    {
+      name: 'a missing lower bound',
+      source: `export function read(values: readonly number[]): number {
+        let index = 0;
+        while (index < values.length) { return values[index]; }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a guard on a different array',
+      source: `export function read(values: readonly number[], other: readonly number[]): number {
+        let index = 0;
+        if (index >= 0 && index < other.length) { return values[index]; }
+        return 0;
+      }`,
+    },
+    {
+      name: 'an unproven parameter index',
+      source: `export function read(values: readonly number[], index: number): number {
+        if (index >= 0 && index < values.length) { return values[index]; }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a fractional index update',
+      source: `export function read(values: readonly number[]): number {
+        let index = 0;
+        let total = 0;
+        while (index >= 0 && index < values.length) {
+          total = total + values[index];
+          index = index / 2;
+        }
+        return total;
+      }`,
+    },
+    {
+      name: 'a mutation before the read',
+      source: `export function read(values: readonly number[]): number {
+        let index = 0;
+        let total = 0;
+        while (index >= 0 && index < values.length) {
+          index = index + 1;
+          total = total + values[index];
+        }
+        return total;
+      }`,
+    },
+    {
+      name: 'an array mutation through a call before the read',
+      source: `export function read(values: number[]): number {
+        let index = 0;
+        if (index >= 0 && index < values.length) {
+          values.push(1);
+          return values[index];
+        }
+        return 0;
+      }`,
+    },
+    {
+      name: 'a do-while condition that cannot dominate the first iteration',
+      source: `export function read(values: readonly number[]): number {
+        let index = 0;
+        do { return values[index]; } while (index >= 0 && index < values.length);
+        return 0;
+      }`,
+    },
+  ])('keeps $name on the absence refusal', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('bounds-refused.ts', source).module))).toBe(
+      'rust-array-index-result-absence-unrepresented',
+    );
+  });
+
+  it('keeps an absence-observed read on the Option carrier under a proof', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-option.ts',
+        `export function read(values: readonly number[]): number {
+          let index = 0;
+          if (index >= 0 && index < values.length) { return values[index] ?? 0; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('.get(');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a proven-bounds loop and if witness', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-native.ts',
+        `export function sum(values: readonly number[], limit: number): number {
+          let total = 0;
+          let index = 0;
+          while (index >= 0 && index < values.length) {
+            total = total + values[index];
+            if (total > limit) { break; }
+            index = index + 1;
+          }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    runRustSource(output, 'assert_eq!(sum(vec![1.0, 2.0, 3.0], 10.0), 6.0);');
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(

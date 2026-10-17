@@ -456,6 +456,7 @@ interface EmitContext {
   arrayElementBindingIds: ReadonlySet<string>;
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  arrayElementProvenReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayCopyWithinObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayFillObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayReverseObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
@@ -1071,6 +1072,7 @@ function emitIrModuleRustWithContext(
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
+    arrayElementProvenReads: arrayBoundsPlan.provenElementReads,
     arrayCopyWithinObservedCalls: new Set(),
     arrayFillObservedCalls: new Set(),
     arrayReverseObservedCalls: new Set(),
@@ -2575,6 +2577,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
         if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
+        if (context.arrayElementProvenReads.has(expression)) {
+          return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
+        }
         if (!context.arrayElementPlaces.has(expression)) {
           emissionError(
             context,
@@ -6783,6 +6788,9 @@ function emitRequiredElementExpressionRust(
   }
   if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
     if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
+    if (context.arrayElementProvenReads.has(expression)) {
+      return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
+    }
     if (!context.arrayElementPlaces.has(expression)) {
       emissionError(
         context,
@@ -14402,6 +14410,7 @@ type RustArrayBoundsValueUse =
 interface RustArrayBoundsPlan {
   readonly elementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   readonly optionElementReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  readonly provenElementReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
 }
 
 interface RustArrayBoundsRefusal {
@@ -14481,6 +14490,7 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
   const arrayElementBindingIds = collectIrModuleArrayElementBindingIdsRust(module);
   const elementPlaces = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
   const optionElementReads = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
+  const provenElementReads = collectRustProvenBoundsElementReadsRust(module, bindingTypes);
   const refusals: RustArrayBoundsRefusal[] = [];
 
   for (const expression of elementReads) {
@@ -14515,6 +14525,12 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
           'ordinary array element access requires a numeric JavaScript index domain; property-like keys have no Vec representation',
         rule: 'rust-array-index-key-domain-unrepresented',
       });
+      continue;
+    }
+    if (
+      provenElementReads.has(expression) &&
+      !isRustArrayAbsenceRepresentedUse(use, bindingTypes, arrayElementBindingIds)
+    ) {
       continue;
     }
     if (isRustArrayAbsenceRepresentedUse(use, bindingTypes, arrayElementBindingIds)) {
@@ -14590,7 +14606,585 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
       classification: 'target-runtime',
     });
   }
-  return { elementPlaces, optionElementReads };
+  return { elementPlaces, optionElementReads, provenElementReads };
+}
+
+interface RustArrayBoundsProvenGuard {
+  readonly arrayBindingId: string;
+  readonly indexBindingId: string;
+}
+
+interface RustArrayIndexWrite {
+  readonly operator: IrAssignmentOperator | '++' | '--';
+  readonly right: Readonly<IrExpression> | undefined;
+}
+
+interface RustArrayIndexEvidence {
+  readonly writes: RustArrayIndexWrite[];
+  declared: boolean;
+  initializer: Readonly<IrExpression> | undefined;
+  parameter: boolean;
+}
+
+interface RustArrayBoundsProvenReadContext {
+  readonly bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
+  readonly integerEvidence: ReadonlyMap<string, RustArrayIndexEvidence>;
+  readonly integerProven: Set<string>;
+  readonly integerVisiting: Set<string>;
+  readonly proven: Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+}
+
+// A proven read exists only under a guard that dominates it: the condition's two bounds hold when the
+// branch is entered, the read names exactly those bindings, and nothing in between can change either
+// binding or the array's length. The walk follows statement structure rather than visit order because
+// a loop's condition is evaluated before its body on every iteration.
+function collectRustProvenBoundsElementReadsRust(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
+  const context: RustArrayBoundsProvenReadContext = {
+    bindingTypes,
+    integerEvidence: collectRustArrayIndexEvidenceRust(module),
+    integerProven: new Set(),
+    integerVisiting: new Set(),
+    proven: new Set(),
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') {
+      walkRustGuardedStatementsRust(declaration.body, [], context);
+      continue;
+    }
+    if (declaration.kind !== 'class') continue;
+    if (declaration.classConstructor) walkRustGuardedStatementsRust(declaration.classConstructor.body, [], context);
+    for (const method of declaration.methods) walkRustGuardedStatementsRust(method.body, [], context);
+  }
+  return context.proven;
+}
+
+function walkRustGuardedStatementsRust(
+  statements: readonly IrStatement[],
+  guards: readonly RustArrayBoundsProvenGuard[],
+  context: RustArrayBoundsProvenReadContext,
+): readonly RustArrayBoundsProvenGuard[] {
+  let active = guards;
+  for (const statement of statements) active = walkRustGuardedStatementRust(statement, active, context);
+  return active;
+}
+
+function walkRustGuardedStatementRust(
+  statement: Readonly<IrStatement>,
+  guards: readonly RustArrayBoundsProvenGuard[],
+  context: RustArrayBoundsProvenReadContext,
+): readonly RustArrayBoundsProvenGuard[] {
+  switch (statement.kind) {
+    case 'block':
+      return walkRustGuardedStatementsRust(statement.statements, guards, context);
+    case 'break':
+    case 'continue':
+      return guards;
+    case 'do': {
+      const afterBody = walkRustGuardedStatementRust(statement.body, guards, context);
+      const conditionGuards = filterRustArrayBoundsGuardsRust(
+        afterBody,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.condition),
+      );
+      markRustGuardedExpressionReadsRust(statement.condition, conditionGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'expression':
+      markRustGuardedExpressionReadsRust(statement.expression, guards, context);
+      return filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.expression),
+      );
+    case 'for': {
+      const ownExpressions: IrExpression[] = [];
+      if (Array.isArray(statement.initializer)) {
+        for (const variable of statement.initializer) {
+          if (variable.initializer) ownExpressions.push(variable.initializer);
+        }
+      } else if (statement.initializer) {
+        ownExpressions.push(statement.initializer as IrExpression);
+      }
+      if (statement.condition) ownExpressions.push(statement.condition);
+      if (statement.increment) ownExpressions.push(statement.increment);
+      const ownGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRustForExpressionsRust(ownExpressions),
+      );
+      for (const expression of ownExpressions) markRustGuardedExpressionReadsRust(expression, ownGuards, context);
+      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'forIn': {
+      const ownGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.object),
+      );
+      markRustGuardedExpressionReadsRust(statement.object, ownGuards, context);
+      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'forOf': {
+      const ownGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.iterable),
+      );
+      markRustGuardedExpressionReadsRust(statement.iterable, ownGuards, context);
+      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'if': {
+      const conditionGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.condition),
+      );
+      markRustGuardedExpressionReadsRust(statement.condition, conditionGuards, context);
+      const provenGuard = createRustArrayBoundsProvenGuardRust(statement.condition, context);
+      const consequentGuards =
+        provenGuard && !statementContainsFunctionExpressionRust(statement.consequent)
+          ? [...conditionGuards, provenGuard]
+          : conditionGuards;
+      walkRustGuardedStatementRust(statement.consequent, consequentGuards, context);
+      if (statement.otherwise) walkRustGuardedStatementRust(statement.otherwise, conditionGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'return':
+      if (statement.expression) markRustGuardedExpressionReadsRust(statement.expression, guards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    case 'switch': {
+      const subjectGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.expression),
+      );
+      markRustGuardedExpressionReadsRust(statement.expression, subjectGuards, context);
+      for (const switchCase of statement.cases) {
+        if (switchCase.expression) {
+          markRustGuardedExpressionReadsRust(switchCase.expression, subjectGuards, context);
+        }
+        walkRustGuardedStatementsRust(switchCase.statements, subjectGuards, context);
+      }
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'throw':
+      markRustGuardedExpressionReadsRust(statement.expression, guards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    case 'try': {
+      let active = walkRustGuardedStatementRust(statement.tryBody, guards, context);
+      if (statement.catchClause) active = walkRustGuardedStatementRust(statement.catchClause.body, active, context);
+      if (statement.finallyBody) active = walkRustGuardedStatementRust(statement.finallyBody, active, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+    case 'variable': {
+      const initializers = statement.declarations.flatMap((variable) =>
+        variable.initializer ? [variable.initializer] : [],
+      );
+      const initializerGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRustForExpressionsRust(initializers),
+      );
+      for (const initializer of initializers)
+        markRustGuardedExpressionReadsRust(initializer, initializerGuards, context);
+      return initializerGuards;
+    }
+    case 'while': {
+      const conditionGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.condition),
+      );
+      markRustGuardedExpressionReadsRust(statement.condition, conditionGuards, context);
+      const provenGuard = createRustArrayBoundsProvenGuardRust(statement.condition, context);
+      const bodyGuards =
+        provenGuard && !statementContainsFunctionExpressionRust(statement.body)
+          ? [...conditionGuards, provenGuard]
+          : conditionGuards;
+      walkRustGuardedStatementRust(statement.body, bodyGuards, context);
+      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+    }
+  }
+}
+
+function filterRustArrayBoundsGuardsRust(
+  guards: readonly RustArrayBoundsProvenGuard[],
+  invalidatingBindingIds: ReadonlySet<string>,
+): readonly RustArrayBoundsProvenGuard[] {
+  return guards.filter(
+    (guard) => !invalidatingBindingIds.has(guard.indexBindingId) && !invalidatingBindingIds.has(guard.arrayBindingId),
+  );
+}
+
+function markRustGuardedExpressionReadsRust(
+  expression: Readonly<IrExpression>,
+  guards: readonly RustArrayBoundsProvenGuard[],
+  context: RustArrayBoundsProvenReadContext,
+): void {
+  if (guards.length === 0 || expressionContainsFunctionRust(expression)) return;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(node) {
+      if (node.kind !== 'element' || node.optional || !hasOnlyOrdinaryArrayReceiverRust(node)) return;
+      const object = node.object;
+      const index = node.index;
+      if (
+        object.kind !== 'identifier' ||
+        object.reference.kind !== 'binding' ||
+        index.kind !== 'identifier' ||
+        index.reference.kind !== 'binding'
+      ) {
+        return;
+      }
+      const arrayBindingId = object.reference.binding.id;
+      const indexBindingId = index.reference.binding.id;
+      if (guards.some((guard) => guard.arrayBindingId === arrayBindingId && guard.indexBindingId === indexBindingId)) {
+        context.proven.add(node);
+      }
+    },
+  });
+}
+
+function expressionContainsFunctionRust(expression: Readonly<IrExpression>): boolean {
+  let found = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(node) {
+      if (node.kind === 'function') found = true;
+    },
+  });
+  return found;
+}
+
+function statementContainsFunctionExpressionRust(statement: Readonly<IrStatement>): boolean {
+  let found = false;
+  forEachRustStatementExpressionRust(statement, (expression) => {
+    if (!found && expressionContainsFunctionRust(expression)) found = true;
+  });
+  return found;
+}
+
+function forEachRustStatementExpressionRust(
+  statement: Readonly<IrStatement>,
+  visit: (expression: Readonly<IrExpression>) => void,
+): void {
+  switch (statement.kind) {
+    case 'block':
+      for (const child of statement.statements) forEachRustStatementExpressionRust(child, visit);
+      return;
+    case 'break':
+    case 'continue':
+      return;
+    case 'do':
+    case 'while':
+      forEachRustStatementExpressionRust(statement.body, visit);
+      visit(statement.condition);
+      return;
+    case 'expression':
+    case 'throw':
+      visit(statement.expression);
+      return;
+    case 'for':
+      if (Array.isArray(statement.initializer)) {
+        for (const variable of statement.initializer) {
+          if (variable.initializer) visit(variable.initializer);
+        }
+      } else if (statement.initializer) {
+        visit(statement.initializer as IrExpression);
+      }
+      if (statement.condition) visit(statement.condition);
+      if (statement.increment) visit(statement.increment);
+      forEachRustStatementExpressionRust(statement.body, visit);
+      return;
+    case 'forIn':
+      visit(statement.object);
+      forEachRustStatementExpressionRust(statement.body, visit);
+      return;
+    case 'forOf':
+      visit(statement.iterable);
+      forEachRustStatementExpressionRust(statement.body, visit);
+      return;
+    case 'if':
+      visit(statement.condition);
+      forEachRustStatementExpressionRust(statement.consequent, visit);
+      if (statement.otherwise) forEachRustStatementExpressionRust(statement.otherwise, visit);
+      return;
+    case 'return':
+      if (statement.expression) visit(statement.expression);
+      return;
+    case 'switch':
+      visit(statement.expression);
+      for (const switchCase of statement.cases) {
+        if (switchCase.expression) visit(switchCase.expression);
+        for (const child of switchCase.statements) forEachRustStatementExpressionRust(child, visit);
+      }
+      return;
+    case 'try':
+      forEachRustStatementExpressionRust(statement.tryBody, visit);
+      if (statement.catchClause) forEachRustStatementExpressionRust(statement.catchClause.body, visit);
+      if (statement.finallyBody) forEachRustStatementExpressionRust(statement.finallyBody, visit);
+      return;
+    case 'variable':
+      for (const variable of statement.declarations) {
+        if (variable.initializer) visit(variable.initializer);
+      }
+      return;
+  }
+}
+
+function collectRustGuardedStatementInvalidatingBindingIdsRust(statement: Readonly<IrStatement>): Set<string> {
+  const ids = new Set<string>();
+  forEachRustStatementExpressionRust(statement, (expression) => {
+    for (const id of collectRustGuardedExpressionInvalidatingBindingIdsRust(expression)) ids.add(id);
+  });
+  return ids;
+}
+
+function collectRustGuardedExpressionInvalidatingBindingIdsRustForExpressionsRust(
+  expressions: readonly Readonly<IrExpression>[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const expression of expressions) {
+    for (const id of collectRustGuardedExpressionInvalidatingBindingIdsRust(expression)) ids.add(id);
+  }
+  return ids;
+}
+
+// A guard's proof is broken by rebinding the index or receiver, changing the receiver's length, or any
+// call that could reach either binding. Nested function bodies count for invalidation because a call
+// can run them, even though reads inside them are never marked.
+function collectRustGuardedExpressionInvalidatingBindingIdsRust(expression: Readonly<IrExpression>): Set<string> {
+  const ids = new Set<string>();
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(node) {
+      if (node.kind === 'assignment') {
+        if (node.left.kind === 'identifier' && node.left.reference.kind === 'binding') {
+          ids.add(node.left.reference.binding.id);
+        } else if (
+          node.left.kind === 'property' &&
+          node.left.name === 'length' &&
+          node.left.object.kind === 'identifier' &&
+          node.left.object.reference.kind === 'binding'
+        ) {
+          ids.add(node.left.object.reference.binding.id);
+        }
+        return;
+      }
+      if (
+        node.kind === 'unary' &&
+        (node.operator === '++' || node.operator === '--') &&
+        node.operand.kind === 'identifier' &&
+        node.operand.reference.kind === 'binding'
+      ) {
+        ids.add(node.operand.reference.binding.id);
+        return;
+      }
+      if (node.kind !== 'call' && node.kind !== 'new') return;
+      const collectReferenced = (candidate: Readonly<IrExpression>): void => {
+        analyzeIrExpressionSubtreeTraversal(candidate, {
+          expression(inner) {
+            if (inner.kind === 'identifier' && inner.reference.kind === 'binding') {
+              ids.add(inner.reference.binding.id);
+            }
+          },
+        });
+      };
+      collectReferenced(node.callee);
+      for (const argument of node.arguments) collectReferenced(argument);
+    },
+  });
+  return ids;
+}
+
+// The guard is exactly two conjuncts: one lower bound of zero and one upper bound at the receiver's
+// length, in either operand order. The index must be proven to hold integers; bounds alone would let a
+// fractional index read the wrong element while the source read reports absence.
+function createRustArrayBoundsProvenGuardRust(
+  condition: Readonly<IrExpression>,
+  context: RustArrayBoundsProvenReadContext,
+): RustArrayBoundsProvenGuard | undefined {
+  if (condition.kind !== 'binary' || condition.operator !== '&&') return undefined;
+  const left = parseRustArrayBoundsGuardConjunctRust(condition.left);
+  const right = parseRustArrayBoundsGuardConjunctRust(condition.right);
+  if (!left || !right || left.kind === right.kind) return undefined;
+  const lower = left.kind === 'lower' ? left : right;
+  const upper = left.kind === 'upper' ? left : right;
+  if (lower.kind !== 'lower' || upper.kind !== 'upper' || lower.binding.id !== upper.index.id) return undefined;
+  if (!isRustIntegerProvenBindingRust(lower.binding.id, context)) return undefined;
+  const indexType = context.bindingTypes.get(lower.binding.id);
+  if (indexType?.kind !== 'primitive' || indexType.name !== 'number') return undefined;
+  const arrayType = context.bindingTypes.get(upper.array.id);
+  if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive') return undefined;
+  if (arrayType.element.name !== 'number' && arrayType.element.name !== 'boolean') return undefined;
+  return { arrayBindingId: upper.array.id, indexBindingId: lower.binding.id };
+}
+
+type RustArrayBoundsGuardConjunct =
+  | Readonly<{ binding: IrBindingIdentity; kind: 'lower' }>
+  | Readonly<{ array: IrBindingIdentity; index: IrBindingIdentity; kind: 'upper' }>;
+
+function parseRustArrayBoundsGuardConjunctRust(
+  expression: Readonly<IrExpression>,
+): RustArrayBoundsGuardConjunct | undefined {
+  if (expression.kind !== 'binary') return undefined;
+  if (expression.operator === '>=' || expression.operator === '<=') {
+    const index =
+      expression.operator === '>='
+        ? asRustIdentifierBindingRust(expression.left)
+        : asRustIdentifierBindingRust(expression.right);
+    const zero = expression.operator === '>=' ? expression.right : expression.left;
+    return index && isRustZeroLiteralRust(zero) ? { binding: index, kind: 'lower' } : undefined;
+  }
+  if (expression.operator !== '<' && expression.operator !== '>') return undefined;
+  const length =
+    expression.operator === '<'
+      ? asRustArrayLengthPropertyBindingRust(expression.right)
+      : asRustArrayLengthPropertyBindingRust(expression.left);
+  const index =
+    expression.operator === '<'
+      ? asRustIdentifierBindingRust(expression.left)
+      : asRustIdentifierBindingRust(expression.right);
+  return index && length ? { array: length, index, kind: 'upper' } : undefined;
+}
+
+function asRustIdentifierBindingRust(expression: Readonly<IrExpression>): IrBindingIdentity | undefined {
+  return expression.kind === 'identifier' && expression.reference.kind === 'binding'
+    ? expression.reference.binding
+    : undefined;
+}
+
+function asRustArrayLengthPropertyBindingRust(expression: Readonly<IrExpression>): IrBindingIdentity | undefined {
+  return expression.kind === 'property' &&
+    expression.name === 'length' &&
+    expression.member?.name === 'length' &&
+    expression.member.receiver === 'array' &&
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'binding'
+    ? expression.object.reference.binding
+    : undefined;
+}
+
+function isRustZeroLiteralRust(expression: Readonly<IrExpression>): boolean {
+  return expression.kind === 'literal' && typeof expression.value === 'number' && expression.value === 0;
+}
+
+function collectRustArrayIndexEvidenceRust(module: Readonly<IrModule>): ReadonlyMap<string, RustArrayIndexEvidence> {
+  const evidence = new Map<string, RustArrayIndexEvidence>();
+  const ensure = (bindingId: string): RustArrayIndexEvidence => {
+    const existing = evidence.get(bindingId);
+    if (existing) return existing;
+    const created: RustArrayIndexEvidence = {
+      declared: false,
+      initializer: undefined,
+      parameter: false,
+      writes: [],
+    };
+    evidence.set(bindingId, created);
+    return created;
+  };
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind === 'assignment' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding'
+      ) {
+        ensure(expression.left.reference.binding.id).writes.push({
+          operator: expression.operator,
+          right: expression.right,
+        });
+        return;
+      }
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--') &&
+        expression.operand.kind === 'identifier' &&
+        expression.operand.reference.kind === 'binding'
+      ) {
+        ensure(expression.operand.reference.binding.id).writes.push({
+          operator: expression.operator,
+          right: undefined,
+        });
+      }
+    },
+    parameter(parameter) {
+      ensure(parameter.binding.id).parameter = true;
+    },
+    variable(variable) {
+      if (!('binding' in variable)) return;
+      const record = ensure(variable.binding.id);
+      record.declared = true;
+      record.initializer = variable.initializer;
+    },
+  });
+  return evidence;
+}
+
+function isRustIntegerProvenBindingRust(bindingId: string, context: RustArrayBoundsProvenReadContext): boolean {
+  const memo = context.integerProven;
+  if (memo.has(bindingId)) return true;
+  if (context.integerVisiting.has(bindingId)) return false;
+  const evidence = context.integerEvidence.get(bindingId);
+  if (!evidence || !evidence.declared || evidence.parameter || !evidence.initializer) return false;
+  context.integerVisiting.add(bindingId);
+  const initializerProven = isRustIntegerProvenExpressionRust(evidence.initializer, context);
+  context.integerVisiting.delete(bindingId);
+  if (!initializerProven) return false;
+  // The initializer proves the first value; an update may read the value it replaces, so the binding
+  // is assumed integer while its own writes are checked.
+  memo.add(bindingId);
+  const writesProven = evidence.writes.every((write) => isRustIntegerPreservingWriteRust(write, context));
+  if (!writesProven) memo.delete(bindingId);
+  return writesProven;
+}
+
+function isRustIntegerPreservingWriteRust(
+  write: Readonly<RustArrayIndexWrite>,
+  context: RustArrayBoundsProvenReadContext,
+): boolean {
+  if (write.operator === '++' || write.operator === '--') return true;
+  if (
+    write.operator !== '=' &&
+    write.operator !== '+=' &&
+    write.operator !== '-=' &&
+    write.operator !== '*=' &&
+    write.operator !== '%='
+  ) {
+    return false;
+  }
+  return write.right !== undefined && isRustIntegerProvenExpressionRust(write.right, context);
+}
+
+function isRustIntegerProvenExpressionRust(
+  expression: Readonly<IrExpression>,
+  context: RustArrayBoundsProvenReadContext,
+): boolean {
+  switch (expression.kind) {
+    case 'literal':
+      return typeof expression.value === 'number' && Number.isInteger(expression.value);
+    case 'identifier':
+      return (
+        expression.reference.kind === 'binding' &&
+        isRustIntegerProvenBindingRust(expression.reference.binding.id, context)
+      );
+    case 'binary':
+      return (
+        (expression.operator === '+' ||
+          expression.operator === '-' ||
+          expression.operator === '*' ||
+          expression.operator === '%') &&
+        isRustIntegerProvenExpressionRust(expression.left, context) &&
+        isRustIntegerProvenExpressionRust(expression.right, context)
+      );
+    case 'unary':
+      return (
+        (expression.operator === '+' || expression.operator === '-') &&
+        isRustIntegerProvenExpressionRust(expression.operand, context)
+      );
+    case 'cast':
+      return (
+        expression.type.kind === 'primitive' &&
+        expression.type.name === 'number' &&
+        isRustIntegerProvenExpressionRust(expression.expression, context)
+      );
+    default:
+      return false;
+  }
 }
 
 type RustArrayGrowthMember = 'push' | 'unshift';
