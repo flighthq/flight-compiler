@@ -21555,7 +21555,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
                }`,
     },
     {
-      rule: 'rust-union-array-element-read-evidence-unrepresented',
+      rule: 'rust-union-array-element-read-context-unrepresented',
       source: `export function read(values: number[] | string[] | undefined, index: number): number | string | undefined {
                  const value = values?.[index];
                  return value;
