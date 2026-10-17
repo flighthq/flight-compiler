@@ -2608,12 +2608,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it.each([
     [
-      'an awaited no-finally catch',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return primary; } catch { return await recovery; } }',
-      'rust-async-try-completion-unrepresented',
-      'compiler-restriction',
-    ],
-    [
       'a caught-value member',
       'export async function attempt(primary: Promise<number>): Promise<number> { try { return primary; } catch (error) { return error.message.length; } }',
       'rust-runtime-error-carrier-incomplete',
@@ -3966,11 +3960,22 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).not.toContain('Err(error.clone())');
   });
 
+  it('composes a no-finally bindingless one-await catch with Normal and Return completion', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-bindingless-catch-await-no-finally.ts',
+        'export async function returned(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { return await recovery; } } export async function normal(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return primary; } catch { await recovery; } return 9; }',
+      ).module,
+    ).contents;
+
+    expect(output.match(/Result<Option<f64>, String>/g)).toHaveLength(4);
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(4);
+    expect(output).toContain('Err(_) => {');
+    expect(output).toContain('Ok(catch_value) => Ok(Some(catch_value))');
+    expect(output).toContain('Ok(None) => {}');
+  });
+
   it.each([
-    [
-      'a missing catch binding',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { return await recovery; } }',
-    ],
     [
       'an unused binding',
       'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recovery; } }',
@@ -4075,23 +4080,23 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it.each([
     [
       'a catch binding',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, log: number[]): Promise<number> { try { return await primary; } catch (error) { await recovery; return 0; } finally { log.push(1); } }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recovery; return 0; } }',
     ],
     [
       'multiple handler awaits',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await primary; } catch { await recovery; await backup; return 0; } finally { log.push(1); } }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, backup: Promise<number>): Promise<number> { try { return await primary; } catch { await recovery; await backup; return 0; } }',
     ],
     [
       'a nested handler await',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean, log: number[]): Promise<number> { try { return await primary; } catch { if (enabled) await recovery; return 0; } finally { log.push(1); } }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean): Promise<number> { try { return await primary; } catch { if (enabled) await recovery; return 0; } }',
     ],
     [
       'a nested handler return',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean, log: number[]): Promise<number> { try { return await primary; } catch { await recovery; if (enabled) return 1; return 0; } finally { log.push(1); } }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean): Promise<number> { try { return await primary; } catch { await recovery; if (enabled) return 1; return 0; } }',
     ],
     [
       'a handler throw',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>, log: number[]): Promise<number> { try { return await primary; } catch { await recovery; throw new Error("replacement"); } finally { log.push(1); } }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { await recovery; throw new Error("replacement"); } }',
     ],
   ])('stably refuses bindingless one-await catch with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
@@ -4115,7 +4120,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       emitIrModuleRust(
         lower(
           'try-bindingless-catch-await-assignment-refusal.ts',
-          'interface Box { value: number; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, box: Box, log: number[]): Promise<number> { try { return await primary; } catch { box.value = await recovery; return 0; } finally { log.push(1); } }',
+          'interface Box { value: number; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, box: Box): Promise<number> { try { return await primary; } catch { box.value = await recovery; return 0; } }',
         ).module,
       ),
     );
@@ -4137,7 +4142,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       emitIrModuleRust(
         lower(
           'try-bindingless-catch-await-return-refusal.ts',
-          'export async function attempt(primary: Promise<number>, recovery: Promise<string>, log: number[]): Promise<number> { try { return await primary; } catch { return await recovery; } finally { log.push(1); } }',
+          'export async function attempt(primary: Promise<number>, recovery: Promise<string>): Promise<number> { try { return await primary; } catch { return await recovery; } }',
         ).module,
       ),
     );
@@ -4152,6 +4157,28 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         'rust emission failed for @flighthq/math/packages/math/src/try-bindingless-catch-await-return-refusal.ts: protected return-await requires an exact owned Rust function return carrier',
       rule: 'rust-async-try-completion-unrepresented',
     });
+  });
+
+  it.each([
+    [
+      'a native future',
+      'async function recover(): Promise<number> { return 1; } export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } catch { return await recover(); } }',
+      'rust-native-future-task-adapter-unavailable',
+      'target-runtime',
+    ],
+    [
+      'a bare catch task return',
+      'export async function attempt(primary: Promise<number>, observer: Promise<void>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { await observer; return recovery; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+  ])('preserves bindingless no-finally catch boundary for %s', (_name, source, rule, classification) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-bindingless-catch-await-boundary-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe(classification);
   });
 
   it.skipIf(!rustcAvailable)(
@@ -4409,6 +4436,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            export async function noFinalRethrown(primary: Promise<number>, observer: Promise<void>, log: string[]): Promise<number> {
              try { mark("no-final-rethrow-try", log); return primary; }
              catch (error) { mark("no-final-rethrow-catch", log); await observeError(error, observer, log); mark("no-final-rethrow-after", log); throw error; }
+           }
+           export async function noFinalBindingless(primary: Promise<number>, recovery: Promise<number>, log: string[]): Promise<number> {
+             try { mark("no-final-bindingless-try", log); return primary; }
+             catch { mark("no-final-bindingless-catch", log); await observedNumber(recovery, "no-final-bindingless-recovery", log); mark("no-final-bindingless-after", log); }
+             mark("no-final-bindingless-continue", log);
+             return 7;
            }`,
         ).module,
       ).contents;
@@ -4463,7 +4496,19 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(no_final_rethrow_log, vec!["no-final-rethrow-try".to_owned(), "no-final-rethrow-catch".to_owned(), "no-final-terminal".to_owned(), "no-final-rethrow-after".to_owned()]);
            let no_final_rethrow_payload = no_final_rethrow.expect_err("terminal catch-binding rethrow must preserve the original rejection");
            let no_final_rethrow_message = no_final_rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_rethrow_payload.downcast_ref::<&str>().copied());
-           assert_eq!(no_final_rethrow_message, Some("unhandled task rejection: no-final-terminal"));`,
+           assert_eq!(no_final_rethrow_message, Some("unhandled task rejection: no-final-terminal"));
+           let mut no_final_bindingless_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(no_final_bindingless(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), &mut no_final_bindingless_ready_log)), 4.0);
+           assert_eq!(no_final_bindingless_ready_log, vec!["no-final-bindingless-try".to_owned()]);
+           let mut no_final_bindingless_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(no_final_bindingless(flight_runtime::FlightTask::<f64>::reject("discarded-original"), flight_runtime::FlightTask::ready(6.0), &mut no_final_bindingless_caught_log)), 7.0);
+           assert_eq!(no_final_bindingless_caught_log, vec!["no-final-bindingless-try".to_owned(), "no-final-bindingless-catch".to_owned(), "no-final-bindingless-recovery".to_owned(), "no-final-bindingless-after".to_owned(), "no-final-bindingless-continue".to_owned()]);
+           let mut no_final_bindingless_override_log = Vec::new();
+           let no_final_bindingless_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_bindingless(flight_runtime::FlightTask::<f64>::reject("discarded-original"), flight_runtime::FlightTask::<f64>::reject("bindingless-replacement"), &mut no_final_bindingless_override_log))));
+           assert_eq!(no_final_bindingless_override_log, vec!["no-final-bindingless-try".to_owned(), "no-final-bindingless-catch".to_owned(), "no-final-bindingless-recovery".to_owned()]);
+           let no_final_bindingless_payload = no_final_bindingless_override.expect_err("bindingless catch rejection must replace the discarded original rejection");
+           let no_final_bindingless_message = no_final_bindingless_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_bindingless_payload.downcast_ref::<&str>().copied());
+           assert_eq!(no_final_bindingless_message, Some("unhandled task rejection: bindingless-replacement"));`,
         ),
       ).not.toThrow();
     },

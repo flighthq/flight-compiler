@@ -290,7 +290,7 @@ interface RustAsyncTryLocalCompletionPlan {
   readonly tryStatements: readonly Readonly<IrStatement>[];
 }
 
-interface RustAsyncTryBoundAwaitCatchCompletionPlan extends RustAsyncTryLocalCompletionPlan {
+interface RustAsyncTryTerminalAwaitCatchCompletionPlan extends RustAsyncTryLocalCompletionPlan {
   readonly catchPlan: Extract<RustAsyncTryCatchCompletionPlan, Readonly<{ kind: 'await' }>>;
 }
 
@@ -7934,12 +7934,12 @@ function getAsyncTryCatchCompletionPlanRust(
   };
 }
 
-function getAsyncTryBoundAwaitCatchCompletionPlanRust(
+function getAsyncTryTerminalAwaitCatchCompletionPlanRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   context: EmitContext,
-): RustAsyncTryBoundAwaitCatchCompletionPlan | undefined {
+): RustAsyncTryTerminalAwaitCatchCompletionPlan | undefined {
   const catchClause = statement.catchClause;
-  if (!catchClause?.binding || statement.finallyBody) return undefined;
+  if (!catchClause || statement.finallyBody) return undefined;
 
   const catchEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(catchClause.body);
   if (catchEvidence.suspensionCount === 0) return undefined;
@@ -7963,14 +7963,14 @@ function getAsyncTryBoundAwaitCatchCompletionPlanRust(
   ) {
     emissionRuleError(
       context,
-      'async try/catch awaited bound handler requires one flat protected terminal FlightTask return or return-await and no other protected suspension or abrupt completion',
+      'async try/catch awaited handler requires one flat protected terminal FlightTask return or return-await and no other protected suspension or abrupt completion',
       'rust-async-try-completion-unrepresented',
     );
   }
-  if (catchPlan.kind !== 'await' || !catchPlan.binding) {
+  if (catchPlan.kind !== 'await') {
     emissionRuleError(
       context,
-      'async try/catch awaited bound handler requires one used immutable direct String binding and exactly one direct catch await',
+      'async try/catch awaited handler requires exactly one direct catch await',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -8709,9 +8709,9 @@ function emitAsyncTryCompletionDispatchRust(
   ];
 }
 
-function emitAsyncTryBoundAwaitCatchCompletionRust(
+function emitAsyncTryTerminalAwaitCatchCompletionRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
-  plan: Readonly<RustAsyncTryBoundAwaitCatchCompletionPlan>,
+  plan: Readonly<RustAsyncTryTerminalAwaitCatchCompletionPlan>,
   context: EmitContext,
 ): string[] {
   const emitted = emitAsyncTryLocalCompletionRust(statement, plan, context);
@@ -8789,10 +8789,10 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     assertIrAsyncTaskCatchBindingUsesRust(statement, context);
     return emitAsyncTryFinallyCompletionRust(statement, finallyCompletion, context);
   }
-  const boundAwaitCatchCompletion = getAsyncTryBoundAwaitCatchCompletionPlanRust(statement, context);
-  if (boundAwaitCatchCompletion) {
+  const terminalAwaitCatchCompletion = getAsyncTryTerminalAwaitCatchCompletionPlanRust(statement, context);
+  if (terminalAwaitCatchCompletion) {
     assertIrAsyncTaskCatchBindingUsesRust(statement, context);
-    return emitAsyncTryBoundAwaitCatchCompletionRust(statement, boundAwaitCatchCompletion, context);
+    return emitAsyncTryTerminalAwaitCatchCompletionRust(statement, terminalAwaitCatchCompletion, context);
   }
   const protectedTaskCatch = getAsyncTryProtectedTaskCatchPlanRust(statement, context);
   if (protectedTaskCatch) {
