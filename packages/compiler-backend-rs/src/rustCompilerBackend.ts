@@ -13,6 +13,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  analyzeIrExpressionSubtreeTraversal,
   analyzeIrModuleTraversal,
   analyzeIrStatementSubtreeTraversal,
   getIrModuleTraversalPathValue,
@@ -177,6 +178,7 @@ interface EmitContext {
   primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
+  sharedArrayBindingIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   // Every module's own binding allocation, keyed by module identity. An import has to spell an exported
   // name the way its declaring module allocates it -- `WIDGET` for a constant called `Widget`, not the
@@ -306,6 +308,9 @@ function emitIrModuleRustWithContext(
   const closureEvidence = analyzeIrModuleClosureEvidence(module);
   const ownershipEvidence = analyzeIrModuleOwnershipEvidenceRust(module);
   const bindingTypes = collectIrModuleBindingTypesRust(module);
+  const sharedArrayBindingIds = new Set(
+    referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
+  );
   const allCellWrappedIds = closureEvidence.closures
     .filter(
       (closure) =>
@@ -318,13 +323,13 @@ function emitIrModuleRustWithContext(
   const cellWrappedBindingIds = new Set(
     allCellWrappedIds.filter((id) => {
       const type = bindingTypes.get(id);
-      return !type || isIrTypeCopyRust(type);
+      return !sharedArrayBindingIds.has(id) && (!type || isIrTypeCopyRust(type));
     }),
   );
   const refCellWrappedBindingIds = new Set(
     allCellWrappedIds.filter((id) => {
       const type = bindingTypes.get(id);
-      return type !== undefined && !isIrTypeCopyRust(type);
+      return !sharedArrayBindingIds.has(id) && type !== undefined && !isIrTypeCopyRust(type);
     }),
   );
   const accessorClassNames = new Map<string, string>();
@@ -387,6 +392,7 @@ function emitIrModuleRustWithContext(
       ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.storage === 'sharedIdentity' &&
         evidence.type.kind !== 'function' &&
+        !sharedArrayBindingIds.has(evidence.binding.id) &&
         movedBindingIds.has(evidence.binding.id)
           ? [evidence.binding.id]
           : [],
@@ -409,6 +415,7 @@ function emitIrModuleRustWithContext(
       ...plannedReferentMutatedBindingIds,
     ]),
     referentMutatedParameterIds,
+    sharedArrayBindingIds,
     taggedUnionBindingNames,
     bindingTypes,
     module,
@@ -895,6 +902,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'assignment': {
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
       if (typedArrayAssignment) return typedArrayAssignment;
+      const sharedArrayAssignment = emitSharedArrayElementAssignmentRust(expression, context);
+      if (sharedArrayAssignment) return sharedArrayAssignment;
       if (
         expression.left.kind === 'identifier' &&
         expression.left.reference.kind === 'binding' &&
@@ -1212,7 +1221,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (expression.arguments.length !== 1 || !separator) {
           emissionError(context, 'joining a collection requires exactly one separator argument');
         }
-        return `${emitExpression(expression.callee.object, context)}.join(${emitBorrowedTextRust(separator, context)})`;
+        return `${emitSharedArrayReceiverRust(expression.callee.object, false, context)}.join(${emitBorrowedTextRust(separator, context)})`;
       }
       // Typed arrays use runtime views rather than Vec: slice copies storage, while subarray creates
       // a distinct view sharing storage. Their bounds stay numeric until the runtime applies source
@@ -1252,8 +1261,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.member?.receiver === 'array' &&
         expression.callee.member.name === 'slice'
       ) {
-        const receiver = emitExpression(expression.callee.object, context);
-        if (expression.arguments.length === 0) return `${receiver}.clone()`;
+        const sharedReceiver = getRustSharedArrayBindingRust(expression.callee.object, context);
+        const receiver = sharedReceiver
+          ? `${getBindingTargetNameRust(sharedReceiver, context)}.borrow()`
+          : emitExpression(expression.callee.object, context);
+        if (expression.arguments.length === 0) return sharedReceiver ? `(*${receiver}).clone()` : `${receiver}.clone()`;
         if (expression.arguments.length > 2) {
           emissionError(context, 'slicing a collection takes at most a start and an end');
         }
@@ -1311,7 +1323,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (binding && binding.kind !== 'countingMethod' && binding.kind !== 'propertyMethod') {
           const receiver =
             emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
-            emitExpression(expression.callee.object, context);
+            emitSharedArrayReceiverRust(
+              expression.callee.object,
+              expression.callee.member.receiver === 'array' &&
+                RUST_SHARED_ARRAY_MUTATING_METHODS.has(expression.callee.member.name),
+              context,
+            );
           const borrows =
             binding.kind === 'borrowedMethod' || binding.kind === 'sentinelSearch' || binding.kind === 'splitCollect';
           const values =
@@ -1430,7 +1447,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       // A written index is already a whole number; sending it through the neutral numeric type and
       // back is noise the source never asked for.
-      return `${emitExpression(expression.object, context)}[${emitIndexOperandRust(expression.index, context)}]`;
+      return `${emitSharedArrayReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     case 'function':
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
@@ -1438,6 +1455,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, context))}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier': {
+      if (
+        expression.reference.kind === 'binding' &&
+        context.sharedArrayBindingIds.has(expression.reference.binding.id)
+      ) {
+        return `${emitIdentifierReferenceRust(expression.reference, context)}.borrow().clone()`;
+      }
       if (expression.reference.kind === 'binding' && context.cellWrappedBindingIds.has(expression.reference.binding.id))
         return `${emitIdentifierReferenceRust(expression.reference, context)}.get()`;
       if (
@@ -1536,7 +1559,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (binding.kind === 'countingMethod') {
           const countingReceiver =
             emitPrimitiveUnionNarrowedReceiverRust(expression.object, context) ??
-            emitExpression(expression.object, context);
+            emitSharedArrayReceiverRust(expression.object, false, context);
           return `(${countingReceiver}.${binding.targetName}() as f64)`;
         }
         if (binding.kind === 'propertyMethod') {
@@ -1785,6 +1808,25 @@ function emitTypedArrayElementAssignmentRust(
     emissionError(context, `operator ${expression.operator} on a typed-array element requires Rust lowering`);
   }
   return `{ let ${receiverName} = &${receiver}; let ${indexName} = ${index}; let ${currentName} = ${receiverName}.get_index(${indexName}); let ${rightName} = ${right}; let ${valueName} = ${operation}; ${receiverName}.set_index(${indexName}, ${valueName}) }`;
+}
+
+function emitSharedArrayElementAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.left.kind !== 'element' ||
+    expression.left.object.kind !== 'identifier' ||
+    expression.left.object.reference.kind !== 'binding' ||
+    !context.sharedArrayBindingIds.has(expression.left.object.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const receiver = emitIdentifierReferenceRust(expression.left.object.reference, context);
+  const index = emitIndexOperandRust(expression.left.index, context);
+  const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
+  const operator = emitAssignmentOperatorRust(expression.operator, expression.semantics, context);
+  return `${receiver}.borrow_mut()[${index}] ${operator} ${normalizeSourceTextGrouping(right)}`;
 }
 
 function hasOnlyIrTypedArrayReceiversRust(receivers: readonly IrIndexedReceiver[]): boolean {
@@ -3011,7 +3053,9 @@ function collectCellCapturedBindingIdsRust(
 ): readonly string[] {
   if (
     expression.kind !== 'function' ||
-    (context.cellWrappedBindingIds.size === 0 && context.refCellWrappedBindingIds.size === 0)
+    (context.cellWrappedBindingIds.size === 0 &&
+      context.refCellWrappedBindingIds.size === 0 &&
+      context.sharedArrayBindingIds.size === 0)
   )
     return [];
   const found = new Set<string>();
@@ -3021,7 +3065,8 @@ function collectCellCapturedBindingIdsRust(
         expr.kind === 'identifier' &&
         expr.reference.kind === 'binding' &&
         (context.cellWrappedBindingIds.has(expr.reference.binding.id) ||
-          context.refCellWrappedBindingIds.has(expr.reference.binding.id))
+          context.refCellWrappedBindingIds.has(expr.reference.binding.id) ||
+          context.sharedArrayBindingIds.has(expr.reference.binding.id))
       ) {
         found.add(expr.reference.binding.id);
       }
@@ -3030,6 +3075,7 @@ function collectCellCapturedBindingIdsRust(
     },
   };
   expression.body.forEach((stmt) => analyzeIrStatementSubtreeTraversal(stmt, observer));
+  if (expression.expression) analyzeIrExpressionSubtreeTraversal(expression.expression, observer);
   return [...found];
 }
 
@@ -3056,12 +3102,41 @@ function emitClosureWithCellClonesRust(expression: Readonly<IrExpression>, conte
 // passed as it stands, because Rust reborrows it: taking a reference to it again would hand the
 // callee a reference to the reference.
 function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedArrayBindingIds.has(expression.reference.binding.id)
+  ) {
+    return `&mut *${emitIdentifierReferenceRust(expression.reference, context)}.borrow_mut()`;
+  }
   const source = emitExpression(expression, context);
   return expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
     context.referentMutatedParameterIds.has(expression.reference.binding.id)
     ? source
     : `&mut ${source}`;
+}
+
+function getRustSharedArrayBindingRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrBindingIdentity> | undefined {
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedArrayBindingIds.has(expression.reference.binding.id)
+    ? expression.reference.binding
+    : undefined;
+}
+
+function emitSharedArrayReceiverRust(
+  expression: Readonly<IrExpression>,
+  mutable: boolean,
+  context: EmitContext,
+): string {
+  const binding = getRustSharedArrayBindingRust(expression, context);
+  return binding
+    ? `${getBindingTargetNameRust(binding, context)}.${mutable ? 'borrow_mut' : 'borrow'}()`
+    : emitExpression(expression, context);
 }
 
 // A closure an iterator adaptor hands a reference to. The source wrote it for the element, so the
@@ -4313,6 +4388,26 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.type?.kind === 'unknown' && variable.initializer
       ? (inferIrExpressionTypeRust(variable.initializer, context) ?? variable.type)
       : variable.type;
+  if (context.sharedArrayBindingIds.has(variable.binding.id)) {
+    const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
+    if (type?.kind !== 'array' || !variable.initializer) {
+      emissionError(
+        context,
+        `shared array binding ${variable.binding.name} requires an initialized array representation`,
+        'rust-reference-shared-array-use-unrepresented',
+      );
+    }
+    context.needsRefCellImport.add('RefCell');
+    context.needsRcImport.add('Rc');
+    const name = getBindingTargetNameRust(variable.binding, context);
+    const initializer =
+      variable.initializer.kind === 'identifier' &&
+      variable.initializer.reference.kind === 'binding' &&
+      context.sharedArrayBindingIds.has(variable.initializer.reference.binding.id)
+        ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
+        : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
+    return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
+  }
   if (variable.initialValue === 'undefined') {
     if (!variable.type || !isNullableType(variable.type)) {
       emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
@@ -6001,3 +6096,5 @@ const rustMathSpreadFoldTargets: Readonly<Record<string, { folder: string; ident
   max: { folder: 'f64::max', identity: 'f64::NEG_INFINITY' },
   min: { folder: 'f64::min', identity: 'f64::INFINITY' },
 };
+
+const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set(['pop', 'push', 'reverse', 'shift', 'unshift']);

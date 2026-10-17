@@ -71,6 +71,21 @@ function compileRustSourceAgainstRuntime(contents: string): void {
   }
 }
 
+function runRustSource(contents: string, main: string): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-behavior-'));
+  try {
+    const subject = path.join(directory, 'subject.rs');
+    const executable = path.join(directory, 'subject');
+    writeFileSync(subject, `${contents}\nfn main() { ${main} }\n`);
+    const build = spawnSync('rustc', ['--edition', '2021', '-o', executable, subject], { encoding: 'utf8' });
+    if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+    const run = spawnSync(executable, [], { encoding: 'utf8' });
+    if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
 // A crate with two generated modules: the shape a namespace import needs, since a module alias only
 // resolves inside a crate that declares both modules. Type-checks the crate, which is the proof that the
 // alias and its member paths are real Rust.
@@ -7605,10 +7620,10 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub x: f64');
   });
 
-  it('refuses a deep clone that would split observable source identity', () => {
+  it('preserves shared mutable array identity with a local Rc RefCell carrier', () => {
     const result = lower(
       'shared-identity-clone.ts',
-      `export function observedLength(): number {
+      `export function aliasArray(): number {
         const items = [1];
         const alias = items;
         alias.push(2);
@@ -7617,13 +7632,104 @@ describe('emitIrModuleRust', () => {
     );
 
     expect(result.diagnostics).toEqual([]);
-    expect(() => emitIrModuleRust(result.module)).toThrow(
-      expect.objectContaining({
-        classification: 'compiler-restriction',
-        message: expect.stringContaining('deep Rust clone that would split source shared identity'),
-        rule: 'rust-shared-identity-deep-clone-unrepresented',
-      }),
-    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use std::cell::RefCell;');
+    expect(output).toContain('use std::rc::Rc;');
+    expect(output).toContain('let items: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(vec![1.0]));');
+    expect(output).toContain('let alias: Rc<RefCell<Vec<f64>>> = Rc::clone(&items);');
+    expect(output).toContain('alias.borrow_mut().push(2.0);');
+    expect(output).toContain('items.borrow().len() as f64');
+    expect(output).not.toContain('items.clone()');
+  });
+
+  it.skipIf(!rustcAvailable)('runs aliasArray with both aliases observing the mutation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-array.ts',
+        `export function aliasArray(): number {
+           const items = [1];
+           const alias = items;
+           alias.push(2);
+           return items.length;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(() => runRustSource(output, 'assert_eq!(alias_array(), 2.0);')).not.toThrow();
+  });
+
+  it('lends a shared array through one temporary mutable call borrow and reuses it afterwards', () => {
+    const provider = lower('provider.ts', 'export function append(items: number[]): void { items.push(2); }').module;
+    const consumer = lower(
+      'alias-call.ts',
+      `import { append } from './provider.js';
+       export function aliasCall(): number {
+           const items = [1];
+           const alias = items;
+           append(alias);
+           return items.length;
+         }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn append(items: &mut Vec<f64>)');
+    expect(output).toContain('append(&mut *alias.borrow_mut());');
+    expect(output).toContain('items.borrow().len() as f64');
+    if (rustcAvailable) {
+      expect(() => compileRustModulePair('provider', providerOutput, 'alias_call', output)).not.toThrow();
+    }
+  });
+
+  it('captures a shared array only in a proven synchronous non-escaping closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-closure.ts',
+        `export function aliasClosure(): number {
+           const items = [1];
+           const alias = items;
+           const append = (): void => { alias.push(2); };
+           append();
+           return items.length;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let alias = Rc::clone(&alias);');
+    expect(output).toContain('alias.borrow_mut().push(2.0)');
+    expect(output).toContain('items.borrow().len() as f64');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('refuses a shared-array borrow conflict instead of emitting a RefCell panic', () => {
+    const module = lower(
+      'alias-conflict.ts',
+      `export function aliasConflict(): number {
+         const items = [1];
+         const alias = items;
+         alias.push(items.length);
+         return alias.length;
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-reference-shared-array-borrow-conflict');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('refuses an unconstructed contextual callable-union return', () => {

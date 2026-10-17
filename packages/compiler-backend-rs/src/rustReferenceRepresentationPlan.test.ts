@@ -106,6 +106,101 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('elects one shared RefCell Vec carrier for a mutated local alias group', () => {
+    const module = lower(
+      'alias-array.ts',
+      `export function aliasArray(): number {
+         const values = [1];
+         const alias = values;
+         alias.push(2);
+         return values.length;
+       }`,
+    );
+    const first = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const second = createCompilerRustReferenceRepresentationPlan({ modules: [structuredClone(module)] });
+    const modulePlan = getModulePlan(first, module);
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(modulePlan.refusals).toEqual([]);
+    expect(
+      modulePlan.sharedArrayBindings.map(({ binding, representation }) => [binding.name, representation]).sort(),
+    ).toEqual([
+      ['alias', 'shared-ref-cell-vec'],
+      ['values', 'shared-ref-cell-vec'],
+    ]);
+  });
+
+  it('refuses overlapping shared-array borrows before emitting RefCell runtime failure', () => {
+    const module = lower(
+      'alias-conflict.ts',
+      `export function aliasConflict(): number {
+         const values = [1];
+         const alias = values;
+         alias.push(values.length);
+         return alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
+  });
+
+  it('refuses shared-array suspension and escaping closure capture', () => {
+    const suspended = lower(
+      'alias-suspended.ts',
+      `export async function aliasSuspended(task: Promise<void>): Promise<number> {
+         const values = [1];
+         const alias = values;
+         await task;
+         alias.push(2);
+         return values.length;
+       }`,
+    );
+    const escaping = lower(
+      'alias-escape.ts',
+      `export function aliasEscape(consume: (callback: () => void) => void): number {
+         const values = [1];
+         const alias = values;
+         consume(() => alias.push(2));
+         return values.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [suspended] }), suspended).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-array-suspension-unrepresented' }),
+      ]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [escaping] }), escaping).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-array-closure-escape-unrepresented' }),
+      ]),
+    );
+  });
+
+  it('refuses a mutable alias whose source identity group is ambiguous', () => {
+    const module = lower(
+      'alias-ambiguous.ts',
+      `export function aliasAmbiguous(flag: boolean): number {
+         const left = [1];
+         const right = [2];
+         const alias = flag ? left : right;
+         alias.push(3);
+         return alias.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-alias-ambiguous' })]);
+  });
+
   it('requires the versioned module-resolution contract', () => {
     const module = lower('value.ts', 'export const value = 1;');
     expect(() =>

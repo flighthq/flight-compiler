@@ -3,7 +3,7 @@ import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
-export type CompilerRustReferenceRepresentation = 'mutable-borrowed-vec';
+export type CompilerRustReferenceRepresentation = 'mutable-borrowed-vec' | 'shared-ref-cell-vec';
 
 export interface CompilerRustReferenceParameterPlan {
   readonly position: number;
@@ -20,7 +20,13 @@ export type CompilerRustReferenceRepresentationRefusalCode =
   | 'rust-reference-array-call-target-ambiguous'
   | 'rust-reference-array-call-target-unresolved'
   | 'rust-reference-array-argument-unrepresented'
-  | 'rust-reference-mutating-parameter-unrepresented';
+  | 'rust-reference-mutating-parameter-unrepresented'
+  | 'rust-reference-shared-array-alias-ambiguous'
+  | 'rust-reference-shared-array-binding-reassignment-unrepresented'
+  | 'rust-reference-shared-array-borrow-conflict'
+  | 'rust-reference-shared-array-closure-escape-unrepresented'
+  | 'rust-reference-shared-array-suspension-unrepresented'
+  | 'rust-reference-shared-array-use-unrepresented';
 
 export interface CompilerRustReferenceRepresentationRefusal {
   readonly code: CompilerRustReferenceRepresentationRefusalCode;
@@ -34,6 +40,11 @@ export interface CompilerRustReferenceModulePlan {
   /** Bindings whose array referent is mutated locally or by a planned callee. */
   readonly referentMutatedBindings: readonly IrBindingIdentity[];
   readonly refusals: readonly CompilerRustReferenceRepresentationRefusal[];
+  /** Local array aliases represented by one single-threaded shared RefCell carrier. */
+  readonly sharedArrayBindings: readonly Readonly<{
+    binding: IrBindingIdentity;
+    representation: Extract<CompilerRustReferenceRepresentation, 'shared-ref-cell-vec'>;
+  }>[];
 }
 
 export interface CompilerRustReferenceRepresentationPlan {
