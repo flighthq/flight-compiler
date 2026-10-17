@@ -141,6 +141,11 @@ interface RustSharedArrayTupleAnalysis {
   readonly refusals: readonly CompilerRustReferenceRepresentationRefusal[];
 }
 
+interface RustSharedArrayTupleShape {
+  readonly components: readonly Readonly<{ position: number; representation: 'shared-ref-cell-vec' }>[];
+  readonly primitiveName: 'boolean' | 'number' | 'string';
+}
+
 interface RustSharedHashCollectionAnalysis {
   readonly ambiguousBindingIds: ReadonlySet<string>;
   readonly bindingIds: Set<string>;
@@ -1096,13 +1101,17 @@ function createRustSharedArrayTupleAnalysis(
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
 ): RustSharedArrayTupleAnalysis {
   const variablesByBindingId = new Map<string, Readonly<IrNamedVariable>>();
-  const candidateBindingIds = new Set<string>();
+  const candidateCallsByBindingId = new Map<string, IrCallExpression[]>();
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       const binding = getRustSharedArrayTupleConcatSpreadBinding(expression);
       if (!binding) return undefined;
       const type = bindingTypes.get(binding.id);
-      if (type && isRustPotentialArrayOnlyTupleShape(type, module)) candidateBindingIds.add(binding.id);
+      if (type && isRustPotentialArrayOnlyTupleShape(type, module) && expression.kind === 'call') {
+        const calls = candidateCallsByBindingId.get(binding.id) ?? [];
+        calls.push(expression);
+        candidateCallsByBindingId.set(binding.id, calls);
+      }
       return undefined;
     },
     variable(variable) {
@@ -1112,12 +1121,19 @@ function createRustSharedArrayTupleAnalysis(
 
   const bindingPlans: CompilerRustSharedArrayTupleBindingPlan[] = [];
   const refusals: CompilerRustReferenceRepresentationRefusal[] = [];
-  for (const bindingId of [...candidateBindingIds].sort(compareTextCodeUnits)) {
+  for (const bindingId of [...candidateCallsByBindingId.keys()].sort(compareTextCodeUnits)) {
     const evidence = ownership.bindings.find((candidate) => candidate.binding.id === bindingId);
     if (!evidence) continue;
+    const candidateCalls = candidateCallsByBindingId.get(bindingId) ?? [];
     const subject = `${moduleKey(module)}:${bindingId}`;
     const tuple = resolveRustClosedLocalTypeAliasShape(evidence.type, module, new Set());
-    const components = tuple?.kind === 'tuple' ? getRustSharedArrayTupleComponents(tuple, module) : undefined;
+    const shape = tuple?.kind === 'tuple' ? getRustSharedArrayTupleShape(tuple, module) : undefined;
+    const components = shape?.components;
+    const shapeSupported =
+      shape !== undefined &&
+      candidateCalls.every((call) =>
+        isRustSharedArrayTupleConcatCarrierShape(call, shape.primitiveName, module, bindingTypes),
+      );
     const variable = variablesByBindingId.get(bindingId);
     const uses = evidence.uses.filter((use) => use.kind === 'read');
     const unsupportedUses = uses.filter((use) => !isRustSharedArrayTupleConcatSpreadUse(module, bindingId, use.path));
@@ -1135,21 +1151,21 @@ function createRustSharedArrayTupleAnalysis(
         !isRustSharedArrayTupleDenseInitializer(variable.initializer, components?.length)) ||
       unsupportedUses.some((use) => !isRustSharedArrayTupleCallableBoundaryUse(module, use.path));
 
-    const refusal = !components
+    const refusal = !shapeSupported
       ? {
-          code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented' as const,
+          code: 'rust-reference-shared-array-tuple-shape-unrepresented' as const,
           message: `array tuple binding ${evidence.binding.name} does not have one closed homogeneous required tuple of exact dense primitive arrays`,
           subject,
         }
       : flowUnsupported
         ? {
-            code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' as const,
+            code: 'rust-reference-shared-array-tuple-flow-unrepresented' as const,
             message: `array tuple binding ${evidence.binding.name} escapes the exact immutable local concat-spread flow`,
             subject,
           }
         : abiUnsupported
           ? {
-              code: 'rust-reference-shared-array-tuple-pack-abi-unrepresented' as const,
+              code: 'rust-reference-shared-array-tuple-abi-unrepresented' as const,
               message: `array tuple binding ${evidence.binding.name} crosses a callable or module ABI without tuple-pack propagation`,
               subject,
             }
@@ -1158,7 +1174,7 @@ function createRustSharedArrayTupleAnalysis(
       refusals.push(refusal);
       continue;
     }
-    bindingPlans.push({ binding: evidence.binding, components: components! });
+    if (components) bindingPlans.push({ binding: evidence.binding, components });
   }
   return { bindingPlans, refusals };
 }
@@ -1182,7 +1198,10 @@ function getRustSharedArrayTupleConcatSpreadBinding(
     expression.arguments[0].expression.reference.kind !== 'binding' ||
     expression.semantics.signature?.parameterCount !== 1 ||
     expression.semantics.signature.restParameter !== 0 ||
-    expression.semantics.signature.providedArgumentCount !== 'dynamic'
+    expression.semantics.signature.providedArgumentCount !== 'dynamic' ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined
   ) {
     return undefined;
   }
@@ -1240,10 +1259,10 @@ function resolveRustClosedLocalTypeAliasShape(
   return resolveRustClosedLocalTypeAliasShape(declaration.type, module, new Set(resolving).add(key));
 }
 
-function getRustSharedArrayTupleComponents(
+function getRustSharedArrayTupleShape(
   tuple: Readonly<Extract<IrType, { kind: 'tuple' }>>,
   module: Readonly<IrModule>,
-): readonly Readonly<{ position: number; representation: 'shared-ref-cell-vec' }>[] | undefined {
+): RustSharedArrayTupleShape | undefined {
   if (tuple.elements.length === 0 || tuple.elements.some((element) => element.optional || element.rest)) {
     return undefined;
   }
@@ -1261,7 +1280,48 @@ function getRustSharedArrayTupleComponents(
   });
   const primitiveName = primitiveNames[0];
   if (!primitiveName || primitiveNames.some((candidate) => candidate !== primitiveName)) return undefined;
-  return tuple.elements.map((_element, position) => ({ position, representation: 'shared-ref-cell-vec' }));
+  return {
+    components: tuple.elements.map((_element, position) => ({ position, representation: 'shared-ref-cell-vec' })),
+    primitiveName,
+  };
+}
+
+function isRustSharedArrayTupleConcatCarrierShape(
+  call: IrCallExpression,
+  primitiveName: RustSharedArrayTupleShape['primitiveName'],
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): boolean {
+  if (call.callee.kind !== 'property') return false;
+  const receiverType = getRustReferenceArrayExpressionType(call.callee.object, bindingTypes);
+  const receiver = receiverType ? resolveRustClosedLocalTypeAliasShape(receiverType, module, new Set()) : undefined;
+  const result = resolveRustClosedLocalTypeAliasShape(call.semantics.resultType, module, new Set());
+  const receiverElement =
+    receiver?.kind === 'array' ? resolveRustClosedLocalTypeAliasShape(receiver.element, module, new Set()) : undefined;
+  const resultElement =
+    result?.kind === 'array' ? resolveRustClosedLocalTypeAliasShape(result.element, module, new Set()) : undefined;
+  return (
+    receiver?.kind === 'array' &&
+    result?.kind === 'array' &&
+    !result.readonly &&
+    receiverElement?.kind === 'primitive' &&
+    receiverElement.name === primitiveName &&
+    resultElement?.kind === 'primitive' &&
+    resultElement.name === primitiveName
+  );
+}
+
+function getRustReferenceArrayExpressionType(
+  expression: Readonly<IrExpression>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): Readonly<IrType> | undefined {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    return bindingTypes.get(expression.reference.binding.id);
+  }
+  if (expression.kind === 'array') return expression.type;
+  if (expression.kind === 'cast') return expression.type;
+  if (expression.kind === 'call') return expression.semantics.resultType;
+  return undefined;
 }
 
 function isRustSharedArrayTupleDenseInitializer(

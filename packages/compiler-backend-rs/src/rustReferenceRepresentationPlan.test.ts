@@ -187,7 +187,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(modulePlan.sharedArrayTupleBindings).toEqual([]);
     expect(modulePlan.refusals).toEqual([
       expect.objectContaining({
-        code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented',
+        code: 'rust-reference-shared-array-tuple-shape-unrepresented',
         message: expect.stringContaining('pack'),
         subject: expect.stringContaining(
           module.declarations.flatMap((declaration) =>
@@ -231,11 +231,11 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
     expect(escapedPlan.sharedArrayTupleBindings).toEqual([]);
     expect(escapedPlan.refusals).toEqual([
-      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' }),
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-flow-unrepresented' }),
     ]);
     expect(parameterPlan.sharedArrayTupleBindings).toEqual([]);
     expect(parameterPlan.refusals).toEqual([
-      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-abi-unrepresented' }),
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-abi-unrepresented' }),
     ]);
   });
 
@@ -257,7 +257,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(second).toEqual(first);
     expect(first.sharedArrayTupleBindings).toEqual([]);
     expect(first.refusals).toEqual([
-      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-shape-unrepresented' }),
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-shape-unrepresented' }),
     ]);
 
     const flowBeforeAbi = lower(
@@ -277,7 +277,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
     expect(flowPlan.sharedArrayTupleBindings).toEqual([]);
     expect(flowPlan.refusals).toEqual([
-      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-pack-flow-unrepresented' }),
+      expect.objectContaining({ code: 'rust-reference-shared-array-tuple-flow-unrepresented' }),
     ]);
   });
 
