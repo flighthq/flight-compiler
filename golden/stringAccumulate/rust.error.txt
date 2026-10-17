@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/stringAccumulate.ts: ordinary array element read can be absent, but this use has no Rust Option carrier

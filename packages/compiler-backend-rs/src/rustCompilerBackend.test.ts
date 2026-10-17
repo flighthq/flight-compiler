@@ -30214,6 +30214,61 @@ describe('emitIrModuleRust proven-bounds array element reads', () => {
     expect(output).toContain('return values[index as usize].clone();');
   });
 
+  it('clones consumed String elements and borrows non-consuming String reads under dual bounds', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-string.ts',
+        `export function pick(values: readonly string[]): string {
+          let index = 0;
+          if (index >= 0 && index < values.length) { return values[index]; }
+          return "";
+        }
+        export function combine(values: readonly string[]): string {
+          let index = 0;
+          let result = "";
+          if (index >= 0 && index < values.length) { result = result + values[index]; }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return values[index as usize].clone();');
+    expect(output).toContain('result = format!("{}{}", result, values[index as usize]);');
+    expect(output).not.toContain('format!("{}{}", result, values[index as usize].clone())');
+  });
+
+  it('carries a String-array nonempty proof after exact abrupt empty guards', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-string-nonempty.ts',
+        `export function first(values: string[]): string {
+          if (values.length === 0) return "";
+          return values[0];
+        }
+        export function firstOrThrow(values: readonly string[]): string {
+          if (0 === values.length) { throw "empty"; }
+          return values[0];
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/return values\[0\]\.clone\(\);/gu)).toHaveLength(2);
+  });
+
+  it('keeps absence-observed String reads on the Option lane after a nonempty guard', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bounds-string-nonempty-option.ts',
+        `export function first(values: readonly string[]): string {
+          if (values.length === 0) return "";
+          return values[0] ?? "";
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('.get(array_index as usize).cloned()');
+  });
+
   it.each([
     {
       name: 'a guard on a different array',
@@ -30273,9 +30328,97 @@ describe('emitIrModuleRust proven-bounds array element reads', () => {
         return 0;
       }`,
     },
+    {
+      name: 'a non-abrupt empty String-array check',
+      source: `export function read(values: readonly string[]): string {
+        if (values.length === 0) { const marker = 0; }
+        return values[0];
+      }`,
+    },
+    {
+      name: 'an empty String-array check with an else',
+      source: `export function read(values: readonly string[]): string {
+        if (values.length === 0) return ""; else { const marker = 0; }
+        return values[0];
+      }`,
+    },
+    {
+      name: 'an empty check on a different String array',
+      source: `export function read(values: readonly string[], other: readonly string[]): string {
+        if (other.length === 0) return "";
+        return values[0];
+      }`,
+    },
+    {
+      name: 'a String-array mutation after an empty check',
+      source: `export function read(values: string[]): string {
+        if (values.length === 0) return "";
+        values.pop();
+        return values[0];
+      }`,
+    },
+    {
+      name: 'a reachable String-array call after an empty check',
+      source: `function touch(values: string[]): void { values.push("x"); }
+      export function read(values: string[]): string {
+        if (values.length === 0) return "";
+        touch(values);
+        return values[0];
+      }`,
+    },
+    {
+      name: 'a generic array carrier',
+      source: `export function read<T>(values: T[]): T {
+        if (values.length === 0) throw "empty";
+        return values[0];
+      }`,
+    },
+    {
+      name: 'a nested String-array carrier',
+      source: `export function read(values: string[][]): string[] {
+        if (values.length === 0) throw "empty";
+        return values[0];
+      }`,
+    },
+    {
+      name: 'a nonzero literal read after an empty check',
+      source: `export function read(values: readonly string[]): string {
+        if (values.length === 0) return "";
+        return values[1];
+      }`,
+    },
+    {
+      name: 'a nonliteral zero read after an empty check',
+      source: `export function read(values: readonly string[]): string {
+        const index = 0;
+        if (values.length === 0) return "";
+        return values[index];
+      }`,
+    },
+    {
+      name: 'a union array carrier under dual bounds',
+      source: `export function read(values: string[] | number[]): string | number {
+        let index = 0;
+        if (index >= 0 && index < values.length) return values[index];
+        return "";
+      }`,
+    },
   ])('keeps $name on the absence refusal', ({ source }) => {
     expect(getEmissionRule(() => emitIrModuleRust(lower('bounds-refused.ts', source).module))).toBe(
       'rust-array-index-result-absence-unrepresented',
+    );
+  });
+
+  it('keeps shared String-array carriers on their existing identity refusal', () => {
+    const source = `export function read(): boolean {
+      const values = ["x"];
+      const alias = values;
+      if (values.length === 0) return false;
+      return values[0] === "x" && alias.length > 0;
+    }`;
+
+    expect(getEmissionRule(() => emitIrModuleRust(lower('bounds-shared-string.ts', source).module))).toBe(
+      'rust-shared-identity-deep-clone-unrepresented',
     );
   });
 
@@ -30584,6 +30727,25 @@ describe('emitIrModuleRust monotone while-loop array reads', () => {
     expect(output).toContain('total = total + values[i as usize];');
   });
 
+  it('borrows exact owned String elements throughout monotone loops', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'monotone-string.ts',
+        `export function join(values: readonly string[]): string {
+          let result = "";
+          for (let index = 0; index < values.length; index++) {
+            result = result + values[index];
+          }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('while index < (values.len() as f64) {');
+    expect(output).toContain('result = format!("{}{}", result, values[index as usize]);');
+    expect(output).not.toContain('values[index as usize].clone()');
+  });
+
   it('keeps an inherited dual-bound proof out of a nested loop while allowing the loop its own proof', () => {
     expect(
       getEmissionRule(() =>
@@ -30740,15 +30902,6 @@ describe('emitIrModuleRust monotone while-loop array reads', () => {
         let index = 0;
         while (index < values.length) { total = total + values[index]; index = index + 1; }
         return total;
-      }`,
-    },
-    {
-      name: 'a string element',
-      source: `export function scan(values: readonly string[]): number {
-        let text = "";
-        let index = 0;
-        while (index < values.length) { text = text + values[index]; index = index + 1; }
-        return text === "x" ? 1 : 0;
       }`,
     },
     {

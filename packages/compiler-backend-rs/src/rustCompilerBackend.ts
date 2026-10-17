@@ -16360,19 +16360,24 @@ function createRustArrayBoundsPlan(
   return { elementPlaces, optionElementReads, provenElementProofs };
 }
 
-type RustArrayBoundsProofKind = 'dual-bound' | 'monotone';
+type RustArrayBoundsProofKind = 'dual-bound' | 'monotone' | 'nonempty-zero';
 
-type RustArrayBoundsProvenGuard = Readonly<{
-  arrayBindingId: string;
-  indexBindingId: string;
-}> &
-  (
-    | Readonly<{ kind: 'dual-bound' }>
-    | Readonly<{
-        kind: 'monotone';
-        monotoneLoop: Readonly<Extract<IrStatement, { kind: 'while' }>>;
-      }>
-  );
+type RustArrayBoundsProvenGuard =
+  | Readonly<{
+      arrayBindingId: string;
+      indexBindingId: string;
+      kind: 'dual-bound';
+    }>
+  | Readonly<{
+      arrayBindingId: string;
+      indexBindingId: string;
+      kind: 'monotone';
+      monotoneLoop: Readonly<Extract<IrStatement, { kind: 'while' }>>;
+    }>
+  | Readonly<{
+      arrayBindingId: string;
+      kind: 'nonempty-zero';
+    }>;
 
 interface RustArrayIndexWrite {
   readonly node: Readonly<Extract<IrExpression, { kind: 'assignment' | 'unary' }>>;
@@ -16402,10 +16407,10 @@ interface RustArrayBoundsProvenReadContext {
   readonly writeTargetElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
 }
 
-// A proven read exists only under a guard that dominates it: the condition's two bounds hold when the
-// branch is entered, the read names exactly those bindings, and nothing in between can change either
-// binding or the array's length. The walk follows statement structure rather than visit order because
-// a loop's condition is evaluated before its body on every iteration.
+// A proven read exists only under evidence that dominates it: either the condition's bounds hold when
+// a branch or loop is entered, or an exact empty check exits before literal zero is read. The read names
+// exactly those bindings, and nothing in between can change the index binding or array length. The walk
+// follows statement structure rather than visit order because a loop condition runs before every body.
 function collectRustProvenBoundsElementReadsRust(
   module: Readonly<IrModule>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
@@ -16647,7 +16652,12 @@ function walkRustGuardedStatementRust(
       if (statement.otherwise) {
         walkRustGuardedStatementRust(statement.otherwise, conditionGuards, context, triangularScopeEligible);
       }
-      return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
+      const survivingGuards = filterRustArrayBoundsGuardsRust(
+        guards,
+        collectRustGuardedStatementInvalidatingBindingIdsRust(statement),
+      );
+      const fallthroughGuard = createRustArrayNonemptyFallthroughGuardRust(statement, context);
+      return fallthroughGuard ? [...survivingGuards, fallthroughGuard] : survivingGuards;
     }
     case 'return':
       if (statement.expression) markRustGuardedExpressionReadsRust(statement.expression, guards, context);
@@ -16722,7 +16732,9 @@ function filterRustArrayBoundsGuardsRust(
   invalidatingBindingIds: ReadonlySet<string>,
 ): readonly RustArrayBoundsProvenGuard[] {
   return guards.filter(
-    (guard) => !invalidatingBindingIds.has(guard.indexBindingId) && !invalidatingBindingIds.has(guard.arrayBindingId),
+    (guard) =>
+      !invalidatingBindingIds.has(guard.arrayBindingId) &&
+      (!('indexBindingId' in guard) || !invalidatingBindingIds.has(guard.indexBindingId)),
   );
 }
 
@@ -16738,26 +16750,30 @@ function markRustGuardedExpressionReadsRust(
       if (context.excludedWriteElements.has(node)) return;
       const object = node.object;
       const index = node.index;
-      if (
-        object.kind !== 'identifier' ||
-        object.reference.kind !== 'binding' ||
-        index.kind !== 'identifier' ||
-        index.reference.kind !== 'binding'
-      ) {
-        return;
-      }
+      if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return;
       const arrayBindingId = object.reference.binding.id;
-      const indexBindingId = index.reference.binding.id;
-      const matching = guards.filter(
-        (guard) => guard.arrayBindingId === arrayBindingId && guard.indexBindingId === indexBindingId,
-      );
+      const indexBindingId =
+        index.kind === 'identifier' && index.reference.kind === 'binding' ? index.reference.binding.id : undefined;
+      const matching = guards.filter((guard) => {
+        if (guard.arrayBindingId !== arrayBindingId) return false;
+        if (guard.kind === 'nonempty-zero') return isRustZeroLiteralRust(index);
+        return indexBindingId !== undefined && guard.indexBindingId === indexBindingId;
+      });
       if (matching.length === 0) return;
       // The staged compound/update write lane owns only dual-bound evidence. A monotone proof may
-      // protect reads, but it never marks a write target as writable under that lane.
-      if (context.writeTargetElements.has(node) && matching.every((guard) => guard.kind === 'monotone')) {
+      // protect reads, and a fallthrough proof may protect literal zero, but neither marks a write
+      // target as writable under that lane.
+      if (context.writeTargetElements.has(node) && matching.every((guard) => guard.kind !== 'dual-bound')) {
         return;
       }
-      context.proven.set(node, matching.some((guard) => guard.kind === 'dual-bound') ? 'dual-bound' : 'monotone');
+      context.proven.set(
+        node,
+        matching.some((guard) => guard.kind === 'dual-bound')
+          ? 'dual-bound'
+          : matching.some((guard) => guard.kind === 'monotone')
+            ? 'monotone'
+            : 'nonempty-zero',
+      );
     },
   });
 }
@@ -16918,7 +16934,7 @@ function collectRustGuardedExpressionInvalidatingBindingIdsRust(expression: Read
 function createRustArrayBoundsProvenGuardRust(
   condition: Readonly<IrExpression>,
   context: RustArrayBoundsProvenReadContext,
-): RustArrayBoundsProvenGuard | undefined {
+): Extract<RustArrayBoundsProvenGuard, { kind: 'dual-bound' }> | undefined {
   if (condition.kind !== 'binary' || condition.operator !== '&&') return undefined;
   const left = parseRustArrayBoundsGuardConjunctRust(condition.left);
   const right = parseRustArrayBoundsGuardConjunctRust(condition.right);
@@ -16931,8 +16947,45 @@ function createRustArrayBoundsProvenGuardRust(
   if (indexType?.kind !== 'primitive' || indexType.name !== 'number') return undefined;
   const arrayType = context.bindingTypes.get(upper.array.id);
   if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive') return undefined;
-  if (arrayType.element.name !== 'number' && arrayType.element.name !== 'boolean') return undefined;
+  if (
+    arrayType.element.name !== 'number' &&
+    arrayType.element.name !== 'boolean' &&
+    arrayType.element.name !== 'string'
+  ) {
+    return undefined;
+  }
+  if (arrayType.element.name === 'string' && context.sharedArrayBindingIds.has(upper.array.id)) return undefined;
   return { arrayBindingId: upper.array.id, indexBindingId: lower.binding.id, kind: 'dual-bound' };
+}
+
+// An abrupt empty branch makes the following path nonempty. This deliberately proves only literal
+// zero on an owned exact String array: broader indices still need ordinary bounds, and a shared
+// carrier could change length through an alias between the guard and read.
+function createRustArrayNonemptyFallthroughGuardRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'if' }>>,
+  context: RustArrayBoundsProvenReadContext,
+): Extract<RustArrayBoundsProvenGuard, { kind: 'nonempty-zero' }> | undefined {
+  if (statement.otherwise || !isRustUnconditionallyAbruptStatementRust(statement.consequent)) return undefined;
+  const condition = statement.condition;
+  if (condition.kind !== 'binary' || condition.operator !== '===') return undefined;
+  const array = isRustZeroLiteralRust(condition.left)
+    ? asRustArrayLengthPropertyBindingRust(condition.right)
+    : isRustZeroLiteralRust(condition.right)
+      ? asRustArrayLengthPropertyBindingRust(condition.left)
+      : undefined;
+  if (!array || context.sharedArrayBindingIds.has(array.id)) return undefined;
+  const arrayType = context.bindingTypes.get(array.id);
+  if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive' || arrayType.element.name !== 'string') {
+    return undefined;
+  }
+  return { arrayBindingId: array.id, kind: 'nonempty-zero' };
+}
+
+function isRustUnconditionallyAbruptStatementRust(statement: Readonly<IrStatement>): boolean {
+  if (statement.kind === 'return' || statement.kind === 'throw') return true;
+  if (statement.kind !== 'block') return false;
+  const last = statement.statements.at(-1);
+  return last !== undefined && isRustUnconditionallyAbruptStatementRust(last);
 }
 
 // A while loop with only the upper bound can still prove the same read when the index is inductively
@@ -16942,14 +16995,14 @@ function createRustArrayBoundsProvenGuardRust(
 function createRustMonotoneArrayBoundsProvenGuardRust(
   statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
   context: RustArrayBoundsProvenReadContext,
-): RustArrayBoundsProvenGuard | undefined {
+): Extract<RustArrayBoundsProvenGuard, { kind: 'monotone' }> | undefined {
   const upper = parseRustArrayBoundsGuardConjunctRust(statement.condition);
   if (!upper || upper.kind !== 'upper') return undefined;
   const indexType = context.bindingTypes.get(upper.index.id);
   if (indexType?.kind !== 'primitive' || indexType.name !== 'number') return undefined;
   const arrayType = context.bindingTypes.get(upper.array.id);
   if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive') return undefined;
-  if (arrayType.element.name !== 'number') return undefined;
+  if (arrayType.element.name !== 'number' && arrayType.element.name !== 'string') return undefined;
   if (context.sharedArrayBindingIds.has(upper.array.id)) return undefined;
   const evidence = context.integerEvidence.get(upper.index.id);
   if (!evidence || !evidence.declared || evidence.parameter) return undefined;
@@ -17018,7 +17071,7 @@ function createRustDerivedMonotoneArrayBoundsProvenGuardRust(
   statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
   outerIndexBindingId: string,
   context: RustArrayBoundsProvenReadContext,
-): RustArrayBoundsProvenGuard | undefined {
+): Extract<RustArrayBoundsProvenGuard, { kind: 'monotone' }> | undefined {
   const upper = parseRustArrayBoundsGuardConjunctRust(statement.condition);
   if (!upper || upper.kind !== 'upper') return undefined;
   const indexType = context.bindingTypes.get(upper.index.id);
