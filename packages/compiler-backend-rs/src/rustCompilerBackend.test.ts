@@ -21815,3 +21815,76 @@ describe('createRustCompilerBackend finalization failures', () => {
     expect((failure as Readonly<{ kind?: string }>).kind).toBeUndefined();
   });
 });
+
+describe('emitIrModuleRust package specifier modules', () => {
+  function packageSession(modules: readonly Readonly<IrModule>[], edges: CompilerModuleResolutionPlan['edges']) {
+    return createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges, schema: 'flight-compiler-module-resolution/1' },
+      modules,
+      options: {},
+    });
+  }
+
+  it('spells a subpath lane with its module path for a value and a type', () => {
+    const consumer = lowerPackage(
+      '@alpha/app',
+      'consumer.ts',
+      "import { helper } from '@beta/lib/sub.js';\nimport type { Value } from '@beta/lib/sub.js';\nexport { helper };\nexport type Alias = Value;",
+    ).module;
+    const beta = lowerPackage(
+      '@beta/lib',
+      'sub.ts',
+      'export interface Value { size: number }\nexport function helper(): number { return 1; }',
+    ).module;
+    const session = packageSession(
+      [consumer, beta],
+      [
+        {
+          specifier: '@beta/lib/sub.js',
+          target: getRustTestModuleIdentity(beta),
+        },
+      ],
+    );
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('use beta_lib::sub::helper;');
+    expect(output).toContain('use beta_lib::sub::Value;');
+  });
+
+  it('keeps a root-lane package import at the crate root', () => {
+    const consumer = lowerPackage(
+      '@alpha/app',
+      'consumer.ts',
+      "import { helper } from '@beta/lib';\nexport { helper };",
+    ).module;
+    const beta = lowerPackage('@beta/lib', 'index.ts', 'export function helper(): number { return 1; }').module;
+    const session = packageSession(
+      [consumer, beta],
+      [{ specifier: '@beta/lib', target: getRustTestModuleIdentity(beta) }],
+    );
+
+    expect(session.emitModule(consumer)[0]!.contents).toContain('use beta_lib::helper;');
+  });
+
+  it('keeps the ambiguous-target refusal defensive because the structural plan validator refuses that plan first', () => {
+    // A plan that names two targets for one request never reaches the emitter: the structural lowering
+    // pass refuses it before any backend code runs, so the emission rule is a second line of defence and
+    // is pinned as source coverage rather than through a plan that cannot exist.
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    expect(source.split("'rust-package-import-target-ambiguous'").length - 1).toBe(1);
+
+    const consumer = lowerPackage(
+      '@alpha/app',
+      'consumer.ts',
+      "import { helper } from '@beta/lib/sub.js';\nexport { helper };",
+    ).module;
+    const first = lowerPackage('@beta/lib', 'sub.ts', 'export function helper(): number { return 1; }').module;
+    const second = lowerPackage('@gamma/lib', 'sub.ts', 'export function helper(): number { return 2; }').module;
+    const edges: CompilerModuleResolutionPlan['edges'] = [
+      { specifier: '@beta/lib/sub.js', target: getRustTestModuleIdentity(first) },
+      { specifier: '@beta/lib/sub.js', target: getRustTestModuleIdentity(second) },
+    ];
+
+    expect(() => packageSession([consumer, first, second], edges).emitModule(consumer)).toThrow(TypeError);
+  });
+});

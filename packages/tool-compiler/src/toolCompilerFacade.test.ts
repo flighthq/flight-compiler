@@ -378,3 +378,73 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     expect(failure?.message).toContain('which is not selected for this output');
   });
 });
+
+describe('@flighthq/tool-compiler package subpath imports', () => {
+  const compile = (
+    consumerSource: string,
+    betaSource: string,
+    betaFile: string,
+    specifier: string,
+    betaSourcePath: string,
+  ) => {
+    const sources = [
+      {
+        packageName: '@alpha/app',
+        upstreamDirectory: '/flight',
+        sourceFile: parseTypeScriptSource('/flight/packages/app/src/consumer.ts', consumerSource),
+      },
+      {
+        packageName: '@beta/lib',
+        upstreamDirectory: '/flight',
+        sourceFile: parseTypeScriptSource(betaSourcePath, betaSource),
+      },
+    ];
+    return compileTypeScriptModules({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      moduleResolution: {
+        edges: [{ specifier, target: { packageName: '@beta/lib', source: betaFile } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      sources,
+    });
+  };
+
+  it('spells a subpath lane with its module path for a value and a type, deterministically', () => {
+    const source = (): string =>
+      "import { helper } from '@beta/lib/sub.js';\nimport type { Value } from '@beta/lib/sub.js';\nexport { helper };\nexport type Alias = Value;";
+    const beta = 'export interface Value { size: number }\nexport function helper(): number { return 1; }';
+    const first = compile(
+      source(),
+      beta,
+      'packages/lib/src/sub.ts',
+      '@beta/lib/sub.js',
+      '/flight/packages/lib/src/sub.ts',
+    );
+    const second = compile(
+      source(),
+      beta,
+      'packages/lib/src/sub.ts',
+      '@beta/lib/sub.js',
+      '/flight/packages/lib/src/sub.ts',
+    );
+    const consumerFile = first.compilation.files.find(({ path }) => path === 'alpha-app/src/consumer.rs');
+
+    expect(consumerFile?.contents).toContain('use beta_lib::sub::helper;');
+    expect(consumerFile?.contents).toContain('use beta_lib::sub::Value;');
+    expect(second.compilation.files).toEqual(first.compilation.files);
+  });
+
+  it('keeps a root-lane package import at the crate root', () => {
+    const result = compile(
+      "import { helper } from '@beta/lib';\nexport { helper };",
+      'export function helper(): number { return 1; }',
+      'packages/lib/src/index.ts',
+      '@beta/lib',
+      '/flight/packages/lib/src/index.ts',
+    );
+    const consumerFile = result.compilation.files.find(({ path }) => path === 'alpha-app/src/consumer.rs');
+
+    expect(consumerFile?.contents).toContain('use beta_lib::helper;');
+  });
+});

@@ -9019,11 +9019,11 @@ function getTypeBindingTargetNameRust(
 
 function getRustQualifiedTypeName(module: Readonly<IrModule>, name: string, context: EmitContext): string {
   const targetName = safeRustTypeName(name);
-  if (module.packageName === context.module.packageName) {
-    const modulePath = getRustModulePathRust(module, context.sourceModules);
-    return modulePath.length === 0 ? `crate::${targetName}` : `crate::${modulePath.join('::')}::${targetName}`;
-  }
-  return `${convertPackageNameToRustCrateName(module.packageName).replaceAll('-', '_')}::${targetName}`;
+  const base =
+    module.packageName === context.module.packageName
+      ? 'crate'
+      : convertPackageNameToRustCrateName(module.packageName).replaceAll('-', '_');
+  return `${formatRustModuleCratePathRust(getRustModulePathRust(module, context.sourceModules), base)}::${targetName}`;
 }
 
 function assertStructuralObjectCompatibilityRust(
@@ -10611,11 +10611,7 @@ function getRustArrayFindIndexCallbackBodyRust(
   let found: Readonly<Extract<IrExpression, { kind: 'function' }>> | undefined;
   analyzeIrModuleTraversal(context.module, {
     variable(variable) {
-      if (
-        'binding' in variable &&
-        variable.binding.id === bindingId &&
-        variable.initializer?.kind === 'function'
-      ) {
+      if ('binding' in variable && variable.binding.id === bindingId && variable.initializer?.kind === 'function') {
         found = variable.initializer;
         return false;
       }
@@ -11661,6 +11657,22 @@ function rustImportModule(specifier: string, context: EmitContext): string {
     const resolved = /\.tsx?$/u.test(target) ? target : `${target}.ts`;
     return getRustModuleCratePathFromSourceRust(resolved, context.module.packageName, context.sourceModules);
   }
+  // A non-relative specifier names a module a package lane exported; the lane decides which module, so
+  // the graph is the only evidence that can spell it. Only when no edge answers is the crate root the
+  // best available answer, and two distinct targets are a refusal rather than a guess.
+  const specifierTargets = resolveRustImportSpecifierTargetsRust(specifier, context);
+  if (specifierTargets.kind === 'ambiguous') {
+    emissionRuleError(
+      context,
+      `package import ${specifier} resolves to multiple Rust modules (${specifierTargets.targets
+        .map(formatRustImportTargetSubjectRust)
+        .join(', ')})`,
+      'rust-package-import-target-ambiguous',
+    );
+  }
+  if (specifierTargets.kind === 'resolved') {
+    return getRustPackageModuleCratePathRust(specifierTargets.target, context);
+  }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
     if (!packageName) {
@@ -11781,8 +11793,60 @@ function getRustModulePathRust(
   ).modulePath;
 }
 
-function formatRustModuleCratePathRust(modulePath: readonly string[]): string {
-  return modulePath.length === 0 ? 'crate' : `crate::${modulePath.join('::')}`;
+function formatRustModuleCratePathRust(modulePath: readonly string[], base = 'crate'): string {
+  return modulePath.length === 0 ? base : `${base}::${modulePath.join('::')}`;
+}
+
+// The module-path spelling of a target named by a non-relative specifier: a same-package target stays
+// inside this crate, and another package's target is reached through its crate name.
+function getRustPackageModuleCratePathRust(
+  target: Readonly<{ packageName: string; source: string }>,
+  context: EmitContext,
+): string {
+  const base =
+    target.packageName === context.module.packageName
+      ? 'crate'
+      : convertPackageNameToRustCrateName(target.packageName).replaceAll('-', '_');
+  const modulePath = createRustCompilerModuleLocator(
+    { packageName: target.packageName, source: target.source },
+    { multiPackage: isRustMultiPackageGraphRust(context.sourceModules) },
+  ).modulePath;
+  return formatRustModuleCratePathRust(modulePath, base);
+}
+
+type RustImportSpecifierTargets =
+  | Readonly<{ kind: 'ambiguous'; targets: readonly Readonly<{ packageName: string; source: string }>[] }>
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'resolved'; target: Readonly<{ packageName: string; source: string }> }>;
+
+// Which module one non-relative specifier names, from the edges that answer for this importer. The
+// imported names an edge lists describe one request, not the module's identity, so they are ignored
+// here: one specifier has one target module.
+function resolveRustImportSpecifierTargetsRust(specifier: string, context: EmitContext): RustImportSpecifierTargets {
+  const matching = (context.moduleResolution?.edges ?? []).filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter(
+    (edge) => edge.importer && isRustCompilerModuleIdentityEqual(edge.importer, context.module),
+  );
+  const scoped = exact.length > 0 ? exact : matching.filter((edge) => edge.importer === undefined);
+  const targets = new Map<string, Readonly<{ packageName: string; source: string }>>();
+  for (const edge of scoped) {
+    const target = { packageName: edge.target.packageName, source: edge.target.source };
+    targets.set(formatRustImportTargetSubjectRust(target), target);
+  }
+  if (targets.size === 0) return { kind: 'none' };
+  if (targets.size > 1) {
+    return {
+      kind: 'ambiguous',
+      targets: [...targets.entries()]
+        .sort(([left], [right]) => compareTextCodeUnits(left, right))
+        .map(([, target]) => target),
+    };
+  }
+  return { kind: 'resolved', target: [...targets.values()][0]! };
+}
+
+function formatRustImportTargetSubjectRust(target: Readonly<{ packageName: string; source: string }>): string {
+  return `${target.packageName}/${path.posix.normalize(target.source)}`;
 }
 
 function isRustMultiPackageGraphRust(sourceModules: readonly Readonly<IrModule>[]): boolean {
