@@ -5853,16 +5853,29 @@ function emitCallArgumentsRust(
       const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameter.type, context);
       if (constructed) return constructed;
     }
-    if (
-      !optionalSharedClass &&
-      methodParameter &&
-      hasIrTypeContextualGeneralUnionCandidateRust(
-        methodParameter.type,
-        createRustUnionRepresentationPlanForTypeRust(methodParameter.type, context),
-        context,
-      )
-    ) {
-      refuseRustContextualGeneralUnionConstructionRust(context);
+    if (!optionalSharedClass && methodParameter) {
+      const methodUnionPlan = createRustUnionRepresentationPlanForTypeRust(methodParameter.type, context);
+      if (
+        hasIrTypeContextualGeneralUnionCandidateRust(methodParameter.type, methodUnionPlan, context) &&
+        methodUnionPlan.kind === 'nominalEnum' &&
+        hasRustExactGenericApplicationUnionArmRust(argument, methodUnionPlan, context)
+      ) {
+        if (
+          (referencedMethod?.method.typeParameters.length ?? 0) > 0 ||
+          methodParameter.rest ||
+          methodParameter.optional ||
+          methodParameter.initializer !== undefined ||
+          argument.kind === 'spread' ||
+          representation !== undefined
+        ) {
+          refuseRustContextualGeneralUnionConstructionRust(context);
+        }
+        const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameter.type, context);
+        if (constructed) return constructed;
+      }
+      if (hasIrTypeContextualGeneralUnionCandidateRust(methodParameter.type, methodUnionPlan, context)) {
+        refuseRustContextualGeneralUnionConstructionRust(context);
+      }
     }
     return isRustOptionalSharedClassRepresentation(representation)
       ? emitSharedClassCarrierExpressionRust(argument, representation, context)
@@ -9612,6 +9625,15 @@ interface RustExactAliasTransparentRecordArrayIdentity {
   readonly kind: 'arrayRecord';
 }
 
+interface RustExactGenericApplicationIdentity {
+  readonly arguments: readonly RustExactGenericArgumentIdentity[];
+  readonly declarationKey: string;
+}
+
+type RustExactGenericArgumentIdentity =
+  | Readonly<{ declarationKey: string; kind: 'declaration' }>
+  | Readonly<{ application: RustExactGenericApplicationIdentity; kind: 'application' }>;
+
 // Contextual unions get one construction boundary for returns, stores, calls, and assertions. A
 // single payload plus one sentinel is the Option carrier Rust already uses, and must be claimed
 // before nominal-enum construction. Both paths require exact representation evidence; evaluating an
@@ -9687,7 +9709,8 @@ function emitExactContextualGeneralUnionConstructionRust(
       (variant) =>
         getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context) !== undefined ||
         getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context) !== undefined,
-    )
+    ) &&
+    !hasRustExactGenericApplicationUnionArmRust(expression, plan, context)
   ) {
     return undefined;
   }
@@ -9737,6 +9760,9 @@ function emitExactContextualGeneralUnionConstructionRust(
 
   const recordArray = emitExactAliasTransparentRecordArrayUnionConstructionRust(expression, plan, context);
   if (recordArray) return recordArray;
+
+  const genericApplication = emitExactGenericApplicationUnionConstructionRust(expression, plan, context);
+  if (genericApplication) return genericApplication;
 
   const sourceType = getIrExpressionExactNominalRecordTypeRust(expression, context);
   const sourceIdentity = sourceType ? getIrExactNominalRecordIdentityRust(sourceType, context) : undefined;
@@ -9794,6 +9820,51 @@ function emitExactAliasTransparentRecordArrayUnionConstructionRust(
     const identity = getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context);
     return identity?.elementDeclarationKey === sourceIdentity.elementDeclarationKey;
   });
+  if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
+  const operand = emitOwnedOperandRust(expression, context);
+  return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
+}
+
+// A generic application selects a nominal union arm only when the source application and the arm's
+// application have the same declaration and the same concrete argument declarations. Nothing is
+// rendered to decide that: alias spelling, source naming, and the target's own `Box` spelling are
+// observational. The direct binding is moved into the already-represented arm with no conversion.
+function emitExactGenericApplicationUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    expression.presence === 'narrowedPresent' ||
+    context.moduleStateBindings.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!sourceType || sourceType.kind === 'union') return undefined;
+  const sourceIdentity = getRustExactGenericApplicationIdentityRust(sourceType, context);
+  if (!sourceIdentity) return undefined;
+  const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  if (
+    context.activeTypeParameters.length > 0 ||
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    ownerIdentity?.location.declaration.kind !== 'typeAlias' ||
+    ownerIdentity.location.declaration.typeParameters.length > 0 ||
+    ownerIdentity.location.declaration.type.kind !== 'union' ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const matches = plan.valueVariants.filter((variant) =>
+    areRustExactGenericApplicationIdentitiesEqualRust(
+      getRustExactGenericApplicationIdentityRust(variant.sourceAlternative, context),
+      sourceIdentity,
+    ),
+  );
   if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
   const operand = emitOwnedOperandRust(expression, context);
   return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
@@ -10169,6 +10240,130 @@ function resolveRustExactAliasTransparentRecordArrayIdentityRust(
     new Set(resolving).add(declarationKey),
     depth + 1,
   );
+}
+
+// A source generic application is identified by its declaration and by the declarations its concrete
+// arguments reach, never by a rendered spelling: a type alias and its target spell differently, a
+// source declaration determines the target name, and Rust's own prelude `Box` is not a source
+// declaration at all. Following an alias chain is observational and stops on a cycle.
+function getRustExactGenericApplicationIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactGenericApplicationIdentity | undefined {
+  return resolveRustExactGenericApplicationIdentityRust(type, context, new Set(), 0);
+}
+
+function resolveRustExactGenericApplicationIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactGenericApplicationIdentity | undefined {
+  if (depth > 8) return undefined;
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length === 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  if (
+    declaration.kind !== 'interface' ||
+    declaration.typeParameters.length !== type.typeArguments.length ||
+    declaration.indexSignature !== undefined ||
+    declaration.properties.some((property) => property.type.kind === 'function')
+  ) {
+    return undefined;
+  }
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+  const arguments_ = type.typeArguments.map((argument) =>
+    resolveRustExactGenericArgumentIdentityRust(argument, context, resolving, depth + 1),
+  );
+  const identities = arguments_.filter(
+    (identity): identity is RustExactGenericArgumentIdentity => identity !== undefined,
+  );
+  return identities.length === arguments_.length ? { arguments: identities, declarationKey } : undefined;
+}
+
+function resolveRustExactGenericArgumentIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactGenericArgumentIdentity | undefined {
+  if (depth > 8) return undefined;
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return undefined;
+  }
+  if (type.typeArguments.length > 0) {
+    const application = resolveRustExactGenericApplicationIdentityRust(type, context, resolving, depth);
+    return application ? { application, kind: 'application' } : undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+  if (resolving.has(declarationKey) || declaration.typeParameters.length > 0) return undefined;
+  if (declaration.kind === 'interface') return { declarationKey, kind: 'declaration' };
+  if (declaration.type.kind === 'object') return { declarationKey, kind: 'declaration' };
+  return resolveRustExactGenericArgumentIdentityRust(
+    declaration.type,
+    context,
+    new Set(resolving).add(declarationKey),
+    depth + 1,
+  );
+}
+
+function areRustExactGenericApplicationIdentitiesEqualRust(
+  left: Readonly<RustExactGenericApplicationIdentity> | undefined,
+  right: Readonly<RustExactGenericApplicationIdentity> | undefined,
+): boolean {
+  if (!left || !right || left.declarationKey !== right.declarationKey) return false;
+  return left.arguments.length === right.arguments.length
+    ? left.arguments.every((argument, index) => {
+        const other = right.arguments[index]!;
+        if (argument.kind !== other.kind) return false;
+        return argument.kind === 'declaration'
+          ? other.kind === 'declaration' && argument.declarationKey === other.declarationKey
+          : other.kind === 'application' &&
+              areRustExactGenericApplicationIdentitiesEqualRust(argument.application, other.application);
+      })
+    : false;
+}
+
+// The return-level constructor is attempted for a union only when one of its arms has construction
+// evidence; otherwise the established return refusal keeps ownership. A declared generic application
+// arm counts only when the direct binding being returned has the very same application identity.
+function hasRustExactGenericApplicationUnionArmRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  const sourceIdentity = sourceType ? getRustExactGenericApplicationIdentityRust(sourceType, context) : undefined;
+  return sourceIdentity !== undefined
+    ? plan.valueVariants.some((variant) =>
+        areRustExactGenericApplicationIdentitiesEqualRust(
+          getRustExactGenericApplicationIdentityRust(variant.sourceAlternative, context),
+          sourceIdentity,
+        ),
+      )
+    : false;
 }
 
 function hasIrTypeContextualGeneralUnionCandidateRust(

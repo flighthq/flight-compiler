@@ -38841,10 +38841,11 @@ describe('emitIrModuleRust exact alias-transparent record-array union constructi
        export function wrong(values: () => Point): Slot { return values; }`,
     ],
     [
-      'a generic record arm',
+      'an unmatched generic record arm',
       `interface Point { value: number }
+       interface Other { label: string }
        interface Box<T> { value: T }
-       type Slot = readonly Point[] | Box<Point>;
+       type Slot = readonly Point[] | Box<Other>;
        export function wrong(values: Box<Point>): Slot { return values; }`,
     ],
     [
@@ -39057,6 +39058,398 @@ export function wrong(values: Source9): Slot { return values; }`;
       reference: { binding: source0.binding, kind: 'binding', path: [] },
       typeArguments: [],
     };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+});
+
+describe('emitIrModuleRust exact generic application union construction', () => {
+  it('constructs one exact generic application arm in every contextual position through closed alias chains', () => {
+    const result = lower(
+      'generic-application-contexts.ts',
+      `interface Point { value: number }
+       interface Box<Value> { value: Value }
+       type PointAlias = Point;
+       type Slot = Box<PointAlias> | number;
+       interface Holder { slot: Slot }
+       class Sink { take(_slot: Slot): number { return 1; } }
+       function consume(_slot: Slot): number { return 1; }
+
+       export function returned(box: Box<Point>): Slot { return box; }
+       export function passed(box: Box<Point>): number { return consume(box); }
+       export function throughMethod(sink: Sink, box: Box<Point>): number { return sink.take(box); }
+       export function initialized(box: Box<Point>): number { const slot: Slot = box; return 0; }
+       export function assigned(initial: Box<Point>, box: Box<Point>): number {
+         let slot: Slot = initial;
+         slot = box;
+         return 0;
+       }
+       export function stored(holder: Holder, box: Box<Point>): number { holder.slot = box; return 1; }
+       export function asserted(box: Box<Point>): Slot { return box as Slot; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::Box(box_);');
+    expect(output).toContain('consume(Slot::Box(box_))');
+    expect(output).toContain('sink.take(Slot::Box(box_))');
+    expect(output).toContain('let slot: Slot = Slot::Box(box_);');
+    expect(output).toContain('let mut slot: Slot = Slot::Box(initial);');
+    expect(output).toContain('slot = Slot::Box(box_)');
+    expect(output).toContain('holder.slot = Slot::Box(box_)');
+    expect(output.match(/Slot::Box\(/gu)).toHaveLength(8);
+    expect(output).not.toContain('.clone()');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('matches nested applications and aliases that expand to applications', () => {
+    const result = lower(
+      'generic-application-nested.ts',
+      `interface Point { value: number }
+       interface Box<Value> { value: Value }
+       type PointAlias = Point;
+       type Boxed = Box<Point>;
+       type Pair = Box<PointAlias>;
+       type Slot = Box<Pair> | number;
+       export function nested(box: Box<Box<Point>>): Slot { return box; }
+       export function aliased(box: Box<Boxed>): Slot { return box; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::Box(box_);');
+    expect(output.match(/Slot::Box\(box_\)/gu)).toHaveLength(2);
+  });
+
+  it('matches a generic application whose interface heritage the lowering flattened to properties', () => {
+    const result = lower(
+      'generic-application-heritage.ts',
+      `interface Point { value: number }
+       interface Box<Value> { value: Value }
+       interface DerivedBox<Value> extends Box<Value> { label: string }
+       type PointAlias = Point;
+       type Slot = DerivedBox<PointAlias> | number;
+       export function returned(box: DerivedBox<Point>): Slot { return box; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Slot::DerivedBox(box_);');
+  });
+
+  it('preserves generic application identity through imports and a type reexport', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/generic-provider.ts',
+      `export interface Point { value: number }
+       export interface Box<Value> { value: Value }
+       export type PointAlias = Point;
+       export type Slot = Box<PointAlias> | number;
+       export function consume(_slot: Slot): number { return 1; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/generic-facade.ts',
+      `export type { Box, Point, PointAlias, Slot } from './generic-provider.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/generic-consumer.ts',
+      `import type { Box, Point, PointAlias, Slot } from './generic-facade.js';
+       import { consume } from './generic-provider.js';
+       export function returned(box: Box<Point>): Slot { return box; }
+       export function passed(box: Box<PointAlias>): number { return consume(box); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Generic-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/generic-facade.ts',
+          },
+          specifier: './generic-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/generic-provider.ts' },
+        },
+        {
+          importer: {
+            name: 'Generic-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/generic-consumer.ts',
+          },
+          specifier: './generic-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/generic-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Generic-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/generic-consumer.ts',
+          },
+          specifier: './generic-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/generic-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = emitRustModuleInGraph([consumer, facade, provider], consumer, [...moduleResolution.edges]);
+
+    expect(output).toContain('::Slot::Box(box_)');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
+    [
+      'a different generic declaration',
+      `interface Box<Value> { value: Value }
+       interface Other<Value> { value: Value }
+       type Slot = Other<PointAlias> | number;
+       export function wrong(box: Box<Point>): Slot { return box; }`,
+    ],
+    [
+      'a same-shaped different argument declaration',
+      `interface Box<Value> { value: Value }
+       interface Other { value: number }
+       type Slot = Box<Other> | number;
+       export function wrong(box: Box<Point>): Slot { return box; }`,
+    ],
+    [
+      'a derived argument declaration',
+      `interface Box<Value> { value: Value }
+       interface Derived extends Point { label: string }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<Derived>): Slot { return box; }`,
+    ],
+    [
+      'a structural lookalike argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<{ value: number }>): Slot { return box; }`,
+    ],
+    [
+      'a primitive argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<number>): Slot { return box; }`,
+    ],
+    [
+      'a literal argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<'point'>): Slot { return box; }`,
+    ],
+    [
+      'an array argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<Point[]>): Slot { return box; }`,
+    ],
+    [
+      'a tuple argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<[Point]>): Slot { return box; }`,
+    ],
+    [
+      'a union argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<Point | number>): Slot { return box; }`,
+    ],
+    [
+      'a function argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<() => Point>): Slot { return box; }`,
+    ],
+    [
+      'an index-signature generic declaration',
+      `interface Dictionary<Value> { [key: string]: Value }
+       type Slot = Dictionary<PointAlias> | number;
+       export function wrong(box: Dictionary<Point>): Slot { return box; }`,
+    ],
+    [
+      'a method-bearing generic declaration',
+      `interface Reader<Value> { read(): Value }
+       type Slot = Reader<PointAlias> | number;
+       export function wrong(box: Reader<Point>): Slot { return box; }`,
+    ],
+    [
+      'a parameterized alias argument',
+      `interface Box<Value> { value: Value }
+       type Wrapped<T> = Box<T>;
+       type Slot = Box<Point> | number;
+       export function wrong(box: Wrapped<Point>): Slot { return box; }`,
+    ],
+    [
+      'a parameterized alias declaration',
+      `interface Box<Value> { value: Value }
+       type Wrapped<T> = Box<T>;
+       type Slot = Wrapped<PointAlias> | number;
+       export function wrong(box: Box<Point>): Slot { return box; }`,
+    ],
+    [
+      'an active type parameter argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong<T extends Point>(box: Box<T>): Slot { return box; }`,
+    ],
+    [
+      'a generic value argument',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong<T>(box: Box<Box<T>>): Slot { return box; }`,
+    ],
+    [
+      'an optional owner',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<PointAlias> | number | undefined;
+       export function wrong(box: Box<Point>): Slot { return box; }`,
+    ],
+    [
+      'a generic owner',
+      `interface Box<Value> { value: Value }
+       type Slot<T> = Box<T> | number;
+       export function wrong(box: Box<Point>): Slot<PointAlias> { return box; }`,
+    ],
+    [
+      'an anonymous owner',
+      `interface Box<Value> { value: Value }
+       export function wrong(box: Box<Point>): Box<PointAlias> | number { return box; }`,
+    ],
+    [
+      'a union source',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | number;
+       export function wrong(box: Box<Point> | number): Slot { return box; }`,
+    ],
+    [
+      'a Map arm',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | Map<string, Point>;
+       export function wrong(box: Map<string, Point>): Slot { return box; }`,
+    ],
+    [
+      'a callable arm',
+      `interface Box<Value> { value: Value }
+       type Slot = Box<Point> | (() => Point);
+       export function wrong(box: () => Point): Slot { return box; }`,
+    ],
+  ])('keeps %s outside the exact generic-application lane', (_name, body) => {
+    const source = `interface Point { value: number }
+type PointAlias = Point;
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('generic-application-type-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a call',
+      `function make(box: Box<Point>): Box<Point> { return box; }
+       export function wrong(box: Box<Point>): Slot { return make(box); }`,
+    ],
+    [
+      'a property read',
+      `interface Holder { box: Box<Point> }
+       export function wrong(holder: Holder): Slot { return holder.box; }`,
+    ],
+    [
+      'a conditional',
+      `export function wrong(left: Box<Point>, right: Box<Point>, flag: boolean): Slot {
+         return flag ? left : right;
+       }`,
+    ],
+    [
+      'an assignment expression',
+      `export function wrong(box: Box<Point>, replacement: Box<Point>): Slot {
+         return (box = replacement);
+       }`,
+    ],
+  ])('rejects %s rather than evaluating it to select a generic arm', (_name, body) => {
+    const source = `interface Point { value: number }
+interface Box<Value> { value: Value }
+type PointAlias = Point;
+type Slot = Box<PointAlias> | number;
+${body}`;
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('generic-application-operand-refusal.ts', source).module)),
+    ).toBe('rust-contextual-general-union-construction-unrepresented');
+  });
+
+  it('requires one and only one exact generic-arm identity match', () => {
+    const module = structuredClone(
+      lower(
+        'generic-application-duplicate-arm-refusal.ts',
+        `interface Point { value: number }
+         interface Box<Value> { value: Value }
+         type PointAlias = Point;
+         type Slot = Box<PointAlias> | number;
+         export function wrong(box: Box<Point>): Slot { return box; }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const application = slot.type.types.find((member) => member.kind === 'named' && member.typeArguments.length > 0);
+    if (!application) throw new Error('expected generic arm');
+    (slot.type.types as unknown as IrType[]).splice(1, 0, structuredClone(application));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('rejects cyclic and over-depth argument alias chains deterministically', () => {
+    const source = `interface Point { value: number }
+interface Box<Value> { value: Value }
+type Source0 = Point;
+type Source1 = Source0;
+type Source2 = Source1;
+type Source3 = Source2;
+type Source4 = Source3;
+type Source5 = Source4;
+type Source6 = Source5;
+type Source7 = Source6;
+type Source8 = Source7;
+type Source9 = Source8;
+type Slot = Box<Point> | number;
+export function wrong(box: Box<Source9>): Slot { return box; }`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('generic-depth-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+
+    const cyclic = structuredClone(
+      lower(
+        'generic-cycle-refusal.ts',
+        `interface Point { value: number }
+         interface Box<Value> { value: Value }
+         type Source0 = Source1;
+         type Source1 = Source0;
+         type Slot = Box<Point> | number;
+         export function wrong(box: Box<Source0>): Slot { return box; }`,
+      ).module,
+    );
     expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
       'rust-contextual-general-union-construction-unrepresented',
     );
