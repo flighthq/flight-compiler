@@ -1509,6 +1509,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return emitStringConcatenationRust(expression, context);
       }
       {
+        const stringComparison = emitStringRelationalComparisonRust(expression, context);
+        if (stringComparison) return stringComparison;
+      }
+      {
         const sharedClassIdentity = emitSharedClassIdentityComparisonRust(expression, context);
         if (sharedClassIdentity) return sharedClassIdentity;
       }
@@ -1821,30 +1825,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // back is noise the source never asked for.
       return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     }
-    case 'function': {
-      if (expression.async) {
-        emissionError(context, 'async closures require Flight task lowering', 'rust-async-closure-lowering-required');
-      }
-      if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
-      const closureContext: EmitContext = {
-        ...context,
-        activeTypeParameters: expression.typeParameters,
-        allowedNativeFutureCall: undefined,
-        enclosingReturnType: expression.returns,
-        insideProtectedTry: false,
-        nativeAsyncFunction: false,
-        returnsAbsent: hasIrTypeAbsentMember(expression.returns),
-        returnsSharedClass:
-          expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
-        sharedClassReturnRepresentation:
-          expression.binding === undefined
-            ? undefined
-            : context.sharedClassReturnRepresentations.get(expression.binding.id),
-      };
-      return expression.expression
-        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, closureContext))}`
-        : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, closureContext)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, closureContext)).join('\n')}\n}`;
-    }
+    case 'function':
+      return emitFunctionExpressionRust(expression, context);
     case 'identifier': {
       if (expression.reference.kind === 'binding') {
         const representation = getRustSharedClassBindingRepresentationRust(expression.reference.binding, context);
@@ -2172,6 +2154,41 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `${emitExpression(expression.value, context)}.unwrap_or_else(|| ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitFunctionExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'function' }>>,
+  context: EmitContext,
+  annotateParameters = false,
+): string {
+  if (expression.async) {
+    emissionError(context, 'async closures require Flight task lowering', 'rust-async-closure-lowering-required');
+  }
+  if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
+  const closureContext: EmitContext = {
+    ...context,
+    activeTypeParameters: expression.typeParameters,
+    allowedNativeFutureCall: undefined,
+    enclosingReturnType: expression.returns,
+    insideProtectedTry: false,
+    nativeAsyncFunction: false,
+    returnsAbsent: hasIrTypeAbsentMember(expression.returns),
+    returnsSharedClass:
+      expression.binding !== undefined && context.sharedClassReturnBindingIds.has(expression.binding.id),
+    sharedClassReturnRepresentation:
+      expression.binding === undefined
+        ? undefined
+        : context.sharedClassReturnRepresentations.get(expression.binding.id),
+  };
+  const parameters = expression.parameters
+    .map((parameter) => {
+      const name = getBindingTargetNameRust(parameter.binding, closureContext);
+      return annotateParameters ? `${name}: ${emitType(parameter.type, closureContext)}` : name;
+    })
+    .join(', ');
+  return expression.expression
+    ? `|${parameters}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, closureContext))}`
+    : `|${parameters}| {\n${indentSourceLines(emitStatements(expression.body, closureContext)).join('\n')}\n}`;
 }
 
 function emitAssignmentTargetRust(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -3834,10 +3851,14 @@ function emitArraySortCallRust(
     : observed
       ? `&mut ${receiverName}`
       : receiverName;
+  const emittedComparator =
+    comparator.kind === 'function'
+      ? emitFunctionExpressionRust(comparator, context, true)
+      : emitExpression(comparator, context);
   const ordering = `let ${comparisonName}: f64 = (${comparatorName})((*${leftName}).clone(), (*${rightName}).clone()); if ${comparisonName}.is_nan() || ${comparisonName} == 0.0 { std::cmp::Ordering::Equal } else if ${comparisonName} < 0.0 { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }`;
   const initializers = [
     `let ${observed && !sharedBinding ? 'mut ' : ''}${receiverName} = ${receiverInitializer};`,
-    `let ${comparatorName} = &${normalizeSourceTextGrouping(emitExpression(comparator, context))};`,
+    `let ${comparatorName} = &${normalizeSourceTextGrouping(emittedComparator)};`,
     `let ${sharedBinding ? 'mut ' : ''}${valuesName} = ${valuesInitializer};`,
   ];
   const mutation = `${valuesName}.sort_by(|${leftName}, ${rightName}| { ${ordering} });`;
@@ -10732,10 +10753,12 @@ function isRustArraySortComparatorRepresentedRust(
   ) {
     return false;
   }
-  return (
-    getRustDensePrimitiveArrayCarrierDomainRust(comparator.returns, context) === 'number' &&
-    emitType(comparator.returns, context) === 'f64'
-  );
+  const returns = resolveIrTypeAliasValueRust(comparator.returns, context, new Set());
+  const returnDomain =
+    returns.kind === 'union'
+      ? getIrUnionPrimitiveDomainRust(returns.types, context)
+      : getIrTypePrimitiveDomainRust(returns, context);
+  return returnDomain === 'number' && emitType(returns, context) === 'f64';
 }
 
 function isRustArrayReverseElementCarrierRust(
@@ -11289,6 +11312,40 @@ function emitStringConcatenationRust(expression: Readonly<IrExpression>, context
     operand.kind === 'literal' && typeof operand.value === 'string' ? [] : [emitExpression(operand, context)],
   );
   return `format!(${JSON.stringify(format)}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
+}
+
+function emitStringRelationalComparisonRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.semantics.left.flow !== 'string' ||
+    expression.semantics.right.flow !== 'string' ||
+    expression.semantics.result !== 'boolean'
+  ) {
+    return undefined;
+  }
+  let orderingTest: 'is_lt' | 'is_le' | 'is_gt' | 'is_ge';
+  switch (expression.operator) {
+    case '<':
+      orderingTest = 'is_lt';
+      break;
+    case '<=':
+      orderingTest = 'is_le';
+      break;
+    case '>':
+      orderingTest = 'is_gt';
+      break;
+    case '>=':
+      orderingTest = 'is_ge';
+      break;
+    default:
+      return undefined;
+  }
+  const left = normalizeSourceTextGrouping(emitExpression(expression.left, context));
+  const right = normalizeSourceTextGrouping(emitExpression(expression.right, context));
+  // JavaScript orders strings by UTF-16 code units, not Rust UTF-8 bytes or Unicode scalar values.
+  return `${left}.encode_utf16().cmp(${right}.encode_utf16()).${orderingTest}()`;
 }
 
 function emitAssignmentOperatorRust(

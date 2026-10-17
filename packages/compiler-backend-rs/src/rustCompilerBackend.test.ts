@@ -17169,6 +17169,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(output).toContain('.sort_by(');
     expect(output).toContain('array_sort_comparison.is_nan() || array_sort_comparison == 0.0');
     expect(output).toContain('(*array_sort_left).clone(), (*array_sort_right).clone()');
+    expect(output).toContain('.encode_utf16().cmp(');
     if (rustcAvailable) {
       runRustSource(
         output,
@@ -17190,6 +17191,9 @@ describe('emitIrModuleRust array element access with coalescing', () => {
           'let mut string_values = vec!["b".to_owned(), "a".to_owned(), "c".to_owned()];',
           'strings(&mut string_values);',
           'assert_eq!(string_values, vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);',
+          'let mut utf16_values = vec!["\\u{e000}".to_owned(), "\\u{10000}".to_owned()];',
+          'strings(&mut utf16_values);',
+          'assert_eq!(utf16_values, vec!["\\u{10000}".to_owned(), "\\u{e000}".to_owned()]);',
           'let mut zero_values = vec![-0.0, 0.0, -0.0, 0.0];',
           'stable_zeros(&mut zero_values);',
           'assert!(zero_values[0].is_sign_negative());',
