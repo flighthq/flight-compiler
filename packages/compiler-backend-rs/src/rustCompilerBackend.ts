@@ -458,7 +458,7 @@ interface EmitContext {
   arrayElementBindingIds: ReadonlySet<string>;
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
-  arrayElementProvenReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  arrayElementProofKinds: ReadonlyMap<Readonly<Extract<IrExpression, { kind: 'element' }>>, RustArrayBoundsProofKind>;
   arrayCopyWithinObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayFillObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayReverseObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
@@ -1074,7 +1074,7 @@ function emitIrModuleRustWithContext(
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
-    arrayElementProvenReads: arrayBoundsPlan.provenElementReads,
+    arrayElementProofKinds: arrayBoundsPlan.provenElementProofs,
     arrayCopyWithinObservedCalls: new Set(),
     arrayFillObservedCalls: new Set(),
     arrayReverseObservedCalls: new Set(),
@@ -2594,7 +2594,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
         if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
-        if (context.arrayElementProvenReads.has(expression)) {
+        if (context.arrayElementProofKinds.has(expression)) {
           return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
         }
         if (!context.arrayElementPlaces.has(expression)) {
@@ -3220,7 +3220,7 @@ function isRustEmittedProvenArrayWriteTargetRust(
   element: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): boolean {
-  if (element.optional || !context.arrayElementProvenReads.has(element)) return false;
+  if (element.optional || context.arrayElementProofKinds.get(element) !== 'dual-bound') return false;
   const receiver = element.object;
   if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return false;
   if (context.sharedArrayBindingIds.has(receiver.reference.binding.id)) return false;
@@ -7185,7 +7185,7 @@ function emitRequiredElementExpressionRust(
   }
   if (hasOnlyOrdinaryArrayReceiverRust(expression)) {
     if (context.arrayElementOptionReads.has(expression)) return emitArrayElementOptionRust(expression, context);
-    if (context.arrayElementProvenReads.has(expression)) {
+    if (context.arrayElementProofKinds.has(expression)) {
       return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     }
     if (!context.arrayElementPlaces.has(expression)) {
@@ -15022,7 +15022,10 @@ type RustArrayBoundsValueUse =
 interface RustArrayBoundsPlan {
   readonly elementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   readonly optionElementReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
-  readonly provenElementReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  readonly provenElementProofs: ReadonlyMap<
+    Readonly<Extract<IrExpression, { kind: 'element' }>>,
+    RustArrayBoundsProofKind
+  >;
 }
 
 interface RustArrayBoundsRefusal {
@@ -15106,7 +15109,13 @@ function createRustArrayBoundsPlan(
   const elementPlaces = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
   const optionElementReads = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
   const excludedWriteElements = collectRustExcludedProvenWriteElementsRust(module, bindingTypes, sharedArrayBindingIds);
-  const provenElementReads = collectRustProvenBoundsElementReadsRust(module, bindingTypes, excludedWriteElements);
+  const provenElementProofs = collectRustProvenBoundsElementReadsRust(
+    module,
+    bindingTypes,
+    excludedWriteElements,
+    collectRustArrayWriteTargetElementsRust(module),
+    sharedArrayBindingIds,
+  );
   const refusals: RustArrayBoundsRefusal[] = [];
 
   for (const expression of elementReads) {
@@ -15144,7 +15153,7 @@ function createRustArrayBoundsPlan(
       continue;
     }
     if (
-      provenElementReads.has(expression) &&
+      provenElementProofs.has(expression) &&
       !isRustArrayAbsenceRepresentedUse(use, bindingTypes, arrayElementBindingIds)
     ) {
       continue;
@@ -15222,15 +15231,19 @@ function createRustArrayBoundsPlan(
       classification: 'target-runtime',
     });
   }
-  return { elementPlaces, optionElementReads, provenElementReads };
+  return { elementPlaces, optionElementReads, provenElementProofs };
 }
+
+type RustArrayBoundsProofKind = 'dual-bound' | 'monotone';
 
 interface RustArrayBoundsProvenGuard {
   readonly arrayBindingId: string;
   readonly indexBindingId: string;
+  readonly kind: RustArrayBoundsProofKind;
 }
 
 interface RustArrayIndexWrite {
+  readonly node: Readonly<Extract<IrExpression, { kind: 'assignment' | 'unary' }>>;
   readonly operator: IrAssignmentOperator | '++' | '--';
   readonly right: Readonly<IrExpression> | undefined;
 }
@@ -15245,10 +15258,12 @@ interface RustArrayIndexEvidence {
 interface RustArrayBoundsProvenReadContext {
   readonly bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   readonly excludedWriteElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  readonly sharedArrayBindingIds: ReadonlySet<string>;
   readonly integerEvidence: ReadonlyMap<string, RustArrayIndexEvidence>;
   readonly integerProven: Set<string>;
   readonly integerVisiting: Set<string>;
-  readonly proven: Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  readonly proven: Map<Readonly<Extract<IrExpression, { kind: 'element' }>>, RustArrayBoundsProofKind>;
+  readonly writeTargetElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
 }
 
 // A proven read exists only under a guard that dominates it: the condition's two bounds hold when the
@@ -15259,14 +15274,18 @@ function collectRustProvenBoundsElementReadsRust(
   module: Readonly<IrModule>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
   excludedWriteElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>,
-): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
+  writeTargetElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>,
+  sharedArrayBindingIds: ReadonlySet<string>,
+): ReadonlyMap<Readonly<Extract<IrExpression, { kind: 'element' }>>, RustArrayBoundsProofKind> {
   const context: RustArrayBoundsProvenReadContext = {
     bindingTypes,
     excludedWriteElements,
+    sharedArrayBindingIds,
     integerEvidence: collectRustArrayIndexEvidenceRust(module),
     integerProven: new Set(),
     integerVisiting: new Set(),
-    proven: new Set(),
+    proven: new Map(),
+    writeTargetElements,
   };
   for (const declaration of module.declarations) {
     if (declaration.kind === 'function') {
@@ -15329,6 +15348,30 @@ function collectRustExcludedProvenWriteElementsRust(
   return excluded;
 }
 
+// Compound and update targets are owned by the staged write lane, which accepts only double-bounded
+// evidence. The set lets a monotone proof protect reads without silently widening that lane.
+function collectRustArrayWriteTargetElementsRust(
+  module: Readonly<IrModule>,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
+  const targets = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'assignment' && expression.operator !== '=' && expression.left.kind === 'element') {
+        targets.add(expression.left);
+        return;
+      }
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--') &&
+        expression.operand.kind === 'element'
+      ) {
+        targets.add(expression.operand);
+      }
+    },
+  });
+  return targets;
+}
+
 function isRustNarrowGuardedArrayWriteTargetRust(
   element: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
@@ -15376,12 +15419,10 @@ function walkRustGuardedStatementRust(
     case 'continue':
       return guards;
     case 'do': {
-      const afterBody = walkRustGuardedStatementRust(statement.body, guards, context);
-      const conditionGuards = filterRustArrayBoundsGuardsRust(
-        afterBody,
-        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.condition),
-      );
-      markRustGuardedExpressionReadsRust(statement.condition, conditionGuards, context);
+      // A do-while condition does not dominate the first body execution, and inherited proofs do not
+      // survive across iterations. The body and condition keep no inherited proof.
+      walkRustGuardedStatementRust(statement.body, [], context);
+      markRustGuardedExpressionReadsRust(statement.condition, [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'expression':
@@ -15391,40 +15432,44 @@ function walkRustGuardedStatementRust(
         collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.expression),
       );
     case 'for': {
-      const ownExpressions: IrExpression[] = [];
+      const initializers: IrExpression[] = [];
       if (Array.isArray(statement.initializer)) {
         for (const variable of statement.initializer) {
-          if (variable.initializer) ownExpressions.push(variable.initializer);
+          if (variable.initializer) initializers.push(variable.initializer);
         }
       } else if (statement.initializer) {
-        ownExpressions.push(statement.initializer as IrExpression);
+        initializers.push(statement.initializer as IrExpression);
       }
-      if (statement.condition) ownExpressions.push(statement.condition);
-      if (statement.increment) ownExpressions.push(statement.increment);
-      const ownGuards = filterRustArrayBoundsGuardsRust(
+      const initializerGuards = filterRustArrayBoundsGuardsRust(
         guards,
-        collectRustGuardedExpressionInvalidatingBindingIdsRustForExpressionsRust(ownExpressions),
+        collectRustGuardedExpressionInvalidatingBindingIdsRustForExpressionsRust(initializers),
       );
-      for (const expression of ownExpressions) markRustGuardedExpressionReadsRust(expression, ownGuards, context);
-      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      // The initializer runs once before the loop and keeps the enclosing proof; the condition,
+      // increment, and body run on every iteration and keep no inherited proof.
+      for (const initializer of initializers) {
+        markRustGuardedExpressionReadsRust(initializer, initializerGuards, context);
+      }
+      if (statement.condition) markRustGuardedExpressionReadsRust(statement.condition, [], context);
+      if (statement.increment) markRustGuardedExpressionReadsRust(statement.increment, [], context);
+      walkRustGuardedStatementRust(statement.body, [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'forIn': {
-      const ownGuards = filterRustArrayBoundsGuardsRust(
+      const objectGuards = filterRustArrayBoundsGuardsRust(
         guards,
         collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.object),
       );
-      markRustGuardedExpressionReadsRust(statement.object, ownGuards, context);
-      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      markRustGuardedExpressionReadsRust(statement.object, objectGuards, context);
+      walkRustGuardedStatementRust(statement.body, [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'forOf': {
-      const ownGuards = filterRustArrayBoundsGuardsRust(
+      const iterableGuards = filterRustArrayBoundsGuardsRust(
         guards,
         collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.iterable),
       );
-      markRustGuardedExpressionReadsRust(statement.iterable, ownGuards, context);
-      walkRustGuardedStatementRust(statement.body, ownGuards, context);
+      markRustGuardedExpressionReadsRust(statement.iterable, iterableGuards, context);
+      walkRustGuardedStatementRust(statement.body, [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
     case 'if': {
@@ -15481,17 +15526,14 @@ function walkRustGuardedStatementRust(
       return initializerGuards;
     }
     case 'while': {
-      const conditionGuards = filterRustArrayBoundsGuardsRust(
-        guards,
-        collectRustGuardedExpressionInvalidatingBindingIdsRust(statement.condition),
-      );
-      markRustGuardedExpressionReadsRust(statement.condition, conditionGuards, context);
-      const provenGuard = createRustArrayBoundsProvenGuardRust(statement.condition, context);
-      const bodyGuards =
-        provenGuard && !statementContainsFunctionExpressionRust(statement.body)
-          ? [...conditionGuards, provenGuard]
-          : conditionGuards;
-      walkRustGuardedStatementRust(statement.body, bodyGuards, context);
+      // Condition reads run on every iteration after a possible previous body write, so they keep no
+      // inherited proof. A loop may establish only its own proof, from its own condition.
+      markRustGuardedExpressionReadsRust(statement.condition, [], context);
+      const provenGuard = statementContainsFunctionExpressionRust(statement.body)
+        ? undefined
+        : (createRustArrayBoundsProvenGuardRust(statement.condition, context) ??
+          createRustMonotoneArrayBoundsProvenGuardRust(statement, context));
+      walkRustGuardedStatementRust(statement.body, provenGuard ? [provenGuard] : [], context);
       return filterRustArrayBoundsGuardsRust(guards, collectRustGuardedStatementInvalidatingBindingIdsRust(statement));
     }
   }
@@ -15528,9 +15570,16 @@ function markRustGuardedExpressionReadsRust(
       }
       const arrayBindingId = object.reference.binding.id;
       const indexBindingId = index.reference.binding.id;
-      if (guards.some((guard) => guard.arrayBindingId === arrayBindingId && guard.indexBindingId === indexBindingId)) {
-        context.proven.add(node);
+      const matching = guards.filter(
+        (guard) => guard.arrayBindingId === arrayBindingId && guard.indexBindingId === indexBindingId,
+      );
+      if (matching.length === 0) return;
+      // The staged compound/update write lane owns only dual-bound evidence. A monotone proof may
+      // protect reads, but it never marks a write target as writable under that lane.
+      if (context.writeTargetElements.has(node) && matching.every((guard) => guard.kind === 'monotone')) {
+        return;
       }
+      context.proven.set(node, matching.some((guard) => guard.kind === 'dual-bound') ? 'dual-bound' : 'monotone');
     },
   });
 }
@@ -15705,7 +15754,97 @@ function createRustArrayBoundsProvenGuardRust(
   const arrayType = context.bindingTypes.get(upper.array.id);
   if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive') return undefined;
   if (arrayType.element.name !== 'number' && arrayType.element.name !== 'boolean') return undefined;
-  return { arrayBindingId: upper.array.id, indexBindingId: lower.binding.id };
+  return { arrayBindingId: upper.array.id, indexBindingId: lower.binding.id, kind: 'dual-bound' };
+}
+
+// A while loop with only the upper bound can still prove the same read when the index is inductively
+// nonnegative: it starts at a nonnegative integer literal and every write in the whole function is an
+// exact +1 form located inside this loop body. The condition re-establishes the upper bound each
+// iteration; the unit step preserves non-negativity, so the read before any body write is in range.
+function createRustMonotoneArrayBoundsProvenGuardRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  context: RustArrayBoundsProvenReadContext,
+): RustArrayBoundsProvenGuard | undefined {
+  const upper = parseRustArrayBoundsGuardConjunctRust(statement.condition);
+  if (!upper || upper.kind !== 'upper') return undefined;
+  const indexType = context.bindingTypes.get(upper.index.id);
+  if (indexType?.kind !== 'primitive' || indexType.name !== 'number') return undefined;
+  const arrayType = context.bindingTypes.get(upper.array.id);
+  if (arrayType?.kind !== 'array' || arrayType.element.kind !== 'primitive') return undefined;
+  if (arrayType.element.name !== 'number') return undefined;
+  if (context.sharedArrayBindingIds.has(upper.array.id)) return undefined;
+  const evidence = context.integerEvidence.get(upper.index.id);
+  if (!evidence || !evidence.declared || evidence.parameter) return undefined;
+  if (!isRustNonnegativeIntegerLiteralRust(evidence.initializer)) return undefined;
+  if (!isRustIntegerProvenBindingRust(upper.index.id, context)) return undefined;
+  const bodyWrites = collectRustArrayIndexWriteNodesRust(statement.body, upper.index.id);
+  if (bodyWrites.size !== evidence.writes.length) return undefined;
+  if (
+    evidence.writes.some((write) => !bodyWrites.has(write.node) || !isRustExactUnitIndexStepRust(write, upper.index.id))
+  ) {
+    return undefined;
+  }
+  return { arrayBindingId: upper.array.id, indexBindingId: upper.index.id, kind: 'monotone' };
+}
+
+function isRustNonnegativeIntegerLiteralRust(expression: Readonly<IrExpression> | undefined): boolean {
+  return (
+    expression?.kind === 'literal' &&
+    typeof expression.value === 'number' &&
+    Number.isInteger(expression.value) &&
+    expression.value >= 0
+  );
+}
+
+function isRustExactUnitIndexStepRust(write: Readonly<RustArrayIndexWrite>, indexBindingId: string): boolean {
+  if (write.operator === '++') return true;
+  if (write.operator === '+=') {
+    return write.right?.kind === 'literal' && write.right.value === 1;
+  }
+  if (write.operator !== '=' || !write.right || write.right.kind !== 'binary' || write.right.operator !== '+') {
+    return false;
+  }
+  const left = write.right.left;
+  const right = write.right.right;
+  const literalOne = (candidate: Readonly<IrExpression>): boolean =>
+    candidate.kind === 'literal' && typeof candidate.value === 'number' && candidate.value === 1;
+  const sameIndex = (candidate: Readonly<IrExpression>): boolean =>
+    candidate.kind === 'identifier' &&
+    candidate.reference.kind === 'binding' &&
+    candidate.reference.binding.id === indexBindingId;
+  return (sameIndex(left) && literalOne(right)) || (literalOne(left) && sameIndex(right));
+}
+
+function collectRustArrayIndexWriteNodesRust(
+  statement: Readonly<IrStatement>,
+  indexBindingId: string,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'assignment' | 'unary' }>>> {
+  const nodes = new Set<Readonly<Extract<IrExpression, { kind: 'assignment' | 'unary' }>>>();
+  forEachRustStatementExpressionRust(statement, (expression) => {
+    analyzeIrExpressionSubtreeTraversal(expression, {
+      expression(node) {
+        if (
+          node.kind === 'assignment' &&
+          node.left.kind === 'identifier' &&
+          node.left.reference.kind === 'binding' &&
+          node.left.reference.binding.id === indexBindingId
+        ) {
+          nodes.add(node);
+          return;
+        }
+        if (
+          node.kind === 'unary' &&
+          (node.operator === '++' || node.operator === '--') &&
+          node.operand.kind === 'identifier' &&
+          node.operand.reference.kind === 'binding' &&
+          node.operand.reference.binding.id === indexBindingId
+        ) {
+          nodes.add(node);
+        }
+      },
+    });
+  });
+  return nodes;
 }
 
 type RustArrayBoundsGuardConjunct =
@@ -15779,6 +15918,7 @@ function collectRustArrayIndexEvidenceRust(module: Readonly<IrModule>): Readonly
         expression.left.reference.kind === 'binding'
       ) {
         ensure(expression.left.reference.binding.id).writes.push({
+          node: expression,
           operator: expression.operator,
           right: expression.right,
         });
@@ -15791,6 +15931,7 @@ function collectRustArrayIndexEvidenceRust(module: Readonly<IrModule>): Readonly
         expression.operand.reference.kind === 'binding'
       ) {
         ensure(expression.operand.reference.binding.id).writes.push({
+          node: expression,
           operator: expression.operator,
           right: undefined,
         });

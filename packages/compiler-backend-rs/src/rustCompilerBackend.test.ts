@@ -28947,14 +28947,6 @@ describe('emitIrModuleRust proven-bounds array element reads', () => {
 
   it.each([
     {
-      name: 'a missing lower bound',
-      source: `export function read(values: readonly number[]): number {
-        let index = 0;
-        while (index < values.length) { return values[index]; }
-        return 0;
-      }`,
-    },
-    {
       name: 'a guard on a different array',
       source: `export function read(values: readonly number[], other: readonly number[]): number {
         let index = 0;
@@ -29256,6 +29248,299 @@ describe('emitIrModuleRust guarded indexed writes', () => {
     ).contents;
 
     runRustSource(output, 'assert_eq!(add(vec![1.0, 2.0], 10.0), 7.0); assert_eq!(bump(vec![4.0]), 4.0);');
+  });
+});
+
+describe('emitIrModuleRust monotone while-loop array reads', () => {
+  it('reads under a monotone while condition in every unit-step form', () => {
+    for (const step of ['index = index + 1;', 'index = 1 + index;', 'index += 1;', 'index++;', '++index;']) {
+      const result = lower(
+        'monotone-form.ts',
+        `export function sum(values: readonly number[]): number {
+          let total = 0;
+          let index = 0;
+          while (index < values.length) { total = total + values[index]; ${step} }
+          return total;
+        }`,
+      );
+
+      expect(result.diagnostics).toEqual([]);
+      const output = emitIrModuleRust(result.module).contents;
+      expect(output).toContain('values[index as usize]');
+      expect(emitIrModuleRust(result.module).contents).toBe(output);
+    }
+  });
+
+  it('accepts the golden while shape with an inner branch and the strict mirror', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'monotone-golden.ts',
+        `export function sumUntil(values: readonly number[], limit: number): number {
+          let total = 0;
+          let index = 0;
+          while (index < values.length) {
+            if (total + values[index] > limit) { break; }
+            total = total + values[index];
+            index = index + 1;
+          }
+          return total;
+        }
+        export function mirror(values: readonly number[]): number {
+          let total = 0;
+          let index = 0;
+          while (values.length > index) { total = total + values[index]; index += 1; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('while index < (values.len() as f64) {');
+    expect(output).toContain('total = total + values[index as usize];');
+    expect(output).toContain('while (values.len() as f64) > index {');
+  });
+
+  it('accepts loops lowered from a C-style for statement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'monotone-c-style.ts',
+        `export function sum(values: readonly number[]): number {
+          let total = 0;
+          for (let i = 0; i < values.length; i++) { total = total + values[i]; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('while i < (values.len() as f64) {');
+    expect(output).toContain('total = total + values[i as usize];');
+  });
+
+  it('keeps an inherited dual-bound proof out of a nested loop while allowing the loop its own proof', () => {
+    expect(
+      getEmissionRule(() =>
+        emitIrModuleRust(
+          lower(
+            'monotone-nested-inherited.ts',
+            `export function read(values: number[]): number {
+              let index = 0;
+              if (index >= 0 && index < values.length) {
+                for (let k = 0; k < 2; k++) { return values[index]; }
+              }
+              return 0;
+            }`,
+          ).module,
+        ),
+      ),
+    ).toBe('rust-array-index-result-absence-unrepresented');
+
+    const own = emitIrModuleRust(
+      lower(
+        'monotone-nested-own.ts',
+        `export function read(values: number[]): number {
+          for (let outer = 0; outer < 1; outer++) {
+            let index = 0;
+            while (index >= 0 && index < values.length) { return values[index]; }
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(own).toContain('return values[index as usize].clone();');
+  });
+
+  it.each([
+    {
+      name: 'a read after the increment',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < values.length) { index = index + 1; total = total + values[index]; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a larger step',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < values.length) { total = total + values[index]; index = index + 2; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a negative initializer',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = -1;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a nonliteral initializer',
+      source: `export function sum(values: readonly number[], start: number): number {
+        let total = 0;
+        let index = start;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a fractional initializer',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0.5;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a parameter index',
+      source: `export function sum(values: readonly number[], index: number): number {
+        let total = 0;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a non-strict upper bound',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index <= values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a do-while condition',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        do { total = total + values[index]; index = index + 1; } while (index < values.length);
+        return total;
+      }`,
+    },
+    {
+      name: 'a write outside the loop',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        index = index + 1;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a write in another loop',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a read inside a nested loop',
+      source: `export function sum(values: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < values.length) {
+          for (let k = 0; k < 2; k++) { total = total + values[index]; }
+          index = index + 1;
+        }
+        return total;
+      }`,
+    },
+    {
+      name: 'an array mutation through a call before the read',
+      source: `export function sum(values: number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < values.length) { values.push(1); total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a shared-reference array',
+      source: `export function sum(): number {
+        const values = [1, 2];
+        const alias = values;
+        alias.push(3);
+        let total = 0;
+        let index = 0;
+        while (index < values.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+    {
+      name: 'a string element',
+      source: `export function scan(values: readonly string[]): number {
+        let text = "";
+        let index = 0;
+        while (index < values.length) { text = text + values[index]; index = index + 1; }
+        return text === "x" ? 1 : 0;
+      }`,
+    },
+    {
+      name: 'a mismatched receiver binding',
+      source: `export function sum(values: readonly number[], other: readonly number[]): number {
+        let total = 0;
+        let index = 0;
+        while (index < other.length) { total = total + values[index]; index = index + 1; }
+        return total;
+      }`,
+    },
+  ])('keeps $name on the absence refusal', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('monotone-refused.ts', source).module))).toBe(
+      'rust-array-index-result-absence-unrepresented',
+    );
+  });
+
+  it('keeps a monotone proof from widening the staged write lane', () => {
+    expect(
+      getEmissionRule(() =>
+        emitIrModuleRust(
+          lower(
+            'monotone-write-provenance.ts',
+            `export function sum(values: number[]): number {
+              let total = 0;
+              let index = 0;
+              while (index < values.length) { values[index] += 1; total = total + values[index]; index = index + 1; }
+              return total;
+            }`,
+          ).module,
+        ),
+      ),
+    ).toBe('rust-array-index-result-absence-unrepresented');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles monotone while and lowered C-style for loops', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'monotone-native.ts',
+        `export function sumUntil(values: readonly number[], limit: number): number {
+          let total = 0;
+          let index = 0;
+          while (index < values.length) {
+            if (total + values[index] > limit) { break; }
+            total = total + values[index];
+            index = index + 1;
+          }
+          return total;
+        }
+        export function sum(values: readonly number[]): number {
+          let total = 0;
+          for (let i = 0; i < values.length; i++) { total = total + values[i]; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      'assert_eq!(sumUntil(vec![1.0, 2.0, 3.0], 10.0), 6.0); assert_eq!(sum(vec![1.0, 2.0, 3.0]), 6.0);',
+    );
   });
 });
 
