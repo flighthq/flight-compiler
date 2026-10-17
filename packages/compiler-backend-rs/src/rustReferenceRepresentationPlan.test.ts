@@ -213,6 +213,185 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-alias-ambiguous' })]);
   });
 
+  it('elects a shared RefCell class carrier and a mutable class call parameter', () => {
+    const module = lower(
+      'alias-class.ts',
+      `class Counter { value = 0; }
+       function write(counter: Counter): void { counter.value = 2; }
+       export function aliasCounter(): number {
+         const values = new Counter();
+         const alias = values;
+         write(alias);
+         return values.value;
+       }`,
+    );
+    const plan = createCompilerRustReferenceRepresentationPlan({ modules: [module] });
+    const modulePlan = getModulePlan(plan, module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'write' }),
+          parameters: [{ position: 0, representation: 'mutable-borrowed-class' }],
+        }),
+      ]),
+    );
+    expect(
+      modulePlan.sharedClassBindings.map(({ binding, representation }) => [binding.name, representation]).sort(),
+    ).toEqual([
+      ['alias', 'shared-ref-cell-class'],
+      ['values', 'shared-ref-cell-class'],
+    ]);
+  });
+
+  it('refuses overlapping shared-class field borrows and observed assignment results', () => {
+    const conflict = lower(
+      'alias-class-conflict.ts',
+      `class Counter { value = 0; }
+       export function aliasConflict(): number {
+         const values = new Counter();
+         const alias = values;
+         alias.value = values.value + 1;
+         return alias.value;
+       }`,
+    );
+    const observed = lower(
+      'alias-class-result.ts',
+      `class Counter { value = 0; }
+       export function aliasResult(): number {
+         const values = new Counter();
+         const alias = values;
+         return (alias.value = 2);
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [conflict] }), conflict).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [observed] }), observed).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-class-mutator-result-unrepresented' })]);
+  });
+
+  it('refuses class methods, identity-valued fields, generics, and nonzero construction', () => {
+    const cases = [
+      [
+        lower(
+          'alias-class-method.ts',
+          `class Counter { value = 0; increment(): void { this.value = 1; } }
+           export function run(): number { const values = new Counter(); const alias = values; alias.value = 2; return values.value; }`,
+        ),
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        lower(
+          'alias-class-field.ts',
+          `class Holder { values: number[] = []; }
+           export function run(): number { const values = new Holder(); const alias = values; alias.values = [1]; return values.values.length; }`,
+        ),
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+      [
+        lower(
+          'alias-class-generic.ts',
+          `class Box<T> { value: T; constructor() { this.value = undefined as T; } }
+           export function run(): number { const values = new Box<number>(); const alias = values; alias.value = 1; return values.value; }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
+          'alias-class-construction.ts',
+          `class Counter { value: number; constructor(value: number) { this.value = value; } }
+           export function run(): number { const values = new Counter(0); const alias = values; alias.value = 1; return values.value; }`,
+        ),
+        'rust-reference-shared-class-construction-unrepresented',
+      ],
+    ] as const;
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
+  it('refuses shared-class escape, storage, reassignment, dynamic calls, suspension, and ambiguous owners', () => {
+    const cases = [
+      [
+        lower(
+          'class-return.ts',
+          `class Counter { value = 0; }
+           export function run(): Counter { const values = new Counter(); const alias = values; alias.value = 1; return alias; }`,
+        ),
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        lower(
+          'class-storage.ts',
+          `class Counter { value = 0; }
+           export function run(): number { const values = new Counter(); const alias = values; alias.value = 1; const stored = { alias }; return stored.alias.value; }`,
+        ),
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        lower(
+          'class-dynamic-call.ts',
+          `class Counter { value = 0; }
+           export function run(mutate: (value: Counter) => void): number { const values = new Counter(); const alias = values; mutate(alias); return values.value; }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-optional-call.ts',
+          `class Counter { value = 0; }
+           export function run(mutate?: (value: Counter) => void): number { const values = new Counter(); const alias = values; mutate?.(alias); return values.value; }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-suspension.ts',
+          `class Counter { value = 0; }
+           export async function run(task: Promise<void>): Promise<number> { const values = new Counter(); const alias = values; await task; alias.value = 1; return values.value; }`,
+        ),
+        'rust-reference-shared-class-suspension-unrepresented',
+      ],
+      [
+        lower(
+          'class-escape.ts',
+          `class Counter { value = 0; }
+           export function run(consume: (callback: () => void) => void): number { const values = new Counter(); const alias = values; consume(() => { alias.value = 1; }); return values.value; }`,
+        ),
+        'rust-reference-shared-class-closure-escape-unrepresented',
+      ],
+      [
+        lower(
+          'class-reassignment.ts',
+          `class Counter { value = 0; }
+           export function run(): number { let values = new Counter(); const alias = values; values = new Counter(); alias.value = 1; return values.value; }`,
+        ),
+        'rust-reference-shared-class-binding-reassignment-unrepresented',
+      ],
+      [
+        lower(
+          'class-ambiguous.ts',
+          `class Counter { value = 0; }
+           export function run(flag: boolean): number { const left = new Counter(); const right = new Counter(); const alias = flag ? left : right; alias.value = 1; return alias.value; }`,
+        ),
+        'rust-reference-shared-class-alias-ambiguous',
+      ],
+    ] as const;
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
   it('elects one shared RefCell HashMap carrier for a mutated local alias group', () => {
     const module = lower(
       'alias-map.ts',

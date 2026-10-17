@@ -184,6 +184,7 @@ interface EmitContext {
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   sharedArrayBindingIds: ReadonlySet<string>;
+  sharedClassBindingIds: ReadonlySet<string>;
   sharedMapBindingIds: ReadonlySet<string>;
   sharedSetBindingIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
@@ -320,9 +321,17 @@ function emitIrModuleRustWithContext(
   const sharedArrayBindingIds = new Set(
     referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? [],
   );
+  const sharedClassBindingIds = new Set(
+    referenceModulePlan?.sharedClassBindings.map(({ binding }) => binding.id) ?? [],
+  );
   const sharedMapBindingIds = new Set(referenceModulePlan?.sharedMapBindings.map(({ binding }) => binding.id) ?? []);
   const sharedSetBindingIds = new Set(referenceModulePlan?.sharedSetBindings.map(({ binding }) => binding.id) ?? []);
-  const sharedReferenceBindingIds = new Set([...sharedArrayBindingIds, ...sharedMapBindingIds, ...sharedSetBindingIds]);
+  const sharedReferenceBindingIds = new Set([
+    ...sharedArrayBindingIds,
+    ...sharedClassBindingIds,
+    ...sharedMapBindingIds,
+    ...sharedSetBindingIds,
+  ]);
   const allCellWrappedIds = closureEvidence.closures
     .filter(
       (closure) =>
@@ -428,6 +437,7 @@ function emitIrModuleRustWithContext(
     ]),
     referentMutatedParameterIds,
     sharedArrayBindingIds,
+    sharedClassBindingIds,
     sharedMapBindingIds,
     sharedSetBindingIds,
     taggedUnionBindingNames,
@@ -918,6 +928,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (typedArrayAssignment) return typedArrayAssignment;
       const sharedArrayAssignment = emitSharedArrayElementAssignmentRust(expression, context);
       if (sharedArrayAssignment) return sharedArrayAssignment;
+      const sharedClassAssignment = emitSharedClassFieldAssignmentRust(expression, context);
+      if (sharedClassAssignment) return sharedClassAssignment;
       if (
         expression.left.kind === 'identifier' &&
         expression.left.reference.kind === 'binding' &&
@@ -1474,6 +1486,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (
         expression.reference.kind === 'binding' &&
         (context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
+          context.sharedClassBindingIds.has(expression.reference.binding.id) ||
           context.sharedMapBindingIds.has(expression.reference.binding.id) ||
           context.sharedSetBindingIds.has(expression.reference.binding.id))
       ) {
@@ -1551,6 +1564,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      const sharedClassField = emitSharedClassFieldRust(expression, context);
+      if (sharedClassField) return sharedClassField;
       const namespaceImportMember = getRustNamespaceImportMemberRust(expression.object, expression.name, context);
       if (namespaceImportMember !== undefined) return namespaceImportMember;
       const namespaceMember = expression.namespaceMember;
@@ -1845,6 +1860,36 @@ function emitSharedArrayElementAssignmentRust(
   const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
   const operator = emitAssignmentOperatorRust(expression.operator, expression.semantics, context);
   return `${receiver}.borrow_mut()[${index}] ${operator} ${normalizeSourceTextGrouping(right)}`;
+}
+
+function emitSharedClassFieldAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '=' ||
+    expression.left.kind !== 'property' ||
+    expression.left.object.kind !== 'identifier' ||
+    expression.left.object.reference.kind !== 'binding' ||
+    !context.sharedClassBindingIds.has(expression.left.object.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const receiver = emitIdentifierReferenceRust(expression.left.object.reference, context);
+  const right = emitOwnedOperandRust(expression.right, context);
+  return `${receiver}.borrow_mut().${safeRustValueName(expression.left.name)} = ${normalizeSourceTextGrouping(right)}`;
+}
+
+function emitSharedClassFieldRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const binding = getRustSharedClassBindingRust(expression.object, context);
+  if (!binding) return undefined;
+  const field = getIrSharedClassFieldRust(binding, expression.name, context);
+  if (!field) return undefined;
+  const owned = isIrTypeCopyValueRust(field.type) ? '' : '.clone()';
+  return `${getBindingTargetNameRust(binding, context)}.borrow().${safeRustValueName(expression.name)}${owned}`;
 }
 
 function hasOnlyIrTypedArrayReceiversRust(receivers: readonly IrIndexedReceiver[]): boolean {
@@ -2266,18 +2311,39 @@ function assertIrConstructorInvocationAbiRust(
   // A class this module declares has an associated `new` whenever its constructor was lowered to one,
   // so the call is emitted; a class whose constructor was refused has nothing to call.
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
-    const target = context.module.declarations.find(
-      (candidate) =>
-        candidate.kind === 'class' &&
-        expression.callee.kind === 'identifier' &&
-        expression.callee.reference.kind === 'binding' &&
-        candidate.binding.id === expression.callee.reference.binding.id,
+    const constructorBindingId = expression.callee.reference.binding.id;
+    const local = context.module.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.id === constructorBindingId,
     );
+    const imported = context.module.imports
+      .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+      .find(({ candidate }) => candidate.binding.id === constructorBindingId);
+    const importedModule =
+      imported && imported.candidate.imported !== '*'
+        ? resolveImportModuleRust(imported.specifier, imported.candidate.imported, context)
+        : undefined;
+    const importedTarget = importedModule?.declarations.find(
+      (candidate) =>
+        candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported?.candidate.imported,
+    );
+    const target = local?.kind === 'class' ? local : importedTarget?.kind === 'class' ? importedTarget : undefined;
     if (target?.kind === 'class') {
       const abstractBase = getIrClassStatelessAbstractBaseRust(target, context);
       if (getIrClassConstructorFieldAssignmentsRust(target, abstractBase !== undefined)) return;
       const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(target, context) : undefined;
       if (concreteBase && getIrClassCompositionConstructorRust(target, concreteBase)) return;
+      const instanceFields = target.fields.filter((field) => !field.static);
+      const constructed =
+        !target.classConstructor ||
+        (target.classConstructor.parameters.length === 0 && target.classConstructor.body.length === 0);
+      if (
+        expression.arguments.length === 0 &&
+        constructed &&
+        instanceFields.length > 0 &&
+        instanceFields.every((field) => field.initializer || field.declare)
+      ) {
+        return;
+      }
     }
   }
   emissionError(context, 'class constructor calls require Rust initialization lowering');
@@ -3109,6 +3175,7 @@ function collectCellCapturedBindingIdsRust(
     (context.cellWrappedBindingIds.size === 0 &&
       context.refCellWrappedBindingIds.size === 0 &&
       context.sharedArrayBindingIds.size === 0 &&
+      context.sharedClassBindingIds.size === 0 &&
       context.sharedMapBindingIds.size === 0 &&
       context.sharedSetBindingIds.size === 0)
   )
@@ -3122,6 +3189,7 @@ function collectCellCapturedBindingIdsRust(
         (context.cellWrappedBindingIds.has(expr.reference.binding.id) ||
           context.refCellWrappedBindingIds.has(expr.reference.binding.id) ||
           context.sharedArrayBindingIds.has(expr.reference.binding.id) ||
+          context.sharedClassBindingIds.has(expr.reference.binding.id) ||
           context.sharedMapBindingIds.has(expr.reference.binding.id) ||
           context.sharedSetBindingIds.has(expr.reference.binding.id))
       ) {
@@ -3163,6 +3231,7 @@ function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitCo
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
     (context.sharedArrayBindingIds.has(expression.reference.binding.id) ||
+      context.sharedClassBindingIds.has(expression.reference.binding.id) ||
       context.sharedMapBindingIds.has(expression.reference.binding.id) ||
       context.sharedSetBindingIds.has(expression.reference.binding.id))
   ) {
@@ -3184,6 +3253,43 @@ function getRustSharedArrayBindingRust(
     expression.reference.kind === 'binding' &&
     context.sharedArrayBindingIds.has(expression.reference.binding.id)
     ? expression.reference.binding
+    : undefined;
+}
+
+function getRustSharedClassBindingRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrBindingIdentity> | undefined {
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedClassBindingIds.has(expression.reference.binding.id)
+    ? expression.reference.binding
+    : undefined;
+}
+
+function getIrSharedClassFieldRust(
+  binding: Readonly<IrBindingIdentity>,
+  name: string,
+  context: EmitContext,
+): Readonly<IrClassField> | undefined {
+  const type = context.bindingTypes.get(binding.id);
+  if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const typeBindingId = type.reference.binding.id;
+  const local = context.module.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBindingId,
+  );
+  if (local?.kind === 'class') return local.fields.find((field) => !field.static && field.name === name);
+  const imported = context.module.imports
+    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+    .find(({ candidate }) => candidate.binding.id === typeBindingId);
+  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
+  const target = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context);
+  const declaration = target?.declarations.find(
+    (candidate) =>
+      candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.candidate.imported,
+  );
+  return declaration?.kind === 'class'
+    ? declaration.fields.find((field) => !field.static && field.name === name)
     : undefined;
 }
 
@@ -4476,6 +4582,26 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       variable.initializer.kind === 'identifier' &&
       variable.initializer.reference.kind === 'binding' &&
       context.sharedArrayBindingIds.has(variable.initializer.reference.binding.id)
+        ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
+        : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
+    return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
+  }
+  if (context.sharedClassBindingIds.has(variable.binding.id)) {
+    const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
+    if (type?.kind !== 'named' || !variable.initializer) {
+      emissionError(
+        context,
+        `shared class binding ${variable.binding.name} requires an initialized exact named class representation`,
+        'rust-reference-shared-class-use-unrepresented',
+      );
+    }
+    context.needsRefCellImport.add('RefCell');
+    context.needsRcImport.add('Rc');
+    const name = getBindingTargetNameRust(variable.binding, context);
+    const initializer =
+      variable.initializer.kind === 'identifier' &&
+      variable.initializer.reference.kind === 'binding' &&
+      context.sharedClassBindingIds.has(variable.initializer.reference.binding.id)
         ? `Rc::clone(&${getBindingTargetNameRust(variable.initializer.reference.binding, context)})`
         : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
     return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;

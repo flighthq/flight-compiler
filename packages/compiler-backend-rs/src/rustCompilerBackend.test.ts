@@ -7659,6 +7659,125 @@ describe('emitIrModuleRust', () => {
     expect(failure.classification).toBe('compiler-restriction');
   });
 
+  it('preserves shared mutable class identity with a local Rc RefCell carrier', () => {
+    const result = lower(
+      'shared-class.ts',
+      `class Counter { value = 0; label = "initial"; }
+       export function aliasCounter(): number {
+         const values: Counter = new Counter();
+         const alias: Counter = values;
+         alias.value = 2;
+         alias.label = "changed";
+         return values.value;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use std::cell::RefCell;');
+    expect(output).toContain('use std::rc::Rc;');
+    expect(output).toContain('let values: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new()));');
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
+    expect(output).toContain('alias.borrow_mut().value = 2.0;');
+    expect(output).toContain('alias.borrow_mut().label = "changed".to_owned();');
+    expect(output).toContain('values.borrow().value');
+    if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
+  });
+
+  it('lends a shared class through one temporary mutable call borrow and reuses it afterwards', () => {
+    const provider = lower(
+      'counter-provider.ts',
+      `export class Counter { value = 0; }
+       export function write(counter: Counter): void { counter.value = 2; }`,
+    ).module;
+    const consumer = lower(
+      'alias-counter-call.ts',
+      `import { Counter, write } from './counter-provider.js';
+       export function aliasCounterCall(): number {
+         const values: Counter = new Counter();
+         const alias: Counter = values;
+         write(alias);
+         return values.value;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './counter-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn write(counter: &mut Counter)');
+    expect(output).toContain('write(&mut *alias.borrow_mut());');
+    expect(output).toContain('values.borrow().value');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('counter_provider', providerOutput, 'alias_counter_call', output),
+      ).not.toThrow();
+    }
+  });
+
+  it('captures a shared class only in a proven synchronous non-escaping closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-class-closure.ts',
+        `class Counter { value = 0; }
+         export function aliasCounterClosure(): number {
+           const values = new Counter();
+           const alias = values;
+           const write = (): void => { alias.value = 2; };
+           write();
+           return values.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let alias = Rc::clone(&alias);');
+    expect(output).toContain('alias.borrow_mut().value = 2.0');
+    expect(output).toContain('values.borrow().value');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('refuses shared-class borrow conflicts and observed field assignment results before emission', () => {
+    const conflict = lower(
+      'alias-class-conflict.ts',
+      `class Counter { value = 0; }
+       export function aliasCounterConflict(): number {
+         const values = new Counter();
+         const alias = values;
+         alias.value = values.value + 1;
+         return alias.value;
+       }`,
+    ).module;
+    const observed = lower(
+      'alias-class-result.ts',
+      `class Counter { value = 0; }
+       export function aliasCounterResult(): number {
+         const values = new Counter();
+         const alias = values;
+         return (alias.value = 2);
+       }`,
+    ).module;
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(conflict)).rule).toBe(
+      'rust-reference-shared-class-borrow-conflict',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(observed)).rule).toBe(
+      'rust-reference-shared-class-mutator-result-unrepresented',
+    );
+  });
+
   it('preserves shared mutable Map identity with a local Rc RefCell HashMap carrier', () => {
     const result = lower(
       'shared-map.ts',
