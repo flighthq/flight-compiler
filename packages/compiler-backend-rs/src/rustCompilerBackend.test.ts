@@ -12943,6 +12943,80 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output.match(/Rc::ptr_eq\(/gu) ?? []).toHaveLength(5);
   });
 
+  it('retains direct null and undefined readonly leaf-class fields with staged optional projections', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-retained-class-fields.ts',
+        `class Child {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         class RequiredHolder {
+           readonly child: Child;
+           constructor(child: Child) { this.child = child; }
+         }
+         class NullHolder {
+           readonly child: Child | null;
+           constructor(child: Child | null) { this.child = child; }
+           selected(): Child | null { return this.child; }
+           required(): Child { return this.child!; }
+         }
+         class UndefinedHolder {
+           readonly child: Child | undefined;
+           constructor(child: Child | undefined) { this.child = child; }
+           selected(): Child | undefined { return this.child; }
+           required(): Child { return this.child!; }
+         }
+         function makeChild(value: number): Child { return new Child(value); }
+         export function optionalRetainedClassFields(): boolean {
+           const child = new Child(1); const childAlias = child;
+           const nullable: Child | null = childAlias;
+           const optional: Child | undefined = childAlias;
+           const nullHolder = new NullHolder(nullable); const nullHolderAlias = nullHolder;
+           const undefinedHolder = new UndefinedHolder(optional); const undefinedHolderAlias = undefinedHolder;
+           const missingNull = new NullHolder(null); const missingUndefined = new UndefinedHolder(undefined);
+           const nullProjection = nullHolderAlias.child;
+           const undefinedProjection = undefinedHolderAlias.child;
+           if (nullProjection !== null) nullProjection.value += 1;
+           if (undefinedProjection !== undefined) undefinedProjection.value += 1;
+           if (nullHolder.child !== null) nullHolder.child.value += 1;
+           if (undefinedHolder.child !== undefined) undefinedHolder.child.value += 1;
+           const nullSelected = nullHolder.selected(); const undefinedSelected = undefinedHolder.selected();
+           const nullRequired = nullHolder.required(); const undefinedRequired = undefinedHolder.required();
+           const fresh = new NullHolder(new Child(7));
+           const returned = new UndefinedHolder(makeChild(8));
+           const copied = new NullHolder(nullHolder.child);
+           const narrowedRequired = new RequiredHolder(nullHolder.child!);
+           return nullHolder.child === childAlias && undefinedHolder.child === child &&
+             nullSelected === nullProjection && undefinedSelected === undefinedProjection &&
+             nullRequired === child && undefinedRequired === childAlias &&
+             missingNull.child === null && missingUndefined.child === undefined &&
+             missingNull.child !== missingUndefined.child && nullHolder.child!.value === 5 &&
+             fresh.child!.value === 7 && returned.child!.value === 8 &&
+             copied.child === child && narrowedRequired.child === childAlias;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/child: Option<Rc<RefCell<Child>>>,/gu)).toHaveLength(2);
+    expect(output.match(/fn new\(child: Option<Rc<RefCell<Child>>>\) -> Self/gu)).toHaveLength(2);
+    expect(output).toContain('NullHolder::new(nullable.clone())');
+    expect(output).toContain('UndefinedHolder::new(optional.clone())');
+    expect(output).toContain('NullHolder::new(None)');
+    expect(output).toContain('UndefinedHolder::new(None)');
+    expect(output).toContain('NullHolder::new(Some(Rc::new(RefCell::new(Child::new(7.0)))))');
+    expect(output).toContain('UndefinedHolder::new(Some(make_child(8.0)))');
+    expect(output).toMatch(
+      /let null_projection: Option<Rc<RefCell<Child>>> = \{ null_holder_alias\.borrow\(\)\.child\.clone\(\) \};/u,
+    );
+    expect(output).toMatch(/\{ null_holder\.borrow\(\)\.child\.clone\(\) \}\.unwrap\(\)\.borrow(?:_mut)?\(\)\.value/u);
+    expect(output).toContain('return self.child.clone();');
+    expect(output).toContain('return self.child.clone().unwrap();');
+    expect(output).toContain('RequiredHolder::new({ null_holder.borrow().child.clone() }.unwrap())');
+    expect(output).toContain('(None, None) => true');
+    expect(output).toContain('(None, None) => false');
+  });
+
   it('emits imported retained class fields deterministically from reversed module order', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/retained-field-provider.ts',
@@ -13018,6 +13092,100 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       /let projected: Rc<RefCell<Child(?:_\d+)?>> = \{ Rc::clone\(&holder\.borrow\(\)\.child\) \};/u,
     );
     expect(consumerOutput).toMatch(/\{ Rc::clone\(&holder\.borrow\(\)\.child\) \}\.borrow\(\)\.value/u);
+  });
+
+  it('emits imported optional retained class fields deterministically from reversed module order', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-retained-field-provider.ts',
+      `export class Child { value: number; constructor(value: number) { this.value = value; } }
+       export class NullHolder {
+         readonly child: Child | null;
+         constructor(child: Child | null) { this.child = child; }
+         selected(): Child | null { return this.child; }
+         required(): Child { return this.child!; }
+       }
+       export class UndefinedHolder {
+         readonly child: Child | undefined;
+         constructor(child: Child | undefined) { this.child = child; }
+         selected(): Child | undefined { return this.child; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/optional-retained-field-consumer.ts',
+      `import { Child, NullHolder, UndefinedHolder } from './optional-retained-field-provider.js';
+       export function run(): boolean {
+         const child = new Child(2); const alias = child;
+         const nullable: Child | null = alias; const optional: Child | undefined = alias;
+         const nullHolder = new NullHolder(nullable); const nullAlias = nullHolder;
+         const undefinedHolder = new UndefinedHolder(optional); const undefinedAlias = undefinedHolder;
+         const nullProjection = nullAlias.child; const undefinedProjection = undefinedAlias.child;
+         if (nullProjection !== null) nullProjection.value += 1;
+         if (undefinedProjection !== undefined) undefinedProjection.value += 1;
+         if (nullHolder.child !== null) nullHolder.child.value += 1;
+         return nullHolder.child === child && undefinedHolder.child === alias &&
+           nullHolder.selected() === nullProjection && undefinedHolder.selected() === undefinedProjection &&
+           nullHolder.required() === child && nullHolder.child!.value === 5;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Optional-retained-field-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-retained-field-consumer.ts',
+          },
+          specifier: './optional-retained-field-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/optional-retained-field-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const reversed = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const forward = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    });
+    const providerOutput = reversed.emitModule(provider)[0]!.contents;
+    const consumerOutput = reversed.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toBe(forward.emitModule(provider)[0]!.contents);
+    expect(consumerOutput).toBe(forward.emitModule(consumer)[0]!.contents);
+    expect(providerOutput.match(/child: Option<Rc<RefCell<Child>>>,/gu)).toHaveLength(2);
+    expect(providerOutput.match(/pub fn new\(child: Option<Rc<RefCell<Child>>>\) -> Self/gu)).toHaveLength(2);
+    expect(providerOutput).toContain('return self.child.clone();');
+    expect(providerOutput).toContain('return self.child.clone().unwrap();');
+    expect(consumerOutput).toContain('NullHolder::new(nullable.clone())');
+    expect(consumerOutput).toContain('UndefinedHolder::new(optional.clone())');
+    expect(consumerOutput).toMatch(
+      /let null_projection: Option<Rc<RefCell<Child(?:_\d+)?>>> = \{ null_alias\.borrow\(\)\.child\.clone\(\) \};/u,
+    );
+    expect(consumerOutput).toMatch(
+      /\{ null_holder\.borrow\(\)\.child\.clone\(\) \}\.unwrap\(\)\.borrow(?:_mut)?\(\)\.value/u,
+    );
   });
 
   it('evaluates primitive constructor arguments exactly once in source order before sharing', () => {
@@ -14224,6 +14392,24 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            value: number;
            constructor(owner?: Counter) { this.value = owner === undefined ? 0 : owner.value; }
          }
+         class RetainedSnapshot {
+           readonly child: Counter;
+           constructor(child: Counter) { this.child = child; }
+           selected(): Counter { return this.child; }
+           maybeSelected(): Counter | null { return this.child; }
+         }
+         class NullableRetainedSnapshot {
+           readonly child: Counter | null;
+           constructor(child: Counter | null) { this.child = child; }
+           selected(): Counter | null { return this.child; }
+           required(): Counter { return this.child!; }
+         }
+         class OptionalRetainedSnapshot {
+           readonly child: Counter | undefined;
+           constructor(child: Counter | undefined) { this.child = child; }
+           selected(): Counter | undefined { return this.child; }
+           required(): Counter { return this.child!; }
+         }
          function adjust(value?: Counter): number {
            if (value === undefined) return 0;
            value.value = 3;
@@ -14266,6 +14452,24 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const retainedProjection = retainedAlias.child; retainedProjection.value += 1;
            const retainedSelected = retained.selected(); const retainedMaybe = retainedAlias.maybeSelected();
            const retainedFresh = new RetainedSnapshot(new Counter(13, "fresh"));
+           const nullableChild = new Counter(21, "nullable-retained"); const nullableChildAlias = nullableChild;
+           const nullableCarrier: Counter | null = nullableChildAlias;
+           const nullableRetained = new NullableRetainedSnapshot(nullableCarrier);
+           const nullableProjection = nullableRetained.child;
+           if (nullableProjection !== null) nullableProjection.value += 1;
+           if (nullableRetained.child !== null) nullableRetained.child.value += 1;
+           const nullableSelected = nullableRetained.selected();
+           const nullableRequired = nullableRetained.required();
+           const missingNullableRetained = new NullableRetainedSnapshot(null);
+           const optionalChild = new Counter(31, "optional-retained"); const optionalChildAlias = optionalChild;
+           const optionalCarrier: Counter | undefined = optionalChildAlias;
+           const optionalRetained = new OptionalRetainedSnapshot(optionalCarrier);
+           const optionalProjection = optionalRetained.child;
+           if (optionalProjection !== undefined) optionalProjection.value += 1;
+           if (optionalRetained.child !== undefined) optionalRetained.child.value += 1;
+           const optionalSelected = optionalRetained.selected();
+           const optionalRequired = optionalRetained.required();
+           const missingOptionalRetained = new OptionalRetainedSnapshot(undefined);
            const compound = new Counter(2, "a"); const compoundAlias = compound;
            const optionalCompound: Counter | undefined = compoundAlias;
            let compoundOrder = 0;
@@ -14297,6 +14501,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              retained.child === retainedChild && retainedProjection === retainedChildAlias &&
              retainedSelected === retainedChild && retainedMaybe !== null && retainedMaybe === retainedChild &&
              retained.child.value === 12 && retainedFresh.child.value === 13 &&
+             nullableRetained.child === nullableChild && nullableSelected === nullableProjection &&
+             nullableRequired === nullableChildAlias && nullableRetained.child!.value === 23 &&
+             missingNullableRetained.child === null && optionalRetained.child === optionalChild &&
+             optionalSelected === optionalProjection && optionalRequired === optionalChildAlias &&
+             optionalRetained.child!.value === 33 && missingOptionalRetained.child === undefined &&
+             missingNullableRetained.child !== missingOptionalRetained.child &&
              compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
              compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,

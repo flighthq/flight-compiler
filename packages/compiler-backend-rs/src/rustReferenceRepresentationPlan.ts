@@ -2616,7 +2616,7 @@ function addRustSimpleClassDeclarationRefusals(
       refusals,
       'rust-reference-shared-class-field-unrepresented',
       subject,
-      `class ${declaration.binding.name} requires primitive fields or one required readonly leaf-class field`,
+      `class ${declaration.binding.name} requires primitive fields or one exact readonly leaf-class field`,
     );
   }
   if (!isRustSimpleClassConstructionSupported(declaration, module, modules, moduleResolution, new Set())) {
@@ -2677,6 +2677,41 @@ function isRustSharedClassIdentifierUseRepresented(
     module.sharedClasses.groupByBindingId.has(parent.binding.id)
   ) {
     return true;
+  }
+  if (
+    final === 'right' &&
+    isIrExpressionValue(parent) &&
+    parent.kind === 'assignment' &&
+    parent.left.kind === 'property' &&
+    parent.left.object.kind === 'identifier' &&
+    parent.left.object.reference.kind === 'this' &&
+    expression.reference.kind === 'binding'
+  ) {
+    const bindingId = expression.reference.binding.id;
+    const declaration = module.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'class' &&
+        candidate.classConstructor?.body.some(
+          (statement) => statement.kind === 'expression' && statement.expression === parent,
+        ),
+    );
+    if (declaration?.kind === 'class') {
+      const position = declaration.classConstructor?.parameters.findIndex(
+        (parameter) => parameter.binding.id === bindingId,
+      );
+      if (position !== undefined && position >= 0) {
+        const visiting = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
+        const plan = getRustSimpleClassConstructorPlan(declaration, module, modules, moduleResolution, visiting);
+        const retainedField = getRustSimpleClassRetainedFieldPlan(
+          declaration,
+          module,
+          modules,
+          moduleResolution,
+          visiting,
+        );
+        if (plan?.retainedClassParameters.has(position) && retainedField?.field.name === parent.left.name) return true;
+      }
+    }
   }
   if (final === 'object' && isIrExpressionValue(parent) && parent.kind === 'property') {
     if (parent.optional || parent.structuralAccess) return false;
@@ -2932,7 +2967,7 @@ function addRustSharedClassMutatorResultRefusal(
       refusals,
       'rust-reference-shared-class-use-unrepresented',
       `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
-      'required readonly class-valued field assignment is only represented during direct construction',
+      'readonly class-valued field assignment is only represented during direct construction',
     );
     return;
   }
@@ -4385,7 +4420,10 @@ function isRustReferenceClassReturnExpressionSupported(
         module,
         modules,
         moduleResolution,
-      ),
+      ) &&
+      (retained.carrier.representation === 'shared-ref-cell-class' ||
+        retained.carrier.representation === returnCarrier.representation ||
+        (returnCarrier.representation === 'shared-ref-cell-class' && expression.presence === 'narrowedPresent')),
     );
   }
   if (expression.kind === 'new') {
@@ -5244,18 +5282,25 @@ function isRustReferenceClassCarrierExpressionCompatible(
           expression.presence === 'narrowedPresent')),
     );
   }
-  const actual = getRustReferenceExpressionClassCarrierType(expression, module, modules, moduleResolution);
+  const retainedProjection =
+    expression.kind === 'property'
+      ? getRustReferenceRetainedClassFieldProjection(expression, module, modules, moduleResolution)
+      : undefined;
+  const actual =
+    retainedProjection?.carrier ??
+    getRustReferenceExpressionClassCarrierType(expression, module, modules, moduleResolution);
+  const actualModule = retainedProjection?.module ?? module;
   if (
     !actual ||
-    !isRustReferenceSameClassCarrier(actual, module, expected, expectedModule, modules, moduleResolution)
+    !isRustReferenceSameClassCarrier(actual, actualModule, expected, expectedModule, modules, moduleResolution)
   ) {
-    return false;
-  }
-  if (actual.representation !== 'shared-ref-cell-class' && actual.representation !== expected.representation) {
     return false;
   }
   if (expected.representation === 'shared-ref-cell-class' && actual.representation !== 'shared-ref-cell-class') {
     return 'presence' in expression && expression.presence === 'narrowedPresent';
+  }
+  if (actual.representation !== 'shared-ref-cell-class' && actual.representation !== expected.representation) {
+    return false;
   }
   if (expression.kind === 'new') {
     return isRustSimpleClassConstruction(expression, actual.classType, module, modules, moduleResolution);
@@ -5715,13 +5760,13 @@ function getRustSimpleClassRetainedFieldPlan(
     field.optional ||
     !field.readonly ||
     field.static ||
-    field.parameterProperty !== undefined ||
-    field.type.kind !== 'named' ||
-    field.type.typeArguments.length > 0
+    field.parameterProperty !== undefined
   ) {
     return undefined;
   }
-  const location = getRustReferenceClassDeclaration(field.type, module, modules, moduleResolution);
+  const carrier = getRustDirectRetainedClassCarrierType(field.type, module);
+  if (!carrier) return undefined;
+  const location = getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution);
   if (!location) return undefined;
   const ownerKey = `${moduleKey(module.module)}:${declaration.binding.id}`;
   const payloadKey = `${moduleKey(location.module.module)}:${location.declaration.binding.id}`;
@@ -5739,9 +5784,47 @@ function getRustSimpleClassRetainedFieldPlan(
     return undefined;
   }
   return {
-    carrier: { classType: field.type, representation: 'shared-ref-cell-class' },
+    carrier,
     field,
     module,
+  };
+}
+
+function getRustDirectRetainedClassCarrierType(
+  type: Readonly<IrType>,
+  module: RustReferenceModuleRecord,
+): RustSharedClassCarrierType | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.path.length === 0 &&
+    type.typeArguments.length === 0 &&
+    module.classBindingIds.has(type.reference.binding.id)
+  ) {
+    return { classType: type, representation: 'shared-ref-cell-class' };
+  }
+  if (type.kind !== 'union' || type.types.length !== 2) return undefined;
+  const sentinel = type.types.find(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const payload = type.types.find((member) => member !== sentinel);
+  if (
+    !sentinel ||
+    !payload ||
+    payload.kind !== 'named' ||
+    payload.reference.kind !== 'binding' ||
+    payload.reference.path.length > 0 ||
+    payload.typeArguments.length > 0 ||
+    !module.classBindingIds.has(payload.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  return {
+    classType: payload,
+    representation:
+      sentinel.kind === 'null' ? 'optional-null-shared-ref-cell-class' : 'optional-undefined-shared-ref-cell-class',
+    sentinel: sentinel.kind,
   };
 }
 
@@ -6595,18 +6678,14 @@ function getRustSimpleClassConstructorPlan(
     ) {
       return { kind: 'primitive' as const };
     }
-    const parameterCarrier = getRustSharedClassCarrierTypeCandidate(
-      parameter.type,
-      module.module,
-      module.classBindingIds,
-    );
+    const parameterCarrier = getRustDirectRetainedClassCarrierType(parameter.type, module);
     if (
       retainedField &&
       position === parameters.length - 1 &&
       !parameter.optional &&
       !parameter.rest &&
       parameter.initializer === undefined &&
-      parameterCarrier?.representation === 'shared-ref-cell-class' &&
+      parameterCarrier?.representation === retainedField.carrier.representation &&
       isRustReferenceSameClassCarrier(
         parameterCarrier,
         module,
