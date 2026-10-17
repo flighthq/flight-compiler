@@ -156,6 +156,28 @@ describe('createCompilerRustPublicBindingPlan', () => {
   });
 });
 
+describe('isCompilerRustPublicBindingPlanningFailure', () => {
+  it('recognizes a planning collision and rejects incomplete or unrelated failures', () => {
+    const failure = Object.assign(new Error('collision'), {
+      code: 'rust-public-module-collision',
+      kind: 'rust-public-binding-planning',
+      subjects: ['first', 'second'],
+    });
+
+    expect(isCompilerRustPublicBindingPlanningFailure(failure)).toBe(true);
+    for (const value of [
+      undefined,
+      new Error('unrelated'),
+      { ...failure },
+      Object.assign(new Error('unknown code'), { ...failure, code: 'unknown' }),
+      Object.assign(new Error('missing subject'), { ...failure, subjects: ['first'] }),
+      Object.assign(new Error('empty subject'), { ...failure, subjects: ['first', ''] }),
+    ]) {
+      expect(isCompilerRustPublicBindingPlanningFailure(value)).toBe(false);
+    }
+  });
+});
+
 function createFacade(entry: Readonly<IrModule>, slots: readonly CompilerModuleFacadeSlot[]): CompilerModuleFacadePlan {
   return {
     modules: [{ module: identity(entry), slots }],
