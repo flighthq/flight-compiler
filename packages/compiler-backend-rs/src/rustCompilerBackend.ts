@@ -6045,6 +6045,15 @@ function emitGeneralUnionCastRust(
   const sourceType = inferIrExpressionTypeRust(expression.expression, context);
   const source = sourceType ? getIrCastUnionCarrierRust(sourceType, context) : undefined;
   const destination = getIrCastUnionCarrierRust(expression.type, context);
+  if (source && !destination) {
+    const single = getIrCastSingleAlternativeRust(expression.type, context);
+    // A destination that is one alternative plus one sentinel is the `Option` the target stores, and the
+    // assertion selects that alternative out of the carrier. A bare alternative (no sentinel) or a
+    // dual-sentinel destination is not this shape and keeps the refusal.
+    if (single?.absence === 'null' || single?.absence === 'undefined') {
+      return emitIrCastSingleAlternativeUnionRust(expression, source, single, context);
+    }
+  }
   if (!source || !destination) return undefined;
   if (source.enumName === destination.enumName) return undefined;
   // Dropping the outer absence is the `present` assertion: the source must hold a value, and a missing
@@ -6073,6 +6082,68 @@ function emitGeneralUnionCastRust(
   return match(operand);
 }
 
+// A destination of exactly one concrete alternative plus a single sentinel. Rust stores that as
+// `Option<alternative>`, so the assertion either selects the alternative or reports absence -- and any
+// other source alternative is the assertion being wrong at runtime. A dual-sentinel destination is not
+// this shape (Option has one absence channel), which is the same rule the carrier comparison follows.
+function emitIrCastSingleAlternativeUnionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  source: Readonly<RustCastUnionCarrier>,
+  alternative: Readonly<{ name: string; targetName: string }>,
+  context: EmitContext,
+): string {
+  const match = (operand: string): string =>
+    `match ${operand} { ${source.enumName}::${pascalCase(alternative.name)}(value) => Some(value), _ => panic!("asserted union alternative is not present in the value"), }`;
+  const operand = emitExpression(expression.expression, context);
+  if (source.absence === 'none') return match(operand);
+  return `match ${operand} { Some(value) => ${match('value')}, None => None, }`;
+}
+
+function getIrCastSingleAlternativeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ absence: 'null' | 'undefined' | 'none'; name: string; targetName: string }> | undefined {
+  const resolved = resolveIrCastUnionTypeRust(type, context);
+  if (resolved.kind !== 'union') return undefined;
+  const unionTypes = flattenIrUnionTypesRust(resolved.types);
+  if (unionTypes.some((member) => member.kind === 'null') && unionTypes.some((member) => member.kind === 'undefined')) {
+    return undefined;
+  }
+  const absence = unionTypes.some((member) => member.kind === 'null')
+    ? 'null'
+    : unionTypes.some((member) => member.kind === 'undefined')
+      ? 'undefined'
+      : 'none';
+  const concrete = unionTypes.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (concrete.length !== 1) return undefined;
+  const member = concrete[0]!;
+  if (
+    member.kind !== 'named' ||
+    member.reference.kind !== 'binding' ||
+    member.reference.binding.space !== 'type' ||
+    member.reference.path.length > 0 ||
+    member.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const declaration = getIrNamedTypeDeclarationLocationRust(
+    member.reference.binding,
+    context,
+    context.module,
+  )?.declaration;
+  const isRecord =
+    (declaration?.kind === 'interface' && declaration.typeParameters.length === 0) ||
+    (declaration?.kind === 'typeAlias' &&
+      declaration.typeParameters.length === 0 &&
+      declaration.type.kind === 'object');
+  if (!isRecord) return undefined;
+  return {
+    absence,
+    name: member.reference.binding.name,
+    targetName: getTypeBindingTargetNameRust(member.reference.binding, context),
+  };
+}
+
 interface RustCastUnionCarrier {
   readonly absence: 'null' | 'undefined' | 'none';
   readonly enumName: string;
@@ -6087,10 +6158,7 @@ function getIrCastUnionCarrierRust(type: Readonly<IrType>, context: EmitContext)
   // A parenthesized group in an assertion is a nested union node, and `(A | B) | undefined` is the same
   // carrier as `A | B | undefined`; flatten before asking which alternatives it holds.
   const unionTypes = flattenIrUnionTypesRust(resolved.types);
-  if (
-    unionTypes.some((member) => member.kind === 'null') &&
-    unionTypes.some((member) => member.kind === 'undefined')
-  ) {
+  if (unionTypes.some((member) => member.kind === 'null') && unionTypes.some((member) => member.kind === 'undefined')) {
     return undefined;
   }
   const absence = unionTypes.some((member) => member.kind === 'null')

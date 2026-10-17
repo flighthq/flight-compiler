@@ -14339,3 +14339,63 @@ describe('emitIrModuleRust assertion recovery', () => {
     expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 });
+
+describe('emitIrModuleRust single-alternative assertion recovery', () => {
+  it('selects one alternative out of a carrier as the Option the destination declares', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'one-alternative.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         interface Gamma { c: number }
+         export function one(value: Alpha | Beta | Gamma): Alpha | undefined { return value as Alpha | undefined; }
+         export function nullable(value: Alpha | Beta): Alpha | null { return value as Alpha | null; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn one(value: AnonymousUnion) -> Option<Alpha> {');
+    expect(output).toContain('AnonymousUnion::Alpha(value) => Some(value),');
+    expect(output).toContain('_ => panic!("asserted union alternative is not present in the value"),');
+    // A null destination is the same single absence channel, so it wraps as Option too.
+    expect(output).toContain('pub fn nullable(value: AnonymousUnion2) -> Option<Alpha> {');
+  });
+
+  it('carries absence through a single-alternative assertion', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'one-alternative-absence.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         export function fromNullable(value: (Alpha | Beta) | undefined): Alpha | undefined { return value as Alpha | undefined; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Some(value) => match value {');
+    expect(output).toContain('None => None,');
+  });
+
+  it('refuses a dual-sentinel single-alternative destination instead of borrowing Option', () => {
+    const module = lower(
+      'one-alternative-dual.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       export function both(value: Alpha | Beta): Alpha | null | undefined { return value as Alpha | null | undefined; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-cast-unsupported');
+  });
+
+  it.skipIf(!rustcAvailable)('emits a single-alternative assertion the Rust compiler accepts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'one-alternative-rustc.ts',
+        `interface Alpha { a: number }
+         interface Beta { b: number }
+         interface Gamma { c: number }
+         export function one(value: Alpha | Beta | Gamma): Alpha | undefined { return value as Alpha | undefined; }`,
+      ).module,
+    ).contents;
+
+    expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+});
