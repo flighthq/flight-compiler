@@ -130,8 +130,8 @@ import {
 } from './rustOwnershipEvidence.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
 import {
-  assertCompilerRustRuntimeAbiManifestComplete,
   createCompilerRustRuntimeAbiManifest,
+  validateCompilerRustRuntimeAbiManifest,
 } from './rustRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
@@ -671,7 +671,7 @@ function emitIrModuleRustWithContext(
     replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
   );
-  assertCompilerRustRuntimeAbiManifestComplete(module, createCompilerRustRuntimeAbiManifest());
+  validateCompilerRustRuntimeAbiManifest(module, createCompilerRustRuntimeAbiManifest());
   assertRuntimeExternalBindingRepresentationsRust(module, options);
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);

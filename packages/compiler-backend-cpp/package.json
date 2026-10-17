@@ -28,6 +28,7 @@
     "@flighthq/compiler-types": "*"
   },
   "devDependencies": {
+    "@flighthq/compiler-orchestration": "*",
     "@flighthq/compiler-semantic": "*",
     "typescript": "5.9.3"
   }

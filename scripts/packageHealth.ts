@@ -59,7 +59,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-types',
     ],
     description: 'C++ lowering, naming, and source emission backend',
-    devDependencies: ['compiler-semantic'],
+    devDependencies: ['compiler-orchestration', 'compiler-semantic'],
   },
   'compiler-command-line': {
     dependencies: [

@@ -11,8 +11,8 @@ import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { CompilerRustRuntimeAbiManifest } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 import {
-  assertCompilerRustRuntimeAbiManifestComplete,
   createCompilerRustRuntimeAbiManifest,
+  validateCompilerRustRuntimeAbiManifest,
 } from './rustRuntimeAbiManifest.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -85,7 +85,7 @@ function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
   return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
 }
 
-describe('assertCompilerRustRuntimeAbiManifestComplete', () => {
+describe('validateCompilerRustRuntimeAbiManifest', () => {
   it('fails with a stable target-runtime rule when one emitted helper requirement is absent', () => {
     const module = lower('export const value = 1;');
     const manifest = createCompilerRustRuntimeAbiManifest();
@@ -100,7 +100,7 @@ describe('assertCompilerRustRuntimeAbiManifestComplete', () => {
     };
 
     const failure = captureBackendEmissionFailure(() =>
-      assertCompilerRustRuntimeAbiManifestComplete(module, incomplete),
+      validateCompilerRustRuntimeAbiManifest(module, incomplete),
     );
     expect(failure.classification).toBe('target-runtime');
     expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
@@ -119,7 +119,7 @@ describe('assertCompilerRustRuntimeAbiManifestComplete', () => {
       schema: 'flight-rust-runtime-abi/2',
     } as unknown as CompilerRustRuntimeAbiManifest;
 
-    const failure = captureBackendEmissionFailure(() => assertCompilerRustRuntimeAbiManifestComplete(module, stale));
+    const failure = captureBackendEmissionFailure(() => validateCompilerRustRuntimeAbiManifest(module, stale));
     expect(failure.classification).toBe('target-runtime');
     expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
     expect(failure.message).toContain('invalid manifest schema flight-rust-runtime-abi/2');

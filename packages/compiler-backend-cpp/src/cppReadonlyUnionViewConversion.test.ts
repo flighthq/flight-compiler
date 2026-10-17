@@ -1,6 +1,5 @@
-import { describe, expect, it } from 'vitest';
-
 import ts from 'typescript';
+import { describe, expect, it } from 'vitest';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';

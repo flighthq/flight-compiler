@@ -10,7 +10,22 @@ import { createCompilerRustAmbientMemberBindingPlan } from './rustAmbientMemberB
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import { createCompilerRustRuntimeExternalSymbolBindingPlan } from './rustRuntimeExternalSymbolBinding.js';
 
-export function assertCompilerRustRuntimeAbiManifestComplete(
+export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiManifest {
+  return cloneAndFreezeRustRuntimeAbiValue({
+    ambientMembers: createCompilerRustAmbientMemberBindingPlan(),
+    constructors: createCompilerRuntimeExternalConstructorAbiPlanRust(),
+    externalSymbols: createCompilerRustRuntimeExternalSymbolBindingPlan(),
+    representation: {
+      nullability: { nonNull: 'direct', nullableTargetName: 'Option' },
+      ownership: { nonCopyReuse: 'clone', runtimeWrapperCarrier: 'owned', temporaryAccess: 'borrow' },
+      schema: 'flight-rust-runtime-representation/1',
+    },
+    requirements: createCompilerRustRuntimeRequirementsPlan(),
+    schema: 'flight-rust-runtime-abi/3',
+  });
+}
+
+export function validateCompilerRustRuntimeAbiManifest(
   module: Readonly<CompilerModuleIdentity>,
   manifest: Readonly<CompilerRustRuntimeAbiManifest>,
 ): void {
@@ -49,21 +64,6 @@ export function assertCompilerRustRuntimeAbiManifestComplete(
     'rust-runtime-abi-requirement-incomplete',
     { classification: 'target-runtime' },
   );
-}
-
-export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiManifest {
-  return cloneAndFreezeRustRuntimeAbiValue({
-    ambientMembers: createCompilerRustAmbientMemberBindingPlan(),
-    constructors: createCompilerRuntimeExternalConstructorAbiPlanRust(),
-    externalSymbols: createCompilerRustRuntimeExternalSymbolBindingPlan(),
-    representation: {
-      nullability: { nonNull: 'direct', nullableTargetName: 'Option' },
-      ownership: { nonCopyReuse: 'clone', runtimeWrapperCarrier: 'owned', temporaryAccess: 'borrow' },
-      schema: 'flight-rust-runtime-representation/1',
-    },
-    requirements: createCompilerRustRuntimeRequirementsPlan(),
-    schema: 'flight-rust-runtime-abi/3',
-  });
 }
 
 function addRustRuntimeRequirement(
