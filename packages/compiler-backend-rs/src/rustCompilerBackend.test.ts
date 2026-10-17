@@ -3105,7 +3105,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 
-  it('deterministically refuses optional interface member assignment at the reference-planning boundary', () => {
+  it('deterministically retains the optional interface member assignment-place refusal', () => {
     const source =
       'interface Box { value: number; } export async function attempt(box: Box | undefined, task: Promise<number>): Promise<number> { try { box?.value = await task; } catch {} return 0; }';
     const failures = [0, 1].map(() =>
@@ -3116,8 +3116,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const expected = {
       classification: 'compiler-restriction',
       message:
-        'rust emission failed for @flighthq/math/packages/math/src/try-catch-assignment-place-refusal.ts: class carrier box must be exactly one supported simple class plus exactly null or undefined',
-      rule: 'rust-reference-shared-class-type-unrepresented',
+        'rust emission failed for @flighthq/math/packages/math/src/try-catch-assignment-place-refusal.ts: protected awaited assignment requires one direct binding target and the simple assignment operator',
+      rule: 'rust-async-protected-assignment-place-unrepresented',
     };
 
     expect(

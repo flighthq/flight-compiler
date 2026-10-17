@@ -71,13 +71,14 @@ interface RustReferenceImportRecord {
 interface RustReferenceModuleRecord {
   readonly bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   readonly calls: RustReferenceCallRecord[];
+  readonly classBindingIds: Set<string>;
   readonly functions: RustReferenceFunctionRecord[];
   readonly functionsByBindingId: Map<string, RustReferenceFunctionRecord>;
   readonly importsByBindingId: ReadonlyMap<string, RustReferenceImportRecord>;
   readonly module: Readonly<IrModule>;
   readonly ownership: ReturnType<typeof analyzeIrModuleOwnershipEvidenceRust>;
   readonly sharedArrays: RustSharedArrayAnalysis;
-  readonly sharedClasses: RustSharedClassAnalysis;
+  sharedClasses: RustSharedClassAnalysis;
   readonly sharedMaps: RustSharedHashCollectionAnalysis;
   readonly sharedSets: RustSharedHashCollectionAnalysis;
 }
@@ -142,7 +143,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   if (input.moduleResolution && input.moduleResolution.schema !== 'flight-compiler-module-resolution/1') {
     throw new TypeError('Rust reference representation planning requires flight-compiler-module-resolution/1');
   }
-  const modules = createRustReferenceModuleRecords(input.modules);
+  const modules = createRustReferenceModuleRecords(input.modules, input.moduleResolution);
   collectRustReferenceClassMethodParameterMutations(modules, input.moduleResolution);
   propagateRustReferenceArrayParameterMutation(modules, input.moduleResolution);
   propagateRustReferenceClassParameterMutation(modules, input.moduleResolution);
@@ -189,19 +190,24 @@ function collectRustReferenceClassMethodParameterMutations(
 
 function createRustReferenceModuleRecords(
   modules: readonly Readonly<IrModule>[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): readonly RustReferenceModuleRecord[] {
   const records: RustReferenceModuleRecord[] = [];
   for (const module of modules) {
     const ownership = analyzeIrModuleOwnershipEvidenceRust(module);
     const bindingTypes = new Map(ownership.bindings.map((binding) => [binding.binding.id, binding.type]));
     const mutatedParameters = collectIrModuleReferentMutatedParameterIdsRust(module);
+    const classBindingIds = new Set(
+      module.declarations.flatMap((declaration) => (declaration.kind === 'class' ? [declaration.binding.id] : [])),
+    );
     const sharedArrays = createRustSharedArrayAnalysis(module, ownership, bindingTypes);
-    const sharedClasses = createRustSharedClassAnalysis(module, ownership, bindingTypes);
+    const sharedClasses = createRustSharedClassAnalysis(module, ownership, bindingTypes, classBindingIds);
     const sharedMaps = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'map');
     const sharedSets = createRustSharedHashCollectionAnalysis(module, ownership, bindingTypes, 'set');
     const record: RustReferenceModuleRecord = {
       bindingTypes,
       calls: [],
+      classBindingIds,
       functions: [],
       functionsByBindingId: new Map(),
       importsByBindingId: new Map(
@@ -243,6 +249,45 @@ function createRustReferenceModuleRecords(
       }
     }
     records.push(record);
+  }
+  // An imported type is class evidence only after its target resolves to an actual exported class or
+  // source uses it directly as a constructor. Rebuild this analysis after the complete graph exists so
+  // interfaces and otherwise unresolved imported names cannot enter shared-class planning speculatively.
+  for (const record of records) {
+    const importedBindingIds = new Set(record.importsByBindingId.keys());
+    for (const imported of record.importsByBindingId.values()) {
+      if (imported.binding.imported === '*') continue;
+      const matches = resolveRustReferenceImportModules(imported, record.module, records, moduleResolution).flatMap(
+        (target) =>
+          target.module.declarations.flatMap((declaration) =>
+            declaration.kind === 'class' &&
+            declaration.exported &&
+            declaration.binding.name === imported.binding.imported
+              ? [declaration]
+              : [],
+          ),
+      );
+      if (matches.length === 1) record.classBindingIds.add(imported.binding.binding.id);
+    }
+    analyzeIrModuleTraversal(record.module, {
+      expression(expression) {
+        if (
+          expression.kind === 'new' &&
+          expression.callee.kind === 'identifier' &&
+          expression.callee.reference.kind === 'binding' &&
+          importedBindingIds.has(expression.callee.reference.binding.id)
+        ) {
+          record.classBindingIds.add(expression.callee.reference.binding.id);
+        }
+        return undefined;
+      },
+    });
+    record.sharedClasses = createRustSharedClassAnalysis(
+      record.module,
+      record.ownership,
+      record.bindingTypes,
+      record.classBindingIds,
+    );
   }
   return records;
 }
@@ -875,6 +920,7 @@ function createRustSharedClassAnalysis(
   module: Readonly<IrModule>,
   ownership: RustReferenceModuleRecord['ownership'],
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  classBindingIds: ReadonlySet<string>,
 ): RustSharedClassAnalysis {
   const parents = new Map<string, string>();
   const aliasEdges: Array<readonly [string, string]> = [];
@@ -900,7 +946,7 @@ function createRustSharedClassAnalysis(
     variable(variable) {
       if (!('binding' in variable)) return;
       const type = bindingTypes.get(variable.binding.id);
-      const carrier = getRustSharedClassCarrierTypeCandidate(type, module);
+      const carrier = getRustSharedClassCarrierTypeCandidate(type, module, classBindingIds);
       if (!carrier) return;
       carrierTypesByBindingId.set(variable.binding.id, carrier);
       variablesByBindingId.set(variable.binding.id, {
@@ -915,7 +961,11 @@ function createRustSharedClassAnalysis(
           [variable.initializer.whenTrue, variable.initializer.whenFalse].flatMap((alternative) =>
             alternative.kind === 'identifier' &&
             alternative.reference.kind === 'binding' &&
-            getRustSharedClassCarrierTypeCandidate(bindingTypes.get(alternative.reference.binding.id), module)
+            getRustSharedClassCarrierTypeCandidate(
+              bindingTypes.get(alternative.reference.binding.id),
+              module,
+              classBindingIds,
+            )
               ? [alternative.reference.binding.id]
               : [],
           ),
@@ -926,7 +976,7 @@ function createRustSharedClassAnalysis(
         return;
       }
       const sourceId = variable.initializer.reference.binding.id;
-      const sourceCarrier = getRustSharedClassCarrierTypeCandidate(bindingTypes.get(sourceId), module);
+      const sourceCarrier = getRustSharedClassCarrierTypeCandidate(bindingTypes.get(sourceId), module, classBindingIds);
       if (!sourceCarrier) return;
       carrierTypesByBindingId.set(sourceId, sourceCarrier);
       const edge = [variable.binding.id, variable.initializer.reference.binding.id] as const;
@@ -1734,7 +1784,7 @@ function addRustOptionalClassCarrierBoundaryRefusals(
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
   for (const evidence of module.ownership.bindings) {
-    if (!isRustPotentialOptionalClassCarrierType(evidence.type, module.module)) continue;
+    if (!isRustPotentialOptionalClassCarrierType(evidence.type, module.module, module.classBindingIds)) continue;
     if (getRustOptionalSharedClassCarrierType(evidence.type, module, modules, moduleResolution)) continue;
     addRustReferenceRefusal(
       refusals,
@@ -1748,32 +1798,40 @@ function addRustOptionalClassCarrierBoundaryRefusals(
 function isRustPotentialOptionalClassCarrierType(
   type: Readonly<IrType>,
   module: Readonly<IrModule>,
+  classBindingIds: ReadonlySet<string>,
   resolving: ReadonlySet<string> = new Set(),
 ): boolean {
-  const facts = getRustPotentialOptionalClassCarrierFacts(type, module, resolving);
+  const facts = getRustPotentialOptionalClassCarrierFacts(type, module, classBindingIds, resolving);
   return facts.classLike && facts.sentinel;
 }
 
 function getRustPotentialOptionalClassCarrierFacts(
   type: Readonly<IrType>,
   module: Readonly<IrModule>,
+  classBindingIds: ReadonlySet<string>,
   resolving: ReadonlySet<string>,
 ): Readonly<{ classLike: boolean; sentinel: boolean }> {
   if (type.kind === 'null' || type.kind === 'undefined') return { classLike: false, sentinel: true };
-  if (type.kind === 'array') return getRustPotentialOptionalClassCarrierFacts(type.element, module, resolving);
+  if (type.kind === 'array') {
+    return getRustPotentialOptionalClassCarrierFacts(type.element, module, classBindingIds, resolving);
+  }
   if (type.kind === 'tuple') {
     return combineRustOptionalClassCarrierFacts(
-      type.elements.map((element) => getRustPotentialOptionalClassCarrierFacts(element.type, module, resolving)),
+      type.elements.map((element) =>
+        getRustPotentialOptionalClassCarrierFacts(element.type, module, classBindingIds, resolving),
+      ),
     );
   }
   if (type.kind === 'object') {
     return combineRustOptionalClassCarrierFacts(
-      type.properties.map((property) => getRustPotentialOptionalClassCarrierFacts(property.type, module, resolving)),
+      type.properties.map((property) =>
+        getRustPotentialOptionalClassCarrierFacts(property.type, module, classBindingIds, resolving),
+      ),
     );
   }
   if (type.kind === 'union' || type.kind === 'intersection') {
     return combineRustOptionalClassCarrierFacts(
-      type.types.map((member) => getRustPotentialOptionalClassCarrierFacts(member, module, resolving)),
+      type.types.map((member) => getRustPotentialOptionalClassCarrierFacts(member, module, classBindingIds, resolving)),
     );
   }
   if (type.kind !== 'named') return { classLike: false, sentinel: false };
@@ -1784,22 +1842,22 @@ function getRustPotentialOptionalClassCarrierFacts(
   ) {
     const bindingId = type.reference.binding.id;
     const declaration = module.declarations.find(
-      (candidate) =>
-        (candidate.kind === 'class' || candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
-        candidate.binding.id === bindingId,
+      (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
     );
     if (declaration?.kind === 'typeAlias') {
-      return getRustPotentialOptionalClassCarrierFacts(declaration.type, module, new Set(resolving).add(bindingId));
+      return getRustPotentialOptionalClassCarrierFacts(
+        declaration.type,
+        module,
+        classBindingIds,
+        new Set(resolving).add(bindingId),
+      );
     }
-    if (declaration?.kind === 'class' || declaration?.kind === 'interface') {
-      return { classLike: true, sentinel: false };
-    }
-    if (module.imports.some((item) => item.bindings.some((binding) => binding.binding.id === bindingId))) {
-      return { classLike: true, sentinel: false };
-    }
+    if (classBindingIds.has(bindingId)) return { classLike: true, sentinel: false };
   }
   return combineRustOptionalClassCarrierFacts(
-    type.typeArguments.map((argument) => getRustPotentialOptionalClassCarrierFacts(argument, module, resolving)),
+    type.typeArguments.map((argument) =>
+      getRustPotentialOptionalClassCarrierFacts(argument, module, classBindingIds, resolving),
+    ),
   );
 }
 
@@ -2167,6 +2225,7 @@ function isRustSharedClassIdentifierUseRepresented(
 ): boolean {
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
+  if (final === 'expression' && isIrExpressionValue(parent) && parent.kind === 'cast') return true;
   const initializerIndex = path_.lastIndexOf('initializer');
   if (initializerIndex >= 0) {
     const declaration = getIrModuleTraversalPathValue(module.module, path_.slice(0, initializerIndex));
@@ -3257,7 +3316,7 @@ function addRustSharedClassReturnRefusals(
       `function ${function_.declaration.binding.name} does not have one exact synchronous simple-class return completion`,
     );
     const type = getRustReferenceFunctionClassReturnType(function_.declaration);
-    const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module);
+    const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module, module.classBindingIds);
     const location = carrier
       ? getRustReferenceClassDeclaration(carrier.classType, module, modules, moduleResolution)
       : undefined;
@@ -3308,7 +3367,7 @@ function isRustReferencePotentialClassReturnType(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): boolean {
-  const candidate = getRustSharedClassCarrierTypeCandidate(type, module.module);
+  const candidate = getRustSharedClassCarrierTypeCandidate(type, module.module, module.classBindingIds);
   const location = getRustReferenceClassDeclaration(candidate?.classType ?? type, module, modules, moduleResolution);
   if (location) {
     return isRustReferenceClassReturnDeclarationInScope(
@@ -3696,15 +3755,19 @@ function getRustReferenceAnyClassParameterPositions(
 ): ReadonlySet<number> {
   return new Set(
     function_.declaration.parameters.flatMap((parameter, position) =>
-      isRustPotentialClassParameterType(parameter.type, module.module) ? [position] : [],
+      isRustPotentialClassParameterType(parameter.type, module.module, module.classBindingIds) ? [position] : [],
     ),
   );
 }
 
-function isRustPotentialClassParameterType(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
-  if (isRustClassLikeType(type, module) || type.kind === 'unknown') return true;
+function isRustPotentialClassParameterType(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  classBindingIds: ReadonlySet<string>,
+): boolean {
+  if (isRustClassLikeType(type, module, classBindingIds)) return true;
   return type.kind === 'union' || type.kind === 'intersection'
-    ? type.types.some((member) => isRustPotentialClassParameterType(member, module))
+    ? type.types.some((member) => isRustPotentialClassParameterType(member, module, classBindingIds))
     : false;
 }
 
@@ -3714,7 +3777,11 @@ function getRustReferenceAnyClassMutationPositions(
 ): ReadonlySet<number> {
   return new Set(
     [...function_.mutatedParameterPositions].filter((position) =>
-      getRustSharedClassCarrierTypeCandidate(function_.declaration.parameters[position]?.type, module.module),
+      getRustSharedClassCarrierTypeCandidate(
+        function_.declaration.parameters[position]?.type,
+        module.module,
+        module.classBindingIds,
+      ),
     ),
   );
 }
@@ -3831,21 +3898,10 @@ function isRustReferenceClassExpression(
   expression: Readonly<IrExpression>,
   module: RustReferenceModuleRecord,
 ): boolean {
-  if (
-    expression.kind === 'new' &&
-    expression.callee.kind === 'identifier' &&
-    expression.callee.reference.kind === 'binding'
-  ) {
-    return true;
-  }
-  if (expression.kind === 'cast') {
-    return getRustSharedClassCarrierTypeCandidate(expression.type, module.module) !== undefined;
-  }
+  const type = getRustReferenceClassIdentityExpressionType(expression, module);
   return (
-    expression.kind === 'identifier' &&
-    expression.reference.kind === 'binding' &&
-    getRustSharedClassCarrierTypeCandidate(module.bindingTypes.get(expression.reference.binding.id), module.module) !==
-      undefined
+    type !== undefined &&
+    getRustSharedClassCarrierTypeCandidate(type, module.module, module.classBindingIds) !== undefined
   );
 }
 
@@ -3912,6 +3968,7 @@ function isRustHashCollectionLikeType(
 function isRustClassLikeType(
   type: Readonly<IrType> | undefined,
   module: Readonly<IrModule>,
+  classBindingIds: ReadonlySet<string>,
   resolving: ReadonlySet<string> = new Set(),
 ): boolean {
   if (
@@ -3923,21 +3980,19 @@ function isRustClassLikeType(
     return false;
   }
   const bindingId = type.reference.binding.id;
-  if (module.declarations.some((candidate) => candidate.kind === 'class' && candidate.binding.id === bindingId)) {
-    return true;
-  }
-  if (module.imports.some((item) => item.bindings.some((binding) => binding.binding.id === bindingId))) return true;
+  if (classBindingIds.has(bindingId)) return true;
   const declaration = module.declarations.find(
     (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
   );
   return declaration?.kind === 'typeAlias'
-    ? isRustClassLikeType(declaration.type, module, new Set(resolving).add(bindingId))
+    ? isRustClassLikeType(declaration.type, module, classBindingIds, new Set(resolving).add(bindingId))
     : false;
 }
 
 function getRustSharedClassCarrierTypeCandidate(
   type: Readonly<IrType> | undefined,
   module: Readonly<IrModule>,
+  classBindingIds: ReadonlySet<string>,
   resolving: ReadonlySet<string> = new Set(),
 ): RustSharedClassCarrierType | undefined {
   if (!type) return undefined;
@@ -3952,10 +4007,15 @@ function getRustSharedClassCarrierTypeCandidate(
       (candidate) => candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
     );
     if (alias?.kind === 'typeAlias') {
-      return getRustSharedClassCarrierTypeCandidate(alias.type, module, new Set(resolving).add(bindingId));
+      return getRustSharedClassCarrierTypeCandidate(
+        alias.type,
+        module,
+        classBindingIds,
+        new Set(resolving).add(bindingId),
+      );
     }
   }
-  if (isRustClassLikeType(type, module)) {
+  if (isRustClassLikeType(type, module, classBindingIds)) {
     return { classType: type, representation: 'shared-ref-cell-class' };
   }
   if (type.kind !== 'union' || type.types.length !== 2) return undefined;
@@ -3966,7 +4026,7 @@ function getRustSharedClassCarrierTypeCandidate(
   if (sentinelMembers.length !== 1) return undefined;
   const classMembers = type.types.filter((member) => member !== sentinelMembers[0]);
   if (classMembers.length !== 1) return undefined;
-  const classCarrier = getRustSharedClassCarrierTypeCandidate(classMembers[0], module, resolving);
+  const classCarrier = getRustSharedClassCarrierTypeCandidate(classMembers[0], module, classBindingIds, resolving);
   if (!classCarrier || classCarrier.representation !== 'shared-ref-cell-class') return undefined;
   const sentinel = sentinelMembers[0]!.kind;
   return {
@@ -4329,7 +4389,7 @@ function getRustSharedClassCarrierType(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): RustSharedClassCarrierType | undefined {
-  const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module);
+  const carrier = getRustSharedClassCarrierTypeCandidate(type, module.module, module.classBindingIds);
   return carrier && isRustSharedClassTypeSupported(carrier.classType, module, modules, moduleResolution)
     ? carrier
     : undefined;

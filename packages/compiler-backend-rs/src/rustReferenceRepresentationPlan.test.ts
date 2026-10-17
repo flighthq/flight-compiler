@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrModule } from '../../compiler-types/src/index.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
@@ -536,7 +537,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(
       modulePlan.sharedClassBindings
         .map(({ binding, representation }) => [binding.name, representation])
-        .sort(([left], [right]) => String(left).localeCompare(String(right))),
+        .sort(([left], [right]) => compareTextCodeUnits(String(left), String(right))),
     ).toEqual([
       ['maybeNull', 'optional-null-shared-ref-cell-class'],
       ['maybeUndefined', 'optional-undefined-shared-ref-cell-class'],
@@ -653,6 +654,32 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         ['lifted', 'optional-undefined-shared-ref-cell-class'],
       ]),
     );
+  });
+
+  it('keeps local and imported optional interfaces outside shared-class planning', () => {
+    const provider = lower(
+      'optional-interface-provider.ts',
+      `export interface Box { value: number; }
+       export function read(value: Box | undefined): number {
+         return value === undefined ? 0 : value.value;
+       }`,
+    );
+    const consumer = lower(
+      'optional-interface-consumer.ts',
+      `import { Box, read } from './optional-interface-provider.js';
+       export function inspect(value: Box | undefined): number { return read(value); }`,
+    );
+    const plan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution: resolve('./optional-interface-provider.js', provider, consumer),
+      modules: [provider, consumer],
+    });
+
+    for (const module of [provider, consumer]) {
+      const modulePlan = getModulePlan(plan, module);
+      expect(modulePlan.callables).toEqual([]);
+      expect(modulePlan.refusals).toEqual([]);
+      expect(modulePlan.sharedClassBindings).toEqual([]);
+    }
   });
 
   it('refuses unsupported class identity comparisons', () => {
