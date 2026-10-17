@@ -1827,6 +1827,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
            const finalAlias = alias;
            return useLocal ? finalAlias : makeCounter(this.value, this.label);
          }
+         forwarded(): Counter { return this.snapshot(true); }
          current(): number { return this.value; }
        }
        export function run(): boolean {
@@ -1848,6 +1849,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
            const alias = result;
            return useLocal ? alias : makeCounter(this.value);
          }
+         forwarded(): Counter { return this.snapshot(true); }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -1855,11 +1857,16 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/class-method-return-consumer.ts',
       `import { Counter } from './class-method-return-provider.js';
+       class Factory {
+         marker = 0;
+         copy(): Counter { const receiver = new Counter(2); return receiver.forwarded(); }
+       }
        export function run(): number {
          const receiver = new Counter(2); const receiverAlias = receiver;
          const result = receiverAlias.snapshot(true); const resultAlias = result;
+         const factory = new Factory(); const forwarded = factory.copy();
          resultAlias.value += 1;
-         return result.value;
+         return result.value + forwarded.value;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -1913,21 +1920,16 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(getModulePlan(importedPlan, provider).refusals).toEqual([]);
     expect(getModulePlan(importedPlan, consumer).refusals).toEqual([]);
     expect(getModulePlan(importedPlan, consumer).sharedClassBindings.map(({ binding }) => binding.name)).toEqual(
-      expect.arrayContaining(['receiver', 'receiverAlias', 'result', 'resultAlias']),
+      expect.arrayContaining(['receiver', 'receiverAlias', 'result', 'resultAlias', 'forwarded']),
     );
   });
 
-  it('refuses borrowed, forwarded, and inexact class method return roots', () => {
+  it('refuses borrowed and inexact class method return roots', () => {
     const cases = [
       `class Counter { value = 0; copy(): Counter { return this; } }`,
       `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
-      `class Counter {
-         value = 0;
-         fresh(): Counter { return new Counter(); }
-         copy(): Counter { return this.fresh(); }
-       }`,
       `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
       `class Counter { value = 0; }
        class Other { value = 1; }
@@ -1941,6 +1943,43 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       `class Counter { value = 0; }
        class Other { value = 1; }
        class Factory { copy(): Counter { return new Other(); } }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(other: Counter): Counter { return other.fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(other?: Counter): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh<T>(): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh<number>(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         receiver(): Counter { return new Counter(); }
+         copy(): Counter { return this.receiver().fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(): Counter {
+           const receiver: Counter | undefined = new Counter();
+           return receiver!.fresh();
+         }
+       }`,
+      `class Counter {
+         value = 0;
+         static fresh(): Counter { return new Counter(); }
+         copy(): Counter { return Counter.fresh(); }
+       }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; fresh(): Other { return new Other(); } }
+       class Factory { marker = 0; copy(): Counter { const receiver = new Other(); return receiver.fresh(); } }`,
     ];
 
     for (const [index, declaration] of cases.entries()) {
@@ -1955,11 +1994,112 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         expect.arrayContaining([
           expect.objectContaining({
             code:
-              index === 7
+              index === 6
                 ? 'rust-async-method-owner-carrier-unrepresented'
                 : 'rust-reference-shared-class-return-unrepresented',
           }),
         ]),
+      );
+    }
+  });
+
+  it('refuses self, mutual, and imported class-return forwarding cycles deterministically', () => {
+    const local = lower(
+      'class-method-return-cycle.ts',
+      `class Counter {
+         value = 0;
+         self(): Counter { return this.self(); }
+         first(): Counter { return this.second(); }
+         second(): Counter { return this.first(); }
+       }
+       export function run(): number { return 0; }`,
+    );
+    const localRefusals = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [local] }),
+      local,
+    ).refusals.filter(({ code }) => code === 'rust-reference-shared-class-return-unrepresented');
+    expect(localRefusals.map(({ subject }) => subject)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(':method:self'),
+        expect.stringContaining(':method:first'),
+        expect.stringContaining(':method:second'),
+      ]),
+    );
+
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/class-method-cycle-provider.ts',
+      `import { Relay } from './class-method-cycle-consumer.js';
+       export class Counter { value = 0; }
+       export class Provider {
+         marker = 0;
+         forward(): Counter { const relay = new Relay(); return relay.forward(); }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/class-method-cycle-consumer.ts',
+      `import { Counter, Provider } from './class-method-cycle-provider.js';
+       export class Relay {
+         marker = 0;
+         forward(): Counter { const provider = new Provider(); return provider.forward(); }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Class-method-cycle-provider',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-cycle-provider.ts',
+          },
+          specifier: './class-method-cycle-consumer.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-cycle-consumer.ts',
+          },
+        },
+        {
+          importer: {
+            name: 'Class-method-cycle-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-cycle-consumer.ts',
+          },
+          specifier: './class-method-cycle-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-cycle-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const first = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+    const second = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [consumer, provider],
+    });
+
+    expect(second).toEqual(first);
+    for (const module of [provider, consumer]) {
+      expect(getModulePlan(first, module).refusals).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-return-unrepresented' })]),
       );
     }
   });

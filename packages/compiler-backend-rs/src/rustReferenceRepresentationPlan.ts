@@ -92,6 +92,17 @@ interface RustSimpleClassMethodPlan {
     | undefined;
 }
 
+interface RustSimpleClassMethodPlanningState {
+  readonly plans: Map<string, RustSimpleClassMethodPlan | null>;
+  readonly visiting: Set<string>;
+}
+
+interface RustSimpleClassMethodReturnPlanningContext {
+  readonly declaration: Readonly<IrClassDeclaration>;
+  readonly methodPlans: RustSimpleClassMethodPlanningState;
+  readonly visitingClasses: ReadonlySet<string>;
+}
+
 interface RustReferenceImportRecord {
   readonly binding: Readonly<IrImportBinding>;
   readonly specifier: string;
@@ -360,6 +371,7 @@ function createRustReferenceModuleRecords(
         });
       }
       const visitingClasses = new Set([`${moduleKey(record.module)}:${declaration.binding.id}`]);
+      const methodPlans = createRustSimpleClassMethodPlanningState();
       for (const method of declaration.methods) {
         const methodPlan = getRustSimpleClassMethodPlan(
           method,
@@ -368,6 +380,7 @@ function createRustReferenceModuleRecords(
           records,
           moduleResolution,
           visitingClasses,
+          methodPlans,
         );
         for (const [position, carrier] of methodPlan?.optionalClassParameters ?? []) {
           const parameter = method.parameters[position];
@@ -1562,6 +1575,7 @@ function activateRustSharedClassMethodReturnAliases(
     for (const declaration of module.module.declarations) {
       if (declaration.kind !== 'class') continue;
       const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
+      const methodPlans = createRustSimpleClassMethodPlanningState();
       for (const method of declaration.methods) {
         const plan = getRustSimpleClassMethodPlan(
           method,
@@ -1570,6 +1584,7 @@ function activateRustSharedClassMethodReturnAliases(
           modules,
           moduleResolution,
           visitingClasses,
+          methodPlans,
         );
         if (!plan?.returnClass) continue;
         const expression = getRustSimpleClassMethodReturnExpression(method);
@@ -2442,6 +2457,7 @@ function addRustSimpleClassDeclarationRefusals(
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
   const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
+  const methodPlans = createRustSimpleClassMethodPlanningState();
   for (const method of declaration.methods) {
     if (!method.async) continue;
     const ownerSupported =
@@ -2471,7 +2487,9 @@ function addRustSimpleClassDeclarationRefusals(
     );
   }
   for (const method of declaration.methods) {
-    if (getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses)) {
+    if (
+      getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses, methodPlans)
+    ) {
       continue;
     }
     if (method.async) {
@@ -3483,11 +3501,22 @@ function addRustClassMethodRefusals(
   for (const declaration of module.module.declarations) {
     if (declaration.kind !== 'class') continue;
     const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
+    const methodPlans = createRustSimpleClassMethodPlanningState();
     for (const method of declaration.methods) {
       if (method.async) continue;
       const potentialReturn = isRustPotentialClassMethodReturn(method, module, modules, moduleResolution);
       if (!potentialReturn && !isRustPotentialClassParameterMethod(method, module)) continue;
-      if (getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses)) {
+      if (
+        getRustSimpleClassMethodPlan(
+          method,
+          declaration,
+          module,
+          modules,
+          moduleResolution,
+          visitingClasses,
+          methodPlans,
+        )
+      ) {
         continue;
       }
       addRustReferenceRefusal(
@@ -3497,7 +3526,7 @@ function addRustClassMethodRefusals(
           : 'rust-reference-shared-class-member-unrepresented',
         getRustSimpleClassMethodIdentity(module, declaration, method),
         potentialReturn
-          ? `class method ${declaration.binding.name}.${method.name} does not have one exact owned synchronous simple-class return completion`
+          ? `class method ${declaration.binding.name}.${method.name} does not have one exact acyclic owned synchronous simple-class return completion`
           : `class method ${declaration.binding.name}.${method.name} is outside the bounded final simple-class parameter carrier`,
       );
     }
@@ -3543,7 +3572,7 @@ function addRustClassMethodRefusals(
             : 'rust-reference-shared-class-member-unrepresented',
           `${getRustSimpleClassMethodIdentity(location.module, location.declaration, location.method)}:${JSON.stringify(path_)}`,
           potentialReturn
-            ? `class method ${location.declaration.binding.name}.${location.method.name} does not have one exact owned synchronous simple-class return completion`
+            ? `class method ${location.declaration.binding.name}.${location.method.name} does not have one exact acyclic owned synchronous simple-class return completion`
             : `class method ${location.declaration.binding.name}.${location.method.name} is outside the bounded final simple-class parameter carrier`,
         );
         return;
@@ -4141,6 +4170,7 @@ function isRustReferenceClassReturnExpressionSupported(
   visitingFunctions: ReadonlySet<string>,
   visitingBindings: ReadonlySet<string>,
   skipClassSupport = false,
+  methodContext?: RustSimpleClassMethodReturnPlanningContext,
 ): boolean {
   if (returnCarrier.sentinel && isRustReferenceSentinelExpression(expression, returnCarrier.sentinel)) return true;
   if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
@@ -4179,6 +4209,7 @@ function isRustReferenceClassReturnExpressionSupported(
         visitingFunctions,
         new Set(visitingBindings).add(bindingId),
         skipClassSupport,
+        methodContext,
       )
     );
   }
@@ -4193,6 +4224,27 @@ function isRustReferenceClassReturnExpressionSupported(
     );
   }
   if (expression.kind === 'call') {
+    const method = methodContext
+      ? getRustRequiredClassReturnMethodCall(
+          expression,
+          module,
+          modules,
+          moduleResolution,
+          visitingFunctions,
+          visitingBindings,
+          methodContext,
+        )
+      : undefined;
+    if (method) {
+      return isRustReferenceSameClassCarrier(
+        method.returnClass,
+        method.module,
+        returnCarrier,
+        module,
+        modules,
+        moduleResolution,
+      );
+    }
     const target = resolveRustReferenceCallTarget(expression, module, modules, moduleResolution);
     if (target.kind !== 'function') return false;
     const targetCarrier = getRustReferenceClassReturnCarrier(
@@ -4221,6 +4273,7 @@ function isRustReferenceClassReturnExpressionSupported(
       visitingFunctions,
       visitingBindings,
       skipClassSupport,
+      methodContext,
     ) &&
     isRustReferenceClassReturnExpressionSupported(
       expression.whenFalse,
@@ -4231,6 +4284,7 @@ function isRustReferenceClassReturnExpressionSupported(
       visitingFunctions,
       visitingBindings,
       skipClassSupport,
+      methodContext,
     )
   );
 }
@@ -5108,6 +5162,99 @@ function getRustReferenceClassInstanceMethodCandidate(
   return location && method ? { declaration: location.declaration, method, module: location.module } : undefined;
 }
 
+function getRustRequiredClassReturnMethodCall(
+  call: IrCallExpression,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  visitingFunctions: ReadonlySet<string>,
+  visitingBindings: ReadonlySet<string>,
+  methodContext: RustSimpleClassMethodReturnPlanningContext,
+):
+  | Readonly<{
+      module: RustReferenceModuleRecord;
+      returnClass: NonNullable<RustSimpleClassMethodPlan['returnClass']>;
+    }>
+  | undefined {
+  if (call.callee.kind !== 'property') return undefined;
+  const callee = call.callee;
+  if (
+    !isRustSimpleClassDirectMethodInvocation(call) ||
+    callee.optional ||
+    callee.structuralAccess ||
+    callee.object.kind !== 'identifier' ||
+    call.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return undefined;
+  }
+  const receiver = callee.object;
+  let location:
+    | Readonly<{
+        declaration: Readonly<IrClassDeclaration>;
+        method: Readonly<IrClassMethod>;
+        module: RustReferenceModuleRecord;
+      }>
+    | undefined;
+  if (receiver.reference.kind === 'this') {
+    const method = methodContext.declaration.methods.find(
+      (candidate) => !candidate.static && candidate.accessor === undefined && candidate.name === callee.name,
+    );
+    if (method) location = { declaration: methodContext.declaration, method, module };
+  } else if (receiver.reference.kind === 'binding') {
+    const receiverCarrier = getRustSharedClassCarrierTypeCandidate(
+      module.bindingTypes.get(receiver.reference.binding.id),
+      module.module,
+      module.classBindingIds,
+    );
+    if (
+      receiverCarrier?.representation !== 'shared-ref-cell-class' ||
+      !isRustReferenceClassReturnExpressionSupported(
+        receiver,
+        receiverCarrier,
+        module,
+        modules,
+        moduleResolution,
+        visitingFunctions,
+        visitingBindings,
+        true,
+        methodContext,
+      )
+    ) {
+      return undefined;
+    }
+    location = getRustReferenceClassInstanceMethodCandidate(receiver, callee.name, module, modules, moduleResolution);
+  }
+  if (!location || call.arguments.length !== location.method.parameters.length) return undefined;
+  const signature = call.semantics.signature;
+  if (
+    signature !== undefined &&
+    (signature.parameterCount !== location.method.parameters.length ||
+      signature.providedArgumentCount !== call.arguments.length)
+  ) {
+    return undefined;
+  }
+  const plan = getRustSimpleClassMethodPlan(
+    location.method,
+    location.declaration,
+    location.module,
+    modules,
+    moduleResolution,
+    new Set(methodContext.visitingClasses).add(
+      `${moduleKey(location.module.module)}:${location.declaration.binding.id}`,
+    ),
+    methodContext.methodPlans,
+  );
+  if (
+    !plan?.returnClass ||
+    plan.async ||
+    plan.optionalClassParameters.size > 0 ||
+    plan.requiredClassParameters.size > 0
+  ) {
+    return undefined;
+  }
+  return { module: location.module, returnClass: plan.returnClass };
+}
+
 function getRustSimpleClassMethodCall(
   call: IrCallExpression,
   module: RustReferenceModuleRecord,
@@ -5296,6 +5443,7 @@ function isRustSimpleClassDeclarationSupported(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingClasses: ReadonlySet<string>,
+  methodPlans: RustSimpleClassMethodPlanningState = createRustSimpleClassMethodPlanningState(),
 ): boolean {
   const key = `${moduleKey(module.module)}:${declaration.binding.id}`;
   if (visitingClasses.has(key)) return false;
@@ -5307,8 +5455,15 @@ function isRustSimpleClassDeclarationSupported(
     declaration.typeParameters.length === 0 &&
     declaration.methods.every(
       (method) =>
-        getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, nextVisiting) !==
-        undefined,
+        getRustSimpleClassMethodPlan(
+          method,
+          declaration,
+          module,
+          modules,
+          moduleResolution,
+          nextVisiting,
+          methodPlans,
+        ) !== undefined,
     ) &&
     declaration.fields.length > 0 &&
     declaration.fields.every(isRustSimpleClassField) &&
@@ -5324,6 +5479,10 @@ function getRustSimpleClassMethodIdentity(
   return `${moduleKey(module.module)}:${declaration.binding.id}:method:${method.name}`;
 }
 
+function createRustSimpleClassMethodPlanningState(): RustSimpleClassMethodPlanningState {
+  return { plans: new Map(), visiting: new Set() };
+}
+
 function getRustSimpleClassMethodPlan(
   method: Readonly<IrClassMethod>,
   declaration: Readonly<IrClassDeclaration>,
@@ -5331,6 +5490,38 @@ function getRustSimpleClassMethodPlan(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingClasses: ReadonlySet<string>,
+  methodPlans: RustSimpleClassMethodPlanningState = createRustSimpleClassMethodPlanningState(),
+): RustSimpleClassMethodPlan | undefined {
+  const identity = getRustSimpleClassMethodIdentity(module, declaration, method);
+  if (methodPlans.plans.has(identity)) return methodPlans.plans.get(identity) ?? undefined;
+  if (methodPlans.visiting.has(identity)) return undefined;
+  methodPlans.visiting.add(identity);
+  let plan: RustSimpleClassMethodPlan | undefined;
+  try {
+    plan = getRustSimpleClassMethodPlanUncached(
+      method,
+      declaration,
+      module,
+      modules,
+      moduleResolution,
+      visitingClasses,
+      methodPlans,
+    );
+  } finally {
+    methodPlans.visiting.delete(identity);
+  }
+  methodPlans.plans.set(identity, plan ?? null);
+  return plan;
+}
+
+function getRustSimpleClassMethodPlanUncached(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  visitingClasses: ReadonlySet<string>,
+  methodPlans: RustSimpleClassMethodPlanningState,
 ): RustSimpleClassMethodPlan | undefined {
   if (method.async) {
     return isRustSimpleAsyncClassMethodOwnerSupported(method, declaration) &&
@@ -5377,6 +5568,7 @@ function getRustSimpleClassMethodPlan(
         modules,
         moduleResolution,
         visitingClasses,
+        methodPlans,
       )
     ) {
       return undefined;
@@ -5426,6 +5618,7 @@ function getRustSimpleClassMethodPlan(
         modules,
         moduleResolution,
         visitingClasses,
+        methodPlans,
       )
     ) {
       return undefined;
@@ -5463,6 +5656,7 @@ function getRustSimpleClassMethodPlan(
         new Set(),
         new Set(),
         true,
+        { declaration, methodPlans, visitingClasses },
       )
     ) {
       return undefined;

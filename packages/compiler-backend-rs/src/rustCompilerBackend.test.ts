@@ -13103,17 +13103,45 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output.match(/Rc::ptr_eq\(identity_left(?:_\d+)?, identity_right(?:_\d+)?\)/gu)).toHaveLength(2);
   });
 
-  it('refuses borrowed, forwarded, and inexact class method return roots', () => {
+  it('moves exact forwarded class method returns and preserves transitive receiver mutation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-method-return-forwarding.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           fresh(offset: number): Counter { return new Counter(this.value + offset); }
+           mutateAndFresh(): Counter { this.value += 1; return new Counter(this.value); }
+           forwarded(): Counter { return this.mutateAndFresh(); }
+         }
+         class Factory {
+           marker = 0;
+           copy(): Counter { const receiver = new Counter(4); return receiver.fresh(1); }
+         }
+         export function run(): boolean {
+           const receiver = new Counter(2);
+           const forwarded = receiver.forwarded(); const forwardedAlias = forwarded;
+           const factory = new Factory(); const copied = factory.copy();
+           return forwarded === forwardedAlias && forwarded !== receiver && receiver.value === 3 &&
+             forwarded.value === 3 && copied.value === 5;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn mutate_and_fresh(&mut self) -> Rc<RefCell<Counter>>');
+    expect(output).toContain('fn forwarded(&mut self) -> Rc<RefCell<Counter>>');
+    expect(output).toContain('return self.mutate_and_fresh();');
+    expect(output).toContain('return receiver.borrow().fresh(1.0);');
+    expect(output).toContain('let forwarded: Rc<RefCell<Counter>> = receiver.borrow_mut().forwarded();');
+    expect(output).toContain('let forwarded_alias: Rc<RefCell<Counter>> = Rc::clone(&forwarded);');
+  });
+
+  it('refuses borrowed and inexact class method return roots', () => {
     const cases = [
       `class Counter { value = 0; copy(): Counter { return this; } }`,
       `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
       `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
-      `class Counter {
-         value = 0;
-         fresh(): Counter { return new Counter(); }
-         copy(): Counter { return this.fresh(); }
-       }`,
       `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
       `class Counter { value = 0; }
        class Other { value = 1; }
@@ -13127,6 +13155,43 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       `class Counter { value = 0; }
        class Other { value = 1; }
        class Factory { copy(): Counter { return new Other(); } }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(other: Counter): Counter { return other.fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(other?: Counter): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh<T>(): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh<number>(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         receiver(): Counter { return new Counter(); }
+         copy(): Counter { return this.receiver().fresh(); }
+       }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(): Counter {
+           const receiver: Counter | undefined = new Counter();
+           return receiver!.fresh();
+         }
+       }`,
+      `class Counter {
+         value = 0;
+         static fresh(): Counter { return new Counter(); }
+         copy(): Counter { return Counter.fresh(); }
+       }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; fresh(): Other { return new Other(); } }
+       class Factory { marker = 0; copy(): Counter { const receiver = new Other(); return receiver.fresh(); } }`,
     ];
 
     for (const [index, declaration] of cases.entries()) {
@@ -13137,9 +13202,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule, `case ${String(index)}`).toBe(
         index === 3
           ? 'rust-reference-shared-class-use-unrepresented'
-          : index === 7
+          : index === 6
             ? 'rust-async-method-owner-carrier-unrepresented'
-            : 'rust-reference-shared-class-return-unrepresented',
+            : index === 14
+              ? 'rust-reference-shared-class-construction-unrepresented'
+              : 'rust-reference-shared-class-return-unrepresented',
       );
     }
   });
@@ -13230,6 +13297,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          inspectRequired(scale: number, other: Counter): number { return other.value * scale; }
          writeRequired(scale: number, other: Counter): void { other.value += this.value * scale; }
          snapshot(): Counter { const result = new Counter(this.value); const alias = result; return alias; }
+         forwarded(): Counter { return this.snapshot(); }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13237,6 +13305,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-consumer.ts',
       `import { Counter } from './optional-class-method-provider.js';
+       class Factory {
+         marker = 0;
+         copy(): Counter { const receiver = new Counter(6); return receiver.forwarded(); }
+       }
        function relay(receiver: Counter, other?: Counter): void {
          if (other === undefined) return;
          receiver.write(other);
@@ -13253,9 +13325,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          relayNull(receiverAlias, nullable);
          relayRequired(receiverAlias, 2, otherAlias);
          const returned = receiverAlias.snapshot(); const returnedAlias = returned;
+         const factory = new Factory(); const forwarded = factory.copy();
          returnedAlias.value += 1;
          return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null) +
-           receiverAlias.inspectRequired(3, otherAlias) + returned.value;
+           receiverAlias.inspectRequired(3, otherAlias) + returned.value + forwarded.value;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13303,6 +13376,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(providerOutput).toContain('fn inspect_required(&self, scale: f64, other: &Counter) -> f64');
     expect(providerOutput).toContain('fn write_required(&self, scale: f64, other: &mut Counter)');
     expect(providerOutput).toContain('fn snapshot(&self) -> Rc<RefCell<Counter>>');
+    expect(providerOutput).toContain('fn forwarded(&self) -> Rc<RefCell<Counter>>');
+    expect(providerOutput).toContain('return self.snapshot();');
     expect(providerOutput).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&result);');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
@@ -13323,6 +13398,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       /let returned: Rc<RefCell<Counter(?:_\d+)?>> = receiver_alias\.borrow\(\)\.snapshot\(\)/u,
     );
     expect(consumerOutput).toMatch(/let returned_alias: Rc<RefCell<Counter(?:_\d+)?>> = Rc::clone\(&returned\)/u);
+    expect(consumerOutput).toMatch(/return receiver\.borrow\(\)\.forwarded\(\);/u);
   });
 
   it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
@@ -13540,6 +13616,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              const alias = result;
              return alias;
            }
+           mutateAndSnapshot(): Counter {
+             this.value += 1;
+             return new Counter(this.value, this.label);
+           }
+           forwardedSnapshot(): Counter { return this.mutateAndSnapshot(); }
          }
          class Snapshot {
            value: number;
@@ -13559,6 +13640,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const forwarded = forward(receiverAlias);
            const methodResult = receiver.snapshot(); const methodResultAlias = methodResult;
            methodResultAlias.value += 1;
+           const forwardedReceiver = new Counter(8, "forwarded");
+           const forwardedResult = forwardedReceiver.forwardedSnapshot();
+           const forwardedResultAlias = forwardedResult;
            const omittedSnapshot = new Snapshot();
            const explicitSnapshot = new Snapshot(undefined);
            const presentSnapshot = new Snapshot(receiverAlias);
@@ -13592,6 +13676,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
              methodResult === methodResultAlias && methodResult !== receiver &&
              methodResult.value === 4 && methodResult.label === "receiver" &&
+             forwardedResult === forwardedResultAlias && forwardedResult !== forwardedReceiver &&
+             forwardedReceiver.value === 9 && forwardedResult.value === 9 && forwardedResult.label === "forwarded" &&
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
              requiredMethod === requiredMethodAlias && requiredMethod.value === 8 && requiredMethod.label === "required#" &&
