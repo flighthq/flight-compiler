@@ -30528,6 +30528,71 @@ describe('emitIrModuleRust optional-chained array element receivers', () => {
   });
 });
 
+describe('emitIrModuleRust ambient constructor argument derivation', () => {
+  it('emits zero-argument Map and Set constructors from the provided argument list', () => {
+    const result = lower(
+      'ambient-zero-constructors.ts',
+      `export function createMap(): Map<string, number> { return new Map(); }
+       export function createSet(): Set<number> { return new Set(); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return std::collections::HashMap::new();');
+    expect(output).toContain('return std::collections::HashSet::new();');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('keeps a one-argument Map pair input on the ambient constructor ABI refusal', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower('ambient-map-pairs.ts', 'export function create(): Map<string, number> { return new Map([["a", 1]]); }')
+          .module,
+      ),
+    );
+
+    expect(failure.rule).toBe('rust-runtime-external-constructor-abi-incomplete');
+  });
+
+  it('keeps shared Map identity, borrowed operations, calls, and a proven closure working', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'ambient-shared-map.ts',
+        `export function run(): number {
+           const values = new Map<string, number>();
+           const alias = values;
+           alias.set("a", 1);
+           const read = (): number => values.has("a") ? 1 : 0;
+           return read();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('std::collections::HashMap::new()');
+    expect(output).toContain('.insert(');
+  });
+
+  it('leaves the class constructor paths unchanged', () => {
+    const required = emitIrModuleRust(
+      lower(
+        'ambient-class-required-constructor.ts',
+        `class Box { value: number; constructor(value: number) { this.value = value; } }
+         export function make(): Box { return new Box(2); }`,
+      ).module,
+    ).contents;
+    expect(required).toContain('Box::new(2.0)');
+
+    const optional = lower(
+      'ambient-class-optional-constructor.ts',
+      `class Box { value: number; constructor(value?: number) { this.value = value ?? 0; } }
+       export function make(): Box { return new Box(); }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(optional))).toBe(
+      'rust-reference-shared-class-construction-unrepresented',
+    );
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(

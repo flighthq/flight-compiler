@@ -5507,10 +5507,15 @@ function emitConstructorArgumentsRust(
   plan: IrClassConstructorParameterPlanRust,
   context: EmitContext,
 ): string[] {
-  const parameterCount =
-    expression.semantics.optionalParameters?.parameterCount ??
-    expression.semantics.signature?.parameterCount ??
-    expression.arguments.length;
+  // An ambient constructor's declared parameter list can include optional arguments the source
+  // omitted (`Map`/`Set` entries). The ambient ABI plan already validated the provided arity against
+  // the allowed fixed counts, so the emitted argument list is exactly what the source passed.
+  const ambient = expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient';
+  const parameterCount = ambient
+    ? expression.arguments.length
+    : (expression.semantics.optionalParameters?.parameterCount ??
+      expression.semantics.signature?.parameterCount ??
+      expression.arguments.length);
   return Array.from({ length: parameterCount }, (_, position) => {
     const argument = expression.arguments[position];
     if (plan.optionalClassPositions.has(position)) {
