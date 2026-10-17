@@ -173,6 +173,10 @@ interface EmitContext {
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
+  // Every module's own binding allocation, keyed by module identity. An import has to spell an exported
+  // name the way its declaring module allocates it -- `WIDGET` for a constant called `Widget`, not the
+  // name-shaped guess -- so the declaring allocation has to be reachable from the importing module.
+  targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -245,13 +249,7 @@ function emitIrModuleRustWithContext(
   assertRuntimeExternalConstructorAbiRust(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
-  const constantIdentities = new Set(
-    module.declarations.flatMap((declaration) =>
-      declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
-        ? [declaration.binding.id]
-        : [],
-    ),
-  );
+  const constantIdentities = collectRustConstantBindingIds(module);
   let targetNames: Map<string, string>;
   try {
     targetNames = new Map(
@@ -362,6 +360,7 @@ function emitIrModuleRustWithContext(
     objectRestRecords: new Map(),
     options,
     returnsAbsent: false,
+    targetNameMaps: createRustTargetNameMaps(replaceIrModuleBackendContext(sourceModules, module)),
     targetNames,
   };
   // Which bindings hold a union this module lowered to an enum. The type is on the binding, not on
@@ -1945,10 +1944,14 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Rust mapping for ${imported.specifier}`);
       }
-      const importedName =
-        binding.binding.space === 'type' || /^[A-Z]/u.test(binding.imported)
-          ? safeRustTypeName(binding.imported)
-          : safeRustValueName(binding.imported);
+      // The name to import is the one the declaring module allocated for its declaration: a constant is
+      // spelled screaming snake there, a type pascal, a value snake. Name shape is not evidence of which
+      // of those a module wrote, so only the allocation can answer.
+      const targetModule = resolveImportModuleRust(imported.specifier, binding.imported, context);
+      const declaredName = targetModule
+        ? getRustDeclaredExportNameRust(targetModule, binding.imported, binding.binding.space, context)
+        : undefined;
+      const importedName = declaredName ?? getRustNameShapeFallback(binding.imported, binding.binding.space === 'type');
       const localName = getBindingTargetNameRust(binding.binding, context);
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
@@ -1975,14 +1978,21 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
     }
     if (exported.kind !== 'reexport') emissionError(context, 'default exports require Rust module-facade lowering');
     const module = rustImportModule(exported.specifier, context);
-    const source =
-      exported.typeOnly || /^[A-Z]/u.test(exported.imported)
-        ? safeRustTypeName(exported.imported)
-        : safeRustValueName(exported.imported);
-    const target =
-      exported.typeOnly || /^[A-Z]/u.test(exported.exported)
-        ? safeRustTypeName(exported.exported)
-        : safeRustValueName(exported.exported);
+    const targetModule = resolveImportModuleRust(exported.specifier, exported.imported, context);
+    const preferredSpace = exported.typeOnly ? 'type' : 'value';
+    const declaredName = targetModule
+      ? getRustDeclaredExportNameRust(targetModule, exported.imported, preferredSpace, context)
+      : undefined;
+    const declaredSpace = targetModule
+      ? getRustDeclaredExportSpaceRust(targetModule, exported.imported, preferredSpace, context)
+      : preferredSpace;
+    // Without the declaring module in the graph there is no allocation to read. That is the single-module
+    // emission the fixtures exercise, and it keeps the name rule it always had; the module graph is what
+    // makes the canonical answer available.
+    const source = declaredName ?? getRustNameShapeFallback(exported.imported, exported.typeOnly);
+    const target = targetModule
+      ? getRustExportAliasName(declaredSpace, exported.exported)
+      : getRustNameShapeFallback(exported.exported, exported.typeOnly);
     lines.add(`pub use ${module}::${emitUseTreeRust([source === target ? source : `${source} as ${target}`])};`);
   }
   return [...lines].sort();
@@ -4242,6 +4252,129 @@ function getElementAccessTupleIndexRust(
     emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
   }
   return expression.index.value;
+}
+
+function collectRustConstantBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  return new Set(
+    module.declarations.flatMap((declaration) =>
+      declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
+        ? [declaration.binding.id]
+        : [],
+    ),
+  );
+}
+
+// Every module's allocation, computed the same way its own emission computes it. A module whose names
+// collide cannot be emitted at all, and its own emission reports that; leaving it out here keeps an
+// importing module's resolution defensive instead of failing it early for someone else's collision.
+function createRustTargetNameMaps(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const maps = new Map<string, ReadonlyMap<string, string>>();
+  for (const module of modules) {
+    try {
+      const constants = collectRustConstantBindingIds(module);
+      maps.set(
+        getRustModuleIdentityKey(module),
+        new Map(
+          createIrModuleTargetNameAllocation(module, (binding) => ({
+            namespace: 'identifier',
+            preferredName: getPreferredBindingNameRust(binding, constants),
+          })).map((allocation) => [allocation.identity, allocation.name]),
+        ),
+      );
+    } catch (error) {
+      if (!isCompilerTargetNameAllocationFailure(error)) throw error;
+    }
+  }
+  return maps;
+}
+
+function getRustModuleIdentityKey(module: Readonly<IrModule>): string {
+  return `${module.packageName}\0${path.posix.normalize(module.source)}\0${module.name}`;
+}
+
+// What a facade names a re-export. The alias is this module's own public name, so it follows the same
+// space rule a declaration of that space would.
+function getRustExportAliasName(space: 'type' | 'value', exported: string): string {
+  return space === 'type' ? safeRustTypeName(exported) : safeRustValueName(exported);
+}
+
+/**
+ * The spelling a module's own allocation gave one of the names it exports.
+ *
+ * A direct exported declaration answers from that module's allocation; a facade entry answers with the
+ * alias its `pub use` spells, which is the same helper the re-export emission uses, so an import and the
+ * re-export it names cannot disagree.
+ */
+function getRustExportedTargetNameRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  space: 'type' | 'value',
+  context: EmitContext,
+): string | undefined {
+  const allocation = context.targetNameMaps.get(getRustModuleIdentityKey(module));
+  const isTypeDeclaration = (kind: string): boolean =>
+    kind === 'class' || kind === 'enum' || kind === 'interface' || kind === 'typeAlias';
+  const isValueDeclaration = (kind: string): boolean =>
+    kind === 'class' || kind === 'enum' || kind === 'function' || kind === 'variable';
+  const declaration = module.declarations.find(
+    (candidate) =>
+      'binding' in candidate &&
+      candidate.exported &&
+      candidate.binding.name === exportedName &&
+      (space === 'type' ? isTypeDeclaration(candidate.kind) : isValueDeclaration(candidate.kind)),
+  );
+  if (declaration && 'binding' in declaration) {
+    return allocation?.get(declaration.binding.id);
+  }
+  const exported = module.exports.find(
+    (entry) =>
+      'exported' in entry &&
+      entry.exported === exportedName &&
+      (space === 'type' ? entry.typeOnly === true : entry.typeOnly !== true || entry.kind !== 'local'),
+  );
+  if (!exported || !('exported' in exported)) return undefined;
+  if (exported.kind === 'local') return allocation?.get(exported.binding.id);
+  if (exported.kind === 'namespace') return safeRustValueName(exported.exported);
+  const inner = resolveImportModuleRust(exported.specifier, exported.imported, context, module);
+  return inner
+    ? getRustExportAliasName(
+        getRustDeclaredExportSpaceRust(inner, exported.imported, exported.typeOnly ? 'type' : 'value', context),
+        exported.exported,
+      )
+    : getRustNameShapeFallback(exported.exported, exported.typeOnly);
+}
+
+// TypeScript lets a name change space between the declaration and the use: `export interface X` is a
+// type while `import { X }` is written in value space, and `export { X }` does not say which it means.
+// The declaring module is the only authority, so ask it in the preferred space and then in the other one.
+function getRustDeclaredExportNameRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  preferredSpace: 'type' | 'value',
+  context: EmitContext,
+): string | undefined {
+  const preferred = getRustExportedTargetNameRust(module, exportedName, preferredSpace, context);
+  if (preferred !== undefined) return preferred;
+  return getRustExportedTargetNameRust(module, exportedName, preferredSpace === 'type' ? 'value' : 'type', context);
+}
+
+function getRustDeclaredExportSpaceRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  preferredSpace: 'type' | 'value',
+  context: EmitContext,
+): 'type' | 'value' {
+  if (getRustExportedTargetNameRust(module, exportedName, preferredSpace, context) !== undefined) return preferredSpace;
+  const other = preferredSpace === 'type' ? 'value' : 'type';
+  return getRustExportedTargetNameRust(module, exportedName, other, context) !== undefined ? other : preferredSpace;
+}
+
+// The rule a name gets when nothing can be asked. A single-module emission has no declaring allocation
+// to read, and this is the rule it has always used; it is the fallback, not the answer.
+function getRustNameShapeFallback(name: string, typeOnly: boolean): string {
+  return typeOnly || /^[A-Z]/u.test(name) ? safeRustTypeName(name) : safeRustValueName(name);
 }
 
 function getPreferredBindingNameRust(

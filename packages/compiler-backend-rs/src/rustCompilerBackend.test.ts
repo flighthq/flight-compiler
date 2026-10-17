@@ -126,6 +126,100 @@ describe('createRustCompilerBackend', () => {
       }),
     ).toThrow('structural object compatibility missing-required-property');
   });
+
+  it('spells an imported value by the declaring module allocation, not by its name shape', () => {
+    const provider = lower('provider.ts', 'export const Widget = 1;').module;
+    const consumer = lower(
+      'consumer.ts',
+      "import { Widget } from './provider'; export function read(): unknown { return Widget; }",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './provider',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const backend = createRustCompilerBackend();
+    const providerContents = backend.emitModule(provider, {
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    })[0]!.contents;
+    const consumerContents = backend.emitModule(consumer, {
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    })[0]!.contents;
+
+    expect(providerContents).toContain('pub const WIDGET: f64 = 1.0;');
+    expect(consumerContents).toContain('use crate::provider::WIDGET as Widget;');
+    expect(consumerContents).toContain('return Widget;');
+  });
+
+  it('spells an imported lowercase type by the declaring module allocation', () => {
+    const provider = lower('shapes.ts', 'export interface widgetShape { readonly width: number }').module;
+    const consumer = lower(
+      'measure.ts',
+      "import type { widgetShape } from './shapes'; export function measure(value: widgetShape): number { return value.width; }",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './shapes',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/shapes.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const backend = createRustCompilerBackend();
+    const providerContents = backend.emitModule(provider, {
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    })[0]!.contents;
+    const consumerContents = backend.emitModule(consumer, {
+      moduleResolution,
+      modules: [provider, consumer],
+      options: {},
+    })[0]!.contents;
+
+    expect(providerContents).toContain('pub struct WidgetShape');
+    expect(consumerContents).toContain('use crate::shapes::WidgetShape;');
+    expect(consumerContents).toContain('pub fn measure(value: WidgetShape) -> f64');
+  });
+
+  it('re-exports a value and a type by the spelling each declaration was allocated', () => {
+    const provider = lower(
+      'source.ts',
+      'export const Widget = 1; export interface widgetShape { readonly width: number }',
+    ).module;
+    const facade = lower(
+      'facade.ts',
+      "export { Widget } from './source'; export { Widget as Shown } from './source'; export { widgetShape } from './source';",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './source',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/source.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const backend = createRustCompilerBackend();
+    const facadeContents = backend.emitModule(facade, {
+      moduleResolution,
+      modules: [provider, facade],
+      options: {},
+    })[0]!.contents;
+
+    expect(facadeContents).toContain('pub use crate::source::WIDGET as widget;');
+    expect(facadeContents).toContain('pub use crate::source::WIDGET as shown;');
+    expect(facadeContents).toContain('pub use crate::source::WidgetShape;');
+  });
 });
 
 describe('emitIrModuleRust', () => {
@@ -11214,11 +11308,25 @@ describe('emitIrModuleRust nullable binding and optional chain', () => {
 });
 
 describe('emitIrModuleRust re-export emission', () => {
-  it('emits re-exports as pub use statements', () => {
-    const result = lowerPackage('@flighthq/math', 'reexport.ts', `export { Vec2 } from './vector.js';`);
-    const output = emitIrModuleRust(result.module).contents;
-    expect(output).toContain('pub use');
-    expect(output).toContain('Vec2');
+  it('emits re-exports as pub use statements in the declaring module spelling', () => {
+    const provider = lowerPackage('@flighthq/math', 'vector.ts', 'export class Vec2 { x: number = 0; }').module;
+    const facade = lowerPackage('@flighthq/math', 'reexport.ts', `export { Vec2 } from './vector.js';`).module;
+    const output = createRustCompilerBackend().emitModule(facade, {
+      moduleResolution: {
+        edges: [
+          {
+            specifier: './vector.js',
+            target: { packageName: '@flighthq/math', source: 'packages/math/src/vector.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [facade, provider],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('pub use crate::vector::Vec2 as vec2;');
+    expect(output).not.toContain('pub use crate::vector::vec2;');
   });
 });
 
