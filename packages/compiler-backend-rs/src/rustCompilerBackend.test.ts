@@ -15767,6 +15767,54 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('preserves exact lastIndexOf equality across mutable and readonly primitive carriers', () => {
+    const result = lower(
+      'array-last-index-of-exact.ts',
+      `export function numberLast(values: number[], candidate: number): number {
+         return values.lastIndexOf(candidate);
+       }
+       export function readonlyNumberLast(values: readonly number[], candidate: number): number {
+         return values.lastIndexOf(candidate);
+       }
+       export function booleanLast(values: readonly boolean[], candidate: boolean): number {
+         return values.lastIndexOf(candidate);
+       }
+       export function mutableBooleanLast(values: boolean[], candidate: boolean): number {
+         return values.lastIndexOf(candidate);
+       }
+       export function stringLast(values: string[], candidate: string): number {
+         return values.lastIndexOf(candidate);
+       }
+       export function readonlyStringLast(values: readonly string[], candidate: string): number {
+         return values.lastIndexOf(candidate);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      '.rposition(|array_last_index_of_value| *array_last_index_of_value == *array_last_index_of_candidate)',
+    );
+    expect(output).toContain('.map(|index| index as f64).unwrap_or(-1.0)');
+    expect(output).not.toContain('.is_nan()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(number_last(vec![f64::NAN, 7.0, 7.0], f64::NAN), -1.0);',
+          'assert_eq!(number_last(vec![9.0, 7.0, 7.0], 7.0), 2.0);',
+          'assert_eq!(number_last(vec![-0.0, 0.0], 0.0), 1.0);',
+          'assert_eq!(number_last(vec![1.0, 2.0], 3.0), -1.0);',
+          'assert_eq!(readonly_number_last(vec![], 1.0), -1.0);',
+          'assert_eq!(boolean_last(vec![false, true, true], true), 2.0);',
+          'assert_eq!(mutable_boolean_last(vec![true, false], true), 0.0);',
+          'assert_eq!(string_last(vec!["a".to_owned(), "b".to_owned(), "a".to_owned()], "a".to_owned()), 2.0);',
+          'assert_eq!(readonly_string_last(vec!["a".to_owned(), "b".to_owned()], "b".to_owned()), 1.0);',
+        ].join(' '),
+      );
+    }
+  });
+
   it('borrows reusable search sources and evaluates receiver then candidate exactly once', () => {
     const result = lower(
       'array-search-evaluation.ts',
@@ -15828,6 +15876,48 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('evaluates a temporary lastIndexOf receiver before its candidate exactly once', () => {
+    const result = lower(
+      'array-last-index-of-evaluation.ts',
+      `function recordValues(log: number[], marker: number): number[] {
+         log.push(marker);
+         return [1, 2, 2];
+       }
+       function recordCandidate(log: number[], marker: number, candidate: number): number {
+         log.push(marker);
+         return candidate;
+       }
+       export function evaluatedLast(log: number[]): number {
+         return recordValues(log, 1).lastIndexOf(recordCandidate(log, 2, 2));
+       }
+       export function reusableLast(): number {
+         const values = [1, 2, 1];
+         const candidate = 1;
+         const index = values.lastIndexOf(candidate);
+         values.push(3);
+         return index * 100 + values.length + candidate;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_last_index_of_receiver = &record_values(');
+    const candidate = output.indexOf('let array_last_index_of_candidate = &record_candidate(', receiver);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(candidate).toBeGreaterThan(receiver);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut log = vec![];',
+          'assert_eq!(evaluated_last(&mut log), 2.0);',
+          'assert_eq!(log, vec![1.0, 2.0]);',
+          'assert_eq!(reusable_last(), 205.0);',
+        ].join(' '),
+      );
+    }
+  });
+
   it('searches a shared receiver through an immutable borrow and keeps aliases reusable', () => {
     const result = lower(
       'shared-array-search-exact.ts',
@@ -15850,6 +15940,37 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_search(), 114.0);');
   });
 
+  it('releases a shared lastIndexOf borrow before later alias mutation', () => {
+    const result = lower(
+      'shared-array-last-index-of-exact.ts',
+      `function recordSharedCandidate(log: number[]): number {
+         log.push(7);
+         return 1;
+       }
+       export function sharedLastSearch(log: number[]): number {
+         const values = [1, 2, 1];
+         const alias = values;
+         const index = alias.lastIndexOf(recordSharedCandidate(log));
+         values.push(3);
+         return index * 10 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_last_index_of_receiver = &alias;');
+    expect(output).toContain('array_last_index_of_receiver.borrow().iter().rposition(');
+    const candidate = output.indexOf('let array_last_index_of_candidate = &record_shared_candidate(');
+    expect(candidate).toBeGreaterThan(output.indexOf('let array_last_index_of_receiver = &alias;'));
+    expect(output.indexOf('array_last_index_of_receiver.borrow()', candidate)).toBeGreaterThan(candidate);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        'let mut log = vec![]; assert_eq!(shared_last_search(&mut log), 24.0); assert_eq!(log, vec![7.0]);',
+      );
+    }
+  });
+
   it.each([
     {
       rule: 'rust-array-index-of-invocation-unrepresented',
@@ -15862,6 +15983,11 @@ describe('emitIrModuleRust array element access with coalescing', () => {
         'export function has(values: number[], candidate: number): boolean { return values.includes(candidate, 1); }',
     },
     {
+      rule: 'rust-array-last-index-of-invocation-unrepresented',
+      source:
+        'export function find(values: number[], candidate: number): number { return values.lastIndexOf(candidate, 1); }',
+    },
+    {
       rule: 'rust-array-index-of-invocation-unrepresented',
       source:
         'export function find(values: number[], candidate: number): number | undefined { return values.indexOf?.(candidate); }',
@@ -15870,6 +15996,11 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       rule: 'rust-array-includes-invocation-unrepresented',
       source:
         'export function has(values: number[], candidate: number): boolean | undefined { return values.includes?.(candidate); }',
+    },
+    {
+      rule: 'rust-array-last-index-of-invocation-unrepresented',
+      source:
+        'export function find(values: number[], candidate: number): number | undefined { return values.lastIndexOf?.(candidate); }',
     },
     {
       rule: 'rust-array-index-of-invocation-unrepresented',
@@ -15901,8 +16032,17 @@ describe('emitIrModuleRust array element access with coalescing', () => {
         'interface Point { x: number } export function find(values: Point[], candidate: Point): number { return values.indexOf(candidate); }',
     },
     {
+      rule: 'rust-array-last-index-of-element-carrier-unrepresented',
+      source:
+        'export function find(values: (number | string)[], candidate: number | string): number { return values.lastIndexOf(candidate); }',
+    },
+    {
       rule: 'rust-sparse-array-literal-runtime-required',
       source: 'export function find(): number { const values = [1, , 3]; return values.indexOf(3); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function find(): number { const values = [1, , 3]; return values.lastIndexOf(3); }',
     },
   ])('stably refuses unsupported exact array search semantics with $rule', ({ rule, source }) => {
     const result = lower('array-search-refused.ts', source);
@@ -15936,8 +16076,18 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       'rust-array-index-of-invocation-unrepresented',
     );
 
+    const dynamicLast = lower(
+      'array-last-index-of-dynamic.ts',
+      'export function find(values: number[], candidate: [number]): number { return values.lastIndexOf(...candidate); }',
+    );
+    expect(getSearchCall(dynamicLast.module, 'find').semantics.signature?.providedArgumentCount).toBe('dynamic');
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(dynamicLast.module)).rule).toBe(
+      'rust-array-last-index-of-invocation-unrepresented',
+    );
+
     for (const [member, rule, resultType] of [
       ['indexOf', 'rust-array-index-of-invocation-unrepresented', 'number'],
+      ['lastIndexOf', 'rust-array-last-index-of-invocation-unrepresented', 'number'],
       ['includes', 'rust-array-includes-invocation-unrepresented', 'boolean'],
     ] as const) {
       const zero = lower(
@@ -15981,6 +16131,13 @@ describe('emitIrModuleRust array element access with coalescing', () => {
         'boolean',
         { kind: 'primitive', name: 'number' },
       ],
+      [
+        'lastIndexOf',
+        'rust-array-last-index-of-candidate-carrier-unrepresented',
+        'rust-array-last-index-of-result-carrier-unrepresented',
+        'number',
+        { kind: 'primitive', name: 'boolean' },
+      ],
     ] as const) {
       const source = `export function search(values: number[], candidate: number): ${sourceResult} { return values.${member}(candidate); }`;
       const mismatchedCandidate = lower(`array-${member}-candidate.ts`, source);
@@ -16005,6 +16162,11 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     },
     {
       member: 'indexOf',
+      result: 'number',
+      rule: 'rust-reference-shared-array-borrow-conflict',
+    },
+    {
+      member: 'lastIndexOf',
       result: 'number',
       rule: 'rust-reference-shared-array-borrow-conflict',
     },

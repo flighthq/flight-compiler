@@ -3319,7 +3319,13 @@ function getArrayGrowthMemberRust(
   return expression.callee.member.name;
 }
 
-type RustArraySearchMember = 'includes' | 'indexOf';
+type RustArraySearchMember = 'includes' | 'indexOf' | 'lastIndexOf';
+
+type RustArraySearchRuleMember = 'includes' | 'index-of' | 'last-index-of';
+
+function getRustArraySearchRuleMember(member: RustArraySearchMember): RustArraySearchRuleMember {
+  return member === 'indexOf' ? 'index-of' : member === 'lastIndexOf' ? 'last-index-of' : 'includes';
+}
 
 function getArraySearchMemberRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
@@ -3327,7 +3333,9 @@ function getArraySearchMemberRust(
   if (
     expression.callee.kind !== 'property' ||
     expression.callee.member?.receiver !== 'array' ||
-    (expression.callee.member.name !== 'includes' && expression.callee.member.name !== 'indexOf')
+    (expression.callee.member.name !== 'includes' &&
+      expression.callee.member.name !== 'indexOf' &&
+      expression.callee.member.name !== 'lastIndexOf')
   ) {
     return undefined;
   }
@@ -3459,7 +3467,10 @@ function emitArraySearchCallRust(
   const member = getArraySearchMemberRust(expression);
   const argument = expression.arguments[0];
   if (!member || expression.callee.kind !== 'property' || !argument || expression.arguments.length !== 1) {
-    return emissionError(context, 'array search emission requires indexOf or includes with exactly one argument');
+    return emissionError(
+      context,
+      'array search emission requires indexOf, lastIndexOf, or includes with exactly one argument',
+    );
   }
   const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
   const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
@@ -3467,7 +3478,7 @@ function emitArraySearchCallRust(
   const domain = getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context);
   if (!domain) return emissionError(context, 'array search emission requires an exact primitive value carrier');
 
-  const generatedMember = member === 'indexOf' ? 'index_of' : 'includes';
+  const generatedMember = member === 'indexOf' ? 'index_of' : member === 'lastIndexOf' ? 'last_index_of' : 'includes';
   const receiverName = getGeneratedTargetNameRust(`array_${generatedMember}_receiver`, context);
   const candidateName = getGeneratedTargetNameRust(`array_${generatedMember}_candidate`, context);
   const valueName = getGeneratedTargetNameRust(`array_${generatedMember}_value`, context);
@@ -3484,8 +3495,8 @@ function emitArraySearchCallRust(
   const search =
     member === 'includes' && domain !== 'number'
       ? `${receiverValues}.contains(${candidateName})`
-      : `${receiverValues}.iter().${member === 'includes' ? 'any' : 'position'}(|${valueName}| ${equality})`;
-  const result = member === 'indexOf' ? `${search}.map(|index| index as f64).unwrap_or(-1.0)` : search;
+      : `${receiverValues}.iter().${member === 'includes' ? 'any' : member === 'lastIndexOf' ? 'rposition' : 'position'}(|${valueName}| ${equality})`;
+  const result = member === 'includes' ? search : `${search}.map(|index| index as f64).unwrap_or(-1.0)`;
   // A reference to each operand extends temporary lifetimes through the search without moving a
   // reusable source. The shared receiver borrow starts only after the candidate has been evaluated.
   return `{ let ${receiverName} = ${emittedReceiver}; let ${candidateName} = &${emitExpression(argument, context)}; ${result} }`;
@@ -8993,6 +9004,10 @@ interface RustArrayOperationRefusal {
     | 'rust-array-index-of-element-carrier-unrepresented'
     | 'rust-array-index-of-invocation-unrepresented'
     | 'rust-array-index-of-result-carrier-unrepresented'
+    | 'rust-array-last-index-of-candidate-carrier-unrepresented'
+    | 'rust-array-last-index-of-element-carrier-unrepresented'
+    | 'rust-array-last-index-of-invocation-unrepresented'
+    | 'rust-array-last-index-of-result-carrier-unrepresented'
     | 'rust-array-copy-within-alias-borrow-conflict'
     | 'rust-array-copy-within-bounds-domain-unrepresented'
     | 'rust-array-copy-within-element-carrier-unrepresented'
@@ -9038,10 +9053,7 @@ function assertArraySearchInvocationSemanticsRust(module: Readonly<IrModule>): v
       refusals.push({
         member,
         message: `array.${member} currently requires a non-optional receiver and exactly one fixed non-spread argument; fromIndex is not represented`,
-        rule:
-          member === 'indexOf'
-            ? 'rust-array-index-of-invocation-unrepresented'
-            : 'rust-array-includes-invocation-unrepresented',
+        rule: `rust-array-${getRustArraySearchRuleMember(member)}-invocation-unrepresented`,
       });
     },
   });
@@ -9599,7 +9611,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
 
   for (const { callee, expression, member } of searchCalls) {
     const argumentExpression = expression.arguments[0];
-    const ruleMember = member === 'indexOf' ? 'index-of' : 'includes';
+    const ruleMember = getRustArraySearchRuleMember(member);
     if (!isRustArraySearchInvocationRepresentedRust(expression) || !argumentExpression) {
       refusals.push({
         member,

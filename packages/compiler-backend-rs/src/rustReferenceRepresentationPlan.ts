@@ -4993,6 +4993,7 @@ const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
   'concat',
   'includes',
   'indexOf',
+  'lastIndexOf',
   'slice',
 ]);
 
