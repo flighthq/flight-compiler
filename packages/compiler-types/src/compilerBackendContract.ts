@@ -51,6 +51,13 @@ export interface CompilerBackendPackageGraphFinalization {
   readonly facade: CompilerModuleFacadePlan;
   /** Ordered by module identity, then emitted path. Refused, placeholder, and unselected outputs are absent. */
   readonly moduleFiles: readonly CompilerBackendModuleFile[];
+  /**
+   * One entry per module this run refused whose output is absent from `moduleFiles`, ordered by module
+   * identity, then code, then message. The same refusal shape the public-binding request reports; absent
+   * when every refused module retained its output or nothing was refused. A backend needs it to say an
+   * absent imported target was refused rather than merely missing from the output.
+   */
+  readonly refusals?: readonly CompilerBackendPublicBindingRefusal[] | undefined;
 }
 
 export interface CompilerBackendPackageGraphFinalizationResult {

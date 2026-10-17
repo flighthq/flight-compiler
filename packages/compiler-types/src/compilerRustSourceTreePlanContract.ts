@@ -48,12 +48,33 @@ export interface CompilerRustSourceTreePlanInput {
   readonly facade: CompilerModuleFacadePlan;
   readonly moduleResolution?: CompilerModuleResolutionPlan | undefined;
   readonly modules: readonly Readonly<IrModule>[];
+  /**
+   * Modules the run looked at but deliberately left out of `modules`, with the reason. Import resolution
+   * consults it only to attribute a request that names no retained module; it never selects a target.
+   */
+  readonly unavailableModules?: readonly CompilerRustSourceTreeUnavailableModule[] | undefined;
 }
+
+/**
+ * Why a module is absent from the retained set. `refused` carries the producer's reason, `unselected`
+ * records a module outside the requested emit paths.
+ */
+export type CompilerRustSourceTreeUnavailableModule =
+  | Readonly<{
+      code: string;
+      disposition: 'refused';
+      message: string;
+      module: CompilerModuleIdentity;
+    }>
+  | Readonly<{ disposition: 'unselected'; module: CompilerModuleIdentity }>;
 
 export type CompilerRustSourceTreePlanningFailureCode =
   | 'rust-source-tree-crate-collision'
   | 'rust-source-tree-file-collision'
   | 'rust-source-tree-import-ambiguity'
+  | 'rust-source-tree-import-target-absent'
+  | 'rust-source-tree-import-target-refused'
+  | 'rust-source-tree-import-target-unselected'
   | 'rust-source-tree-module-collision'
   | 'rust-source-tree-public-module-missing';
 

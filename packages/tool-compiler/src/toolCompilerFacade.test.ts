@@ -295,3 +295,73 @@ function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
   seen.add(value);
   return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
 }
+
+describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
+  function rustBestEffortRun(
+    sources: readonly (typeof provider)[],
+    emitPathPrefixes?: readonly string[],
+  ): Readonly<{ code?: string; message?: string }> | undefined {
+    try {
+      compileTypeScriptPackageGraph({
+        backend: createRustCompilerBackend(),
+        backendOptions: {},
+        bestEffort: true,
+        ...(emitPathPrefixes === undefined ? {} : { emitPathPrefixes }),
+        graph: {
+          entries: [{ name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' }],
+          moduleDependencies: [
+            {
+              importer: { name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' },
+              specifier: './provider.js',
+              target: { name: 'Provider', packageName: '@scope/math', source: 'packages/math/src/provider.ts' },
+            },
+          ],
+          packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+          schema: 'flight-compiler-package-graph/1',
+        },
+        sources,
+      });
+      return undefined;
+    } catch (error) {
+      return error as Readonly<{ code?: string; message?: string }>;
+    }
+  }
+
+  const provider = {
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource(
+      '/flight/packages/math/src/provider.ts',
+      'export function convert(value: unknown): { value: number } { return value as { value: number }; }',
+    ),
+    upstreamDirectory: '/flight',
+  };
+  const consumer = {
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource(
+      '/flight/packages/math/src/consumer.ts',
+      "import { convert } from './provider.js';\nexport { convert };",
+    ),
+    upstreamDirectory: '/flight',
+  };
+
+  it('attributes an import of a refused module to that refusal', () => {
+    const first = rustBestEffortRun([consumer, provider]);
+    const second = rustBestEffortRun([provider, consumer]);
+
+    expect(first?.code).toBe('rust-source-tree-import-target-refused');
+    expect(first?.message).toContain('@scope/math/packages/math/src/provider.ts#Provider');
+    expect(first?.message).toContain('which was refused: rust-cast-requires-type-directed-lowering:');
+    expect(first?.message).toContain('cast to object requires Rust type-directed lowering');
+    expect(second?.code).toBe(first?.code);
+    expect(second?.message).toBe(first?.message);
+  });
+
+  it('attributes an import of a module outside the requested emit paths to selection', () => {
+    const failure = rustBestEffortRun([consumer, provider], ['packages/math/src/consumer.ts']);
+
+    expect(failure?.code).toBe('rust-source-tree-import-target-unselected');
+    expect(failure?.message).toContain('which is not selected for this output');
+  });
+});

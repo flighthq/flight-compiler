@@ -11,6 +11,7 @@ import type {
   CompilerRustSourceTreePlanningFailure,
   CompilerRustSourceTreePlanningFailureCode,
   CompilerRustSourceTreeReferencePlan,
+  CompilerRustSourceTreeUnavailableModule,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToRustCrateName, createRustCompilerModuleLocator } from './rustCompilerIdentity.js';
@@ -272,6 +273,7 @@ function createRustSourceTreeReferences(
   modules: readonly RustSourceTreeModuleRecord[],
   multiPackage: boolean,
 ): readonly CompilerRustSourceTreeReferencePlan[] {
+  const unavailable = createRustSourceTreeUnavailableIndex(input.unavailableModules ?? []);
   const references = modules.flatMap((module) => {
     const specifiers = new Set([
       ...module.module.imports.map((imported) => imported.specifier),
@@ -279,19 +281,35 @@ function createRustSourceTreeReferences(
     ]);
     return [...specifiers].sort(compareTextCodeUnits).flatMap((specifier) => {
       const edges = getRustSourceTreeResolutionEdges(module.identity, specifier, input.moduleResolution?.edges ?? []);
-      if (edges.length > 0) return createRustSourceTreeEdgeReferences(module, specifier, edges, modules, multiPackage);
+      if (edges.length > 0) {
+        return createRustSourceTreeEdgeReferences(module, specifier, edges, modules, multiPackage, unavailable);
+      }
       if (!specifier.startsWith('.')) return [];
       const candidates = resolveRustSourceTreeRelativeModules(module, specifier, modules);
       if (candidates.length !== 1) {
-        const subjects = [
-          getRustSourceTreeModuleKey(module.identity),
-          ...candidates.map((item) => getRustSourceTreeModuleKey(item.identity)),
-        ];
-        throw createRustSourceTreePlanningFailure(
-          'rust-source-tree-import-ambiguity',
-          subjects,
-          `Rust source-tree relative import ${specifier} from ${getRustSourceTreeModuleKey(module.identity)} resolved to ${String(candidates.length)} modules`,
-        );
+        const importerSubject = formatRustSourceTreeModuleSubject(module.identity);
+        if (candidates.length > 1) {
+          throw createRustSourceTreePlanningFailure(
+            'rust-source-tree-import-ambiguity',
+            [
+              getRustSourceTreeModuleKey(module.identity),
+              ...candidates.map((item) => getRustSourceTreeModuleKey(item.identity)),
+            ],
+            `Rust source-tree relative import ${specifier} from ${importerSubject} resolved to ${String(candidates.length)} modules`,
+          );
+        }
+        const unavailableMatches = resolveRustSourceTreeUnavailableRelativeModules(module, specifier, unavailable);
+        if (unavailableMatches.length > 1) {
+          throw createRustSourceTreePlanningFailure(
+            'rust-source-tree-import-ambiguity',
+            [
+              getRustSourceTreeModuleKey(module.identity),
+              ...unavailableMatches.map((entry) => getRustSourceTreeModuleKey(entry.module)),
+            ],
+            `Rust source-tree relative import ${specifier} from ${importerSubject} resolved to ${String(unavailableMatches.length)} unavailable modules`,
+          );
+        }
+        assertRustSourceTreeImportTargetAvailable(specifier, module.identity, unavailableMatches[0]);
       }
       return [createRustSourceTreeReference(module, candidates[0]!, specifier, undefined, multiPackage)];
     });
@@ -311,6 +329,7 @@ function createRustSourceTreeEdgeReferences(
   edges: readonly Readonly<CompilerModuleResolutionEdge>[],
   modules: readonly RustSourceTreeModuleRecord[],
   multiPackage: boolean,
+  unavailable: ReadonlyMap<string, CompilerRustSourceTreeUnavailableModule>,
 ): readonly CompilerRustSourceTreeReferencePlan[] {
   const targetsBySource = new Map<string, RustSourceTreeModuleRecord[]>();
   for (const module of modules) {
@@ -318,7 +337,11 @@ function createRustSourceTreeEdgeReferences(
     targetsBySource.set(key, [...(targetsBySource.get(key) ?? []), module]);
   }
   const resolved = edges.map((edge) => {
-    const targets = targetsBySource.get(getRustSourceTreeSourceKey(edge.target.packageName, edge.target.source)) ?? [];
+    const sourceKey = getRustSourceTreeSourceKey(edge.target.packageName, edge.target.source);
+    const targets = targetsBySource.get(sourceKey) ?? [];
+    if (targets.length === 0) {
+      assertRustSourceTreeImportTargetAvailable(specifier, from.identity, unavailable.get(sourceKey));
+    }
     if (targets.length !== 1) {
       throw createRustSourceTreePlanningFailure(
         'rust-source-tree-import-ambiguity',
@@ -326,7 +349,7 @@ function createRustSourceTreeEdgeReferences(
           getRustSourceTreeModuleKey(from.identity),
           `${edge.target.packageName}/${normalizePathPortable(edge.target.source)}`,
         ],
-        `Rust source-tree import ${specifier} does not identify one target module`,
+        `Rust source-tree import ${specifier} from ${formatRustSourceTreeModuleSubject(from.identity)} does not identify one target module`,
       );
     }
     return {
@@ -362,7 +385,7 @@ function createRustSourceTreeEdgeReferences(
         getRustSourceTreeModuleKey(from.identity),
         ...resolved.map((item) => getRustSourceTreeModuleKey(item.target.identity)),
       ],
-      `Rust source-tree import ${specifier} resolves the same request to multiple module paths`,
+      `Rust source-tree import ${specifier} from ${formatRustSourceTreeModuleSubject(from.identity)} resolves the same request to multiple module paths`,
     );
   }
   const unique = new Map<string, CompilerRustSourceTreeReferencePlan>();
@@ -423,6 +446,11 @@ function getRustSourceTreeModuleKey(identity: Readonly<CompilerModuleIdentity>):
   return `${identity.packageName}\0${normalizePathPortable(identity.source)}\0${identity.name}`;
 }
 
+// The same identity a person reads in a diagnostic; the key above is a machine key with NUL boundaries.
+function formatRustSourceTreeModuleSubject(identity: Readonly<CompilerModuleIdentity>): string {
+  return `${identity.packageName}/${normalizePathPortable(identity.source)}#${identity.name}`;
+}
+
 function getRustSourceTreeNodeKey(packageName: string, modulePath: readonly string[]): string {
   return `${packageName}\0${modulePath.join('\0')}`;
 }
@@ -466,8 +494,15 @@ function resolveRustSourceTreeRelativeModules(
   specifier: string,
   modules: readonly RustSourceTreeModuleRecord[],
 ): readonly RustSourceTreeModuleRecord[] {
+  const candidates = getRustSourceTreeRelativeCandidateSources(importer.identity.source, specifier);
+  return modules.filter(
+    (module) => module.identity.packageName === importer.identity.packageName && candidates.has(module.identity.source),
+  );
+}
+
+function getRustSourceTreeRelativeCandidateSources(importerSource: string, specifier: string): ReadonlySet<string> {
   const unresolved = path.posix.normalize(
-    path.posix.join(path.posix.dirname(importer.identity.source), normalizePathPortable(specifier)),
+    path.posix.join(path.posix.dirname(importerSource), normalizePathPortable(specifier)),
   );
   const candidates = new Set([unresolved]);
   for (const [emitted, source] of [
@@ -484,8 +519,69 @@ function resolveRustSourceTreeRelativeModules(
     candidates.add(`${unresolved}/index.ts`);
     candidates.add(`${unresolved}/index.tsx`);
   }
-  return modules.filter(
-    (module) => module.identity.packageName === importer.identity.packageName && candidates.has(module.identity.source),
+  return candidates;
+}
+
+// A module the run left out, indexed by the package and source an import request names. Sorted first so
+// two runs over the same evidence answer with the same entry even when the caller built the list differently.
+function createRustSourceTreeUnavailableIndex(
+  modules: readonly CompilerRustSourceTreeUnavailableModule[],
+): ReadonlyMap<string, CompilerRustSourceTreeUnavailableModule> {
+  const index = new Map<string, CompilerRustSourceTreeUnavailableModule>();
+  const sorted = [...modules].sort((left, right) =>
+    compareTextCodeUnits(getRustSourceTreeModuleKey(left.module), getRustSourceTreeModuleKey(right.module)),
+  );
+  for (const entry of sorted) {
+    const key = getRustSourceTreeSourceKey(entry.module.packageName, entry.module.source);
+    if (!index.has(key)) index.set(key, entry);
+  }
+  return index;
+}
+
+function resolveRustSourceTreeUnavailableRelativeModules(
+  importer: RustSourceTreeModuleRecord,
+  specifier: string,
+  unavailable: ReadonlyMap<string, CompilerRustSourceTreeUnavailableModule>,
+): readonly CompilerRustSourceTreeUnavailableModule[] {
+  const candidates = getRustSourceTreeRelativeCandidateSources(importer.identity.source, specifier);
+  return [...unavailable.values()].filter(
+    (entry) =>
+      entry.module.packageName === importer.identity.packageName &&
+      candidates.has(normalizePathPortable(entry.module.source)),
+  );
+}
+
+// An import that names no retained module is one of four facts, and the caller has to be able to tell them
+// apart: the target was refused (and why), the target exists but was not selected for this output, the
+// request resolves to several modules, or nothing in the compilation answers it.
+function assertRustSourceTreeImportTargetAvailable(
+  specifier: string,
+  importer: Readonly<CompilerModuleIdentity>,
+  unavailable: CompilerRustSourceTreeUnavailableModule | undefined,
+): never {
+  const importerSubject = formatRustSourceTreeModuleSubject(importer);
+  if (unavailable !== undefined) {
+    const targetSubject = formatRustSourceTreeModuleSubject(unavailable.module);
+    const subjects = [getRustSourceTreeModuleKey(importer), getRustSourceTreeModuleKey(unavailable.module)].sort(
+      compareTextCodeUnits,
+    );
+    if (unavailable.disposition === 'refused') {
+      throw createRustSourceTreePlanningFailure(
+        'rust-source-tree-import-target-refused',
+        subjects,
+        `Rust source-tree import ${specifier} from ${importerSubject} targets ${targetSubject}, which was refused: ${unavailable.code}: ${unavailable.message}`,
+      );
+    }
+    throw createRustSourceTreePlanningFailure(
+      'rust-source-tree-import-target-unselected',
+      subjects,
+      `Rust source-tree import ${specifier} from ${importerSubject} targets ${targetSubject}, which is not selected for this output`,
+    );
+  }
+  throw createRustSourceTreePlanningFailure(
+    'rust-source-tree-import-target-absent',
+    [getRustSourceTreeModuleKey(importer)],
+    `Rust source-tree import ${specifier} from ${importerSubject} has no target module in this compilation`,
   );
 }
 
@@ -493,6 +589,9 @@ const rustSourceTreePlanningFailureCodes: ReadonlySet<CompilerRustSourceTreePlan
   'rust-source-tree-crate-collision',
   'rust-source-tree-file-collision',
   'rust-source-tree-import-ambiguity',
+  'rust-source-tree-import-target-absent',
+  'rust-source-tree-import-target-refused',
+  'rust-source-tree-import-target-unselected',
   'rust-source-tree-module-collision',
   'rust-source-tree-public-module-missing',
 ]);

@@ -5,8 +5,10 @@ import type {
   CompilerBackendModuleFileReplacement,
   CompilerBackendPackageFile,
   CompilerBackendPackageGraphFinalizationResult,
+  CompilerBackendPublicBindingRefusal,
   CompilerModuleIdentity,
   CompilerRustSourceTreeFilePlan,
+  CompilerRustSourceTreeUnavailableModule,
   CompilerRustSourceTreeFinalizationFailure,
   CompilerRustSourceTreeFinalizationFailureCode,
   CompilerRustSourceTreeFinalizationRequest,
@@ -22,10 +24,16 @@ export function createCompilerRustSourceTreeFinalization(
 ): CompilerBackendPackageGraphFinalizationResult {
   const retainedFilesByModule = createCompilerRustRetainedFilesByModule(request.finalization.moduleFiles);
   const retainedModules = createCompilerRustRetainedSemanticModules(retainedFilesByModule, request.semanticModules);
+  const unavailableModules = createCompilerRustUnavailableModules(
+    request.finalization.refusals ?? [],
+    retainedFilesByModule,
+    request.semanticModules,
+  );
   const plan = createCompilerRustSourceTreePlan({
     facade: request.finalization.facade,
     ...(request.moduleResolution ? { moduleResolution: request.moduleResolution } : {}),
     modules: retainedModules,
+    ...(unavailableModules.length === 0 ? {} : { unavailableModules }),
   });
   const sourceFiles = createCompilerRustSourceTreeFinalizationSourceFiles(plan, retainedFilesByModule, retainedModules);
   const moduleFileReplacements = sourceFiles
@@ -214,6 +222,35 @@ function createCompilerRustRetainedSemanticModules(
     }
     return matches[0]!;
   });
+}
+
+// What the plan may say about a module it was not given: why it is missing, never how to emit it. A refusal
+// outranks selection because the refusal is the reason the module cannot be part of any output.
+function createCompilerRustUnavailableModules(
+  refusals: readonly Readonly<CompilerBackendPublicBindingRefusal>[],
+  retainedFilesByModule: ReadonlyMap<string, readonly Readonly<CompilerBackendModuleFile>[]>,
+  semanticModules: readonly Readonly<IrModule>[],
+): readonly CompilerRustSourceTreeUnavailableModule[] {
+  const unavailable = new Map<string, CompilerRustSourceTreeUnavailableModule>();
+  for (const refusal of refusals) {
+    unavailable.set(getCompilerRustSourceTreeModuleKey(refusal.module), {
+      code: refusal.code,
+      disposition: 'refused',
+      message: refusal.message,
+      module: cloneCompilerRustSourceTreeModuleIdentity(refusal.module),
+    });
+  }
+  for (const module of semanticModules) {
+    const key = getCompilerRustSourceTreeModuleKey(module);
+    if (retainedFilesByModule.has(key) || unavailable.has(key)) continue;
+    unavailable.set(key, {
+      disposition: 'unselected',
+      module: cloneCompilerRustSourceTreeModuleIdentity(module),
+    });
+  }
+  return [...unavailable.entries()]
+    .sort(([left], [right]) => compareTextCodeUnits(left, right))
+    .map(([, entry]) => entry);
 }
 
 function createCompilerRustSourceTreeFinalizationFailure(

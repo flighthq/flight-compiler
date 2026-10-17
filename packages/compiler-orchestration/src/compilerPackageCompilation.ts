@@ -22,6 +22,7 @@ import type {
   CompilerBackendPackageFile,
   CompilerBackendPackageGraphFinalization,
   CompilerBackendPackageGraphFinalizationResult,
+  CompilerBackendPublicBindingRefusal,
   CompilerDiagnostic,
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
@@ -463,7 +464,42 @@ function createCompilerBackendPackageGraphFinalization(
         module: cloneCompilerPackageGraphIdentity(record.module),
       })),
     );
-  return freezeCompilerBackendPackageGraphValue(structuredClone({ facade, moduleFiles }));
+  const refusals = createCompilerBackendRefusalEvidence(
+    records,
+    new Set(moduleFiles.map(({ module }) => getCompilerPackageGraphModuleKey(module))),
+  );
+  return freezeCompilerBackendPackageGraphValue(
+    structuredClone({ facade, moduleFiles, ...(refusals.length === 0 ? {} : { refusals }) }),
+  );
+}
+
+// A backend asked to finalize cannot see why a module it expected is missing; it sees only that the module
+// is absent. One deterministic entry per refused module whose output is absent gives it the producer's own
+// reason, so an import of that module can be attributed instead of described as an ambiguity. A module
+// refused only through its dependencies reports the first inherited reason rather than nothing.
+function createCompilerBackendRefusalEvidence(
+  records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  retainedModules: ReadonlySet<string>,
+): readonly Readonly<CompilerBackendPublicBindingRefusal>[] {
+  return [...records.values()]
+    .filter(
+      (record) => record.refusals.length > 0 && !retainedModules.has(getCompilerPackageGraphModuleKey(record.module)),
+    )
+    .map((record): Readonly<CompilerBackendPublicBindingRefusal> => {
+      const refusal =
+        record.refusals.find((candidate) => candidate.code !== 'dependency-refused') ?? record.refusals[0]!;
+      return {
+        code: refusal.rule ?? refusal.code,
+        message: refusal.message,
+        module: cloneCompilerPackageGraphIdentity(record.module),
+      };
+    })
+    .sort(
+      (left, right) =>
+        compareCompilerPackageGraphModules(left.module, right.module) ||
+        compareTextCodeUnits(left.code, right.code) ||
+        compareTextCodeUnits(left.message, right.message),
+    );
 }
 
 function createCompilerBackendPackageGraphFinalizationResult(

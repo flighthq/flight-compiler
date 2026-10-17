@@ -2125,3 +2125,88 @@ function getFixtureDependencyTargets(
       ?.dependencies.map((dependency) => dependency.target.name) ?? []
   );
 }
+
+describe('compileTypeScriptPackageGraph finalization refusal evidence', () => {
+  it('hands the backend one deterministic refusal entry per refused module in best-effort', () => {
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { values } from './provider.js';\nimport { values as alphaValues } from './alpha.js';\nexport { alphaValues, values };",
+    );
+    const provider = source('@local/source', 'source', 'provider.ts', 'export const values: number[] = [1, 2];');
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const values: number[] = [3];');
+    const consumerIdentity = identity(consumer, 'Consumer');
+    const providerIdentity = identity(provider, 'Provider');
+    const alphaIdentity = identity(alpha, 'Alpha');
+    const received: CompilerBackendPackageGraphFinalization[] = [];
+    const backend: CompilerBackend = {
+      createEmissionSession: () => ({
+        emitModule(module) {
+          if (module.source.endsWith('provider.ts')) {
+            throw createBackendEmissionFailure(
+              'fixture',
+              module,
+              'provider values are not representable',
+              'fixture-provider-values',
+            );
+          }
+          if (module.source.endsWith('alpha.ts')) {
+            throw createBackendEmissionFailure(
+              'fixture',
+              module,
+              'alpha values are not representable',
+              'fixture-alpha-values',
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        finalizePackageGraph(finalization) {
+          received.push(finalization);
+          return { packageFiles: [] };
+        },
+      }),
+      emitModule: () => {
+        throw new Error('the emission session must be used');
+      },
+      name: 'fixture',
+    };
+    const compile = (sources: readonly ReturnType<typeof source>[]) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        bestEffort: true,
+        graph: graph(
+          [consumerIdentity],
+          [
+            { importer: consumerIdentity, specifier: './provider.js', target: providerIdentity },
+            { importer: consumerIdentity, specifier: './alpha.js', target: alphaIdentity },
+          ],
+          [{ dependencies: [], name: '@local/source', root: consumer.packageRoot }],
+        ),
+        sources,
+      });
+
+    compile([consumer, provider, alpha]);
+    compile([alpha, provider, consumer]);
+
+    expect(received).toHaveLength(2);
+    for (const finalization of received) {
+      expect(finalization.moduleFiles.map(({ module }) => module.source)).toEqual(['packages/source/src/consumer.ts']);
+      expect(finalization.refusals).toEqual([
+        {
+          code: 'fixture-alpha-values',
+          message:
+            'fixture emission failed for @local/source/packages/source/src/alpha.ts: alpha values are not representable',
+          module: alphaIdentity,
+        },
+        {
+          code: 'fixture-provider-values',
+          message:
+            'fixture emission failed for @local/source/packages/source/src/provider.ts: provider values are not representable',
+          module: providerIdentity,
+        },
+      ]);
+    }
+  });
+});

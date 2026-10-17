@@ -6,7 +6,9 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerRustSourceTreePlan,
+  CompilerRustSourceTreePlanningFailure,
   CompilerRustSourceTreePlanningFailureCode,
+  CompilerRustSourceTreeUnavailableModule,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import { createCompilerRustSourceTreePlan, isCompilerRustSourceTreePlanningFailure } from './rustSourceTreePlan.js';
@@ -221,7 +223,82 @@ describe('createCompilerRustSourceTreePlan', () => {
       },
       'rust-source-tree-import-ambiguity',
     );
-    expectPlanningFailure([consumer], [consumer], undefined, 'rust-source-tree-import-ambiguity');
+    expectPlanningFailure([consumer], [consumer], undefined, 'rust-source-tree-import-target-absent');
+  });
+
+  it('distinguishes a refused, unselected, and absent imported target', () => {
+    const consumer = lower('@scope/math', 'consumer.ts', "import { value } from './value'; export { value };");
+    const target = lower('@scope/math', 'value.ts', 'export const value = 1;');
+    const refused: CompilerRustSourceTreeUnavailableModule = {
+      code: 'rust-module-array-value-unrepresented',
+      disposition: 'refused',
+      message: 'module array value value requires runtime initialization',
+      module: identity(target),
+    };
+    const unselected: CompilerRustSourceTreeUnavailableModule = {
+      disposition: 'unselected',
+      module: identity(target),
+    };
+
+    const refusedFailure = captureTargetFailure([consumer], undefined, [refused]);
+    expect(refusedFailure.code).toBe('rust-source-tree-import-target-refused');
+    expect(refusedFailure.message).toContain(
+      'which was refused: rust-module-array-value-unrepresented: module array value value requires runtime initialization',
+    );
+    expect(refusedFailure.message).toContain('@scope/math/packages/math/src/value.ts#Value');
+    expect(refusedFailure.message).not.toContain('\0');
+    expect(refusedFailure.subjects).toHaveLength(2);
+
+    const unselectedFailure = captureTargetFailure([consumer], undefined, [unselected]);
+    expect(unselectedFailure.code).toBe('rust-source-tree-import-target-unselected');
+    expect(unselectedFailure.message).toContain('which is not selected for this output');
+
+    const absentFailure = captureTargetFailure([consumer], undefined, []);
+    expect(absentFailure.code).toBe('rust-source-tree-import-target-absent');
+    expect(absentFailure.message).toContain('has no target module in this compilation');
+    expect(absentFailure.message).not.toContain('\0');
+  });
+
+  it('attributes an edge-resolved import from the same evidence', () => {
+    const consumer = lower('@scope/math', 'consumer.ts', "import { value } from './value'; export { value };");
+    const target = lower('@scope/math', 'value.ts', 'export const value = 1;');
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ importer: identity(consumer), specifier: './value', target: identity(target) }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const failure = captureTargetFailure([consumer], moduleResolution, [
+      {
+        code: 'rust-module-array-value-unrepresented',
+        disposition: 'refused',
+        message: 'module array value value requires runtime initialization',
+        module: identity(target),
+      },
+    ]);
+
+    expect(failure.code).toBe('rust-source-tree-import-target-refused');
+    expect(failure.message).toContain('targets @scope/math/packages/math/src/value.ts#Value');
+  });
+
+  it('answers the same imported-target failure when the evidence order is reversed', () => {
+    const consumer = lower('@scope/math', 'consumer.ts', "import { value } from './value'; export { value };");
+    const target = lower('@scope/math', 'value.ts', 'export const value = 1;');
+    const other = lower('@scope/math', 'other.ts', 'export const other = 1;');
+    const evidence: readonly CompilerRustSourceTreeUnavailableModule[] = [
+      {
+        code: 'rust-module-array-value-unrepresented',
+        disposition: 'refused',
+        message: 'module array value value requires runtime initialization',
+        module: identity(target),
+      },
+      { disposition: 'unselected', module: identity(other) },
+    ];
+
+    const first = captureTargetFailure([consumer], undefined, evidence);
+    const second = captureTargetFailure([consumer], undefined, [...evidence].reverse());
+
+    expect(second.code).toBe(first.code);
+    expect(second.message).toBe(first.message);
+    expect(second.subjects).toEqual(first.subjects);
   });
 
   it('does not mutate caller-owned graph facts', () => {
@@ -292,6 +369,28 @@ function expectPlanningFailure(
   expect(isCompilerRustSourceTreePlanningFailure(failure)).toBe(true);
   if (!isCompilerRustSourceTreePlanningFailure(failure)) throw failure;
   expect(failure.code).toBe(code);
+}
+
+function captureTargetFailure(
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  unavailableModules: readonly CompilerRustSourceTreeUnavailableModule[],
+): CompilerRustSourceTreePlanningFailure {
+  let failure: unknown;
+  try {
+    createCompilerRustSourceTreePlan({
+      facade: createFacade(modules),
+      ...(moduleResolution ? { moduleResolution } : {}),
+      modules,
+      ...(unavailableModules.length === 0 ? {} : { unavailableModules }),
+    });
+  } catch (error) {
+    failure = error;
+  }
+  if (!isCompilerRustSourceTreePlanningFailure(failure)) {
+    throw failure instanceof Error ? failure : new Error('expected a Rust source-tree planning failure');
+  }
+  return failure;
 }
 
 function findFile(plan: Readonly<CompilerRustSourceTreePlan>, packageName: string, modulePath: readonly string[]) {
