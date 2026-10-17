@@ -245,6 +245,27 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('elects the class carrier for exact primitive constructor arguments', () => {
+    const module = lower(
+      'alias-class-constructor.ts',
+      `class Pair {
+         first: number;
+         label: string;
+         constructor(first: number, label: string) { this.first = first; this.label = label; }
+       }
+       export function aliasPair(): number {
+         const values = new Pair(1, "second");
+         const alias = values;
+         alias.first = 3;
+         return values.first;
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+  });
+
   it('refuses overlapping shared-class field borrows and observed assignment results', () => {
     const conflict = lower(
       'alias-class-conflict.ts',
@@ -274,12 +295,20 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-class-mutator-result-unrepresented' })]);
   });
 
-  it('refuses class methods, identity-valued fields, generics, and nonzero construction', () => {
+  it('refuses class methods, identity-valued fields, generics, and unsupported construction', () => {
     const cases = [
       [
         lower(
           'alias-class-method.ts',
           `class Counter { value = 0; increment(): void { this.value = 1; } }
+           export function run(): number { const values = new Counter(); const alias = values; alias.value = 2; return values.value; }`,
+        ),
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        lower(
+          'alias-class-accessor.ts',
+          `class Counter { stored = 0; get value(): number { return this.stored; } set value(next: number) { this.stored = next; } }
            export function run(): number { const values = new Counter(); const alias = values; alias.value = 2; return values.value; }`,
         ),
         'rust-reference-shared-class-member-unrepresented',
@@ -302,9 +331,17 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
       ],
       [
         lower(
+          'alias-class-inheritance.ts',
+          `class Base { value = 0; } class Counter extends Base {}
+           export function run(): number { const values = new Counter(); const alias = values; alias.value = 1; return values.value; }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
           'alias-class-construction.ts',
-          `class Counter { value: number; constructor(value: number) { this.value = value; } }
-           export function run(): number { const values = new Counter(0); const alias = values; alias.value = 1; return values.value; }`,
+          `class Counter { value: number; constructor(value: number = 0) { this.value = value; } }
+           export function run(): number { const values = new Counter(); const alias = values; alias.value = 1; return values.value; }`,
         ),
         'rust-reference-shared-class-construction-unrepresented',
       ],
@@ -315,6 +352,73 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
       ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
     }
+  });
+
+  it('refuses inexact primitive constructor invocation and constructor escape shapes', () => {
+    const cases = [
+      lower(
+        'class-constructor-argument.ts',
+        `class Pair { first: number; second: string; constructor(first: number, second: string) { this.first = first; this.second = second; } }
+         export function run(): number { const values = new Pair({} as any, "second"); const alias = values; alias.first = 3; return values.first; }`,
+      ),
+      lower(
+        'class-constructor-object.ts',
+        `class Counter { value: number; constructor(input: { value: number }) { this.value = input.value; } }
+         export function run(): number { const values = new Counter({ value: 1 }); const alias = values; alias.value = 3; return values.value; }`,
+      ),
+      lower(
+        'class-constructor-identity.ts',
+        `class Counter { value: number; constructor(input: number[]) { this.value = input.length; } }
+         export function run(): number { const values = new Counter([1]); const alias = values; alias.value = 3; return values.value; }`,
+      ),
+      lower(
+        'class-constructor-rest.ts',
+        `class Counter { value: number; constructor(...input: number[]) { this.value = input[0]!; } }
+         export function run(): number { const values = new Counter(1); const alias = values; alias.value = 3; return values.value; }`,
+      ),
+      lower(
+        'class-constructor-overload.ts',
+        `class Counter { value: number; constructor(value: number); constructor(value: number) { this.value = value; } }
+         export function run(): number { const values = new Counter(1); const alias = values; alias.value = 3; return values.value; }`,
+      ),
+      lower(
+        'class-constructor-spread.ts',
+        `class Pair { first: number; second: number; constructor(first: number, second: number) { this.first = first; this.second = second; } }
+         export function run(input: [number, number]): number { const values = new Pair(...input); const alias = values; alias.first = 3; return values.first; }`,
+      ),
+      lower(
+        'class-constructor-escape.ts',
+        `function consume(_value: Counter): void {}
+         class Counter { value: number; constructor(value: number) { consume(this); this.value = value; } }
+         export function run(): number { const values = new Counter(1); const alias = values; alias.value = 3; return values.value; }`,
+      ),
+    ];
+
+    for (const module of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'rust-reference-shared-class-construction-unrepresented' }),
+        ]),
+      );
+    }
+  });
+
+  it('refuses an unresolved imported constructor owner', () => {
+    const module = lower(
+      'class-constructor-unresolved.ts',
+      `import { Pair } from './missing.js';
+       export function run(): number { const values: Pair = new Pair(1, 2); const alias: Pair = values; alias.first = 3; return alias.first; }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-construction-unrepresented' }),
+      ]),
+    );
   });
 
   it('refuses shared-class escape, storage, reassignment, dynamic calls, suspension, and ambiguous owners', () => {

@@ -7684,6 +7684,128 @@ describe('emitIrModuleRust', () => {
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
 
+  it('constructs a shared class from two primitive arguments before alias mutation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-class-constructor.ts',
+        `class Counter {
+           value: number;
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+         }
+         export function aliasConstructedCounter(): number {
+           const values = new Counter(1, "ready");
+           const alias = values;
+           alias.value = 3;
+           return values.value + (values.label === "ready" ? 1 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'let values: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new(1.0, "ready".to_owned())));',
+    );
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
+    expect(output).toContain('alias.borrow_mut().value = 3.0;');
+    expect(output).toContain('values.borrow().label.clone()');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(alias_constructed_counter(), 4.0);')).not.toThrow();
+    }
+  });
+
+  it('evaluates primitive constructor arguments exactly once in source order before sharing', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-class-constructor-order.ts',
+        `class Pair {
+           first: number;
+           second: number;
+           constructor(first: number, second: number) { this.first = first; this.second = second; }
+         }
+         export function constructorOrder(): number {
+           let state = 0;
+           const next = (value: number): number => { state = state * 10 + value; return value; };
+           const values = new Pair(next(1), next(2));
+           const alias = values;
+           alias.first = 3;
+           return state * 100 + values.first * 10 + values.second;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/next\(1\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/next\(2\.0\)/gu)).toHaveLength(1);
+    expect(output.indexOf('next(1.0)')).toBeLessThan(output.indexOf('next(2.0)'));
+    if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(constructor_order(), 1232.0);')).not.toThrow();
+  });
+
+  it('constructs an imported shared class from exact primitive arguments', () => {
+    const provider = lower(
+      'pair-provider.ts',
+      `export class Pair {
+         first: number;
+         second: number;
+         constructor(first: number, second: number) { this.first = first; this.second = second; }
+       }`,
+    ).module;
+    const consumer = lower(
+      'alias-pair-constructor.ts',
+      `import { Pair } from './pair-provider.js';
+       export function aliasPair(): number {
+         const values: Pair = new Pair(1, 2);
+         const alias: Pair = values;
+         alias.first = 3;
+         return values.first;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './pair-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn new(first: f64, second: f64) -> Self');
+    expect(output).toContain('Rc::new(RefCell::new(Pair::new(1.0, 2.0)))');
+    expect(output).toContain('values.borrow().first');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('pair_provider', providerOutput, 'alias_pair_constructor', output),
+      ).not.toThrow();
+    }
+  });
+
+  it('refuses inexact constructor argument and default-parameter class carriers', () => {
+    const mismatch = lower(
+      'shared-class-constructor-mismatch.ts',
+      `class Pair { first: number; second: string; constructor(first: number, second: string) { this.first = first; this.second = second; } }
+       export function run(): number { const values = new Pair({} as any, "second"); const alias = values; alias.first = 3; return values.first; }`,
+    ).module;
+    const defaulted = lower(
+      'shared-class-constructor-default.ts',
+      `class Counter { value: number; constructor(value: number = 1) { this.value = value; } }
+       export function run(): number { const values = new Counter(); const alias = values; alias.value = 3; return values.value; }`,
+    ).module;
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatch)).rule).toBe(
+      'rust-reference-shared-class-construction-unrepresented',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(defaulted)).rule).toBe(
+      'rust-reference-shared-class-construction-unrepresented',
+    );
+  });
+
   it('lends a shared class through one temporary mutable call borrow and reuses it afterwards', () => {
     const provider = lower(
       'counter-provider.ts',

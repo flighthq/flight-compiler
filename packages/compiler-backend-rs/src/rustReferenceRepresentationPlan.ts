@@ -1321,14 +1321,14 @@ function addRustSharedClassRefusals(
     if (![...group].some((id) => module.sharedClasses.bindingIds.has(id))) continue;
     const roots = [...group].filter((id) => {
       const variable = module.sharedClasses.variablesByBindingId.get(id);
-      return isZeroArgumentClassConstruction(variable?.initializer, variable?.type, module, modules, moduleResolution);
+      return isRustSimpleClassConstruction(variable?.initializer, variable?.type, module, modules, moduleResolution);
     });
     if (roots.length !== 1) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-class-construction-unrepresented',
         `${moduleKey(module.module)}:group:${[...group].sort(compareTextCodeUnits).join(',')}`,
-        'shared class alias group must have exactly one local zero-argument construction root',
+        'shared class alias group must have exactly one local represented construction root',
       );
     }
     const classKeys = new Set<string>();
@@ -1339,12 +1339,7 @@ function addRustSharedClassRefusals(
         initializer?.kind === 'identifier' &&
         initializer.reference.kind === 'binding' &&
         group.has(initializer.reference.binding.id);
-      if (
-        !variable ||
-        variable.mutable ||
-        (!aliasInitializer &&
-          !isZeroArgumentClassConstruction(initializer, variable.type, module, modules, moduleResolution))
-      ) {
+      if (!variable || variable.mutable || (!aliasInitializer && initializer?.kind !== 'new')) {
         addRustReferenceRefusal(
           refusals,
           'rust-reference-shared-class-use-unrepresented',
@@ -1497,7 +1492,7 @@ function addRustSimpleClassDeclarationRefusals(
       refusals,
       'rust-reference-shared-class-construction-unrepresented',
       subject,
-      `class ${declaration.binding.name} has no represented zero-argument construction path`,
+      `class ${declaration.binding.name} has no represented primitive field-only construction path`,
     );
   }
 }
@@ -2366,8 +2361,7 @@ function isRustSimpleClassField(field: Readonly<IrClassField>): boolean {
     !field.optional &&
     !field.static &&
     field.parameterProperty === undefined &&
-    field.type.kind === 'primitive' &&
-    (field.type.name === 'boolean' || field.type.name === 'number' || field.type.name === 'string')
+    isRustSimpleClassPrimitiveType(field.type)
   );
 }
 
@@ -2380,14 +2374,23 @@ function isRustSimpleClassConstructionSupported(declaration: Readonly<IrClassDec
       (field) => field.initializer !== undefined && !hasIrExpressionThisReferenceInPlan(field.initializer),
     );
   }
+  if (constructor.overloads.length > 0 || fields.some((field) => field.initializer !== undefined)) {
+    return false;
+  }
+  const parameters = constructor.parameters;
   if (
-    constructor.parameters.length > 0 ||
-    constructor.overloads.length > 0 ||
-    fields.some((field) => field.initializer !== undefined)
+    parameters.some(
+      (parameter) =>
+        parameter.optional ||
+        parameter.rest ||
+        parameter.initializer !== undefined ||
+        !isRustSimpleClassPrimitiveType(parameter.type),
+    )
   ) {
     return false;
   }
   const assigned = new Set<string>();
+  const usedParameters = new Set<string>();
   for (const statement of constructor.body) {
     if (statement.kind !== 'expression' || statement.expression.kind !== 'assignment') return false;
     const assignment = statement.expression;
@@ -2402,9 +2405,33 @@ function isRustSimpleClassConstructionSupported(declaration: Readonly<IrClassDec
     ) {
       return false;
     }
-    assigned.add(assignment.left.name);
+    const fieldName = assignment.left.name;
+    const field = fields.find((candidate) => candidate.name === fieldName);
+    if (!field) return false;
+    if (parameters.length > 0) {
+      if (assignment.right.kind !== 'identifier' || assignment.right.reference.kind !== 'binding') return false;
+      const parameterBindingId = assignment.right.reference.binding.id;
+      const parameter = parameters.find((candidate) => candidate.binding.id === parameterBindingId);
+      if (
+        !parameter ||
+        usedParameters.has(parameter.binding.id) ||
+        !isRustSimpleClassPrimitiveType(field.type) ||
+        !isRustSimpleClassPrimitiveType(parameter.type) ||
+        field.type.name !== parameter.type.name
+      ) {
+        return false;
+      }
+      usedParameters.add(parameter.binding.id);
+    }
+    assigned.add(fieldName);
   }
-  return fields.length === assigned.size && fields.every((field) => assigned.has(field.name));
+  return (
+    fields.length === assigned.size &&
+    fields.every((field) => assigned.has(field.name)) &&
+    (parameters.length === 0 ||
+      (parameters.length === usedParameters.size &&
+        parameters.every((parameter) => usedParameters.has(parameter.binding.id))))
+  );
 }
 
 function hasIrExpressionThisReferenceInPlan(expression: Readonly<IrExpression>): boolean {
@@ -2421,7 +2448,7 @@ function hasIrExpressionThisReferenceInPlan(expression: Readonly<IrExpression>):
   return found;
 }
 
-function isZeroArgumentClassConstruction(
+function isRustSimpleClassConstruction(
   expression: Readonly<IrExpression> | undefined,
   type: Readonly<IrType> | undefined,
   module: RustReferenceModuleRecord,
@@ -2430,7 +2457,6 @@ function isZeroArgumentClassConstruction(
 ): boolean {
   if (
     expression?.kind !== 'new' ||
-    expression.arguments.length > 0 ||
     expression.callee.kind !== 'identifier' ||
     expression.callee.reference.kind !== 'binding' ||
     type?.kind !== 'named' ||
@@ -2454,8 +2480,98 @@ function isZeroArgumentClassConstruction(
     constructorLocation !== undefined &&
     moduleKey(typeLocation.module.module) === moduleKey(constructorLocation.module.module) &&
     typeLocation.declaration.binding.id === constructorLocation.declaration.binding.id &&
-    isRustSimpleClassDeclarationSupported(typeLocation.declaration)
+    isRustSimpleClassDeclarationSupported(typeLocation.declaration) &&
+    isRustSimpleClassConstructorInvocationSupported(expression, typeLocation.declaration, module)
   );
+}
+
+function isRustSimpleClassConstructorInvocationSupported(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  declaration: Readonly<IrClassDeclaration>,
+  module: RustReferenceModuleRecord,
+): boolean {
+  const parameters = declaration.classConstructor?.parameters ?? [];
+  // Rust evaluates fixed call operands once from left to right. Keeping exact primitive arguments as
+  // constructor operands therefore preserves source order; every dynamic/default/rest shape is refused here.
+  if (
+    expression.arguments.length !== parameters.length ||
+    expression.semantics.construction === 'factory' ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    expression.semantics.overloadImplementation !== undefined ||
+    expression.semantics.signature?.providedArgumentCount === 'dynamic' ||
+    expression.semantics.signature?.restParameter !== undefined ||
+    (expression.semantics.signature !== undefined &&
+      (expression.semantics.signature.parameterCount !== parameters.length ||
+        expression.semantics.signature.providedArgumentCount !== expression.arguments.length))
+  ) {
+    return false;
+  }
+  return parameters.every((parameter, position) => {
+    const argument = expression.arguments[position];
+    const argumentType = argument ? getRustSimpleClassPrimitiveExpressionType(argument, module) : undefined;
+    return (
+      argumentType !== undefined &&
+      isRustSimpleClassPrimitiveType(parameter.type) &&
+      argumentType.name === parameter.type.name
+    );
+  });
+}
+
+function getRustSimpleClassPrimitiveExpressionType(
+  expression: Readonly<IrExpression>,
+  module: RustReferenceModuleRecord,
+): Readonly<Extract<IrType, { kind: 'primitive' }>> | undefined {
+  if (expression.kind === 'literal') {
+    if (typeof expression.value === 'boolean') return { kind: 'primitive', name: 'boolean' };
+    if (typeof expression.value === 'number') return { kind: 'primitive', name: 'number' };
+    if (typeof expression.value === 'string') return { kind: 'primitive', name: 'string' };
+    return undefined;
+  }
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const type = module.bindingTypes.get(expression.reference.binding.id);
+    return type ? getRustSimpleClassPrimitiveValueType(type) : undefined;
+  }
+  if (expression.kind === 'cast') {
+    return getRustSimpleClassPrimitiveValueType(expression.type);
+  }
+  if (expression.kind === 'call') {
+    return getRustSimpleClassPrimitiveValueType(expression.semantics.resultType);
+  }
+  if (expression.kind === 'property') {
+    return expression.type ? getRustSimpleClassPrimitiveValueType(expression.type) : undefined;
+  }
+  if (expression.kind === 'template') return { kind: 'primitive', name: 'string' };
+  if (expression.kind === 'assignment' || expression.kind === 'binary' || expression.kind === 'unary') {
+    const result = expression.semantics.result;
+    return result === 'boolean' || result === 'number' || result === 'string'
+      ? { kind: 'primitive', name: result }
+      : undefined;
+  }
+  if (expression.kind === 'conditional') {
+    const whenTrue = getRustSimpleClassPrimitiveExpressionType(expression.whenTrue, module);
+    const whenFalse = getRustSimpleClassPrimitiveExpressionType(expression.whenFalse, module);
+    return whenTrue?.name === whenFalse?.name ? whenTrue : undefined;
+  }
+  return undefined;
+}
+
+function getRustSimpleClassPrimitiveValueType(
+  type: Readonly<IrType>,
+): Readonly<Extract<IrType, { kind: 'primitive' }>> | undefined {
+  if (isRustSimpleClassPrimitiveType(type)) return type;
+  if (type.kind !== 'literal') return undefined;
+  return typeof type.value === 'boolean'
+    ? { kind: 'primitive', name: 'boolean' }
+    : typeof type.value === 'number'
+      ? { kind: 'primitive', name: 'number' }
+      : { kind: 'primitive', name: 'string' };
+}
+
+function isRustSimpleClassPrimitiveType(
+  type: Readonly<IrType>,
+): type is Readonly<Extract<IrType, { kind: 'primitive' }>> {
+  return type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number' || type.name === 'string');
 }
 
 function isRustSharedHashCollectionTypeSupported(
