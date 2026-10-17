@@ -11534,6 +11534,48 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
   });
 
+  it.skipIf(!rustcAvailable)('runs the combined optional simple-class parameter checkpoint', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-simple-class-parameter-checkpoint.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+         }
+         class Snapshot {
+           value: number;
+           constructor(owner?: Counter) { this.value = owner === undefined ? 0 : owner.value; }
+         }
+         function adjust(value?: Counter): number {
+           if (value === undefined) return 0;
+           value.value += 1;
+           return value.value;
+         }
+         function forward(value?: Counter): number { return adjust(value); }
+         export function optionalClassParameterCheckpoint(): boolean {
+           const receiver = new Counter(2); const receiverAlias = receiver;
+           const other = new Counter(7); const otherAlias = other;
+           const omittedFunction = adjust();
+           const explicitFunction = adjust(undefined);
+           const forwarded = forward(receiverAlias);
+           const omittedSnapshot = new Snapshot();
+           const explicitSnapshot = new Snapshot(undefined);
+           const presentSnapshot = new Snapshot(receiverAlias);
+           const omittedMethod = receiver.inspect();
+           const explicitMethod = receiverAlias.inspect(undefined);
+           const distinctMethod = receiver.inspect(otherAlias);
+           return omittedFunction === 0 && explicitFunction === 0 && forwarded === 3 &&
+             omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
+             omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
+             receiver === receiverAlias && receiver.value === 3 && other.value === 7;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(() => runRustSource(output, 'assert!(optional_class_parameter_checkpoint());')).not.toThrow();
+  });
+
   it('refuses inexact constructor argument and default-parameter class carriers', () => {
     const mismatch = lower(
       'shared-class-constructor-mismatch.ts',
