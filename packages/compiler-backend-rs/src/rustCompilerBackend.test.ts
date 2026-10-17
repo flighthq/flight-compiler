@@ -19307,6 +19307,63 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('emits zero and multiple fixed concat arguments after receiver-first left-to-right staging', () => {
+    const result = lower(
+      'array-concat-pack.ts',
+      `function record(log: number[], marker: number): number[] {
+         log.push(marker);
+         return [marker];
+       }
+       export function copy(values: readonly boolean[]): boolean[] {
+         return values.concat();
+       }
+       export function merge(
+         left: readonly number[],
+         first: readonly number[],
+         second: number[],
+         third: readonly number[],
+       ): number[] {
+         return left.concat(first, second, third);
+       }
+       export function evaluated(log: number[]): number[] {
+         return record(log, 1).concat(record(log, 2), record(log, 3), record(log, 4));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const copyStart = output.indexOf('pub fn copy(');
+    const mergeStart = output.indexOf('pub fn merge(', copyStart);
+    const copyOutput = output.slice(copyStart, mergeStart);
+    expect(copyOutput).toContain('let mut array_concat_values = (*array_concat_receiver).clone();');
+    expect(copyOutput).not.toContain('.extend(');
+    const mergeOutput = output.slice(mergeStart, output.indexOf('pub fn evaluated(', mergeStart));
+    const firstArgument = mergeOutput.indexOf('let array_concat_argument0 = &first;');
+    const secondArgument = mergeOutput.indexOf('let array_concat_argument1 = &second;');
+    const thirdArgument = mergeOutput.indexOf('let array_concat_argument2 = &third;');
+    const firstExtension = mergeOutput.indexOf('array_concat_values_2.extend(array_concat_argument0.iter().cloned());');
+    const secondExtension = mergeOutput.indexOf(
+      'array_concat_values_2.extend(array_concat_argument1.iter().cloned());',
+    );
+    const thirdExtension = mergeOutput.indexOf('array_concat_values_2.extend(array_concat_argument2.iter().cloned());');
+    expect(firstArgument).toBeGreaterThan(-1);
+    expect(secondArgument).toBeGreaterThan(firstArgument);
+    expect(thirdArgument).toBeGreaterThan(secondArgument);
+    expect(firstExtension).toBeGreaterThan(thirdArgument);
+    expect(secondExtension).toBeGreaterThan(firstExtension);
+    expect(thirdExtension).toBeGreaterThan(secondExtension);
+    const evaluatedReceiver = output.indexOf('let array_concat_receiver_3 = &record(');
+    const evaluatedFirst = output.indexOf('let array_concat_argument0_2 = &record(', evaluatedReceiver);
+    const evaluatedSecond = output.indexOf('let array_concat_argument1_2 = &record(', evaluatedFirst);
+    const evaluatedThird = output.indexOf('let array_concat_argument2_2 = &record(', evaluatedSecond);
+    const evaluatedClone = output.indexOf('let mut array_concat_values_3', evaluatedThird);
+    expect(evaluatedReceiver).toBeGreaterThan(-1);
+    expect(evaluatedFirst).toBeGreaterThan(evaluatedReceiver);
+    expect(evaluatedSecond).toBeGreaterThan(evaluatedFirst);
+    expect(evaluatedThird).toBeGreaterThan(evaluatedSecond);
+    expect(evaluatedClone).toBeGreaterThan(evaluatedThird);
+  });
+
   it('clones exact dense concat sources and preserves empty, number, string, self, and evaluation semantics', () => {
     const result = lower(
       'array-concat-exact.ts',
@@ -19391,6 +19448,13 @@ describe('emitIrModuleRust array element access with coalescing', () => {
          const joined = alias.concat(alias);
          values.push(7);
          return joined;
+       }
+       export function sharedRepeatedConcat(): number[] {
+         const values = [8];
+         const alias = values;
+         const joined = values.concat(alias, values, alias);
+         values.push(9);
+         return joined;
        }`,
     );
 
@@ -19400,24 +19464,21 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(output).toContain('let array_concat_argument = &alias;');
     expect(output).toContain('array_concat_receiver.borrow().clone()');
     expect(output).toContain('array_concat_argument.borrow().iter().cloned()');
+    expect(output).toContain('let array_concat_argument0 = &alias;');
+    expect(output).toContain('let array_concat_argument1 = &values;');
+    expect(output).toContain('let array_concat_argument2 = &alias;');
+    expect(output).toContain('array_concat_argument0.borrow().iter().cloned()');
+    expect(output).toContain('array_concat_argument1.borrow().iter().cloned()');
+    expect(output).toContain('array_concat_argument2.borrow().iter().cloned()');
     if (rustcAvailable) {
       runRustSource(
         output,
-        'assert_eq!(shared_concat(), vec![1.0, 2.0, 1.0, 2.0]); assert_eq!(shared_self_concat(), vec![5.0, 6.0, 5.0, 6.0]);',
+        'assert_eq!(shared_concat(), vec![1.0, 2.0, 1.0, 2.0]); assert_eq!(shared_self_concat(), vec![5.0, 6.0, 5.0, 6.0]); assert_eq!(shared_repeated_concat(), vec![8.0, 8.0, 8.0, 8.0]);',
       );
     }
   });
 
   it.each([
-    {
-      rule: 'rust-array-concat-invocation-unrepresented',
-      source: 'export function merge(values: number[]): number[] { return values.concat(); }',
-    },
-    {
-      rule: 'rust-array-concat-invocation-unrepresented',
-      source:
-        'export function merge(values: number[], left: number[], right: number[]): number[] { return values.concat(left, right); }',
-    },
     {
       rule: 'rust-array-concat-invocation-unrepresented',
       source:
@@ -19464,7 +19525,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
-  it('stably refuses dynamic spread concat arity', () => {
+  it('stably refuses dynamic spread and malformed fixed concat signatures', () => {
     const dynamic = lower(
       'array-concat-dynamic.ts',
       'export function merge(values: number[], groups: number[][]): number[] { return values.concat(...groups); }',
@@ -19479,6 +19540,27 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
     expect(returned.expression.semantics.signature?.providedArgumentCount).toBe('dynamic');
     expect(captureBackendEmissionFailure(() => emitIrModuleRust(dynamic.module)).rule).toBe(
+      'rust-array-concat-invocation-unrepresented',
+    );
+
+    const malformed = lower(
+      'array-concat-signature.ts',
+      'export function merge(values: number[], first: number[], second: number[]): number[] { return values.concat(first, second); }',
+    );
+    const malformedDeclaration = malformed.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'merge',
+    );
+    const malformedReturn =
+      malformedDeclaration?.kind === 'function'
+        ? malformedDeclaration.body.find((statement) => statement.kind === 'return')
+        : undefined;
+    if (malformedReturn?.kind !== 'return' || malformedReturn.expression?.kind !== 'call') {
+      throw new Error('expected returned array.concat call');
+    }
+    const signature = malformedReturn.expression.semantics.signature as { restParameter?: number } | undefined;
+    if (!signature) throw new Error('expected concat signature evidence');
+    delete signature.restParameter;
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(malformed.module)).rule).toBe(
       'rust-array-concat-invocation-unrepresented',
     );
   });
@@ -19500,20 +19582,29 @@ describe('emitIrModuleRust array element access with coalescing', () => {
 
     const mismatchedArgument = lower(
       'array-concat-argument-carrier.ts',
-      'export function merge(values: number[], other: number[]): number[] { return values.concat(other); }',
+      'export function merge(values: number[], first: number[], second: number[], third: number[]): number[] { return values.concat(first, second, third); }',
     );
     const mismatched = getConcatCall(mismatchedArgument.module);
-    if (mismatched.declaration?.kind !== 'function' || !mismatched.declaration.parameters[1]) {
-      throw new Error('expected second concat parameter');
+    if (
+      mismatched.declaration?.kind !== 'function' ||
+      !mismatched.declaration.parameters[2] ||
+      !mismatched.declaration.parameters[3]
+    ) {
+      throw new Error('expected later concat parameters');
     }
-    (mismatched.declaration.parameters[1] as { type: unknown }).type = {
+    (mismatched.declaration.parameters[2] as { type: unknown }).type = {
       element: { kind: 'primitive', name: 'string' },
       kind: 'array',
       readonly: false,
     };
-    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedArgument.module)).rule).toBe(
-      'rust-array-concat-argument-carrier-unrepresented',
-    );
+    (mismatched.declaration.parameters[3] as { type: unknown }).type = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    const argumentFailure = captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedArgument.module));
+    expect(argumentFailure.rule).toBe('rust-array-concat-argument-carrier-unrepresented');
+    expect(argumentFailure.message).toContain('argument 1');
 
     const mismatchedResult = lower(
       'array-concat-result-carrier.ts',
@@ -27672,12 +27763,20 @@ describe('emitIrModuleRust static Array.of', () => {
          copy.push(9);
          const flags = Array.from([true, false]);
          const fromEmpty = Array.from<number>([]);
+         const group = (digit: number): number[] => { calls = calls * 10 + digit; return [digit]; };
+         const concatSource = [8];
+         const concatAlias = concatSource;
+         const concatCopy = concatAlias.concat();
+         const merged = group(5).concat(group(6), concatAlias, concatAlias);
+         concatSource.push(9);
          return empty.length === 0 && constructedAlias.length === 1 && zeroWords.join("") === "z" &&
            constructedFlags.length === 1 && filledAlias.reduce((total, value) => total * 10 + value, 0) === 4445 &&
-           emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 42123 &&
+           emptyFilled.length === 0 && alias.length === 3 && independent.length === 1 && calls === 4212356 &&
            words.join("") === "abc" && source.reduce((total, value) => total * 10 + value, 0) === 123 &&
            copyAlias.reduce((total, value) => total * 10 + value, 0) === 129 && flags.length === 2 &&
-           fromEmpty.length === 0;
+           fromEmpty.length === 0 && concatCopy.reduce((total, value) => total * 10 + value, 0) === 8 &&
+           merged.reduce((total, value) => total * 10 + value, 0) === 5688 &&
+           concatAlias.reduce((total, value) => total * 10 + value, 0) === 89;
        }`,
     );
 

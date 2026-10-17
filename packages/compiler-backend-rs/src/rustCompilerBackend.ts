@@ -629,6 +629,7 @@ function emitIrModuleRustWithContext(
   assertArrayIsArrayInvocationSemanticsRust(sourceModule);
   assertArrayOfInvocationSemanticsRust(sourceModule);
   assertArrayFromInvocationSemanticsRust(sourceModule);
+  assertArrayConcatInvocationSemanticsRust(sourceModule);
   assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArrayFindIndexInvocationSemanticsRust(sourceModule);
@@ -4846,6 +4847,25 @@ function isArrayConcatCallRust(
   );
 }
 
+function isRustArrayConcatInvocationRepresentedRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+): boolean {
+  const signature = expression.semantics.signature;
+  return (
+    !expression.optional &&
+    expression.semantics.optionalChain === undefined &&
+    !expression.callee.optional &&
+    expression.callee.optionalChain === undefined &&
+    signature !== undefined &&
+    signature.parameterCount === 1 &&
+    signature.restParameter === 0 &&
+    signature.providedArgumentCount !== 'dynamic' &&
+    signature.providedArgumentCount === expression.arguments.length &&
+    expression.arguments.every((argument) => argument.kind !== 'spread')
+  );
+}
+
 function isArraySliceCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -5382,28 +5402,37 @@ function emitArrayConcatCallRust(
     Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
   context: EmitContext,
 ): string {
-  const argument = expression.arguments[0];
-  if (!argument || expression.arguments.length !== 1) {
-    return emissionError(context, 'array.concat emission requires exactly one array argument');
-  }
   const receiverName = getGeneratedTargetNameRust('array_concat_receiver', context);
-  const argumentName = getGeneratedTargetNameRust('array_concat_argument', context);
   const resultName = getGeneratedTargetNameRust('array_concat_values', context);
   const receiverShared = getRustSharedArrayBindingRust(expression.callee.object, context);
-  const argumentShared = getRustSharedArrayBindingRust(argument, context);
   const receiver = receiverShared
     ? `&${getBindingTargetNameRust(receiverShared, context)}`
     : `&${emitExpression(expression.callee.object, context)}`;
-  const other = argumentShared
-    ? `&${getBindingTargetNameRust(argumentShared, context)}`
-    : `&${emitExpression(argument, context)}`;
+  const arguments_ = expression.arguments.map((argument, position) => {
+    const name = getGeneratedTargetNameRust(
+      expression.arguments.length === 1 ? 'array_concat_argument' : `array_concat_argument${String(position)}`,
+      context,
+    );
+    const sharedBinding = getRustSharedArrayBindingRust(argument, context);
+    return {
+      initializer: sharedBinding
+        ? `&${getBindingTargetNameRust(sharedBinding, context)}`
+        : `&${emitExpression(argument, context)}`,
+      name,
+      values: sharedBinding ? `${name}.borrow().iter().cloned()` : `${name}.iter().cloned()`,
+    };
+  });
   const clonedReceiver = receiverShared ? `${receiverName}.borrow().clone()` : `(*${receiverName}).clone()`;
-  const argumentValues = argumentShared
-    ? `${argumentName}.borrow().iter().cloned()`
-    : `${argumentName}.iter().cloned()`;
-  // Receiver and argument are materialized in source order. Their immutable borrows end at each
-  // statement, so a shared self-concat never overlaps RefCell borrows and neither source is consumed.
-  return `{ let ${receiverName} = ${receiver}; let ${argumentName} = ${other}; let mut ${resultName} = ${clonedReceiver}; ${resultName}.extend(${argumentValues}); ${resultName} }`;
+  const initializers = [
+    `let ${receiverName} = ${receiver};`,
+    ...arguments_.map(({ initializer, name }) => `let ${name} = ${initializer};`),
+    `let mut ${resultName} = ${clonedReceiver};`,
+  ];
+  const extensions = arguments_.map(({ values }) => `${resultName}.extend(${values});`);
+  // Every source expression is materialized before the receiver is cloned, matching JavaScript's
+  // receiver-first, argument-left-to-right call evaluation. Each immutable RefCell borrow ends at
+  // its clone or extend statement, so self and repeated shared aliases never overlap borrows.
+  return `{ ${[...initializers, ...extensions, resultName].join(' ')} }`;
 }
 
 function emitArrayReverseCallRust(
@@ -12075,8 +12104,10 @@ type RustArrayOperationMember =
   | 'splice';
 
 interface RustArrayOperationRefusal {
+  readonly call?: number;
   readonly member: RustArrayOperationMember;
   readonly message: string;
+  readonly position?: number;
   readonly rule:
     | 'rust-array-push-element-carrier-unrepresented'
     | 'rust-array-push-invocation-unrepresented'
@@ -12990,6 +13021,28 @@ function assertArrayFindIndexInvocationSemanticsRust(module: Readonly<IrModule>)
     module,
     'array.findIndex requires a non-optional invocation with exactly one fixed non-spread callback and no thisArg',
     'rust-array-find-index-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
+}
+
+function assertArrayConcatInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayConcatCallRust(expression)) return;
+      if (!isRustArrayConcatInvocationRepresentedRust(expression)) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'array.concat requires a non-optional receiver and a fixed non-spread array argument pack',
+    'rust-array-concat-invocation-unrepresented',
     { classification: 'target-runtime' },
   );
 }
@@ -14498,66 +14551,86 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     }
   }
 
-  for (const expression of concatCalls) {
-    const signature = expression.semantics.signature;
-    const argumentExpression = expression.arguments[0];
-    if (
-      expression.optional ||
-      expression.semantics.optionalChain !== undefined ||
-      expression.callee.optional ||
-      expression.callee.optionalChain !== undefined ||
-      !signature ||
-      signature.providedArgumentCount === 'dynamic' ||
-      signature.providedArgumentCount !== 1 ||
-      expression.arguments.length !== 1 ||
-      !argumentExpression ||
-      argumentExpression.kind === 'spread'
-    ) {
+  for (const [call, expression] of concatCalls.entries()) {
+    if (!isRustArrayConcatInvocationRepresentedRust(expression)) {
       refusals.push({
+        call,
         member: 'concat',
-        message:
-          'array.concat currently requires a non-optional receiver and exactly one fixed non-spread array argument',
+        message: 'array.concat requires a non-optional receiver and a fixed non-spread array argument pack',
+        position: -1,
         rule: 'rust-array-concat-invocation-unrepresented',
       });
       continue;
     }
 
     const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
-    const argumentType = inferRustArrayGrowthArgumentTypeRust(argumentExpression, context);
     const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
-    const argument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
-    if (receiver?.kind !== 'array' || argument?.kind !== 'array') {
+    if (receiver?.kind !== 'array') {
       refusals.push({
+        call,
         member: 'concat',
-        message: 'array.concat argument requires an exact dense array carrier',
+        message: 'array.concat receiver requires an exact dense array carrier',
+        position: -1,
         rule: 'rust-array-concat-argument-carrier-unrepresented',
       });
       continue;
     }
-    if (
-      !isRustArrayConcatElementCarrierRust(receiver.element, context) ||
-      !isRustArrayConcatElementCarrierRust(argument.element, context)
-    ) {
+    if (!isRustArrayConcatElementCarrierRust(receiver.element, context)) {
       refusals.push({
+        call,
         member: 'concat',
         message:
           'array.concat elements require primitive boolean, number, or string value carriers; union and identity-bearing carriers are not represented',
+        position: -1,
         rule: 'rust-array-concat-element-carrier-unrepresented',
       });
       continue;
     }
-    if (!isRustArrayConcatArgumentCarrierRust(receiver.element, argument.element, context)) {
+
+    let invalidArgument = false;
+    for (const [position, argumentExpression] of expression.arguments.entries()) {
+      const argumentType = inferRustArrayGrowthArgumentTypeRust(argumentExpression, context);
+      const argument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
+      if (argument?.kind !== 'array') {
+        refusals.push({
+          call,
+          member: 'concat',
+          message: `array.concat argument ${String(position)} requires an exact dense array carrier`,
+          position,
+          rule: 'rust-array-concat-argument-carrier-unrepresented',
+        });
+        invalidArgument = true;
+        break;
+      }
+      if (!isRustArrayConcatElementCarrierRust(argument.element, context)) {
+        refusals.push({
+          call,
+          member: 'concat',
+          message: `array.concat argument ${String(position)} elements require primitive boolean, number, or string value carriers; union and identity-bearing carriers are not represented`,
+          position,
+          rule: 'rust-array-concat-element-carrier-unrepresented',
+        });
+        invalidArgument = true;
+        break;
+      }
+      if (isRustArrayConcatArgumentCarrierRust(receiver.element, argument.element, context)) continue;
       refusals.push({
+        call,
         member: 'concat',
-        message: 'array.concat argument does not have the exact Rust element carrier of the receiver',
+        message: `array.concat argument ${String(position)} does not have the exact Rust element carrier of the receiver`,
+        position,
         rule: 'rust-array-concat-argument-carrier-unrepresented',
       });
-      continue;
+      invalidArgument = true;
+      break;
     }
+    if (invalidArgument) continue;
     if (!receiverType || !isRustArrayConcatResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
       refusals.push({
+        call,
         member: 'concat',
         message: 'array.concat result does not have the exact mutable Rust Vec element carrier of the receiver',
+        position: -1,
         rule: 'rust-array-concat-result-carrier-unrepresented',
       });
     }
@@ -14802,8 +14875,11 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     }
   }
 
-  const refusal = refusals.sort((left, right) =>
-    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  const refusal = refusals.sort(
+    (left, right) =>
+      compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`) ||
+      (left.call ?? -1) - (right.call ?? -1) ||
+      (left.position ?? -1) - (right.position ?? -1),
   )[0];
   if (!refusal) return;
   throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {

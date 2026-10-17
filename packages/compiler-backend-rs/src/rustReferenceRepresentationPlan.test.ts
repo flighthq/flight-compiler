@@ -293,6 +293,36 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
   });
 
+  it('represents every direct shared concat argument and refuses a nested alias read in a later position', () => {
+    const direct = lower(
+      'alias-concat-pack.ts',
+      `export function aliasConcatPack(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const result = alias.concat(values, alias, values);
+         values.push(3);
+         return result;
+       }`,
+    );
+    const nested = lower(
+      'alias-concat-nested.ts',
+      `export function aliasConcatNested(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const result = alias.concat([0], values.slice());
+         values.push(3);
+         return result;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [direct] }), direct).refusals,
+    ).toEqual([]);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [nested] }), nested).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
+  });
+
   it('refuses shared-array suspension and escaping closure capture', () => {
     const suspended = lower(
       'alias-suspended.ts',

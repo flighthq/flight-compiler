@@ -1823,7 +1823,6 @@ function isRustSharedArrayIdentifierUseRepresented(
     if (isRustReferenceArrayOfCall(call)) return true;
     if (position === 0 && isRustReferenceArrayFromCall(call)) return true;
     if (
-      position === 0 &&
       call.callee.kind === 'property' &&
       call.callee.member?.receiver === 'array' &&
       call.callee.member.name === 'concat'
