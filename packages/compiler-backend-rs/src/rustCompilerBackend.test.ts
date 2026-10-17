@@ -24591,7 +24591,7 @@ describe('emitIrModuleRust exact dense array reduce', () => {
 
 describe('emitIrModuleRust exact array callback native checkpoint', () => {
   it.skipIf(!rustcAvailable)(
-    'runs findIndex/some/every/find/filter/map/forEach across carriers, arities, empties, reuse, and shared borrows',
+    'runs findIndex/some/every/find/filter/map/forEach/flatMap and explicit-initial reduce across carriers, arities, empties, reuse, and shared borrows',
     () => {
       const result = lower(
         'array-callback-native.ts',
@@ -24664,11 +24664,59 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
              count = count + 1;
            });
            return count;
+         }
+         export function flatMapPairs(values: number[]): number[] {
+           return values.flatMap((value: number, index: number): number[] => [value, index]);
+         }
+         export function flatMapLetters(values: string[]): string[] {
+           return values.flatMap((value: string): string[] => [value, value]);
+         }
+         export function flatMapLabels(values: boolean[]): number[] {
+           return values.flatMap((flag: boolean): number[] => flag ? [1] : [0, 0]);
+         }
+         export function flatMapEmpty(values: number[]): number[] {
+           return values.flatMap((): number[] => []);
+         }
+         export function flatMapShared(): number {
+           const values = [1, 2];
+           const alias = values;
+           const pairs = alias.flatMap((value: number): number[] => [value, value]);
+           values.push(3);
+           return pairs.length * 100 + alias.length * 10 + values.length;
+         }
+         export function reduceSum(values: number[]): number {
+           return values.reduce((accumulated: number, value: number, index: number): number => accumulated + value + index, 10);
+         }
+         export function reduceEmpty(values: number[]): number {
+           return values.reduce((accumulated: number, value: number): number => accumulated + value, 7);
+         }
+         export function reduceFlags(values: number[]): boolean {
+           return values.reduce((accumulated: boolean, value: number): boolean => accumulated || value > 0, false);
+         }
+         export function reduceLabels(values: boolean[]): string {
+           return values.reduce((accumulated: string, flag: boolean): string => accumulated + (flag ? "T" : "F"), "");
+         }
+         export function reduceReuse(values: number[]): number {
+           const total = values.reduce((accumulated: number, value: number): number => accumulated + value, 0);
+           return total + values.length;
+         }
+         export function reduceShared(): number {
+           const values = [1, 2];
+           const alias = values;
+           const total = alias.reduce((accumulated: number, value: number): number => accumulated + value, 0);
+           values.push(3);
+           return total * 10 + alias.length;
          }`,
       );
 
       expect(result.diagnostics).toEqual([]);
       const output = emitIrModuleRust(result.module).contents;
+      expect(output).toContain('.iter().enumerate().flat_map(');
+      expect(output).toContain('array_flat_map_');
+      expect(output).toContain('array_reduce_result');
+      expect(output).toContain('array_reduce_initial');
+      expect(output).toContain('drop(array_flat_map_values);');
+      expect(output).toContain('drop(array_reduce_values);');
       runRustSource(
         output,
         [
@@ -24697,6 +24745,19 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
           'assert_eq!(empty_filter(vec![]), 0.0);',
           'assert_eq!(empty_map(vec![]), 0.0);',
           'assert_eq!(empty_each(vec![]), 0.0);',
+          'assert_eq!(flat_map_pairs(vec![1.0, 2.0]), vec![1.0, 0.0, 2.0, 1.0]);',
+          'assert_eq!(flat_map_letters(vec!["a".to_owned(), "b".to_owned()]), vec!["a".to_owned(), "a".to_owned(), "b".to_owned(), "b".to_owned()]);',
+          'assert_eq!(flat_map_labels(vec![true, false]), vec![1.0, 0.0, 0.0]);',
+          'assert_eq!(flat_map_empty(vec![1.0]), Vec::<f64>::new());',
+          'assert_eq!(flat_map_shared(), 433.0);',
+          'assert_eq!(reduce_sum(vec![1.0, 2.0, 3.0]), 19.0);',
+          'assert_eq!(reduce_empty(vec![]), 7.0);',
+          'assert!(reduce_flags(vec![0.0, 2.0]));',
+          'assert!(!reduce_flags(vec![]));',
+          'assert_eq!(reduce_labels(vec![true, false]), "TF".to_owned());',
+          'assert_eq!(reduce_labels(vec![]), "".to_owned());',
+          'assert_eq!(reduce_reuse(vec![1.0, 2.0]), 5.0);',
+          'assert_eq!(reduce_shared(), 33.0);',
         ].join(' '),
       );
     },
