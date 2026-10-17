@@ -4641,7 +4641,7 @@ function getRustOwnedSharedArrayTypeRust(
     }>
   | undefined {
   const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
-  if (resolved.kind !== 'array' || resolved.readonly) return undefined;
+  if (resolved.kind !== 'array') return undefined;
   const element = resolveIrTypeAliasValueRust(resolved.element, context, new Set());
   return element.kind === 'primitive' &&
     (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
@@ -4654,7 +4654,7 @@ function emitOwnedSharedArrayCarrierTypeRust(type: Readonly<IrType>, context: Em
   if (!represented) {
     return emissionRuleError(
       context,
-      'owned shared array ABI requires one mutable closed boolean, number, or string array carrier',
+      'owned shared array ABI requires one closed boolean, number, or string array carrier',
       'rust-reference-shared-array-use-unrepresented',
     );
   }
@@ -14451,7 +14451,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       : variable.type;
   if (context.sharedArrayBindingIds.has(variable.binding.id)) {
     const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
-    if (type?.kind !== 'array' || !variable.initializer) {
+    if (!type || !getRustOwnedSharedArrayTypeRust(type, context) || !variable.initializer) {
       emissionError(
         context,
         `shared array binding ${variable.binding.name} requires an initialized array representation`,
@@ -14471,7 +14471,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
           : isIrSharedArrayIdentityMethodCallRust(variable.initializer, context)
             ? emitExpression(variable.initializer, context)
             : `Rc::new(RefCell::new(${emitOwnedOperandRust(variable.initializer, context)}))`;
-    return `let ${name}: Rc<RefCell<${emitType(type, context)}>> = ${initializer};`;
+    return `let ${name}: ${emitOwnedSharedArrayCarrierTypeRust(type, context)} = ${initializer};`;
   }
   const sharedClassRepresentation = context.sharedClassBindingRepresentations.get(variable.binding.id);
   if (sharedClassRepresentation) {

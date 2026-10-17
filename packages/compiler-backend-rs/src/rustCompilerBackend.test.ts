@@ -1885,6 +1885,137 @@ export function keep(value: number): number { return value + 1; }`;
   });
 });
 
+describe('emitIrModuleRust repeated readonly primitive-array ownership', () => {
+  it('clones handles for repeated and looped calls while borrowing boolean, number, and string arrays to read', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-array-reuse.ts',
+        `type Flags = readonly boolean[];
+         type Numbers = readonly number[];
+         type Labels = readonly string[];
+         function firstNumber(): number { return 1; }
+         function secondNumber(): number { return 2; }
+         function flagCount(values: Flags): number { return values.length; }
+         function numberCount(values: Numbers): number { return values.length; }
+         function labelCount(values: Labels): number { return values.length; }
+         export function summarize(flags: Flags, numbers: Numbers, labels: Labels): number {
+           let total = numberCount([firstNumber(), secondNumber()]);
+           total += numberCount(numbers) + numberCount(numbers) + labelCount(labels) + labelCount(labels);
+           for (let index = 0; index < 2; index += 1) total += flagCount(flags);
+           return total;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn flag_count(values: Rc<RefCell<Vec<bool>>>) -> f64');
+    expect(output).toContain('fn number_count(values: Rc<RefCell<Vec<f64>>>) -> f64');
+    expect(output).toContain('fn label_count(values: Rc<RefCell<Vec<String>>>) -> f64');
+    expect(output).toContain(
+      'pub fn summarize(flags: Rc<RefCell<Vec<bool>>>, numbers: Rc<RefCell<Vec<f64>>>, labels: Rc<RefCell<Vec<String>>>) -> f64',
+    );
+    expect(output.match(/values\.borrow\(\)\.len\(\)/gu)).toHaveLength(3);
+    expect(output.match(/number_count\(Rc::clone\(&numbers\)\)/gu)).toHaveLength(2);
+    expect(output.match(/label_count\(Rc::clone\(&labels\)\)/gu)).toHaveLength(2);
+    expect(output).toContain('flag_count(Rc::clone(&flags))');
+    expect(output).toContain('number_count(Rc::new(RefCell::new(vec![first_number(), second_number()])))');
+  });
+
+  it('wraps a closed local readonly alias once before cloning its handle', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-array-local-alias.ts',
+        `type Values = readonly number[];
+         function count(values: Values): number { return values.length; }
+         export function report(): number {
+           const values: Values = [1, 2];
+           return count(values) + count(values);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn count(values: Rc<RefCell<Vec<f64>>>) -> f64');
+    expect(output).toContain('let values: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(vec![1.0, 2.0]));');
+    expect(output.match(/count\(Rc::clone\(&values\)\)/gu)).toHaveLength(2);
+    expect(output.match(/Rc::new\(RefCell::new\(vec!\[1\.0, 2\.0\]\)\)/gu)).toHaveLength(1);
+  });
+
+  it('uses the same shared-owner ABI on both sides of one exact named import', () => {
+    const provider = lower(
+      'readonly-array-provider.ts',
+      'export function count(values: readonly number[]): number { return values.length; }',
+    ).module;
+    const consumer = lower(
+      'readonly-array-consumer.ts',
+      `import { count } from './readonly-array-provider.js';
+       export function report(values: readonly number[]): number {
+         count(values);
+         count(values);
+         return 0;
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          specifier: './readonly-array-provider.js',
+          target: getRustTestModuleIdentity(provider),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn count(values: Rc<RefCell<Vec<f64>>>) -> f64');
+    expect(providerOutput).toContain('values.borrow().len() as f64');
+    expect(consumerOutput).toContain('pub fn report(values: Rc<RefCell<Vec<f64>>>) -> f64');
+    expect(consumerOutput.match(/count\(Rc::clone\(&values\)\)/gu)).toHaveLength(2);
+  });
+
+  it('keeps an ineligible component on the existing deep-clone refusal', () => {
+    const module = lower(
+      'readonly-array-retained.ts',
+      `function count(values: readonly number[]): number {
+         const holder = { values };
+         return holder.values.length;
+       }
+       export function report(values: readonly number[]): number { return count(values) + count(values); }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-shared-identity-deep-clone-unrepresented');
+  });
+
+  it('keeps unresolved direct-call precedence ahead of readonly reuse', () => {
+    const module = lower(
+      'readonly-array-unresolved.ts',
+      `import { count } from './missing.js';
+       export function report(values: readonly number[]): number { return count(values) + count(values); }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-array-call-target-unresolved');
+  });
+
+  it.skip('runs the repeated readonly handle-sharing witness', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-array-native-witness.ts',
+        `function count(values: readonly number[]): number { return values.length; }
+         export function report(values: readonly number[]): number { return count(values) + count(values); }`,
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSource(output, 'assert_eq!(report(Rc::new(RefCell::new(vec![1.0, 2.0]))), 4.0);'),
+    ).not.toThrow();
+  });
+});
+
 describe('emitIrModuleRust', () => {
   it('constructs named structural records and fills optional fields explicitly', () => {
     const result = lower(

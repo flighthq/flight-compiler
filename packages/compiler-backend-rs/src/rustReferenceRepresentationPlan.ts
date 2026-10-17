@@ -32,6 +32,7 @@ import type {
 } from '../../compiler-types/src/index.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
+  collectIrModuleMovedBindingIdsRust,
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
 
@@ -246,6 +247,7 @@ interface RustSharedArrayIdentityVariableRecord {
 }
 
 interface RustSharedArrayIdentityGraph {
+  readonly arrayKind: 'mutable' | 'readonly';
   readonly bindingNodes: Map<string, RustSharedArrayIdentityNode>;
   readonly edges: Map<string, Set<string>>;
   readonly issues: Map<string, RustSharedArrayIdentityIssue[]>;
@@ -267,6 +269,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   }
   const modules = createRustReferenceModuleRecords(input.modules, input.moduleResolution);
   activateRustSharedArrayTupleIdentityClosure(modules, input.moduleResolution);
+  activateRustRepeatedReadonlyArrayIdentityClosure(modules, input.moduleResolution);
   collectRustReferenceClassMethodParameterMutations(modules, input.moduleResolution);
   propagateRustReferenceArrayParameterMutation(modules, input.moduleResolution);
   propagateRustReferenceClassParameterMutation(modules, input.moduleResolution);
@@ -1460,11 +1463,155 @@ function isRustSharedArrayTupleCallableBoundaryUse(
   return false;
 }
 
+function activateRustRepeatedReadonlyArrayIdentityClosure(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  const graph = createRustSharedArrayIdentityGraph(modules, moduleResolution, 'readonly');
+  const considered = new Set<string>();
+  for (const module of [...modules].sort((left, right) =>
+    compareTextCodeUnits(moduleKey(left.module), moduleKey(right.module)),
+  )) {
+    const movedBindingIds = collectIrModuleMovedBindingIdsRust(module.module);
+    for (const { call } of module.calls) {
+      const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
+      if (target.kind !== 'function') continue;
+      for (const [position, parameter] of target.function.declaration.parameters.entries()) {
+        const primitiveName = getRustSharedArrayIdentityPrimitiveName(parameter.type, target.module.module, 'readonly');
+        if (!primitiveName) continue;
+        const argument = call.arguments[position];
+        if (
+          argument?.kind !== 'identifier' ||
+          argument.reference.kind !== 'binding' ||
+          !movedBindingIds.has(argument.reference.binding.id)
+        ) {
+          continue;
+        }
+        const source = graph.bindingNodes.get(
+          getRustSharedArrayIdentityBindingKey(module, argument.reference.binding.id),
+        );
+        const parameterNode = graph.nodes.get(
+          getRustSharedArrayIdentityParameterKey(target.module, target.function, position),
+        );
+        if (
+          source?.primitiveName !== primitiveName ||
+          parameterNode?.kind !== 'parameter' ||
+          considered.has(parameterNode.key)
+        ) {
+          continue;
+        }
+        const closure = collectRustSharedArrayIdentityComponent(graph, parameterNode);
+        for (const node of closure.nodes) considered.add(node.key);
+        if (
+          closure.issue ||
+          closure.nodes.some(
+            (node) =>
+              isRustSharedArrayIdentityNodeAlreadyPlanned(node) ||
+              !isRustRepeatedReadonlyArrayIdentityNodeEligible(graph, node, moduleResolution),
+          )
+        ) {
+          continue;
+        }
+        commitRustSharedArrayIdentityNodes(closure.nodes);
+      }
+    }
+  }
+}
+
+function isRustRepeatedReadonlyArrayIdentityNodeEligible(
+  graph: RustSharedArrayIdentityGraph,
+  node: RustSharedArrayIdentityNode,
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  if (node.kind === 'return') return false;
+  const evidence = node.module.ownership.bindings.find((candidate) => candidate.binding.id === node.binding.id);
+  if (
+    !evidence ||
+    evidence.binding.scope === 'module' ||
+    evidence.mutation !== 'none' ||
+    evidence.boundaries.some(
+      (boundary) => boundary === 'closureCapture' || boundary === 'structuralRecord' || boundary === 'suspension',
+    )
+  ) {
+    return false;
+  }
+  return evidence.uses.every((use) => {
+    if (use.kind !== 'read') return false;
+    const expression = getIrModuleTraversalPathValue(node.module.module, use.path);
+    return (
+      isIrExpressionValue(expression) &&
+      expression.kind === 'identifier' &&
+      expression.reference.kind === 'binding' &&
+      expression.reference.binding.id === node.binding.id &&
+      isRustRepeatedReadonlyArrayIdentifierUseEligible(graph, node.module, expression, use.path, moduleResolution)
+    );
+  });
+}
+
+function isRustRepeatedReadonlyArrayIdentifierUseEligible(
+  graph: RustSharedArrayIdentityGraph,
+  module: RustReferenceModuleRecord,
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  path_: CompilerIrTraversalPath,
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  if (expression.reference.kind !== 'binding') return false;
+  const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
+  const final = path_.at(-1);
+  if (final === 'object' && isIrExpressionValue(parent)) {
+    if (parent.kind === 'element') return !parent.optional;
+    if (parent.kind !== 'property' || parent.optional || parent.member?.receiver !== 'array') return false;
+    if (parent.name === 'length') return true;
+    const propertyPath = path_.slice(0, -1);
+    const call =
+      propertyPath.at(-1) === 'callee'
+        ? getIrModuleTraversalPathValue(module.module, propertyPath.slice(0, -1))
+        : undefined;
+    return (
+      isCallExpression(call) &&
+      RUST_SHARED_ARRAY_METHODS.has(parent.name) &&
+      !RUST_SHARED_ARRAY_MUTATING_METHODS.has(parent.name)
+    );
+  }
+  if (path_.at(-2) !== 'arguments' || typeof final !== 'number') return false;
+  const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
+  if (!isCallExpression(call)) return false;
+  const target = resolveRustReferenceCallTarget(call, module, graph.modules, moduleResolution);
+  if (target.kind !== 'function' || getRustSharedArrayIdentityCallShapeReason(call, target.function.declaration)) {
+    return false;
+  }
+  const parameter = target.function.declaration.parameters[final];
+  const primitiveName = parameter
+    ? getRustSharedArrayIdentityPrimitiveName(parameter.type, target.module.module, 'readonly')
+    : undefined;
+  const source = graph.bindingNodes.get(getRustSharedArrayIdentityBindingKey(module, expression.reference.binding.id));
+  const targetNode = graph.nodes.get(getRustSharedArrayIdentityParameterKey(target.module, target.function, final));
+  return (
+    primitiveName !== undefined &&
+    source?.primitiveName === primitiveName &&
+    targetNode?.primitiveName === primitiveName
+  );
+}
+
+function isRustSharedArrayIdentityNodeAlreadyPlanned(node: RustSharedArrayIdentityNode): boolean {
+  if (node.kind === 'binding') return node.module.sharedArrays.bindingIds.has(node.binding.id);
+  if (node.kind === 'return') {
+    return node.module.sharedArrayCallables.returnFunctionIds.has(node.function.declaration.binding.id);
+  }
+  return (
+    (node.module.sharedArrayCallables.parameterPositionsByFunctionId
+      .get(node.function.declaration.binding.id)
+      ?.has(node.position) ??
+      false) ||
+    getRustReferenceArrayMutationPositions(node.function).has(node.position)
+  );
+}
+
 function activateRustSharedArrayTupleIdentityClosure(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): void {
-  const graph = createRustSharedArrayIdentityGraph(modules, moduleResolution);
+  const graph = createRustSharedArrayIdentityGraph(modules, moduleResolution, 'mutable');
   for (const module of [...modules].sort((left, right) =>
     compareTextCodeUnits(moduleKey(left.module), moduleKey(right.module)),
   )) {
@@ -1539,6 +1686,7 @@ function activateRustSharedArrayTupleIdentityClosure(
 function createRustSharedArrayIdentityGraph(
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  arrayKind: RustSharedArrayIdentityGraph['arrayKind'],
 ): RustSharedArrayIdentityGraph {
   const nodes = new Map<string, RustSharedArrayIdentityNode>();
   const bindingNodes = new Map<string, RustSharedArrayIdentityNode>();
@@ -1550,7 +1698,7 @@ function createRustSharedArrayIdentityGraph(
     for (const function_ of module.functions) {
       const owner = function_.declaration.binding;
       for (const [position, parameter] of function_.declaration.parameters.entries()) {
-        const primitiveName = getRustSharedArrayIdentityPrimitiveName(parameter.type, module.module);
+        const primitiveName = getRustSharedArrayIdentityPrimitiveName(parameter.type, module.module, arrayKind);
         if (!primitiveName) continue;
         const node: RustSharedArrayIdentityNode = {
           binding: parameter.binding,
@@ -1565,7 +1713,11 @@ function createRustSharedArrayIdentityGraph(
         nodes.set(node.key, node);
         bindingNodes.set(getRustSharedArrayIdentityBindingKey(module, parameter.binding.id), node);
       }
-      const primitiveName = getRustSharedArrayIdentityPrimitiveName(function_.declaration.returns, module.module);
+      const primitiveName = getRustSharedArrayIdentityPrimitiveName(
+        function_.declaration.returns,
+        module.module,
+        arrayKind,
+      );
       if (primitiveName) {
         const node: RustSharedArrayIdentityNode = {
           function: function_,
@@ -1588,6 +1740,7 @@ function createRustSharedArrayIdentityGraph(
         const primitiveName = getRustSharedArrayIdentityPrimitiveName(
           module.bindingTypes.get(variable.binding.id),
           module.module,
+          arrayKind,
         );
         if (!primitiveName) return;
         const node: RustSharedArrayIdentityNode = {
@@ -1605,7 +1758,15 @@ function createRustSharedArrayIdentityGraph(
     });
   }
 
-  const graph: RustSharedArrayIdentityGraph = { bindingNodes, edges, issues, modules, nodes, variables };
+  const graph: RustSharedArrayIdentityGraph = {
+    arrayKind,
+    bindingNodes,
+    edges,
+    issues,
+    modules,
+    nodes,
+    variables,
+  };
   for (const node of nodes.values()) {
     if (node.kind === 'binding') {
       addRustSharedArrayIdentityBindingRelations(graph, node, moduleResolution);
@@ -1910,7 +2071,7 @@ function resolveRustSharedArrayIdentitySource(
 ): RustSharedArrayIdentitySource {
   if (expression.kind === 'array') {
     const actual = expression.type
-      ? getRustSharedArrayIdentityPrimitiveName(expression.type, module.module)
+      ? getRustSharedArrayIdentityPrimitiveName(expression.type, module.module, graph.arrayKind)
       : primitiveName;
     return actual === primitiveName &&
       expression.elements.every((element) => element !== undefined && element.kind !== 'spread')
@@ -2056,10 +2217,11 @@ function commitRustSharedArrayIdentityNodes(nodes: Iterable<RustSharedArrayIdent
 function getRustSharedArrayIdentityPrimitiveName(
   type: Readonly<IrType> | undefined,
   module: Readonly<IrModule>,
+  arrayKind: RustSharedArrayIdentityGraph['arrayKind'],
 ): RustSharedArrayPrimitiveName | undefined {
   if (!type) return undefined;
   const array = resolveRustClosedLocalTypeAliasShape(type, module, new Set());
-  if (array?.kind !== 'array' || array.readonly) return undefined;
+  if (array?.kind !== 'array' || array.readonly !== (arrayKind === 'readonly')) return undefined;
   const element = resolveRustClosedLocalTypeAliasShape(array.element, module, new Set());
   return element?.kind === 'primitive' &&
     (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
