@@ -2,11 +2,11 @@
 #![forbid(unsafe_code)]
 
 pub fn filter_above(values: Vec<f64>, threshold: f64) -> Vec<f64> {
-  return { let array_filter_receiver = &values; let mut array_filter_callback = |v| v > threshold; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
+  return { let array_filter_receiver = &values; let mut array_filter_callback = |v| v > threshold; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|&(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
 }
 
 pub fn find_first(values: Vec<f64>, threshold: f64) -> f64 {
-  let found: Option<f64> = { let array_find_receiver = &values; let mut array_find_callback = |v| v > threshold; let array_find_values = array_find_receiver; let array_find_result = array_find_values.iter().enumerate().find(|(array_find_index, array_find_element)| (array_find_callback)(array_find_element.clone())).map(|(_index, element)| element.clone()); array_find_result };
+  let found: Option<f64> = { let array_find_receiver = &values; let mut array_find_callback = |v| v > threshold; let array_find_values = array_find_receiver; let array_find_result = array_find_values.iter().enumerate().find(|&(array_find_index, array_find_element)| (array_find_callback)(array_find_element.clone())).map(|(_index, element)| element.clone()); array_find_result };
   if found.is_none() {
     return -1.0;
   }

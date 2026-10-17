@@ -6,7 +6,7 @@ pub fn doubled(values: Vec<f64>) -> Vec<f64> {
 }
 
 pub fn positives(values: Vec<f64>) -> Vec<f64> {
-  return { let array_filter_receiver = &values; let mut array_filter_callback = |value| value > 0.0; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
+  return { let array_filter_receiver = &values; let mut array_filter_callback = |value| value > 0.0; let array_filter_values = array_filter_receiver; let array_filter_result = array_filter_values.iter().enumerate().filter(|&(array_filter_index, array_filter_element)| (array_filter_callback)(array_filter_element.clone())).map(|(_index, element)| element.clone()).collect::<Vec<_>>(); array_filter_result };
 }
 
 pub fn shout(text: String) -> String {
