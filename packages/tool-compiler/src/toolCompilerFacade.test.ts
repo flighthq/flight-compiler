@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -15,10 +15,20 @@ import type { CompilerRustPublicBindingPlan, EmittedFile } from './index.js';
 
 const rustcAvailable = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0;
 
+// A finalized source tree is not flat: a directory index lands at `geometry/mod.rs` beside its
+// children, so staging has to create the parent directories the plan decided on.
+function writeFinalizedRustSourceTree(directory: string, files: readonly Readonly<EmittedFile>[]): void {
+  for (const file of files) {
+    const target = path.join(directory, file.path);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, file.contents);
+  }
+}
+
 function compileFinalizedRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-public-linking-'));
   try {
-    for (const file of files) writeFileSync(path.join(directory, file.path), file.contents);
+    writeFinalizedRustSourceTree(directory, files);
     const build = spawnSync(
       'rustc',
       [
@@ -576,6 +586,21 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     expect(first.report.bestEffort?.modules).toContainEqual(
       expect.objectContaining({ path: 'geometry/tools.rs', status: 'emitted' }),
     );
+  });
+
+  it('stages nested finalized paths when writing a Rust source tree', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-tree-staging-'));
+    try {
+      writeFinalizedRustSourceTree(directory, [
+        { contents: 'pub mod tools;\n', path: 'geometry/mod.rs' },
+        { contents: 'pub const answer: f64 = 1.0;\n', path: 'geometry/tools.rs' },
+      ]);
+
+      expect(readFileSync(path.join(directory, 'geometry/mod.rs'), 'utf8')).toBe('pub mod tools;\n');
+      expect(readFileSync(path.join(directory, 'geometry/tools.rs'), 'utf8')).toContain('answer');
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it.skipIf(!rustcAvailable)(
