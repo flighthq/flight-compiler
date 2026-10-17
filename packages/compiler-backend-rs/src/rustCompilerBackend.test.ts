@@ -9465,26 +9465,42 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   });
 
   it('refuses regexp expressions before lowering', () => {
-    const result = lower('regexp.ts', 'export const x: number = 1;');
+    const result = lower('regexp.ts', 'export function x(): number { return 1; }');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
-    if (decl?.kind === 'variable' && !('pattern' in decl)) {
-      (decl as unknown as { initializer: unknown }).initializer = { kind: 'regexp', pattern: 'test', flags: '' };
+    const statement = decl?.kind === 'function' ? decl.body[0] : undefined;
+    if (statement?.kind === 'return') {
+      (statement as unknown as { expression: unknown }).expression = { kind: 'regexp', pattern: 'test', flags: '' };
     }
-    expect(() => emitIrModuleRust(module)).toThrow('regular expressions');
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    expect(failure.rule).toBeUndefined();
+    expect(failure.message).toContain('regular expressions require a downstream standard-library mapping');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.packageName).toBe('@flighthq/math');
+    expect(failure.source).toBe('packages/math/src/regexp.ts');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
   });
 
   it('refuses spread expressions in non-Math contexts', () => {
-    const result = lower('spread.ts', 'export const x: number = 1;');
+    const result = lower('spread.ts', 'export function x(): number { return 1; }');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
-    if (decl?.kind === 'variable' && !('pattern' in decl)) {
-      (decl as unknown as { initializer: unknown }).initializer = {
+    const statement = decl?.kind === 'function' ? decl.body[0] : undefined;
+    if (statement?.kind === 'return') {
+      (statement as unknown as { expression: unknown }).expression = {
         kind: 'spread',
         expression: { kind: 'literal', value: 1 },
       };
     }
-    expect(() => emitIrModuleRust(module)).toThrow('spreading');
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    expect(failure.rule).toBeUndefined();
+    expect(failure.message).toContain('spreading an unbounded collection requires a fold or a variadic target');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.packageName).toBe('@flighthq/math');
+    expect(failure.source).toBe('packages/math/src/spread.ts');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
   });
 
   it('refuses class constructor with this reference on right side', () => {
