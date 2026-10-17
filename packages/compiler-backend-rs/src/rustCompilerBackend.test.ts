@@ -543,8 +543,8 @@ describe('createRustCompilerBackend', () => {
 
   it('falls back to the comment stub for a module-wide refusal that leaves nothing declaration-local', () => {
     const module = lower(
-      'string-wide.ts',
-      `export function lengthOf(value: string): number { return value.length; }
+      'array-wide.ts',
+      `export function sortAll(values: number[]): number[] { return values.sort(); }
        export function keep(value: number): number { return value + 1; }`,
     ).module;
     const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
@@ -554,8 +554,8 @@ describe('createRustCompilerBackend', () => {
       placeholderModules: [module],
       refusals: [
         {
-          code: 'rust-string-utf16-length-unrepresented',
-          message: 'string.length requires JavaScript UTF-16 code-unit counting',
+          code: 'rust-array-sort-default-order-unrepresented',
+          message: 'array.sort without a comparator requires JavaScript default order',
           module: getRustTestModuleIdentity(module),
         },
       ],
@@ -564,16 +564,142 @@ describe('createRustCompilerBackend', () => {
     if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
     const placeholder = emitPlaceholder(module, {
       classification: 'compiler-restriction',
-      message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
-      rule: 'rust-string-utf16-length-unrepresented',
+      message: 'array.sort without a comparator requires JavaScript default order',
+      rule: 'rust-array-sort-default-order-unrepresented',
     });
     if (!placeholder) throw new Error('expected a comment stub for the module-wide refusal');
 
     expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
-    expect(placeholder.contents).toContain('refusal: rust-string-utf16-length-unrepresented [compiler-restriction]');
+    expect(placeholder.contents).toContain(
+      'refusal: rust-array-sort-default-order-unrepresented [compiler-restriction]',
+    );
     expect(placeholder.contents).toContain('//   function keep(value: number): number -- :2');
     expect(placeholder.contents).not.toContain('pub fn keep');
     expect(placeholder.contents).not.toContain('// PARTIAL:');
+  });
+
+  it.each([
+    {
+      member: 'length',
+      rule: 'rust-string-utf16-length-unrepresented',
+      source:
+        'export function sensitive(s: string): number { return s.length; }\nexport function keep(value: number): number { return value + 1; }',
+    },
+    {
+      member: 'charAt',
+      rule: 'rust-string-utf16-index-unrepresented',
+      source:
+        'export function sensitive(s: string): string { return s.charAt(0); }\nexport function keep(value: number): number { return value + 1; }',
+    },
+    {
+      member: 'charCodeAt',
+      rule: 'rust-string-utf16-index-unrepresented',
+      source:
+        'export function sensitive(s: string): number { return s.charCodeAt(0); }\nexport function keep(value: number): number { return value + 1; }',
+    },
+    {
+      member: 'slice',
+      rule: 'rust-string-utf16-range-unrepresented',
+      source:
+        'export function sensitive(s: string): string { return s.slice(0, 1); }\nexport function keep(value: number): number { return value + 1; }',
+    },
+    {
+      member: 'substring',
+      rule: 'rust-string-utf16-range-unrepresented',
+      source:
+        'export function sensitive(s: string): string { return s.substring(0, 1); }\nexport function keep(value: number): number { return value + 1; }',
+    },
+  ] as const)('salvages a supported sibling around a UTF-16 $member refusal', ({ member, rule, source }) => {
+    const module = lower(`string-salvage-${member}.ts`, source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        { code: rule, message: `string.${member} refused for the witness`, module: getRustTestModuleIdentity(module) },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      message: `string.${member} refused for the witness`,
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function sensitive -- source line 1');
+    expect(placeholder.contents).toContain(`// refusal: ${rule} [target-runtime]`);
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+    expect(placeholder.contents).not.toContain('pub fn sensitive');
+    expect(
+      emitPlaceholder(module, { message: `string.${member} refused for the witness`, sourceText: source }),
+    ).toEqual(placeholder);
+  });
+
+  it('attributes UTF-16 refusals per declaration with the strict sorted family selection', () => {
+    const source = `export function sizes(s: string): number { return s.length + s.charCodeAt(0); }
+export function ranges(s: string): string { return s.slice(0, 1); }
+export function keep(value: number): number { return value + 1; }`;
+    const module = lower('string-declarations.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-string-utf16-index-unrepresented',
+          message: 'string refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'string refused', sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    // The first declaration contains both length and charCodeAt; the sorted selection picks the index
+    // rule, exactly as the strict scan would for that declaration's own uses.
+    expect(placeholder.contents).toContain('// NOT GENERATED: function sizes -- source line 1');
+    expect(placeholder.contents).toContain('// refusal: rust-string-utf16-index-unrepresented [target-runtime]');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function ranges -- source line 2');
+    expect(placeholder.contents).toContain('// refusal: rust-string-utf16-range-unrepresented [target-runtime]');
+    expect(placeholder.contents.indexOf('// NOT GENERATED: function sizes')).toBeLessThan(
+      placeholder.contents.indexOf('// NOT GENERATED: function ranges'),
+    );
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
+  });
+
+  it('attributes a namespace-member UTF-16 use to the enum that emits it', () => {
+    const source = `export enum Kind { A = 0 }
+export namespace Kind { export function size(s: string): number { return s.length; } }
+export function keep(value: number): number { return value + 1; }`;
+    const result = lower('string-namespace.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [result.module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([result.module]),
+      moduleFiles: [],
+      placeholderModules: [result.module],
+      refusals: [
+        {
+          code: 'rust-string-utf16-length-unrepresented',
+          message: 'string refused',
+          module: getRustTestModuleIdentity(result.module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(result.module, { message: 'string refused', sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: enum Kind -- source line 1');
+    expect(placeholder.contents).toContain('// refusal: rust-string-utf16-length-unrepresented [target-runtime]');
+    expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
   });
 
   it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {
@@ -1299,6 +1425,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain(`string.${member}`);
     expect(failure.rule).toBe(rule);
+    expect(failure.line).toBeUndefined();
+    expect(failure.column).toBeUndefined();
   });
 
   it('chooses UTF-16 string refusals independently of source traversal order', () => {

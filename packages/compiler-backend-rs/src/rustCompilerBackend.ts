@@ -650,7 +650,9 @@ function emitIrModuleRustWithContext(
   assertRuntimeExternalBindingRepresentationsRust(module, options);
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
-  assertStringMemberSemanticsRust(module);
+  // Strict and ordinary emission keep the whole-module scan, whose sorted selection is required to
+  // be independent of declaration order. Only a salvaging caller defers it to declaration attribution.
+  if (salvage === undefined) assertStringMemberSemanticsRust(module);
   const arrayBoundsPlan = createRustArrayBoundsPlan(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
@@ -1002,12 +1004,14 @@ function emitIrModuleRustWithContext(
   assertArrayOperationSemanticsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
+  const stringRefusalsByDeclaration =
+    salvage === undefined ? undefined : collectRustStringMemberRefusalsByDeclarationRust(module);
   const declarations = module.declarations
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) =>
       salvage === undefined
         ? emitDeclaration(declaration, context)
-        : emitSalvagedDeclarationRust(declaration, context, salvage),
+        : emitSalvagedDeclarationRust(declaration, context, salvage, stringRefusalsByDeclaration?.get(declaration)),
     );
   if (salvage !== undefined && salvage.failures.length > 0) {
     // The banner follows the generated header and the crate's inner attribute, before anything that
@@ -14611,48 +14615,117 @@ function assertStringMemberSemanticsRust(module: Readonly<IrModule>): void {
   const refusals: RustStringMemberSemanticsRefusal[] = [];
   analyzeIrModuleTraversal(module, {
     expression(expression) {
-      if (
-        expression.kind === 'property' &&
-        expression.member?.receiver === 'string' &&
-        expression.member.name === 'length'
-      ) {
-        refusals.push({
-          member: 'length',
-          message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
-          rule: 'rust-string-utf16-length-unrepresented',
-        });
-        return;
-      }
-      if (
-        expression.kind !== 'call' ||
-        expression.callee.kind !== 'property' ||
-        expression.callee.member?.receiver !== 'string'
-      ) {
-        return;
-      }
-      const member = expression.callee.member.name;
-      if (member === 'charAt' || member === 'charCodeAt') {
-        refusals.push({
-          member,
-          message: `string.${member} requires JavaScript UTF-16 code-unit indexing, including surrogate halves; Rust chars index Unicode scalars`,
-          rule: 'rust-string-utf16-index-unrepresented',
-        });
-      } else if (member === 'slice' || member === 'substring') {
-        refusals.push({
-          member,
-          message: `string.${member} requires JavaScript UTF-16 code-unit indexing and range normalization before Rust emission`,
-          rule: 'rust-string-utf16-range-unrepresented',
-        });
-      }
+      const refusal = getRustStringMemberSemanticsRefusalRust(expression);
+      if (refusal) refusals.push(refusal);
     },
   });
-  const refusal = refusals.sort((left, right) =>
-    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
-  )[0];
+  const refusal = sortRustStringMemberSemanticsRefusalsRust(refusals)[0];
   if (!refusal) return;
   throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
     classification: 'target-runtime',
   });
+}
+
+// The one predicate both the strict whole-module scan and the salvage attribution share. Keeping it
+// single-sourced is what guarantees strict messages and rule text cannot drift from what a salvaged
+// declaration records.
+function getRustStringMemberSemanticsRefusalRust(
+  expression: Readonly<IrExpression>,
+): RustStringMemberSemanticsRefusal | undefined {
+  if (
+    expression.kind === 'property' &&
+    expression.member?.receiver === 'string' &&
+    expression.member.name === 'length'
+  ) {
+    return {
+      member: 'length',
+      message: 'string.length requires JavaScript UTF-16 code-unit counting; Rust String::len counts UTF-8 bytes',
+      rule: 'rust-string-utf16-length-unrepresented',
+    };
+  }
+  if (
+    expression.kind !== 'call' ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'string'
+  ) {
+    return undefined;
+  }
+  const member = expression.callee.member.name;
+  if (member === 'charAt' || member === 'charCodeAt') {
+    return {
+      member,
+      message: `string.${member} requires JavaScript UTF-16 code-unit indexing, including surrogate halves; Rust chars index Unicode scalars`,
+      rule: 'rust-string-utf16-index-unrepresented',
+    };
+  }
+  if (member === 'slice' || member === 'substring') {
+    return {
+      member,
+      message: `string.${member} requires JavaScript UTF-16 code-unit indexing and range normalization before Rust emission`,
+      rule: 'rust-string-utf16-range-unrepresented',
+    };
+  }
+  return undefined;
+}
+
+function sortRustStringMemberSemanticsRefusalsRust(
+  refusals: readonly Readonly<RustStringMemberSemanticsRefusal>[],
+): readonly Readonly<RustStringMemberSemanticsRefusal>[] {
+  return [...refusals].sort((left, right) =>
+    compareTextCodeUnits(`${left.rule}\u0000${left.member}`, `${right.rule}\u0000${right.member}`),
+  );
+}
+
+// Which emitted declaration owns each UTF-16-sensitive use, for a salvaging caller only. The strict
+// scan above stays whole-module so its selection stays order-independent; this map gives the same
+// predicate declaration ownership without changing strict behavior. A use that cannot be tied to an
+// emitted declaration (for example one reached through an export expression) throws the module-level
+// refusal, which makes the session fall back to the comment stub rather than silently keep the use.
+function collectRustStringMemberRefusalsByDeclarationRust(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<IrDeclaration>, readonly Readonly<RustStringMemberSemanticsRefusal>[]> {
+  const namespaceOwners = new Map<string, Readonly<IrDeclaration>>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'enum') continue;
+    for (const namespaceFunction of getIrEnumNamespaceFunctionsRust(declaration, module)) {
+      namespaceOwners.set(namespaceFunction.binding.id, declaration);
+    }
+  }
+  const byDeclaration = new Map<Readonly<IrDeclaration>, RustStringMemberSemanticsRefusal[]>();
+  const all: RustStringMemberSemanticsRefusal[] = [];
+  let unattributable = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path) {
+      const refusal = getRustStringMemberSemanticsRefusalRust(expression);
+      if (!refusal) return;
+      all.push(refusal);
+      const owner =
+        path[0] === 'declarations' && typeof path[1] === 'number' ? module.declarations[path[1]] : undefined;
+      if (owner === undefined) {
+        unattributable = true;
+        return;
+      }
+      const emittedOwner =
+        owner.kind === 'function' && owner.namespaceMember ? namespaceOwners.get(owner.binding.id) : owner;
+      if (emittedOwner === undefined) {
+        unattributable = true;
+        return;
+      }
+      byDeclaration.set(emittedOwner, [...(byDeclaration.get(emittedOwner) ?? []), refusal]);
+    },
+  });
+  if (unattributable) {
+    const refusal = sortRustStringMemberSemanticsRefusalsRust(all)[0]!;
+    throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+      classification: 'target-runtime',
+    });
+  }
+  return new Map(
+    [...byDeclaration.entries()].map(([declaration, refusals]) => [
+      declaration,
+      sortRustStringMemberSemanticsRefusalsRust(refusals),
+    ]),
+  );
 }
 
 function assertRuntimeExternalBindingRepresentationsRust(
@@ -14845,9 +14918,29 @@ function emitSalvagedDeclarationRust(
   declaration: Readonly<IrDeclaration>,
   context: EmitContext,
   salvage: RustSalvageRequest,
+  stringRefusals?: readonly Readonly<RustStringMemberSemanticsRefusal>[] | undefined,
 ): string[] {
   const snapshot = createRustSalvageContextSnapshotRust(context);
   try {
+    // A UTF-16 member refusal is decided per declaration in salvage mode, with the same sorted
+    // rule+member selection the strict scan uses. Throwing it here keeps the classification and
+    // message identical while attributing the omission to the declaration that owns the use.
+    const stringRefusal = stringRefusals?.[0];
+    if (stringRefusal) {
+      throw createBackendEmissionFailure(
+        'rust',
+        context.module,
+        stringRefusal.message,
+        stringRefusal.rule,
+        createRustEmissionFailureMetadata(
+          {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+          },
+          'target-runtime',
+        ),
+      );
+    }
     return emitDeclaration(declaration, context);
   } catch (error) {
     // Only a declared refusal is salvage policy. Anything else -- an invariant, a contract
