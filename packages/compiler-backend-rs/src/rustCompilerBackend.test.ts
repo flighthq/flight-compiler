@@ -4341,6 +4341,82 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('Err(finally_error) => Err(finally_error),');
   });
 
+  it.skipIf(!rustcAvailable)(
+    'runs the combined async checkpoint across native future, catches, finalizer, and rethrow',
+    () => {
+      const output = emitIrModuleRust(
+        lower(
+          'async-checkpoint-runtime.ts',
+          `function mark(value: string, log: string[]): void { log.push(value); }
+           function observedNumber(task: Promise<number>, marker: string, log: string[]): Promise<number> { mark(marker, log); return task; }
+           function observedVoid(task: Promise<void>, marker: string, log: string[]): Promise<void> { mark(marker, log); return task; }
+           function recover(error: string, task: Promise<number>, log: string[]): Promise<number> { mark(error, log); return task; }
+           function observeError(error: string, task: Promise<void>, log: string[]): Promise<void> { mark(error, log); return task; }
+           async function nativeValue(value: number): Promise<number> { return value + 1; }
+           export async function localNative(log: string[]): Promise<number> {
+             mark("local-start", log);
+             const pending = nativeValue(4);
+             mark("local-created", log);
+             const value = await pending;
+             mark("local-awaited", log);
+             return value;
+           }
+           export async function bindingless(primary: Promise<number>, recovery: Promise<number>, log: string[]): Promise<number> {
+             try { mark("bindingless-try", log); return await primary; }
+             catch { mark("bindingless-catch", log); const value = await observedNumber(recovery, "bindingless-recovery", log); mark("bindingless-after", log); return value + 1; }
+             finally { mark("bindingless-finally", log); }
+           }
+           export async function boundSettled(primary: Promise<number>, recovery: Promise<number>, cleanup: Promise<void>, log: string[]): Promise<number> {
+             try { mark("bound-try", log); return primary; }
+             catch (error) { mark("bound-catch", log); const value = await recover(error, recovery, log); mark("bound-after", log); return value + 1; }
+             finally { mark("bound-finally-before", log); await observedVoid(cleanup, "bound-cleanup", log); mark("bound-finally-after", log); }
+           }
+           export async function rethrown(primary: Promise<number>, observer: Promise<void>, cleanup: Promise<void>, log: string[]): Promise<number> {
+             try { mark("rethrow-try", log); return await primary; }
+             catch (error) { mark("rethrow-catch", log); await observeError(error, observer, log); mark("rethrow-after", log); throw error; }
+             finally { mark("rethrow-finally-before", log); await observedVoid(cleanup, "rethrow-cleanup", log); mark("rethrow-finally-after", log); }
+           }`,
+        ).module,
+      ).contents;
+
+      expect(output).toContain('let pending = native_value(4.0);');
+      expect(output).toContain('let value: f64 = pending.await;');
+      expect(output).toContain('Err(finally_error) => Err(finally_error),');
+      expect(() =>
+        runRustSourceAgainstRuntime(
+          output,
+          `let mut native_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
+           assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
+           let mut bindingless_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bindingless(flight_runtime::FlightTask::ready(3.0), flight_runtime::FlightTask::ready(7.0), &mut bindingless_ready_log)), 3.0);
+           assert_eq!(bindingless_ready_log, vec!["bindingless-try".to_owned(), "bindingless-finally".to_owned()]);
+           let mut bindingless_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bindingless(flight_runtime::FlightTask::<f64>::reject("bindingless-original"), flight_runtime::FlightTask::ready(7.0), &mut bindingless_caught_log)), 8.0);
+           assert_eq!(bindingless_caught_log, vec!["bindingless-try".to_owned(), "bindingless-catch".to_owned(), "bindingless-recovery".to_owned(), "bindingless-after".to_owned(), "bindingless-finally".to_owned()]);
+           let mut bound_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(()), &mut bound_ready_log)), 4.0);
+           assert_eq!(bound_ready_log, vec!["bound-try".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           let mut bound_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(()), &mut bound_caught_log)), 7.0);
+           assert_eq!(bound_caught_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           let mut bound_override_log = Vec::new();
+           let bound_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<()>::reject("bound-cleanup-error"), &mut bound_override_log))));
+           assert_eq!(bound_override_log, vec!["bound-try".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned()]);
+           let bound_payload = bound_override.expect_err("awaited finalizer rejection must override a pending return");
+           let bound_message = bound_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_payload.downcast_ref::<&str>().copied());
+           assert_eq!(bound_message, Some("unhandled task rejection: bound-cleanup-error"));
+           let mut rethrow_log = Vec::new();
+           let rethrow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(rethrown(flight_runtime::FlightTask::<f64>::reject("terminal"), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut rethrow_log))));
+           assert_eq!(rethrow_log, vec!["rethrow-try".to_owned(), "rethrow-catch".to_owned(), "terminal".to_owned(), "rethrow-after".to_owned(), "rethrow-finally-before".to_owned(), "rethrow-cleanup".to_owned(), "rethrow-finally-after".to_owned()]);
+           let rethrow_payload = rethrow.expect_err("terminal catch-binding rethrow must survive fulfilled cleanup");
+           let rethrow_message = rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| rethrow_payload.downcast_ref::<&str>().copied());
+           assert_eq!(rethrow_message, Some("unhandled task rejection: terminal"));`,
+        ),
+      ).not.toThrow();
+    },
+  );
+
   it.skipIf(!rustcAvailable)('runs fulfilled and caught deferred returns through finally exactly once', () => {
     const output = emitIrModuleRust(
       lower(
