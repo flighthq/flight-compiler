@@ -9478,6 +9478,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
     expect(output).toContain('alias.borrow_mut().value = 2.0;');
     expect(output).toContain('alias.borrow_mut().label = "changed".to_owned();');
+    expect(output).not.toContain('alias.borrow_mut().label.clone() =');
     expect(output).toContain('values.borrow().value');
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
@@ -9488,13 +9489,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         'optional-undefined-class-local.ts',
         `class Counter {
            value = 1;
+           label = "start";
            increment(amount: number): void { this.value += amount; }
          }
          export function optionalUndefinedClassLocal(flag: boolean): number {
            const required: Counter = new Counter();
            const value: Counter | undefined = flag ? required : undefined;
            const alias: Counter | undefined = value;
-           if (alias !== undefined) { alias.increment(2); alias.value = 4; }
+           if (alias !== undefined) { alias.increment(2); alias.value = 4; alias.label = "done"; }
            return value === undefined ? 0 : value.value;
          }`,
       ).module,
@@ -9505,6 +9507,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('let alias: Option<Rc<RefCell<Counter>>> = value.clone();');
     expect(output).toContain('alias.as_ref().unwrap().borrow_mut().increment(2.0)');
     expect(output).toContain('alias.as_ref().unwrap().borrow_mut().value = 4.0');
+    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().label = "done".to_owned()');
+    expect(output).not.toContain('alias.as_ref().unwrap().borrow_mut().label.clone() =');
     if (rustcAvailable) {
       expect(() =>
         runRustSource(
@@ -9535,6 +9539,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(output).toContain('let value: Option<Rc<RefCell<Counter>>> = if flag');
     expect(output).toContain('let alias: Option<Rc<RefCell<Counter>>> = value.clone();');
+    expect(output).toContain('self.label = label;');
+    expect(output).not.toContain('self.label.clone() = label;');
     expect(output).toContain('alias.as_ref().unwrap().borrow_mut().rename("done".to_owned())');
     expect(output).toContain('value.as_ref().unwrap().borrow().label.clone()');
     if (rustcAvailable) {

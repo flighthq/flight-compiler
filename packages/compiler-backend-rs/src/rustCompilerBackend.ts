@@ -1421,7 +1421,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${emitExpression(expression.left, context)} = Some(${emitOwnedOperandRust(expression.right, context)})`;
         }
       }
-      const left = emitExpression(expression.left, context);
+      const left =
+        expression.operator === '='
+          ? emitAssignmentTargetRust(expression.left, context)
+          : emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
     }
@@ -2150,6 +2153,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `${emitExpression(expression.value, context)}.unwrap_or_else(|| ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitAssignmentTargetRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const emitted = emitExpression(expression, context);
+  if (
+    expression.kind !== 'property' ||
+    expression.object.kind !== 'identifier' ||
+    expression.object.reference.kind !== 'this' ||
+    !emitted.endsWith('.clone()')
+  ) {
+    return emitted;
+  }
+  return emitted.slice(0, -'.clone()'.length);
 }
 
 function emitTypedArrayElementAssignmentRust(
