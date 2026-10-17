@@ -19287,3 +19287,60 @@ describe('emitIrModuleRust import-path refusals', () => {
     expect(rule).toBe(1);
   });
 });
+
+describe('emitIrModuleRust module-variable refusal diagnostics', () => {
+  it('names the missing initializer and type evidence with its own rule', () => {
+    const module = lower('module-variable-evidence.ts', 'export let x: number;').module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-module-variable-initializer-and-type-required');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('module variable x requires an initializer and type');
+    expect(failure.line).toBe(1);
+  });
+
+  it('names mutable module variable synchronization with a distinct rule', () => {
+    const module = lower('module-variable-mutable.ts', 'export let x = 1;').module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-module-variable-synchronization-unsupported');
+    expect(failure.rule).not.toBe('rust-module-variable-initializer-and-type-required');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('mutable module variable x requires synchronization lowering');
+    expect(failure.line).toBe(1);
+  });
+
+  it('emits immutable module bindings without either module-variable refusal', () => {
+    const result = lower(
+      'module-variable-immutable.ts',
+      'export const x: number = 1; const y: number = 2; export function read(): number { return y; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('pub const X: f64 = 1.0;');
+    expect(output).toContain('const Y: f64 = 2.0;');
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBeUndefined();
+  });
+
+  it('leaves the module-array, import-path, source-tree, and binding-allocation diagnostics on their own rules', () => {
+    const moduleArray = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('module-variable-array.ts', 'export const values: number[] = [1, 2];').module),
+    );
+    const externalImport = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower('module-variable-import.ts', `import { helper } from 'some-lib'; export const x = helper;`).module,
+      ),
+    );
+
+    expect(moduleArray.rule).toBe('rust-module-array-value-unrepresented');
+    expect(externalImport.rule).toBe('rust-external-import-unsupported');
+
+    // The two module-variable rules are the only ones these sites may report, and the defensive
+    // source-tree and binding-allocation sites stay message-only by construction.
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    expect(source.split("'rust-module-variable-initializer-and-type-required'").length - 1).toBe(1);
+    expect(source.split("'rust-module-variable-synchronization-unsupported'").length - 1).toBe(1);
+    expect(source.split('has no Rust target name allocation').length - 1).toBe(1);
+    expect(source.split('has no Rust type target resolution').length - 1).toBe(1);
+  });
+});

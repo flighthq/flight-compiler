@@ -7625,10 +7625,19 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
       'rust-binding-pattern-lowering-required',
     );
   if (!declaration.initializer || !declaration.type) {
-    emissionError(context, `module variable ${declaration.binding.name} requires an initializer and type`);
+    emissionRuleError(
+      context,
+      `module variable ${declaration.binding.name} requires an initializer and type`,
+      'rust-module-variable-initializer-and-type-required',
+    );
   }
-  if (declaration.mutable)
-    emissionError(context, `mutable module variable ${declaration.binding.name} requires synchronization lowering`);
+  if (declaration.mutable) {
+    emissionRuleError(
+      context,
+      `mutable module variable ${declaration.binding.name} requires synchronization lowering`,
+      'rust-module-variable-synchronization-unsupported',
+    );
+  }
   return [
     `${declaration.exported ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
