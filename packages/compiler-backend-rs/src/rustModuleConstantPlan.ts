@@ -5,6 +5,7 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleResolutionEdge,
   CompilerModuleResolutionPlan,
+  CompilerRustModuleArrayImportRefusal,
   CompilerRustModuleConstantBindingPlan,
   CompilerRustModuleConstantModulePlan,
   CompilerRustModuleConstantPlan,
@@ -18,7 +19,14 @@ import type {
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 
-type RustNamedModuleConstant = Readonly<IrVariableDeclaration> & Readonly<{ binding: Readonly<IrBindingIdentity> }>;
+type RustNamedModuleVariable = Readonly<IrVariableDeclaration> & Readonly<{ binding: Readonly<IrBindingIdentity> }>;
+
+type RustNamedModuleConstant = RustNamedModuleVariable & Readonly<{ mutable: false }>;
+
+interface RustModuleArrayDeclarationLocation {
+  readonly declaration: RustNamedModuleVariable;
+  readonly module: Readonly<IrModule>;
+}
 
 type RustModuleConstantDecision =
   | Readonly<{ dependencies: readonly string[]; kind: 'accepted'; scalar: CompilerRustModuleConstantScalar }>
@@ -29,6 +37,7 @@ type RustModuleConstantDecision =
     }>;
 
 interface RustModuleConstantPlanningContext {
+  readonly arrayRefusals: ReadonlyMap<string, ReadonlyMap<string, Readonly<CompilerRustModuleConstantRefusal>>>;
   readonly cyclicRuntimeEdges: ReadonlySet<string>;
   readonly moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   readonly modules: readonly Readonly<IrModule>[];
@@ -54,6 +63,7 @@ export function createCompilerRustModuleConstantPlan(
     compareTextCodeUnits(getRustModuleConstantModuleKey(left), getRustModuleConstantModuleKey(right)),
   );
   const context: RustModuleConstantPlanningContext = {
+    arrayRefusals: createRustModuleArrayRefusals(modules),
     cyclicRuntimeEdges: collectCyclicRustModuleConstantRuntimeEdges(modules, input.moduleResolution),
     moduleResolution: input.moduleResolution,
     modules,
@@ -64,6 +74,70 @@ export function createCompilerRustModuleConstantPlan(
   return cloneAndFreezeRustModuleConstantPlan({ modules: plans, schema: 'flight-rust-module-constant-plan/1' });
 }
 
+function createRustModuleArrayRefusals(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, ReadonlyMap<string, Readonly<CompilerRustModuleConstantRefusal>>> {
+  return new Map(
+    modules.map((module) => [
+      getRustModuleConstantModuleKey(module),
+      new Map(
+        module.declarations.flatMap((declaration, index) => {
+          if (!isRustNamedModuleVariable(declaration) || !isRustModuleArrayIdentity(declaration)) return [];
+          const refusal: CompilerRustModuleConstantRefusal = {
+            bindingId: declaration.binding.id,
+            code: 'rust-module-array-value-unrepresented',
+            declarationPath: ['declarations', index],
+            message: `module array value ${declaration.binding.name} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
+            reason: 'array-identity',
+          };
+          return [[declaration.binding.id, refusal] as const];
+        }),
+      ),
+    ]),
+  );
+}
+
+function createRustModuleArrayImportRefusals(
+  module: Readonly<IrModule>,
+  context: RustModuleConstantPlanningContext,
+): readonly CompilerRustModuleArrayImportRefusal[] {
+  return module.imports.flatMap((imported, importIndex) => {
+    if (imported.typeOnly) return [];
+    return imported.bindings.flatMap((binding, bindingIndex): CompilerRustModuleArrayImportRefusal[] => {
+      if (binding.typeOnly || binding.imported === '*' || binding.imported === 'default') return [];
+      const target = resolveRustModuleArrayImportModule(
+        module,
+        imported.specifier,
+        binding.imported,
+        context.modules,
+        context.moduleResolution,
+      );
+      const provider = target
+        ? resolveRustModuleArrayDeclaration(target, binding.imported, context, new Set())
+        : undefined;
+      if (
+        !provider ||
+        !context.arrayRefusals
+          .get(getRustModuleConstantModuleKey(provider.module))
+          ?.has(provider.declaration.binding.id)
+      ) {
+        return [];
+      }
+      return [
+        {
+          bindingId: binding.binding.id,
+          code: 'rust-module-array-value-unrepresented',
+          importPath: ['imports', importIndex, 'bindings', bindingIndex],
+          message: `imported module array value ${binding.imported} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
+          providerBindingId: provider.declaration.binding.id,
+          providerModule: cloneRustModuleConstantIdentity(provider.module),
+          reason: 'array-identity',
+        },
+      ];
+    });
+  });
+}
+
 function createRustModuleConstantModulePlan(
   module: Readonly<IrModule>,
   context: RustModuleConstantPlanningContext,
@@ -72,7 +146,7 @@ function createRustModuleConstantModulePlan(
   const existing = context.plans.get(key);
   if (existing) return existing;
   if (context.planning.has(key)) {
-    return { bindings: [], module: cloneRustModuleConstantIdentity(module), refusals: [] };
+    return { bindings: [], importRefusals: [], module: cloneRustModuleConstantIdentity(module), refusals: [] };
   }
   context.planning.add(key);
   const bindings: CompilerRustModuleConstantBindingPlan[] = [];
@@ -86,21 +160,16 @@ function createRustModuleConstantModulePlan(
   );
 
   for (const [index, declaration] of module.declarations.entries()) {
-    if (!isRustNamedModuleConstant(declaration) || !declaration.initializer || !declaration.type) continue;
+    if (!isRustNamedModuleVariable(declaration)) continue;
     const declarationPath = ['declarations', index] as const;
-    const arrayIdentity = isRustModuleConstantArrayIdentity(declaration);
-    if (arrayIdentity) {
-      const refusal: CompilerRustModuleConstantRefusal = {
-        bindingId: declaration.binding.id,
-        code: 'rust-module-array-value-unrepresented',
-        declarationPath,
-        message: `module array value ${declaration.binding.name} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
-        reason: 'array-identity',
-      };
+    const arrayRefusal = context.arrayRefusals.get(key)?.get(declaration.binding.id);
+    if (arrayRefusal) {
+      const refusal = { ...arrayRefusal, declarationPath };
       refusals.push(refusal);
       refusalById.set(refusal.bindingId, refusal);
       continue;
     }
+    if (!isRustNamedModuleConstant(declaration) || !declaration.initializer || !declaration.type) continue;
     const scalar = getRustModuleConstantDeclaredScalar(declaration);
     if (!scalar) {
       const refusal = createRustModuleConstantRefusal(
@@ -146,6 +215,7 @@ function createRustModuleConstantModulePlan(
 
   const plan: CompilerRustModuleConstantModulePlan = {
     bindings,
+    importRefusals: createRustModuleArrayImportRefusals(module, context),
     module: cloneRustModuleConstantIdentity(module),
     refusals,
   };
@@ -439,6 +509,67 @@ function resolveRustModuleConstantEdgeTarget(
   );
 }
 
+function resolveRustModuleArrayImportModule(
+  importer: Readonly<IrModule>,
+  specifier: string,
+  importedName: string,
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): Readonly<IrModule> | undefined {
+  const resolved = resolveExactRustModuleConstantImport(importer, specifier, importedName, modules, moduleResolution);
+  if (resolved || !specifier.startsWith('.')) return resolved;
+  const source = normalizePathPortable(
+    path.posix.join(path.posix.dirname(importer.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
+  );
+  const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
+  const matching = modules.filter(
+    (module) =>
+      module.packageName === importer.packageName &&
+      candidates.has(normalizePathPortable(path.posix.normalize(module.source))),
+  );
+  return matching.length === 1 ? matching[0] : undefined;
+}
+
+function resolveRustModuleArrayDeclaration(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: RustModuleConstantPlanningContext,
+  seen: ReadonlySet<string>,
+): RustModuleArrayDeclarationLocation | undefined {
+  const key = `${getRustModuleConstantModuleKey(module)}\0${exportedName}`;
+  if (seen.has(key)) return undefined;
+  const nextSeen = new Set(seen).add(key);
+  const direct = module.declarations.filter(
+    (declaration): declaration is RustNamedModuleVariable =>
+      isRustNamedModuleVariable(declaration) && declaration.exported && declaration.binding.name === exportedName,
+  );
+  const local = module.exports.flatMap((exported) =>
+    exported.kind === 'local' && !exported.typeOnly && exported.exported === exportedName
+      ? module.declarations.filter(
+          (declaration): declaration is RustNamedModuleVariable =>
+            isRustNamedModuleVariable(declaration) && declaration.binding.id === exported.binding.id,
+        )
+      : [],
+  );
+  const declarations = new Map([...direct, ...local].map((declaration) => [declaration.binding.id, declaration]));
+  const reexports = module.exports.filter(
+    (exported) => exported.kind === 'reexport' && !exported.typeOnly && exported.exported === exportedName,
+  );
+  if (declarations.size + reexports.length !== 1) return undefined;
+  const declaration = [...declarations.values()][0];
+  if (declaration) return { declaration, module };
+  const reexport = reexports[0];
+  if (reexport?.kind !== 'reexport') return undefined;
+  const target = resolveRustModuleArrayImportModule(
+    module,
+    reexport.specifier,
+    reexport.imported,
+    context.modules,
+    context.moduleResolution,
+  );
+  return target ? resolveRustModuleArrayDeclaration(target, reexport.imported, context, nextSeen) : undefined;
+}
+
 function getDirectExportedRustModuleConstant(
   module: Readonly<IrModule>,
   exportedName: string,
@@ -461,7 +592,11 @@ function getDirectExportedRustModuleConstant(
 }
 
 function isRustNamedModuleConstant(declaration: Readonly<IrDeclaration>): declaration is RustNamedModuleConstant {
-  return declaration.kind === 'variable' && !('pattern' in declaration) && !declaration.mutable;
+  return isRustNamedModuleVariable(declaration) && !declaration.mutable;
+}
+
+function isRustNamedModuleVariable(declaration: Readonly<IrDeclaration>): declaration is RustNamedModuleVariable {
+  return declaration.kind === 'variable' && !('pattern' in declaration);
 }
 
 function getRustModuleConstantDeclaredScalar(
@@ -471,7 +606,7 @@ function getRustModuleConstantDeclaredScalar(
   return declaration.type.name === 'boolean' || declaration.type.name === 'number' ? declaration.type.name : undefined;
 }
 
-function isRustModuleConstantArrayIdentity(declaration: RustNamedModuleConstant): boolean {
+function isRustModuleArrayIdentity(declaration: RustNamedModuleVariable): boolean {
   if (declaration.type?.kind === 'array' || declaration.type?.kind === 'tuple') return true;
   const initializer = declaration.initializer;
   if (!initializer) return false;

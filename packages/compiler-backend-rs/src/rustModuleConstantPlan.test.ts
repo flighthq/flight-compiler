@@ -161,6 +161,127 @@ describe('createCompilerRustModuleConstantPlan', () => {
     ]);
   });
 
+  it('plans exact named array imports through renamed reexports deterministically', () => {
+    const sources = [
+      ['provider.ts', 'const values: [number, number] = [1, 2]; export { values };'],
+      ['facade.ts', "export { values as items } from './provider.js';"],
+      [
+        'consumer.ts',
+        "import { items as localItems } from './facade.js'; export function count(): number { return localItems.length; }",
+      ],
+    ] as const;
+    const preliminary = sources.map(([file, source]) => lower(file, source));
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        edge(preliminary[1]!, './provider.js', preliminary[0]!, ['values']),
+        edge(preliminary[2]!, './facade.js', preliminary[1]!, ['items']),
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, facade, consumer] = lowerProject(sources, resolution);
+    const first = createCompilerRustModuleConstantPlan({
+      moduleResolution: resolution,
+      modules: [consumer!, facade!, provider!],
+    });
+    const second = createCompilerRustModuleConstantPlan({
+      moduleResolution: { ...resolution, edges: [...resolution.edges].reverse() },
+      modules: [provider!, facade!, consumer!],
+    });
+    const providerPlan = getModulePlan(first.modules, provider!);
+    const facadePlan = getModulePlan(first.modules, facade!);
+    const consumerPlan = getModulePlan(first.modules, consumer!);
+
+    expect(second).toEqual(first);
+    expect(providerPlan.refusals).toEqual([
+      expect.objectContaining({ code: 'rust-module-array-value-unrepresented', reason: 'array-identity' }),
+    ]);
+    expect(facadePlan.importRefusals).toEqual([]);
+    expect(consumerPlan.importRefusals).toEqual([
+      expect.objectContaining({
+        bindingId: consumer!.imports[0]!.bindings[0]!.binding.id,
+        code: 'rust-module-array-value-unrepresented',
+        importPath: ['imports', 0, 'bindings', 0],
+        providerBindingId: providerPlan.refusals[0]!.bindingId,
+        providerModule: identity(provider!),
+      }),
+    ]);
+    const failure = captureEmissionFailure(() =>
+      createRustCompilerBackend().createEmissionSession!({
+        moduleResolution: resolution,
+        modules: [provider!, facade!, consumer!],
+        options: {},
+      }).emitModule(consumer!),
+    );
+    expect(failure.rule).toBe('rust-module-array-value-unrepresented');
+    expect(failure.message).toContain('imported module array value items');
+  });
+
+  it('keeps star reexports and namespace imports outside declaration-owned import refusals', () => {
+    const sources = [
+      ['provider.ts', 'export const values: number[] = [1];'],
+      ['facade.ts', "export * from './provider.js';"],
+      [
+        'consumer.ts',
+        "import * as facade from './facade.js'; export function count(): number { return facade.values.length; }",
+      ],
+    ] as const;
+    const preliminary = sources.map(([file, source]) => lower(file, source));
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        edge(preliminary[1]!, './provider.js', preliminary[0]!, ['values']),
+        edge(preliminary[2]!, './facade.js', preliminary[1]!, ['*']),
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, facade, consumer] = lowerProject(sources, resolution);
+    const plan = createCompilerRustModuleConstantPlan({
+      moduleResolution: resolution,
+      modules: [consumer!, provider!, facade!],
+    });
+
+    expect(getModulePlan(plan.modules, provider!).refusals).toEqual([
+      expect.objectContaining({ code: 'rust-module-array-value-unrepresented' }),
+    ]);
+    expect(getModulePlan(plan.modules, facade!).importRefusals).toEqual([]);
+    expect(getModulePlan(plan.modules, consumer!).importRefusals).toEqual([]);
+  });
+
+  it('selects sparse arrays before local module arrays and local arrays before exact imports', () => {
+    const providerSource = 'export const imported: number[] = [1];';
+    const consumerSource = `import { imported } from './provider.js';
+export const local: number[] = [2];
+export function read(): number { return imported.length; }`;
+    const preliminaryProvider = lower('provider.ts', providerSource);
+    const preliminaryConsumer = lower('consumer.ts', consumerSource);
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [edge(preliminaryConsumer, './provider.js', preliminaryProvider, ['imported'])],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, consumer] = lowerProject(
+      [
+        ['provider.ts', providerSource],
+        ['consumer.ts', consumerSource],
+      ],
+      resolution,
+    );
+    const failure = captureEmissionFailure(() =>
+      createRustCompilerBackend().createEmissionSession!({
+        moduleResolution: resolution,
+        modules: [provider!, consumer!],
+        options: {},
+      }).emitModule(consumer!),
+    );
+    const sparse = captureEmissionFailure(() =>
+      emitIrModuleRust(lower('sparse.ts', 'export const local: number[] = [, 1];')),
+    );
+
+    expect(failure.rule).toBe('rust-module-array-value-unrepresented');
+    expect(failure.message).toContain('module array value local');
+    expect(failure.message).not.toContain('imported module array value imported');
+    expect(failure.line).toBe(2);
+    expect(sparse.rule).toBe('rust-sparse-array-literal-runtime-required');
+  });
+
   it('refuses allocation, identity, calls, closures, and unapproved operators while preserving the array rule', () => {
     const cases = [
       ['string.ts', "export const value: string = 'hello';", 'rust-module-constant-initializer-unsupported'],
@@ -172,6 +293,14 @@ describe('createCompilerRustModuleConstantPlan', () => {
       ],
       ['array.ts', 'export const value: number[] = [1, 2];', 'rust-module-array-value-unrepresented'],
       ['tuple.ts', 'export const value: [number, number] = [1, 2];', 'rust-module-array-value-unrepresented'],
+      ['mutable-array.ts', 'export let value: number[] = [1, 2];', 'rust-module-array-value-unrepresented'],
+      ['uninitialized-array.ts', 'export let value: number[];', 'rust-module-array-value-unrepresented'],
+      [
+        'tuple-spread.ts',
+        'export const value: [number, number] = [1, ...([2] as [number])];',
+        'rust-module-array-value-unrepresented',
+      ],
+      ['new-array.ts', 'export const value: unknown = new Array<number>(2);', 'rust-module-array-value-unrepresented'],
       [
         'new.ts',
         'class Box { value: number = 1; } export const value: Box = new Box();',
@@ -230,6 +359,109 @@ export function readRuntime(): number { return runtime; }`;
     expect(placeholder.contents).not.toContain('pub const RUNTIME');
     expect(placeholder.contents).not.toContain('pub const DEPENDENT');
     expect(placeholder.contents).not.toContain('pub fn read_runtime()');
+  });
+
+  it('salvages exact imported-array consumers transitively and removes the unused import', () => {
+    const providerSource = 'export const values: number[] = [1];';
+    const consumerSource = `import { values } from './provider.js';
+export function keep(): number { return 1; }
+export function read(): number { return values.length; }
+export function readAgain(): number { return read(); }`;
+    const preliminaryProvider = lower('provider.ts', providerSource);
+    const preliminaryConsumer = lower('consumer.ts', consumerSource);
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [edge(preliminaryConsumer, './provider.js', preliminaryProvider, ['values'])],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, consumer] = lowerProject(
+      [
+        ['provider.ts', providerSource],
+        ['consumer.ts', consumerSource],
+      ],
+      resolution,
+    );
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules: [consumer!, provider!],
+      options: {},
+    });
+    const providerFailure = captureEmissionFailure(() => session.emitModule(provider!));
+    const consumerFailure = captureEmissionFailure(() => session.emitModule(consumer!));
+    session.finalizePackageGraph!({
+      facade: createFacade([provider!, consumer!]),
+      moduleFiles: [],
+      placeholderModules: [provider!, consumer!],
+      refusals: [
+        { code: providerFailure.rule!, message: providerFailure.message, module: identity(provider!) },
+        { code: consumerFailure.rule!, message: consumerFailure.message, module: identity(consumer!) },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(consumer!, {
+      message: consumerFailure.message,
+      sourceText: consumerSource,
+    });
+    if (!placeholder) throw new Error('expected a partial Rust source file');
+
+    expect(placeholder.contents).toContain('pub fn keep() -> f64');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function read -- source line 3');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function readAgain -- source line 4');
+    expect(placeholder.contents.match(/rust-module-array-value-unrepresented/gu)).toHaveLength(2);
+    expect(placeholder.contents).not.toContain('use crate::provider');
+    expect(placeholder.contents).not.toContain('pub fn read()');
+    expect(placeholder.contents).not.toContain('pub fn read_again()');
+  });
+
+  it('keeps unused and publicly re-exported imported arrays module-wide during salvage', () => {
+    const providerSource = 'export const values: number[] = [1];';
+    for (const [file, consumerSource] of [
+      ['unused.ts', "import { values } from './provider.js'; export function keep(): number { return 1; }"],
+      [
+        'public.ts',
+        "import { values } from './provider.js'; export { values }; export function keep(): number { return 1; }",
+      ],
+    ] as const) {
+      const preliminaryProvider = lower('provider.ts', providerSource);
+      const preliminaryConsumer = lower(file, consumerSource);
+      const resolution: CompilerModuleResolutionPlan = {
+        edges: [edge(preliminaryConsumer, './provider.js', preliminaryProvider, ['values'])],
+        schema: 'flight-compiler-module-resolution/1',
+      };
+      const [provider, consumer] = lowerProject(
+        [
+          ['provider.ts', providerSource],
+          [file, consumerSource],
+        ],
+        resolution,
+      );
+      const session = createRustCompilerBackend().createEmissionSession!({
+        moduleResolution: resolution,
+        modules: [provider!, consumer!],
+        options: {},
+      });
+      const providerFailure = captureEmissionFailure(() => session.emitModule(provider!));
+      const consumerFailure = captureEmissionFailure(() => session.emitModule(consumer!));
+      session.finalizePackageGraph!({
+        facade: createFacade([provider!, consumer!]),
+        moduleFiles: [],
+        placeholderModules: [provider!, consumer!],
+        refusals: [
+          { code: providerFailure.rule!, message: providerFailure.message, module: identity(provider!) },
+          { code: consumerFailure.rule!, message: consumerFailure.message, module: identity(consumer!) },
+        ],
+      });
+      const placeholder = session.emitRefusalPlaceholder?.(consumer!, {
+        message: consumerFailure.message,
+        rule: consumerFailure.rule,
+        sourceText: consumerSource,
+      });
+      if (!placeholder) throw new Error('expected a whole-module Rust refusal placeholder');
+
+      expect(placeholder.contents).toContain('rust-module-array-value-unrepresented');
+      expect(placeholder.contents).not.toContain('pub fn keep() -> f64');
+      expect(placeholder.contents).not.toContain('// NOT GENERATED:');
+    }
   });
 
   it('removes an import used only by a refused constant from salvaged Rust', () => {

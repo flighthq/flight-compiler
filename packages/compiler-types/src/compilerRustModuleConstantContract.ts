@@ -13,8 +13,19 @@ export interface CompilerRustModuleConstantBindingPlan {
   readonly scalar: CompilerRustModuleConstantScalar;
 }
 
+export interface CompilerRustModuleArrayImportRefusal {
+  readonly bindingId: string;
+  readonly code: 'rust-module-array-value-unrepresented';
+  readonly importPath: CompilerIrTraversalPath;
+  readonly message: string;
+  readonly providerBindingId: string;
+  readonly providerModule: CompilerModuleIdentity;
+  readonly reason: 'array-identity';
+}
+
 export interface CompilerRustModuleConstantModulePlan {
   readonly bindings: readonly CompilerRustModuleConstantBindingPlan[];
+  readonly importRefusals: readonly CompilerRustModuleArrayImportRefusal[];
   readonly module: CompilerModuleIdentity;
   readonly refusals: readonly CompilerRustModuleConstantRefusal[];
 }
