@@ -25,7 +25,7 @@ export function assertCompilerRustRuntimeAbiManifestComplete(
   const duplicate = [...actualGroups].filter(([, count]) => count > 1).map(([identity]) => identity);
   const unexpected = [...actualGroups.keys()].filter((identity) => !expectedByIdentity.has(identity));
   const invalidPlans = [
-    ...(manifest.schema === 'flight-rust-runtime-abi/2' ? [] : [`manifest schema ${String(manifest.schema)}`]),
+    ...(manifest.schema === 'flight-rust-runtime-abi/3' ? [] : [`manifest schema ${String(manifest.schema)}`]),
     ...(manifest.requirements.schema === 'flight-rust-runtime-requirements/1'
       ? []
       : [`requirements schema ${String(manifest.requirements.schema)}`]),
@@ -62,7 +62,7 @@ export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiMa
       schema: 'flight-rust-runtime-representation/1',
     },
     requirements: createCompilerRustRuntimeRequirementsPlan(),
-    schema: 'flight-rust-runtime-abi/2',
+    schema: 'flight-rust-runtime-abi/3',
   });
 }
 
@@ -118,6 +118,10 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
 
   addRustRuntimeRequirement(requirements, { kind: 'type', targetName: 'FlightSymbol' });
   addRustRuntimeRequirement(requirements, { kind: 'type', targetName: 'OpaqueHostValue' });
+  addRustRuntimeRequirement(requirements, {
+    kind: 'function',
+    targetName: 'flight_runtime::panic_task_rejection',
+  });
 
   const typedArrayTargets = rustTypedArraySourceNames.flatMap((sourceName) => [
     ...(runtimeTargetsBySource.get(sourceName) ?? []),
@@ -169,6 +173,7 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
   }
 
   addRustRuntimeRequirement(requirements, { kind: 'member', memberName: 'ready', targetName: 'FlightTask' });
+  addRustRuntimeRequirement(requirements, { kind: 'member', memberName: 'from_future', targetName: 'FlightTask' });
   addRustRuntimeRequirement(requirements, { kind: 'member', memberName: 'settle', targetName: 'FlightTask' });
   addRustRuntimeRequirement(requirements, { kind: 'trait', targetName: 'FlightTask', traitName: 'Clone' });
   addRustRuntimeRequirement(requirements, { kind: 'trait', targetName: 'FlightTask', traitName: 'Future' });
@@ -179,18 +184,33 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
     ),
     schema: 'flight-rust-runtime-requirements/1',
     tasks: {
+      adapter: {
+        cancellation: 'drop-future-on-last-task-owner',
+        executor: 'local-eager',
+        future: "Future<Output = T> + 'static",
+        member: 'from_future',
+        ownership: 'consume-once',
+        rejection: {
+          panicFunction: 'flight_runtime::panic_task_rejection',
+          stringPanic: 'preserve-string',
+          taskRejection: 'preserve-string',
+          unknownPanic: 'native future panicked',
+        },
+        sharing: 'shared-settlement',
+        unwind: 'required',
+      },
       awaitBoundary: {
         cloneTrait: 'Clone',
         futureTrait: 'Future',
         repeatedAwait: 'clone-before-await',
       },
       readyMember: 'ready',
-      schema: 'flight-rust-runtime-task-requirements/1',
+      schema: 'flight-rust-runtime-task-requirements/2',
       settlement: {
         rejectionCarrier: 'String',
         result: 'Result<T, String>',
         settleMember: 'settle',
-        unhandledRejection: 'panic',
+        unhandledRejection: 'structured-panic',
       },
       taskType: 'FlightTask',
     },

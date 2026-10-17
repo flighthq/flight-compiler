@@ -2471,6 +2471,138 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.column).toBe(column);
   });
 
+  it.each([
+    [
+      'expression',
+      'async function effect(): Promise<void> {} export async function attempt(): Promise<void> { try { await effect(); } catch {} }',
+      'effect',
+    ],
+    [
+      'assignment',
+      'async function load(): Promise<number> { return 1; } export async function attempt(): Promise<number> { let value = 0; try { value = await load(); } catch {} return value; }',
+      'load',
+    ],
+    [
+      'declaration',
+      'async function load(): Promise<number> { return 1; } export async function attempt(): Promise<number> { try { const value = await load(); return value; } catch { return 0; } }',
+      'load',
+    ],
+    [
+      'return',
+      'async function load(): Promise<number> { return 1; } export async function attempt(): Promise<number> { try { return await load(); } catch { return 0; } }',
+      'load',
+    ],
+  ])('adapts an exact named native future at a protected %s settlement', (_name, source, callee) => {
+    const output = emitIrModuleRust(lower('protected-native-future-adapter.ts', source).module).contents;
+
+    expect(output).toContain(`FlightTask::from_future(${callee}()).settle()`);
+    expect(output).toContain('use flight_runtime::FlightTask;');
+  });
+
+  it('adapts exact named native futures in both catch and finalizer slots while preserving raw direct await', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'protected-native-future-composition.ts',
+        `async function load(value: number): Promise<number> { return value; }
+         async function cleanup(): Promise<void> {}
+         export async function direct(): Promise<number> { return await load(1); }
+         export async function attempt(primary: Promise<number>): Promise<number> {
+           try { return await primary; }
+           catch { const first = await load(2); return await load(first); }
+           finally { await cleanup(); await cleanup(); }
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return load(1.0).await;');
+    expect(output).toContain('FlightTask::from_future(load(2.0)).settle()');
+    expect(output).toContain('FlightTask::from_future(load(first)).settle()');
+    expect(output.match(/FlightTask::from_future\(cleanup\(\)\)\.settle\(\)/gu)).toHaveLength(2);
+  });
+
+  it('adapts an imported exact named native future only at the protected settlement', () => {
+    const provider = lower('provider.ts', 'export async function load(): Promise<number> { return 1; }').module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { load } from './provider.js';
+       export async function run(): Promise<number> { try { return await load(); } catch { return 0; } }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, provider],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('FlightTask::from_future(load()).settle()');
+  });
+
+  it.each([
+    [
+      'generic call',
+      'async function load<T>(value: T): Promise<T> { return value; } export async function attempt(): Promise<number> { try { return await load<number>(1); } catch { return 0; } }',
+    ],
+    [
+      'defaulted call',
+      'async function load(value = 1): Promise<number> { return value; } export async function attempt(): Promise<number> { try { return await load(); } catch { return 0; } }',
+    ],
+    [
+      'optional-parameter call',
+      'async function load(value?: number): Promise<number> { return value ?? 0; } export async function attempt(): Promise<number> { try { return await load(1); } catch { return 0; } }',
+    ],
+    [
+      'rest-parameter call',
+      'async function load(...values: number[]): Promise<number> { return values.length; } export async function attempt(): Promise<number> { try { return await load(1); } catch { return 0; } }',
+    ],
+    [
+      'overloaded call',
+      'function load(value: number): Promise<number>; async function load(value: number): Promise<number> { return value; } export async function attempt(): Promise<number> { try { return await load(1); } catch { return 0; } }',
+    ],
+    [
+      'spread call',
+      'async function load(value: number): Promise<number> { return value; } export async function attempt(): Promise<number> { const values: [number] = [1]; try { return await load(...values); } catch { return 0; } }',
+    ],
+    [
+      'borrowed call argument',
+      'async function load(values: number[]): Promise<number> { values.push(1); return values.length; } export async function attempt(values: number[]): Promise<number> { try { return await load(values); } catch { return 0; } }',
+    ],
+    [
+      'conditional carrier',
+      'async function load(): Promise<number> { return 1; } export async function attempt(task: Promise<number>, choose: boolean): Promise<number> { try { return await (choose ? load() : task); } catch { return 0; } }',
+    ],
+  ])('keeps the protected native-future adapter closed for an excluded %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('protected-native-future-adapter-refusal.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
+    expect(failure.message).toContain('flight-rust-runtime-abi/3 FlightTask::from_future');
+  });
+
+  it('keeps an asserted protected native future on the stable non-numeric cast refusal', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'protected-native-future-cast-refusal.ts',
+          'async function load(): Promise<number> { return 1; } export async function attempt(): Promise<number> { try { return await (load() as Promise<number>); } catch { return 0; } }',
+        ).module,
+      ),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-cast-requires-type-directed-lowering');
+  });
+
   it('emits exact one-shot native-future locals for every direct later await statement shape', () => {
     const output = emitIrModuleRust(
       lower(
@@ -3911,7 +4043,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const settlement = output.indexOf('match task.settle() {');
     const fulfilledWrite = output.indexOf('result = try_value;');
     const finallyEffect = output.indexOf('done = true;');
-    const rePanic = output.indexOf('panic!("unhandled task rejection: {}"');
+    const rePanic = output.indexOf('flight_runtime::panic_task_rejection(');
     expect(output).toContain('Result<Option<f64>, String>');
     expect(settlement).toBeGreaterThan(-1);
     expect(fulfilledWrite).toBeGreaterThan(settlement);
@@ -3933,7 +4065,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(carried).toBeGreaterThan(settlement);
     expect(finallyEffect).toBeGreaterThan(carried);
     expect(deferredReturn).toBeGreaterThan(finallyEffect);
-    expect(output.indexOf('panic!("unhandled task rejection: {}"')).toBeGreaterThan(finallyEffect);
+    expect(output.indexOf('flight_runtime::panic_task_rejection(')).toBeGreaterThan(finallyEffect);
   });
 
   it('defers fulfilled and caught return values until after one non-abrupt finally', () => {
@@ -4242,12 +4374,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'rust-async-protected-assignment-place-unrepresented',
       'compiler-restriction',
     ],
-    [
-      'a native future protected operand',
-      'async function local(): Promise<number> { return 1; } export async function attempt(recovery: Promise<number>): Promise<number> { try { const value = await local(); return value; } catch { return await recovery; } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
   ])('preserves nonterminal protected awaited-catch refusal for %s', (_name, source, rule, classification) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('try-nonterminal-protected-await-refusal.ts', source).module),
@@ -4276,18 +4402,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   });
 
   it.each([
-    [
-      'a native future',
-      'async function recover(error: string): Promise<number> { error; return 1; } export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recover(error); } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
-    [
-      'a native future in the second step',
-      'async function recover(error: string): Promise<number> { error; return 1; } function observe(error: string, task: Promise<void>): Promise<void> { error; return task; } export async function attempt(primary: Promise<number>, observer: Promise<void>): Promise<number> { try { return await primary; } catch (error) { await observe(error, observer); return await recover(error); } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
     [
       'a bare task return',
       'function record(error: string): void { error; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { record(error); return recovery; } }',
@@ -4405,12 +4519,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it.each([
     [
-      'a native future',
-      'async function recover(): Promise<number> { return 1; } export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } catch { return await recover(); } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
-    [
       'a bare catch task return',
       'export async function attempt(primary: Promise<number>, observer: Promise<void>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { await observer; return recovery; } }',
       'rust-async-task-adoption-protected-unrepresented',
@@ -4454,8 +4562,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(normal(flight_runtime::FlightTask::<f64>::reject("original"), flight_runtime::FlightTask::<f64>::reject("replacement"), &mut rejected_log))));
            assert_eq!(rejected_log, vec![1.0, 2.0, 3.0]);
            let payload = panic.expect_err("handler rejection must replace the protected error after cleanup");
-           let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
-           assert_eq!(message, Some("unhandled task rejection: replacement"));`,
+           let message = flight_runtime::task_rejection_message(payload.as_ref());
+           assert_eq!(message, Some("replacement"));`,
         ),
       ).not.toThrow();
     },
@@ -4750,18 +4858,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'rust-async-try-completion-unrepresented',
       'compiler-restriction',
     ],
-    [
-      'a native future first operand',
-      'async function local(): Promise<void> {} export async function attempt(primary: Promise<number>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await local(); await second; } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
-    [
-      'a native future second operand',
-      'async function local(): Promise<void> {} export async function attempt(primary: Promise<number>, first: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await local(); } }',
-      'rust-native-future-task-adapter-unavailable',
-      'target-runtime',
-    ],
   ])('preserves two-await finalizer carrier refusal for %s', (_name, source, rule, classification) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('try-two-await-finalizer-carrier-refusal.ts', source).module),
@@ -4802,6 +4898,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            function recover(error: string, task: Promise<number>, log: string[]): Promise<number> { mark(error, log); return task; }
            function observeError(error: string, task: Promise<void>, log: string[]): Promise<void> { mark(error, log); return task; }
            async function nativeValue(value: number): Promise<number> { return value + 1; }
+           async function nativePrimary(task: Promise<number>): Promise<number> { return await task; }
            export async function localNative(log: string[]): Promise<number> {
              mark("local-start", log);
              const pending = nativeValue(4);
@@ -4816,7 +4913,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              finally { mark("bindingless-finally", log); }
            }
            export async function boundSettled(primary: Promise<number>, firstRecovery: Promise<number>, secondRecovery: Promise<number>, firstCleanup: Promise<void>, secondCleanup: Promise<void>, log: string[]): Promise<number> {
-             try { mark("bound-try", log); return primary; }
+             try { mark("bound-try", log); return await nativePrimary(primary); }
              catch (error) { mark("bound-catch", log); const first = await recover(error, firstRecovery, log); mark("bound-between", log); const second = await recover(error, secondRecovery, log); mark("bound-after", log); return first + second; }
              finally { mark("bound-finally-before", log); await observedVoid(firstCleanup, "bound-first-cleanup", log); mark("bound-finally-between", log); await observedVoid(secondCleanup, "bound-second-cleanup", log); mark("bound-finally-after", log); }
            }
@@ -4851,13 +4948,26 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
       expect(output).toContain('let pending = native_value(4.0);');
       expect(output).toContain('let value: f64 = pending.await;');
+      expect(output).toContain('FlightTask::from_future(native_primary(primary)).settle()');
       expect(output).toContain('Err(finally_error) => Err(finally_error),');
       expect(output).toContain('Err(finally_first_error) => Err(finally_first_error),');
       expect(output).toContain('Err(finally_second_error) => Err(finally_second_error),');
       expect(() =>
         runRustSourceAgainstRuntime(
           output,
-          `let mut native_log = Vec::new();
+          `let adapter_polls = std::rc::Rc::new(std::cell::Cell::new(0));
+           let future_polls = adapter_polls.clone();
+           let adapted = flight_runtime::FlightTask::from_future(std::future::poll_fn(move |_| {
+             let poll = future_polls.get();
+             future_polls.set(poll + 1);
+             if poll == 0 { std::task::Poll::Pending } else { std::task::Poll::Ready(3.0) }
+           }));
+           assert_eq!(adapter_polls.get(), 1, "the adapter must poll eagerly through the first suspension");
+           let adapted_clone = adapted.clone();
+           assert_eq!(adapted.settle(), Ok(3.0));
+           assert_eq!(adapted_clone.settle(), Ok(3.0));
+           assert_eq!(adapter_polls.get(), 2, "task clones must share one consumed future and settlement");
+           let mut native_log = Vec::new();
            assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
            assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
            let mut bindingless_ready_log = Vec::new();
@@ -4876,32 +4986,32 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let bound_first_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::<f64>::reject("bound-first-error"), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_first_rejection_log))));
            assert_eq!(bound_first_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let bound_first_payload = bound_first_rejection.expect_err("first catch rejection must replace the original and skip the second step");
-           let bound_first_message = bound_first_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_first_payload.downcast_ref::<&str>().copied());
-           assert_eq!(bound_first_message, Some("unhandled task rejection: bound-first-error"));
+           let bound_first_message = flight_runtime::task_rejection_message(bound_first_payload.as_ref());
+           assert_eq!(bound_first_message, Some("bound-first-error"));
            let mut bound_second_rejection_log = Vec::new();
            let bound_second_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<f64>::reject("bound-second-error"), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_second_rejection_log))));
            assert_eq!(bound_second_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let bound_second_payload = bound_second_rejection.expect_err("second catch rejection must replace the original after the first step");
-           let bound_second_message = bound_second_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_second_payload.downcast_ref::<&str>().copied());
-           assert_eq!(bound_second_message, Some("unhandled task rejection: bound-second-error"));
+           let bound_second_message = flight_runtime::task_rejection_message(bound_second_payload.as_ref());
+           assert_eq!(bound_second_message, Some("bound-second-error"));
            let mut bound_first_cleanup_rejection_log = Vec::new();
            let bound_first_cleanup_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::<()>::reject("bound-first-cleanup-error"), flight_runtime::FlightTask::ready(()), &mut bound_first_cleanup_rejection_log))));
            assert_eq!(bound_first_cleanup_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned()]);
            let bound_first_cleanup_payload = bound_first_cleanup_rejection.expect_err("first awaited finalizer rejection must override a pending catch return and skip the second cleanup");
-           let bound_first_cleanup_message = bound_first_cleanup_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_first_cleanup_payload.downcast_ref::<&str>().copied());
-           assert_eq!(bound_first_cleanup_message, Some("unhandled task rejection: bound-first-cleanup-error"));
+           let bound_first_cleanup_message = flight_runtime::task_rejection_message(bound_first_cleanup_payload.as_ref());
+           assert_eq!(bound_first_cleanup_message, Some("bound-first-cleanup-error"));
            let mut bound_second_cleanup_rejection_log = Vec::new();
            let bound_second_cleanup_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::<()>::reject("bound-second-cleanup-error"), &mut bound_second_cleanup_rejection_log))));
            assert_eq!(bound_second_cleanup_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned()]);
            let bound_second_cleanup_payload = bound_second_cleanup_rejection.expect_err("second awaited finalizer rejection must override a pending catch return after the first cleanup");
-           let bound_second_cleanup_message = bound_second_cleanup_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_second_cleanup_payload.downcast_ref::<&str>().copied());
-           assert_eq!(bound_second_cleanup_message, Some("unhandled task rejection: bound-second-cleanup-error"));
+           let bound_second_cleanup_message = flight_runtime::task_rejection_message(bound_second_cleanup_payload.as_ref());
+           assert_eq!(bound_second_cleanup_message, Some("bound-second-cleanup-error"));
            let mut rethrow_log = Vec::new();
            let rethrow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(rethrown(flight_runtime::FlightTask::<f64>::reject("terminal"), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut rethrow_log))));
            assert_eq!(rethrow_log, vec!["rethrow-try".to_owned(), "rethrow-catch".to_owned(), "terminal".to_owned(), "rethrow-after".to_owned(), "rethrow-finally-before".to_owned(), "rethrow-cleanup".to_owned(), "rethrow-finally-after".to_owned()]);
            let rethrow_payload = rethrow.expect_err("terminal catch-binding rethrow must survive fulfilled cleanup");
-           let rethrow_message = rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| rethrow_payload.downcast_ref::<&str>().copied());
-           assert_eq!(rethrow_message, Some("unhandled task rejection: terminal"));
+           let rethrow_message = flight_runtime::task_rejection_message(rethrow_payload.as_ref());
+           assert_eq!(rethrow_message, Some("terminal"));
            let mut no_final_ready_log = Vec::new();
            assert_eq!(flight_runtime::block_on(no_final_bound(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), &mut no_final_ready_log)), 4.0);
            assert_eq!(no_final_ready_log, vec!["no-final-bound-try".to_owned()]);
@@ -4912,14 +5022,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let no_final_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_bound(flight_runtime::FlightTask::<f64>::reject("no-final-original"), flight_runtime::FlightTask::<f64>::reject("no-final-replacement"), &mut no_final_override_log))));
            assert_eq!(no_final_override_log, vec!["no-final-bound-try".to_owned(), "no-final-bound-catch".to_owned(), "no-final-original".to_owned()]);
            let no_final_override_payload = no_final_override.expect_err("catch rejection must replace the original rejection");
-           let no_final_override_message = no_final_override_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_override_payload.downcast_ref::<&str>().copied());
-           assert_eq!(no_final_override_message, Some("unhandled task rejection: no-final-replacement"));
+           let no_final_override_message = flight_runtime::task_rejection_message(no_final_override_payload.as_ref());
+           assert_eq!(no_final_override_message, Some("no-final-replacement"));
            let mut no_final_rethrow_log = Vec::new();
            let no_final_rethrow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_rethrown(flight_runtime::FlightTask::<f64>::reject("no-final-terminal"), flight_runtime::FlightTask::ready(()), &mut no_final_rethrow_log))));
            assert_eq!(no_final_rethrow_log, vec!["no-final-rethrow-try".to_owned(), "no-final-rethrow-catch".to_owned(), "no-final-terminal".to_owned(), "no-final-rethrow-after".to_owned()]);
            let no_final_rethrow_payload = no_final_rethrow.expect_err("terminal catch-binding rethrow must preserve the original rejection");
-           let no_final_rethrow_message = no_final_rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_rethrow_payload.downcast_ref::<&str>().copied());
-           assert_eq!(no_final_rethrow_message, Some("unhandled task rejection: no-final-terminal"));
+           let no_final_rethrow_message = flight_runtime::task_rejection_message(no_final_rethrow_payload.as_ref());
+           assert_eq!(no_final_rethrow_message, Some("no-final-terminal"));
            let mut no_final_bindingless_ready_log = Vec::new();
            assert_eq!(flight_runtime::block_on(no_final_bindingless(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), &mut no_final_bindingless_ready_log)), 4.0);
            assert_eq!(no_final_bindingless_ready_log, vec!["no-final-bindingless-try".to_owned()]);
@@ -4930,8 +5040,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let no_final_bindingless_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_bindingless(flight_runtime::FlightTask::<f64>::reject("discarded-original"), flight_runtime::FlightTask::<f64>::reject("bindingless-replacement"), &mut no_final_bindingless_override_log))));
            assert_eq!(no_final_bindingless_override_log, vec!["no-final-bindingless-try".to_owned(), "no-final-bindingless-catch".to_owned(), "no-final-bindingless-recovery".to_owned()]);
            let no_final_bindingless_payload = no_final_bindingless_override.expect_err("bindingless catch rejection must replace the discarded original rejection");
-           let no_final_bindingless_message = no_final_bindingless_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_bindingless_payload.downcast_ref::<&str>().copied());
-           assert_eq!(no_final_bindingless_message, Some("unhandled task rejection: bindingless-replacement"));
+           let no_final_bindingless_message = flight_runtime::task_rejection_message(no_final_bindingless_payload.as_ref());
+           assert_eq!(no_final_bindingless_message, Some("bindingless-replacement"));
            let mut nonterminal_ready_log = Vec::new();
            assert_eq!(flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), &mut nonterminal_ready_log)), 4.0);
            assert_eq!(nonterminal_ready_log, vec!["nonterminal-protected".to_owned(), "nonterminal-protected-after".to_owned(), "nonterminal-continue".to_owned()]);
@@ -4942,14 +5052,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            let nonterminal_first_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::<f64>::reject("nonterminal-original"), flight_runtime::FlightTask::<f64>::reject("nonterminal-first-error"), flight_runtime::FlightTask::ready(8.0), &mut nonterminal_first_rejection_log))));
            assert_eq!(nonterminal_first_rejection_log, vec!["nonterminal-protected".to_owned(), "nonterminal-catch".to_owned(), "nonterminal-original".to_owned()]);
            let nonterminal_first_payload = nonterminal_first_rejection.expect_err("first catch rejection must replace the nonterminal protected rejection");
-           let nonterminal_first_message = nonterminal_first_payload.downcast_ref::<String>().map(String::as_str).or_else(|| nonterminal_first_payload.downcast_ref::<&str>().copied());
-           assert_eq!(nonterminal_first_message, Some("unhandled task rejection: nonterminal-first-error"));
+           let nonterminal_first_message = flight_runtime::task_rejection_message(nonterminal_first_payload.as_ref());
+           assert_eq!(nonterminal_first_message, Some("nonterminal-first-error"));
            let mut nonterminal_second_rejection_log = Vec::new();
            let nonterminal_second_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::<f64>::reject("nonterminal-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<f64>::reject("nonterminal-second-error"), &mut nonterminal_second_rejection_log))));
            assert_eq!(nonterminal_second_rejection_log, vec!["nonterminal-protected".to_owned(), "nonterminal-catch".to_owned(), "nonterminal-original".to_owned(), "nonterminal-between".to_owned(), "nonterminal-original".to_owned()]);
            let nonterminal_second_payload = nonterminal_second_rejection.expect_err("second catch rejection must replace the nonterminal protected rejection");
-           let nonterminal_second_message = nonterminal_second_payload.downcast_ref::<String>().map(String::as_str).or_else(|| nonterminal_second_payload.downcast_ref::<&str>().copied());
-           assert_eq!(nonterminal_second_message, Some("unhandled task rejection: nonterminal-second-error"));`,
+           let nonterminal_second_message = flight_runtime::task_rejection_message(nonterminal_second_payload.as_ref());
+           assert_eq!(nonterminal_second_message, Some("nonterminal-second-error"));`,
         ),
       ).not.toThrow();
     },
@@ -5122,8 +5232,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("same"), &mut rejected_log))));
          assert_eq!(rejected_log, vec![1.0]);
          let payload = panic.expect_err("rejection must panic after cleanup");
-         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
-         assert_eq!(message, Some("unhandled task rejection: same"));`,
+         let message = flight_runtime::task_rejection_message(payload.as_ref());
+         assert_eq!(message, Some("same"));`,
       ),
     ).not.toThrow();
   });
@@ -5184,8 +5294,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(1.0), &mut log))));
          assert_eq!(log, vec![1.0]);
          let payload = panic.expect_err("source throw must panic after cleanup");
-         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
-         assert_eq!(message, Some("unhandled task rejection: source"));`,
+         let message = flight_runtime::task_rejection_message(payload.as_ref());
+         assert_eq!(message, Some("source"));`,
       ),
     ).not.toThrow();
   });
@@ -5200,7 +5310,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(output).toContain('Result<Option<f64>, String>');
     expect(output).toContain('record(error.clone(), log)');
-    expect(output).toMatch(/Err\(error\)[\s\S]*record\("finally"\.to_owned\(\), log\)[\s\S]*unhandled task rejection/);
+    expect(output).toMatch(/Err\(error\)[\s\S]*record\("finally"\.to_owned\(\), log\)[\s\S]*panic_task_rejection/);
   });
 
   it.skipIf(!rustcAvailable)('rethrows a task rejection after catch effects and one finally cleanup', () => {
@@ -5220,8 +5330,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("task"), &mut log))));
          assert_eq!(log, vec!["task".to_owned(), "finally".to_owned()]);
          let payload = panic.expect_err("rethrow must panic after catch and cleanup");
-         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
-         assert_eq!(message, Some("unhandled task rejection: task"));`,
+         let message = flight_runtime::task_rejection_message(payload.as_ref());
+         assert_eq!(message, Some("task"));`,
       ),
     ).not.toThrow();
   });
@@ -5241,8 +5351,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(()), "source".to_owned(), &mut log))));
          assert_eq!(log, vec!["try".to_owned(), "source".to_owned(), "finally".to_owned()]);
          let payload = panic.expect_err("source rethrow must panic after cleanup");
-         let message = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
-         assert_eq!(message, Some("unhandled task rejection: source"));`,
+         let message = flight_runtime::task_rejection_message(payload.as_ref());
+         assert_eq!(message, Some("source"));`,
       ),
     ).not.toThrow();
   });

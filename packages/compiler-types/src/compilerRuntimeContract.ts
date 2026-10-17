@@ -205,18 +205,33 @@ export type CompilerRustRuntimeRequirement =
   | Readonly<{ kind: 'type'; targetName: string }>;
 
 export interface CompilerRustRuntimeTaskRequirements {
+  readonly adapter: Readonly<{
+    cancellation: 'drop-future-on-last-task-owner';
+    executor: 'local-eager';
+    future: "Future<Output = T> + 'static";
+    member: 'from_future';
+    ownership: 'consume-once';
+    rejection: Readonly<{
+      panicFunction: 'flight_runtime::panic_task_rejection';
+      stringPanic: 'preserve-string';
+      taskRejection: 'preserve-string';
+      unknownPanic: 'native future panicked';
+    }>;
+    sharing: 'shared-settlement';
+    unwind: 'required';
+  }>;
   readonly awaitBoundary: Readonly<{
     cloneTrait: 'Clone';
     futureTrait: 'Future';
     repeatedAwait: 'clone-before-await';
   }>;
   readonly readyMember: 'ready';
-  readonly schema: 'flight-rust-runtime-task-requirements/1';
+  readonly schema: 'flight-rust-runtime-task-requirements/2';
   readonly settlement: Readonly<{
     rejectionCarrier: 'String';
     result: 'Result<T, String>';
     settleMember: 'settle';
-    unhandledRejection: 'panic';
+    unhandledRejection: 'structured-panic';
   }>;
   readonly taskType: 'FlightTask';
 }
@@ -244,7 +259,7 @@ export interface CompilerRustRuntimeAbiManifest {
   readonly externalSymbols: CompilerRustRuntimeExternalSymbolBindingPlan;
   readonly representation: CompilerRustRuntimeRepresentationPlan;
   readonly requirements: CompilerRustRuntimeRequirementsPlan;
-  readonly schema: 'flight-rust-runtime-abi/2';
+  readonly schema: 'flight-rust-runtime-abi/3';
 }
 
 export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest | CompilerRustRuntimeAbiManifest;

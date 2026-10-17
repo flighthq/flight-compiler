@@ -106,6 +106,25 @@ describe('assertCompilerRustRuntimeAbiManifestComplete', () => {
     expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
     expect(failure.message).toContain('missing function::repeat_text');
   });
+
+  it('rejects the pre-adapter Rust manifest and task requirement versions', () => {
+    const module = lower('export const value = 1;');
+    const manifest = createCompilerRustRuntimeAbiManifest();
+    const stale = {
+      ...manifest,
+      requirements: {
+        ...manifest.requirements,
+        tasks: { ...manifest.requirements.tasks, schema: 'flight-rust-runtime-task-requirements/1' },
+      },
+      schema: 'flight-rust-runtime-abi/2',
+    } as unknown as CompilerRustRuntimeAbiManifest;
+
+    const failure = captureBackendEmissionFailure(() => assertCompilerRustRuntimeAbiManifestComplete(module, stale));
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
+    expect(failure.message).toContain('invalid manifest schema flight-rust-runtime-abi/2');
+    expect(failure.message).toContain('invalid task requirements');
+  });
 });
 
 describe('createCompilerRustRuntimeAbiManifest', () => {
@@ -127,23 +146,38 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
       requirements: {
         schema: 'flight-rust-runtime-requirements/1',
         tasks: {
+          adapter: {
+            cancellation: 'drop-future-on-last-task-owner',
+            executor: 'local-eager',
+            future: "Future<Output = T> + 'static",
+            member: 'from_future',
+            ownership: 'consume-once',
+            rejection: {
+              panicFunction: 'flight_runtime::panic_task_rejection',
+              stringPanic: 'preserve-string',
+              taskRejection: 'preserve-string',
+              unknownPanic: 'native future panicked',
+            },
+            sharing: 'shared-settlement',
+            unwind: 'required',
+          },
           awaitBoundary: {
             cloneTrait: 'Clone',
             futureTrait: 'Future',
             repeatedAwait: 'clone-before-await',
           },
           readyMember: 'ready',
-          schema: 'flight-rust-runtime-task-requirements/1',
+          schema: 'flight-rust-runtime-task-requirements/2',
           settlement: {
             rejectionCarrier: 'String',
             result: 'Result<T, String>',
             settleMember: 'settle',
-            unhandledRejection: 'panic',
+            unhandledRejection: 'structured-panic',
           },
           taskType: 'FlightTask',
         },
       },
-      schema: 'flight-rust-runtime-abi/2',
+      schema: 'flight-rust-runtime-abi/3',
     });
     expect(manifest.externalSymbols.bindings).toContainEqual({
       capability: 'task',
@@ -161,6 +195,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
       expect.arrayContaining([
         { kind: 'member', memberName: 'get_float32', targetName: 'FlightDataView' },
         { kind: 'member', memberName: 'get_index', targetName: 'FlightUint8Array' },
+        { kind: 'member', memberName: 'from_future', targetName: 'FlightTask' },
         { kind: 'member', memberName: 'ready', targetName: 'FlightTask' },
         { kind: 'member', memberName: 'settle', targetName: 'FlightTask' },
       ]),
@@ -169,7 +204,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
       manifest.requirements.requirements.flatMap((requirement) =>
         requirement.kind === 'function' ? [requirement.targetName] : [],
       ),
-    ).toEqual(['flight_runtime::round', 'repeat_text']);
+    ).toEqual(['flight_runtime::panic_task_rejection', 'flight_runtime::round', 'repeat_text']);
     expect(
       manifest.requirements.requirements.flatMap((requirement) =>
         requirement.kind === 'type' ? [requirement.targetName] : [],

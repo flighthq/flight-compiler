@@ -312,6 +312,8 @@ type RustAsyncTryAwaitFinalizerCompletionPlan = Exclude<
   Readonly<{ kind: 'straight' }>
 >;
 
+type RustTaskCarrierKind = 'flight-task' | 'mixed-task' | 'mixed-value' | 'native-future' | 'value';
+
 interface RustAsyncTryProtectedTaskReturnStep {
   readonly expression: Readonly<IrExpression>;
   readonly statement: Readonly<Extract<IrStatement, { kind: 'return' }>>;
@@ -1764,7 +1766,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
         emissionError(
           context,
-          'a native Rust future cannot enter a FlightTask carrier without the runtime ABI/2 task adapter',
+          'a native Rust future cannot enter a FlightTask carrier without the flight-rust-runtime-abi/3 FlightTask::from_future adapter',
           'rust-native-future-task-adapter-unavailable',
           'target-runtime',
         );
@@ -2758,9 +2760,9 @@ function countIrStatementBindingReferencesRust(statement: Readonly<IrStatement>,
   return count;
 }
 
-function isIrOneShotNativeFutureCallRust(
+function isIrExactNamedNativeFutureCallRust(
   call: Readonly<Extract<IrExpression, { kind: 'call' }>>,
-  consumer: Readonly<IrFunctionDeclaration>,
+  consumerTypeParameters: readonly IrTypeParameter[],
   context: EmitContext,
 ): boolean {
   if (
@@ -2769,7 +2771,7 @@ function isIrOneShotNativeFutureCallRust(
     call.arguments.some((argument) => argument.kind === 'spread') ||
     call.callee.kind !== 'identifier' ||
     call.callee.reference.kind !== 'binding' ||
-    consumer.typeParameters.length > 0
+    consumerTypeParameters.length > 0
   ) {
     return false;
   }
@@ -2788,6 +2790,25 @@ function isIrOneShotNativeFutureCallRust(
     return false;
   }
   return true;
+}
+
+function isIrOneShotNativeFutureCallRust(
+  call: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  consumer: Readonly<IrFunctionDeclaration>,
+  context: EmitContext,
+): boolean {
+  return isIrExactNamedNativeFutureCallRust(call, consumer.typeParameters, context);
+}
+
+function isIrProtectedNativeFutureAdapterCallRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> {
+  return (
+    expression.kind === 'call' &&
+    isIrNativeAsyncFunctionCallRust(expression, context) &&
+    isIrExactNamedNativeFutureCallRust(expression, context.activeTypeParameters, context)
+  );
 }
 
 function collectIrModuleOneShotNativeFutureLocalBindingIdsRust(
@@ -3079,48 +3100,43 @@ function emitImmediateAsyncClosureCallRust(
   ].join('\n');
 }
 
-function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+function getIrTaskCarrierKindRust(expression: Readonly<IrExpression>, context: EmitContext): RustTaskCarrierKind {
   switch (expression.kind) {
-    case 'identifier':
+    case 'identifier': {
+      if (!isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context))) return 'value';
+      return expression.reference.kind === 'binding' &&
+        context.nativeFutureLocalBindingIds.has(expression.reference.binding.id)
+        ? 'native-future'
+        : 'flight-task';
+    }
     case 'call':
-      return isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context));
+      if (isIrNativeAsyncFunctionCallRust(expression, context)) return 'native-future';
+      if (!isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context))) return 'value';
+      return 'flight-task';
     case 'cast':
-      return isIrTaskTypeRust(expression.type) && canIrExpressionDenoteTaskRust(expression.expression, context);
-    case 'conditional':
-      return (
-        canIrExpressionDenoteTaskRust(expression.whenTrue, context) &&
-        canIrExpressionDenoteTaskRust(expression.whenFalse, context)
-      );
+      return isIrTaskTypeRust(expression.type) ? getIrTaskCarrierKindRust(expression.expression, context) : 'value';
+    case 'conditional': {
+      const whenTrue = getIrTaskCarrierKindRust(expression.whenTrue, context);
+      const whenFalse = getIrTaskCarrierKindRust(expression.whenFalse, context);
+      if (whenTrue === whenFalse) return whenTrue;
+      const taskKinds: ReadonlySet<RustTaskCarrierKind> = new Set(['flight-task', 'mixed-task', 'native-future']);
+      return taskKinds.has(whenTrue) && taskKinds.has(whenFalse) ? 'mixed-task' : 'mixed-value';
+    }
     default:
-      return false;
+      return 'value';
   }
+}
+
+function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const carrier = getIrTaskCarrierKindRust(expression, context);
+  return carrier === 'flight-task' || carrier === 'mixed-task' || carrier === 'native-future';
 }
 
 function canIrExpressionDenoteProtectedFlightTaskRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): boolean {
-  switch (expression.kind) {
-    case 'identifier':
-      return isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context));
-    case 'call':
-      return (
-        !isIrNativeAsyncFunctionCallRust(expression, context) &&
-        isIrTaskTypeRust(inferIrExpressionTypeRust(expression, context))
-      );
-    case 'cast':
-      return (
-        isIrTaskTypeRust(expression.type) &&
-        canIrExpressionDenoteProtectedFlightTaskRust(expression.expression, context)
-      );
-    case 'conditional':
-      return (
-        canIrExpressionDenoteProtectedFlightTaskRust(expression.whenTrue, context) &&
-        canIrExpressionDenoteProtectedFlightTaskRust(expression.whenFalse, context)
-      );
-    default:
-      return false;
-  }
+  return getIrTaskCarrierKindRust(expression, context) === 'flight-task';
 }
 
 function getIrProtectedTaskExpressionTypeRust(
@@ -3140,13 +3156,9 @@ function getIrConditionalTaskDenotationRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): 'mixed' | 'task' | 'value' {
-  if (expression.kind === 'cast') return getIrConditionalTaskDenotationRust(expression.expression, context);
-  if (expression.kind !== 'conditional') {
-    return canIrExpressionDenoteTaskRust(expression, context) ? 'task' : 'value';
-  }
-  const whenTrue = getIrConditionalTaskDenotationRust(expression.whenTrue, context);
-  const whenFalse = getIrConditionalTaskDenotationRust(expression.whenFalse, context);
-  return whenTrue === whenFalse ? whenTrue : 'mixed';
+  const carrier = getIrTaskCarrierKindRust(expression, context);
+  if (carrier === 'value') return 'value';
+  return carrier === 'mixed-value' ? 'mixed' : 'task';
 }
 
 function hasIrContextualTaskObjectReturnRust(expression: Readonly<IrExpression>): boolean {
@@ -8708,6 +8720,10 @@ function emitAsyncTryCompletionReturnTypeRust(context: EmitContext): string {
   return context.returnsSharedClass ? `Rc<RefCell<${type}>>` : type;
 }
 
+function emitTaskRejectionPanicRust(error: string, context: EmitContext): string {
+  return `${context.options.runtimeCrate ?? 'flight_runtime'}::panic_task_rejection(${error})`;
+}
+
 function assertIrAsyncTryReturnAwaitCarrierRust(step: RustAsyncTryDirectAwaitStep, context: EmitContext): void {
   if (step.kind !== 'return') return;
   const valueType = getIrAsyncTrySettledValueTypeRust(step.awaitTarget, context);
@@ -8779,6 +8795,21 @@ function emitAsyncTryProtectedTaskOperandRust(expression: Readonly<IrExpression>
   return emitOwnedOperandRust(expression, context);
 }
 
+// A source async free-function call is an opaque, one-shot Rust future while ordinary Promise
+// values are FlightTask. Protected completion needs a reusable settlement carrier, so only the exact
+// named call shape whose complete owned signature is known is admitted through the runtime adapter.
+// Every excluded call/carrier shape still reaches ordinary expression emission and its existing
+// stable refusal instead of being silently widened here.
+function emitAsyncTrySettlementOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const carrier = getIrTaskCarrierKindRust(expression, context);
+  if (carrier === 'native-future' && isIrProtectedNativeFutureAdapterCallRust(expression, context)) {
+    context.runtimeTypeNames.add('FlightTask');
+    const future = emitOwnedOperandRust(expression, { ...context, allowedNativeFutureCall: expression });
+    return `FlightTask::from_future(${future})`;
+  }
+  return emitOwnedOperandRust(expression, context);
+}
+
 function emitAsyncTryProtectedTaskCatchRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
   plan: Readonly<RustAsyncTryProtectedTaskCatchPlan>,
@@ -8827,7 +8858,7 @@ function emitAsyncTryLocalTryCompletionRust(
     const step = getIrAsyncTryDirectAwaitStepRust(statement);
     if (step) {
       assertIrAsyncTrySettledStepCarrierRust(step, context);
-      const target = emitOwnedOperandRust(step.awaitTarget, context);
+      const target = emitAsyncTrySettlementOperandRust(step.awaitTarget, context);
       const error = getGeneratedTargetNameRust('try_error', context);
       if (step.kind === 'return') {
         const value = getGeneratedTargetNameRust('try_value', context);
@@ -8941,10 +8972,10 @@ function emitAsyncTryAwaitCatchCompletionRust(
     const second = plan.second;
     assertIrAsyncTrySettledStepCarrierRust(first, handlerContext);
     assertIrAsyncTrySettledStepCarrierRust(second, handlerContext);
-    const firstTarget = emitOwnedOperandRust(first.awaitTarget, handlerContext);
+    const firstTarget = emitAsyncTrySettlementOperandRust(first.awaitTarget, handlerContext);
     const firstError = getGeneratedTargetNameRust('catch_first_error', context);
     const firstValue = getGeneratedTargetNameRust('catch_first_value', context);
-    const secondTarget = emitOwnedOperandRust(second.awaitTarget, handlerContext);
+    const secondTarget = emitAsyncTrySettlementOperandRust(second.awaitTarget, handlerContext);
     const secondError = getGeneratedTargetNameRust('catch_second_error', context);
     const secondValue = getGeneratedTargetNameRust('catch_second_value', context);
     const secondFulfilled =
@@ -8981,7 +9012,7 @@ function emitAsyncTryAwaitCatchCompletionRust(
   }
   const step = plan.step;
   assertIrAsyncTrySettledStepCarrierRust(step, handlerContext);
-  const target = emitOwnedOperandRust(step.awaitTarget, handlerContext);
+  const target = emitAsyncTrySettlementOperandRust(step.awaitTarget, handlerContext);
   const error = getGeneratedTargetNameRust('catch_error', context);
   const value = getGeneratedTargetNameRust('catch_value', context);
   const fulfilled =
@@ -9013,10 +9044,10 @@ function emitAsyncTryAwaitedFinalizerCompletionRust(
     const second = plan.second;
     assertIrAsyncTrySettledStepCarrierRust(first, context);
     assertIrAsyncTrySettledStepCarrierRust(second, context);
-    const firstTarget = emitOwnedOperandRust(first.awaitTarget, context);
+    const firstTarget = emitAsyncTrySettlementOperandRust(first.awaitTarget, context);
     const firstError = getGeneratedTargetNameRust('finally_first_error', context);
     const firstValue = getGeneratedTargetNameRust('finally_first_value', context);
-    const secondTarget = emitOwnedOperandRust(second.awaitTarget, context);
+    const secondTarget = emitAsyncTrySettlementOperandRust(second.awaitTarget, context);
     const secondError = getGeneratedTargetNameRust('finally_second_error', context);
     const secondValue = getGeneratedTargetNameRust('finally_second_value', context);
     const secondSettlement = [
@@ -9051,7 +9082,7 @@ function emitAsyncTryAwaitedFinalizerCompletionRust(
   }
   const step = plan.step;
   assertIrAsyncTrySettledStepCarrierRust(step, context);
-  const target = emitOwnedOperandRust(step.awaitTarget, context);
+  const target = emitAsyncTrySettlementOperandRust(step.awaitTarget, context);
   const error = getGeneratedTargetNameRust('finally_error', context);
   const value = getGeneratedTargetNameRust('finally_value', context);
   return [
@@ -9132,7 +9163,7 @@ function emitAsyncTryCompletionDispatchRust(
     ...indentSourceLines([
       `Ok(Some(${value})) => return ${value},`,
       `Ok(None) => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
-      `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
+      `Err(${error}) => ${emitTaskRejectionPanicRust(error, context)},`,
     ]),
     '}',
   ];
@@ -9180,9 +9211,9 @@ function emitAsyncTryTwoAwaitRust(
   const preStatements = emitStatements(plan.preStatements, context);
   const firstSettlement = emitAsyncTrySettledStepRust(plan.first, context);
   const secondSettlement = emitAsyncTrySettledStepRust(plan.second, context);
-  const firstTarget = emitOwnedOperandRust(plan.first.awaitTarget, context);
+  const firstTarget = emitAsyncTrySettlementOperandRust(plan.first.awaitTarget, context);
   const betweenStatements = emitStatements(plan.betweenStatements, context);
-  const secondTarget = emitOwnedOperandRust(plan.second.awaitTarget, context);
+  const secondTarget = emitAsyncTrySettlementOperandRust(plan.second.awaitTarget, context);
   const postStatements = emitStatements(plan.postStatements, context);
   const catchStatements = emitStatementBody(catchClause.body, context);
   const secondMatch = [
@@ -9237,7 +9268,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
     return [
       ...emitStatements(variableAwait.preStatements, context),
-      `match ${emitOwnedOperandRust(variableAwait.awaitTarget, context)}.settle() {`,
+      `match ${emitAsyncTrySettlementOperandRust(variableAwait.awaitTarget, context)}.settle() {`,
       ...indentSourceLines([
         'Ok(__value) => {',
         ...indentSourceLines([
@@ -9257,7 +9288,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
     return [
       ...emitStatements(expressionAwait.preStatements, context),
-      `match ${emitOwnedOperandRust(expressionAwait.awaitTarget, context)}.settle() {`,
+      `match ${emitAsyncTrySettlementOperandRust(expressionAwait.awaitTarget, context)}.settle() {`,
       ...indentSourceLines([
         'Ok(_) => {',
         ...indentSourceLines(emitStatements(expressionAwait.postStatements, context)),
@@ -9310,7 +9341,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
   const settledAssignment = assignmentExpression
     ? emitAsyncTrySettledAssignmentRust(assignmentExpression, context)
     : undefined;
-  const settleExpr = `${emitOwnedOperandRust(awaitTarget, context)}.settle()`;
+  const settleExpr = `${emitAsyncTrySettlementOperandRust(awaitTarget, context)}.settle()`;
   const lines: string[] = [];
   lines.push(...emitStatements(preStatements, context));
   if (statement.catchClause) {
@@ -9349,7 +9380,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
       lines.push(
         ...indentSourceLines([
           'Ok(__value) => return __value,',
-          'Err(__error) => panic!("unhandled task rejection: {}", __error),',
+          `Err(__error) => ${emitTaskRejectionPanicRust('__error', context)},`,
         ]),
       );
       lines.push('}');
@@ -9363,7 +9394,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
           'Ok(__value) => {',
           ...indentSourceLines(okBody),
           '}',
-          'Err(__error) => panic!("unhandled task rejection: {}", __error),',
+          `Err(__error) => ${emitTaskRejectionPanicRust('__error', context)},`,
         ]),
       );
       lines.push('}');

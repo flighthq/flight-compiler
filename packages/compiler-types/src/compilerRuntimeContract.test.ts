@@ -40,27 +40,42 @@ describe('CompilerRuntimeAbiManifest', () => {
         requirements: [],
         schema: 'flight-rust-runtime-requirements/1',
         tasks: {
+          adapter: {
+            cancellation: 'drop-future-on-last-task-owner',
+            executor: 'local-eager',
+            future: "Future<Output = T> + 'static",
+            member: 'from_future',
+            ownership: 'consume-once',
+            rejection: {
+              panicFunction: 'flight_runtime::panic_task_rejection',
+              stringPanic: 'preserve-string',
+              taskRejection: 'preserve-string',
+              unknownPanic: 'native future panicked',
+            },
+            sharing: 'shared-settlement',
+            unwind: 'required',
+          },
           awaitBoundary: {
             cloneTrait: 'Clone',
             futureTrait: 'Future',
             repeatedAwait: 'clone-before-await',
           },
           readyMember: 'ready',
-          schema: 'flight-rust-runtime-task-requirements/1',
+          schema: 'flight-rust-runtime-task-requirements/2',
           settlement: {
             rejectionCarrier: 'String',
             result: 'Result<T, String>',
             settleMember: 'settle',
-            unhandledRejection: 'panic',
+            unhandledRejection: 'structured-panic',
           },
           taskType: 'FlightTask',
         },
         unsupportedCapabilities: [],
       },
-      schema: 'flight-rust-runtime-abi/2',
+      schema: 'flight-rust-runtime-abi/3',
     } as const satisfies CompilerRustRuntimeAbiManifest;
 
-    expect(manifest.schema).toBe('flight-rust-runtime-abi/2');
+    expect(manifest.schema).toBe('flight-rust-runtime-abi/3');
     expectTypeOf(manifest).toMatchTypeOf<CompilerRuntimeAbiManifest>();
   });
 });

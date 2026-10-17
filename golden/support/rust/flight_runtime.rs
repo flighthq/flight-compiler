@@ -4,8 +4,8 @@
 //
 // `FlightTask` is clonable and shared because the source language's `await` is: a promise settles
 // once and every await of it sees that settlement. A plain future is consumed by the first `.await`,
-// which is a different thing, so the contract's `first-call-wins` settlement is what makes the two
-// agree.
+// which is a different thing, so `from_future` consumes it once, starts it eagerly, and stores its
+// one settlement for every task clone.
 use std::cell::RefCell;
 use std::fmt;
 use std::future::Future;
@@ -14,35 +14,175 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-#[derive(Clone, Debug)]
-pub struct FlightTask<T: Clone>(Result<T, String>);
+#[derive(Debug)]
+struct FlightTaskRejection(String);
+
+struct FlightTaskState<T: Clone> {
+    future: Option<Pin<Box<dyn Future<Output = T>>>>,
+    polling: bool,
+    settlement: Option<Result<T, String>>,
+    waiters: Vec<Waker>,
+}
+
+#[derive(Clone)]
+pub struct FlightTask<T: Clone> {
+    state: Rc<RefCell<FlightTaskState<T>>>,
+}
 
 impl<T: Clone> FlightTask<T> {
     pub fn ready(value: T) -> Self {
-        FlightTask(Ok(value))
+        Self::from_settlement(Ok(value))
     }
+
     pub fn reject(error: impl Into<String>) -> Self {
-        FlightTask(Err(error.into()))
+        Self::from_settlement(Err(error.into()))
     }
+
+    /// Consumes one native future and eagerly polls it through its first suspension. Later polling or
+    /// settlement drives the same owned future on the calling thread; clones share the stored answer.
+    /// The runtime ABI requires panic=unwind so a task rejection inside the native future can be
+    /// recovered into the String rejection carrier instead of aborting the process.
+    pub fn from_future<F>(future: F) -> Self
+    where
+        F: Future<Output = T> + 'static,
+    {
+        let task = Self {
+            state: Rc::new(RefCell::new(FlightTaskState {
+                future: Some(Box::pin(future)),
+                polling: false,
+                settlement: None,
+                waiters: Vec::new(),
+            })),
+        };
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let _ = task.poll_settlement(&mut context);
+        task
+    }
+
     pub fn settle(self) -> Result<T, String> {
-        self.0
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(settlement) = self.poll_settlement(&mut context) {
+                return settlement;
+            }
+        }
+    }
+
+    fn from_settlement(settlement: Result<T, String>) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(FlightTaskState {
+                future: None,
+                polling: false,
+                settlement: Some(settlement),
+                waiters: Vec::new(),
+            })),
+        }
+    }
+
+    fn poll_settlement(&self, context: &mut Context<'_>) -> Poll<Result<T, String>> {
+        let mut future = {
+            let mut state = self.state.borrow_mut();
+            if let Some(settlement) = &state.settlement {
+                return Poll::Ready(settlement.clone());
+            }
+            if state.polling {
+                register_task_waiter(&mut state.waiters, context.waker());
+                return Poll::Pending;
+            }
+            state.polling = true;
+            state
+                .future
+                .take()
+                .expect("an unsettled FlightTask must own its native future")
+        };
+
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            future.as_mut().poll(context)
+        }));
+        let mut state = self.state.borrow_mut();
+        state.polling = false;
+        let settlement = match polled {
+            Ok(Poll::Pending) => {
+                state.future = Some(future);
+                register_task_waiter(&mut state.waiters, context.waker());
+                return Poll::Pending;
+            }
+            Ok(Poll::Ready(value)) => Ok(value),
+            Err(payload) => Err(native_future_panic_rejection(payload.as_ref())),
+        };
+        state.settlement = Some(settlement.clone());
+        let waiters = std::mem::take(&mut state.waiters);
+        drop(state);
+        for waiter in waiters {
+            waiter.wake();
+        }
+        Poll::Ready(settlement)
     }
 }
 
 impl<T: Clone> Future for FlightTask<T> {
     type Output = T;
-    fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
-        match &self.0 {
-            Ok(value) => Poll::Ready(value.clone()),
-            Err(e) => panic!("unhandled task rejection: {}", e),
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.poll_settlement(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(value)) => Poll::Ready(value),
+            Poll::Ready(Err(error)) => panic_task_rejection(error),
         }
     }
 }
 
-/// Drives a future to completion on the calling thread. A settled task never yields, so no scheduler
-/// is needed to observe the answer an emitted `async fn` produces.
+impl<T: Clone + fmt::Debug> fmt::Debug for FlightTask<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.state.borrow();
+        formatter
+            .debug_struct("FlightTask")
+            .field("settlement", &state.settlement)
+            .field("pending", &state.future.is_some())
+            .finish()
+    }
+}
+
+fn register_task_waiter(waiters: &mut Vec<Waker>, waiter: &Waker) {
+    if !waiters.iter().any(|candidate| candidate.will_wake(waiter)) {
+        waiters.push(waiter.clone());
+    }
+}
+
+fn native_future_panic_rejection(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(rejection) = payload.downcast_ref::<FlightTaskRejection>() {
+        return rejection.0.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_owned();
+    }
+    "native future panicked".to_owned()
+}
+
+pub fn panic_task_rejection(error: String) -> ! {
+    std::panic::panic_any(FlightTaskRejection(error))
+}
+
+pub fn task_rejection_message(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+    if let Some(rejection) = payload.downcast_ref::<FlightTaskRejection>() {
+        return Some(rejection.0.as_str());
+    }
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+}
+
+/// Drives a future to completion on the calling thread. This compiler-owned fixture deliberately
+/// uses one local polling loop; a downstream runtime supplies the wake-aware local executor named by
+/// the task ABI.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NOOP_WAKER_VTABLE)) };
+    let waker = noop_waker();
     let mut context = Context::from_waker(&waker);
     let mut pinned = Box::pin(future);
     loop {
@@ -50,6 +190,10 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             return value;
         }
     }
+}
+
+fn noop_waker() -> Waker {
+    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NOOP_WAKER_VTABLE)) }
 }
 
 pub fn round(value: f64) -> f64 {
