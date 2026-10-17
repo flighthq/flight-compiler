@@ -656,6 +656,127 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('composes fixed class ABI positions with trailing primitive parameter adjuncts', () => {
+    const provider = lower(
+      'mixed-class-provider.ts',
+      `export class Counter { value = 1; }
+       export function update(value: Counter, amount = 1, label?: string): void {
+         value.value += amount + (label === undefined ? 0 : 2);
+       }
+       export function echo(value: Counter | null, keep = true): Counter | null {
+         return keep ? value : null;
+       }`,
+    );
+    const consumer = lower(
+      'mixed-class-consumer.ts',
+      `import { Counter, echo, update } from './mixed-class-provider.js';
+       export function run(): boolean {
+         const value: Counter = new Counter();
+         update(value);
+         update(value, 2, "ok");
+         const present: Counter | null = echo(value);
+         const absent: Counter | null = echo(value, false);
+         return present === value && absent === null;
+       }`,
+    );
+    const moduleResolution = resolve('./mixed-class-provider.js', provider, consumer);
+    const plan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+    const providerPlan = getModulePlan(plan, provider);
+    const consumerPlan = getModulePlan(plan, consumer);
+
+    expect(providerPlan.refusals).toEqual([]);
+    expect(consumerPlan.refusals).toEqual([]);
+    for (const modulePlan of [providerPlan, consumerPlan]) {
+      expect(modulePlan.callables).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            binding: expect.objectContaining({ name: 'update' }),
+            parameters: [{ position: 0, representation: 'mutable-borrowed-class' }],
+          }),
+          expect.objectContaining({
+            binding: expect.objectContaining({ name: 'echo' }),
+            parameters: [{ position: 0, representation: 'optional-null-shared-ref-cell-class' }],
+            returns: 'optional-null-shared-ref-cell-class',
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('keeps flexible and nontrailing class-call shapes inside the stable refusal boundary', () => {
+    const cases = [
+      `class Counter { value = 1; }
+       function inspect(value: Counter, ...extras: number[]): number { return value.value + extras.length; }
+       export function run(): number { return inspect(new Counter()); }`,
+      `class Counter { value = 1; }
+       function inspect(value: Counter, extra?: number): number { return value.value; }
+       export function run(): number {
+         const values: [Counter, number] = [new Counter(), 1];
+         return inspect(...values);
+       }`,
+      `class Counter { value = 1; }
+       function inspect<Value>(value: Counter, extra?: Value): number { return value.value; }
+       export function run(): number { return inspect(new Counter()); }`,
+      `class Counter { value = 1; }
+       function inspect(value: Counter): number;
+       function inspect(value: Counter, extra?: number): number;
+       function inspect(value: Counter, extra?: number): number { return value.value; }
+       export function run(): number { return inspect(new Counter()); }`,
+      `class Counter { value = 1; }
+       async function inspect(value: Counter, extra?: number): Promise<number> { return value.value; }
+       export function run(): number { inspect(new Counter()); return 0; }`,
+      `class Counter { value = 1; }
+       function inspect(extra: number = 1, value: Counter): number { return value.value + extra; }
+       export function run(): number { return inspect(undefined, new Counter()); }`,
+      `class Counter { value = 1; }
+       function inspect(value: Counter, extra: number = value.value): number { return extra; }
+       export function run(): number { return inspect(new Counter()); }`,
+    ];
+
+    for (const [index, source] of cases.entries()) {
+      const module = lower(`mixed-class-refusal-${String(index)}.ts`, source);
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-call-unrepresented' })]),
+      );
+    }
+  });
+
+  it('refuses omitted and supplied optional or default class parameters alike', () => {
+    const module = lower(
+      'mixed-class-flexible-parameter-refusals.ts',
+      `class Counter { value = 1; }
+       function optionalOmitted(value?: Counter): number { return value === undefined ? 0 : value.value; }
+       function optionalSupplied(value?: Counter): number { return value === undefined ? 0 : value.value; }
+       function defaultOmitted(value: Counter = new Counter()): number { return value.value; }
+       function defaultSupplied(value: Counter = new Counter()): number { return value.value; }
+       export function run(): number {
+         optionalOmitted();
+         optionalSupplied(new Counter());
+         defaultOmitted();
+         return defaultSupplied(new Counter());
+       }`,
+    );
+    const refusals = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [module] }),
+      module,
+    ).refusals.filter(({ code }) => code === 'rust-reference-shared-class-call-unrepresented');
+
+    expect(refusals).toHaveLength(4);
+    expect(refusals.map(({ message }) => message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('optionalOmitted'),
+        expect.stringContaining('optionalSupplied'),
+        expect.stringContaining('defaultOmitted'),
+        expect.stringContaining('defaultSupplied'),
+      ]),
+    );
+  });
+
   it('keeps local and imported optional interfaces outside shared-class planning', () => {
     const provider = lower(
       'optional-interface-provider.ts',

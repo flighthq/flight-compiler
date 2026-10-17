@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendEmissionSession,
   CompilerBackendPackageGraphFinalization,
@@ -9816,6 +9816,121 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
           'optional_class_consumer',
           output,
           'assert!(optional_class_consumer::optional_class_imported_abi());',
+        ),
+      ).not.toThrow();
+    }
+  });
+
+  it('emits mixed fixed local class ABI with optional and default primitive adjuncts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mixed-class-local-abi.ts',
+        `class Counter { value = 1; }
+         function update(value: Counter, amount = 1, label?: string): void {
+           value.value += amount + (label === undefined ? 0 : 2);
+         }
+         function echo(value: Counter | undefined, keep = true): Counter | undefined {
+           return keep ? value : undefined;
+         }
+         export function mixedClassLocalAbi(): boolean {
+           const value: Counter = new Counter();
+           const alias: Counter = value;
+           update(alias);
+           update(alias, 2, "ok");
+           const present: Counter | undefined = echo(alias);
+           const absent: Counter | undefined = echo(alias, false);
+           return present === value && absent === undefined && value.value === 6;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn update(value: &mut Counter, amount: Option<f64>, label: Option<String>)');
+    expect(output).toContain(
+      'fn echo(value: Option<Rc<RefCell<Counter>>>, keep: Option<bool>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(output).toContain('update(&mut *alias.borrow_mut(), None, None)');
+    expect(output).toContain('update(&mut *alias.borrow_mut(), Some(2.0), Some("ok".to_owned()))');
+    expect(output).toContain('echo(Some(Rc::clone(&alias)), None)');
+    expect(output).toContain('echo(Some(Rc::clone(&alias)), Some(false))');
+    if (rustcAvailable) expect(() => runRustSource(output, 'assert!(mixed_class_local_abi());')).not.toThrow();
+  });
+
+  it('emits mixed fixed imported class ABI with optional and default primitive adjuncts', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/mixed-class-provider.ts',
+      `export class Counter { value = 1; }
+       export function update(value: Counter, amount = 1, label?: string): void {
+         value.value += amount + (label === undefined ? 0 : 2);
+       }
+       export function echo(value: Counter | null, keep = true): Counter | null {
+         return keep ? value : null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/mixed-class-consumer.ts',
+      `import { Counter, echo, update } from './mixed-class-provider.js';
+       export function mixedClassImportedAbi(): boolean {
+         const value: Counter = new Counter();
+         update(value);
+         update(value, 2, "ok");
+         const present: Counter | null = echo(value);
+         const absent: Counter | null = echo(value, false);
+         return present === value && absent === null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Mixed-class-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/mixed-class-consumer.ts',
+          },
+          specifier: './mixed-class-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/mixed-class-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn update(value: &mut Counter, amount: Option<f64>, label: Option<String>)');
+    expect(providerOutput).toContain(
+      'pub fn echo(value: Option<Rc<RefCell<Counter>>>, keep: Option<bool>) -> Option<Rc<RefCell<Counter>>>',
+    );
+    expect(output).toContain('update(&mut *value.borrow_mut(), None, None)');
+    expect(output).toContain('update(&mut *value.borrow_mut(), Some(2.0), Some("ok".to_owned()))');
+    expect(output).toContain('echo(Some(Rc::clone(&value)), None)');
+    expect(output).toContain('echo(Some(Rc::clone(&value)), Some(false))');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair(
+          'mixed_class_provider',
+          providerOutput,
+          'mixed_class_consumer',
+          output,
+          'assert!(mixed_class_consumer::mixed_class_imported_abi());',
         ),
       ).not.toThrow();
     }

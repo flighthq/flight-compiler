@@ -721,7 +721,13 @@ function addRustReferenceClassCallPlan(
   for (const position of getRustReferenceAnyClassParameterPositions(target, targetModule)) {
     if (positions.has(position) || optionalPositions.has(position)) continue;
     const argument = call.arguments[position];
-    if (!argument || !isRustReferenceClassExpression(argument, module)) continue;
+    const parameter = target.declaration.parameters[position];
+    const excludedFlexibleClassParameter = Boolean(
+      parameter && (parameter.initializer || parameter.optional || parameter.rest),
+    );
+    if (!excludedFlexibleClassParameter && (!argument || !isRustReferenceClassExpression(argument, module))) {
+      continue;
+    }
     addRustReferenceRefusal(
       refusals,
       'rust-reference-shared-class-call-unrepresented',
@@ -3469,7 +3475,7 @@ function getRustReferenceClassReturnCarrier(
     declaration.overloads.length > 0 ||
     declaration.typeParameters.length > 0 ||
     (carrier?.representation !== 'shared-ref-cell-class' &&
-      declaration.parameters.some((parameter) => parameter.initializer || parameter.optional || parameter.rest)) ||
+      !isRustReferenceMixedFixedClassAbiShapeSupported(function_, module, modules, moduleResolution)) ||
     !carrier
   ) {
     return undefined;
@@ -3651,12 +3657,7 @@ function getRustReferenceOptionalClassParameterPlans(
   RustSharedClassCarrierType & Readonly<{ representation: RustOptionalSharedClassRepresentation }>
 > {
   const declaration = function_.declaration;
-  if (
-    declaration.async ||
-    declaration.overloads.length > 0 ||
-    declaration.typeParameters.length > 0 ||
-    declaration.parameters.some((parameter) => parameter.initializer || parameter.optional || parameter.rest)
-  ) {
+  if (!isRustReferenceMixedFixedClassAbiShapeSupported(function_, module, modules, moduleResolution)) {
     return new Map();
   }
   return new Map(
@@ -3679,10 +3680,7 @@ function isRustReferenceClassBorrowPositionSupported(
   const parameter = declaration.parameters[position];
   if (
     !parameter ||
-    declaration.async ||
-    declaration.overloads.length > 0 ||
-    declaration.typeParameters.length > 0 ||
-    declaration.parameters.some((candidate) => candidate.initializer || candidate.optional || candidate.rest) ||
+    !isRustReferenceMixedFixedClassAbiShapeSupported(function_, module, modules, moduleResolution) ||
     !isRustSharedClassTypeSupported(parameter.type, module, modules, moduleResolution)
   ) {
     return false;
@@ -3747,6 +3745,67 @@ function isRustReferenceClassBorrowPositionSupported(
       )
     );
   });
+}
+
+type RustReferenceMixedFixedClassAbiParameterShape = 'fixed' | 'fixed-class' | 'primitive-adjunct' | 'unsupported';
+
+function getRustReferenceMixedFixedClassAbiParameterShape(
+  parameter: Readonly<IrFunctionDeclaration['parameters'][number]>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): RustReferenceMixedFixedClassAbiParameterShape {
+  if (parameter.rest) return 'unsupported';
+  if (isRustPotentialClassParameterType(parameter.type, module.module, module.classBindingIds)) {
+    return !parameter.initializer &&
+      !parameter.optional &&
+      getRustSharedClassCarrierType(parameter.type, module, modules, moduleResolution)
+      ? 'fixed-class'
+      : 'unsupported';
+  }
+  if (!parameter.initializer && !parameter.optional) return 'fixed';
+  if (!isRustSimpleClassPrimitiveType(parameter.type)) return 'unsupported';
+  if (!parameter.initializer) return 'primitive-adjunct';
+  const initializerType = getRustSimpleClassPrimitiveExpressionType(parameter.initializer, module);
+  return initializerType?.name === parameter.type.name &&
+    !hasRustReferenceClassBindingInExpression(parameter.initializer, module)
+    ? 'primitive-adjunct'
+    : 'unsupported';
+}
+
+function hasRustReferenceClassBindingInExpression(
+  expression: Readonly<IrExpression>,
+  module: RustReferenceModuleRecord,
+): boolean {
+  let found = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      const type = getRustReferenceClassIdentityExpressionType(candidate, module);
+      if (type && getRustSharedClassCarrierTypeCandidate(type, module.module, module.classBindingIds)) {
+        found = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return found;
+}
+
+function isRustReferenceMixedFixedClassAbiShapeSupported(
+  function_: RustReferenceFunctionRecord,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  const declaration = function_.declaration;
+  if (declaration.async || declaration.overloads.length > 0 || declaration.typeParameters.length > 0) return false;
+  let inPrimitiveAdjunctSuffix = false;
+  for (const parameter of declaration.parameters) {
+    const shape = getRustReferenceMixedFixedClassAbiParameterShape(parameter, module, modules, moduleResolution);
+    if (shape === 'unsupported' || (inPrimitiveAdjunctSuffix && shape !== 'primitive-adjunct')) return false;
+    if (shape === 'primitive-adjunct') inPrimitiveAdjunctSuffix = true;
+  }
+  return true;
 }
 
 function getRustReferenceAnyClassParameterPositions(

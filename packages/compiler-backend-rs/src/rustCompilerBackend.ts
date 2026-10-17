@@ -3296,24 +3296,33 @@ function emitCallArgumentsRust(
   }
   assertRustCallArgumentsMatchUnionParametersRust(expression, context);
   const borrowed = getIrCallBorrowedRepresentationsRust(expression, context);
+  const emitPlannedArgument = (argument: Readonly<IrExpression>, index: number): string => {
+    const representation = borrowed.get(index);
+    return isRustOptionalSharedClassRepresentation(representation)
+      ? emitSharedClassCarrierExpressionRust(argument, representation, context)
+      : representation === 'borrowed-class'
+        ? emitBorrowedClassOperandRust(argument, context)
+        : representation || isIrLocalCallReferentMutatedParameterRust(expression, index, context)
+          ? emitLentOperandRust(argument, context)
+          : emitOwnedOperandRust(argument, context);
+  };
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
   if (!defaults && !optionals) {
-    return expression.arguments.map((argument, index) => {
-      const representation = borrowed.get(index);
-      return isRustOptionalSharedClassRepresentation(representation)
-        ? emitSharedClassCarrierExpressionRust(argument, representation, context)
-        : representation === 'borrowed-class'
-          ? emitBorrowedClassOperandRust(argument, context)
-          : representation || isIrLocalCallReferentMutatedParameterRust(expression, index, context)
-            ? emitLentOperandRust(argument, context)
-            : emitOwnedOperandRust(argument, context);
-    });
+    return expression.arguments.map(emitPlannedArgument);
   }
   const plan = defaults ?? optionals;
   if (!plan) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
-  if (plan.providedArgumentCount === 'dynamic') {
+  if (defaults?.providedArgumentCount === 'dynamic' || optionals?.providedArgumentCount === 'dynamic') {
     emissionError(context, 'spread calls into optional or default parameters require Rust ABI expansion lowering');
+  }
+  if (
+    defaults &&
+    optionals &&
+    (defaults.parameterCount !== optionals.parameterCount ||
+      defaults.providedArgumentCount !== optionals.providedArgumentCount)
+  ) {
+    emissionError(context, 'optional and default parameter call evidence has incompatible fixed arity');
   }
   if (expression.arguments.length > plan.parameterCount) {
     emissionError(context, 'extra JavaScript call arguments require Rust ABI erasure lowering');
@@ -3331,7 +3340,7 @@ function emitCallArgumentsRust(
     }
     const providedEvidence = defaultProvided.get(index) ?? optionalProvided.get(index);
     if (providedEvidence?.value === 'undefined' || argument.kind === 'undefinedValue') return 'None';
-    const emitted = emitExpression(argument, context);
+    const emitted = emitPlannedArgument(argument, index);
     const optionalEvidence = optionalProvided.get(index);
     if (optionalEvidence && hasIrTypeNullMemberRust(optionalEvidence.parameterType)) {
       return isNullableType(optionalEvidence.argumentType) ? `Some(${emitted})` : `Some(Some(${emitted}))`;
