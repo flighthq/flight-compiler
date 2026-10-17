@@ -7811,9 +7811,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('42.0');
   });
 
-  it('refuses a module string literal that would allocate inside a Rust const item', () => {
+  it('refuses a computed module string that is not one exact literal', () => {
     const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(lower('str-lit.ts', 'export const GREETING: string = "hello";').module),
+      emitIrModuleRust(lower('str-lit.ts', 'export const GREETING: string = `hi ${1}`;').module),
     );
     expect(failure.rule).toBe('rust-module-constant-initializer-unsupported');
     expect(failure.message).toContain('module constant GREETING');
@@ -8028,6 +8028,214 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const output = emitIrModuleRust(lower('module-const.ts', 'export const PI: number = 3.14159;').module).contents;
     expect(output).toContain('pub const');
     expect(output).toContain('3.14159');
+  });
+
+  it('emits literal module string constants as static str with owned reads', () => {
+    const result = lower(
+      'module-string.ts',
+      `export const GREETING: string = "hello";
+       export const TEMPLATE: string = \`world\`;
+       const PRIVATE: string = "secret";
+       function take(value: string): string { return value; }
+       export function greet(): string { return GREETING; }
+       export function template(): string { return TEMPLATE; }
+       export function privateRead(): string { return PRIVATE; }
+       export function call(): string { return take(GREETING); }
+       export function join(name: string): string { return GREETING + " " + name; }
+       export function same(name: string): boolean { return GREETING === name; }
+       export function field(): string { const box: { value: string } = { value: GREETING }; return box.value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub const GREETING: &\'static str = "hello";');
+    expect(output).toContain('pub const TEMPLATE: &\'static str = "world";');
+    expect(output).toContain('const PRIVATE: &\'static str = "secret";');
+    expect(output).toContain('return GREETING.to_owned();');
+    expect(output).toContain('return TEMPLATE.to_owned();');
+    expect(output).toContain('return PRIVATE.to_owned();');
+    expect(output).toContain('return take(GREETING.to_owned());');
+    expect(output).toContain('format!("{} {}", GREETING.to_owned(), name)');
+    expect(output).toContain('GREETING.to_owned() == name');
+    expect(output).toContain('value: GREETING.to_owned()');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('adapts imported, aliased, re-exported, and namespace string constant reads', () => {
+    const provider = lower(
+      'string-provider.ts',
+      `export const GREETING: string = "hello";
+       export { GREETING as SALUTE };`,
+    ).module;
+    const barrel = lower(
+      'string-barrel.ts',
+      `export * from './string-provider.js';
+       export { GREETING as BARREL_GREETING } from './string-provider.js';`,
+    ).module;
+    const consumer = lower(
+      'string-consumer.ts',
+      `import { GREETING, SALUTE } from './string-provider.js';
+       import { BARREL_GREETING } from './string-barrel.js';
+       import * as ns from './string-provider.js';
+       export function direct(): string { return GREETING; }
+       export function aliased(): string { return SALUTE; }
+       export function barrelled(): string { return BARREL_GREETING; }
+       export function namespaced(): string { return ns.GREETING; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './string-provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './string-barrel.js',
+            target: getRustTestModuleIdentity(barrel),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './string-provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [provider, barrel, consumer],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('return GREETING.to_owned();');
+    expect(output).toContain('return SALUTE.to_owned();');
+    expect(output).toContain('return BARRELGREETING.to_owned();');
+    expect(output).toContain('return ns::GREETING.to_owned();');
+  });
+
+  it('keeps collision-safe target names for string constants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-collision.ts',
+        `export const greet: string = "a";
+         export const GREET: number = 1;
+         export function readText(): string { return greet; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toMatch(/const GREET(?:_2)?: &'static str = "a";/u);
+    expect(output).toMatch(/const GREET(?:_2)?: f64 = 1\.0;/u);
+    expect(output).toContain('return GREET');
+  });
+
+  it.each([
+    {
+      name: 'an interpolated template',
+      source: 'export const GREETING: string = `hi ${1}`;',
+    },
+    {
+      name: 'a concatenation',
+      source: 'export const GREETING: string = "a" + "b";',
+    },
+    {
+      name: 'a chained constant',
+      source: "export const BASE: string = 'a'; export const GREETING: string = BASE;",
+    },
+    {
+      name: 'a cast',
+      source: 'export const GREETING: string = "a" as string;',
+    },
+    {
+      name: 'a call',
+      source: 'function seed(): string { return "a"; } export const GREETING: string = seed();',
+    },
+  ])('refuses $name with the module constant rule', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('string-refused.ts', source).module))).toBe(
+      'rust-module-constant-initializer-unsupported',
+    );
+  });
+
+  it('keeps a mutable module string on the synchronization rule', () => {
+    expect(
+      getEmissionRule(() => emitIrModuleRust(lower('string-mutable.ts', 'export let GREETING: string = "a";').module)),
+    ).toBe('rust-module-variable-synchronization-unsupported');
+  });
+
+  it('salvages an unrelated declaration while keeping the string constant and its read', () => {
+    const module = lower(
+      'string-salvage.ts',
+      `export const GREETING: string = "hello";
+       interface Point { value: number }
+       export function greet(): string { return GREETING; }
+       export function wrong(point: Point): number { return point as number; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'record assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'record assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('pub const GREETING: &\'static str = "hello";');
+    expect(placeholder.contents).toContain('return GREETING.to_owned();');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function greet');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 4');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a two-module crate whose consumer reads an imported string constant', () => {
+    const provider = lower('string-native-provider.ts', 'export const GREETING: string = "hello";').module;
+    const consumer = lower(
+      'string-native-consumer.ts',
+      `import { GREETING } from './string-native-provider.js';
+       export function greet(): string { return GREETING; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './string-native-provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [provider, consumer],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([provider, consumer]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [provider, consumer].map((module) => ({
+        file: session.emitModule(module)[0]!,
+        module: getRustTestModuleIdentity(module),
+      })),
+    });
+    const files = [
+      ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
+      ...finalized.packageFiles.map(({ file }) => file),
+    ];
+
+    runRustSourceTree(files, 'assert_eq!(string_native_consumer::greet(), "hello".to_owned());');
   });
 
   it('emits class getter and setter as separate methods', () => {

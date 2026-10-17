@@ -46,6 +46,23 @@ describe('createCompilerRustModuleConstantPlan', () => {
     expect(modulePlan.bindings[1]?.dependencies).toEqual([modulePlan.bindings[0]?.bindingId]);
   });
 
+  it('accepts exact literal strings and no-substitution templates as literal-string constants', () => {
+    const module = lower(
+      'strings.ts',
+      `export const plain: string = 'hello';
+       export const template: string = \`world\`;`,
+    );
+    const plan = getModulePlan(createCompilerRustModuleConstantPlan({ modules: [module] }).modules, module);
+
+    expect(plan.refusals).toEqual([]);
+    expect(plan.bindings.map(({ capability, scalar, dependencies }) => ({ capability, dependencies, scalar }))).toEqual(
+      [
+        { capability: 'literal-string-constant', dependencies: [], scalar: 'string' },
+        { capability: 'literal-string-constant', dependencies: [], scalar: 'string' },
+      ],
+    );
+  });
+
   it('refuses forward and unsupported local dependencies transitively', () => {
     const module = lower(
       'dependencies.ts',
@@ -290,8 +307,19 @@ export function read(): number { return imported.length; }`;
 
   it('refuses allocation, identity, calls, closures, and unapproved operators while preserving the array rule', () => {
     const cases = [
-      ['string.ts', "export const value: string = 'hello';", 'rust-module-constant-initializer-unsupported'],
-      ['template.ts', 'export const value: string = `hello`;', 'rust-module-constant-initializer-unsupported'],
+      ['interpolated.ts', 'export const value: string = `hello ${1}`;', 'rust-module-constant-initializer-unsupported'],
+      ['concatenated.ts', "export const value: string = 'a' + 'b';", 'rust-module-constant-initializer-unsupported'],
+      [
+        'chained.ts',
+        "export const base: string = 'a'; export const value: string = base;",
+        'rust-module-constant-initializer-unsupported',
+      ],
+      ['cast.ts', "export const value: string = 'a' as string;", 'rust-module-constant-initializer-unsupported'],
+      [
+        'call.ts',
+        "function seed(): string { return 'a'; } export const value: string = seed();",
+        'rust-module-constant-initializer-unsupported',
+      ],
       [
         'object.ts',
         'export const value: { count: number } = { count: 1 };',

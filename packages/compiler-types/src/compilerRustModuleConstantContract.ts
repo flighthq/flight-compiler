@@ -3,11 +3,11 @@ import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionCon
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerIrTraversalPath } from './compilerTraversalObserverContract.js';
 
-export type CompilerRustModuleConstantScalar = 'boolean' | 'number';
+export type CompilerRustModuleConstantScalar = 'boolean' | 'number' | 'string';
 
 export interface CompilerRustModuleConstantBindingPlan {
   readonly bindingId: string;
-  readonly capability: 'primitive-const-expression';
+  readonly capability: 'literal-string-constant' | 'primitive-const-expression';
   readonly declarationPath: CompilerIrTraversalPath;
   readonly dependencies: readonly string[];
   readonly scalar: CompilerRustModuleConstantScalar;

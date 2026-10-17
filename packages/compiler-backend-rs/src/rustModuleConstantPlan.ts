@@ -182,6 +182,29 @@ function createRustModuleConstantModulePlan(
       refusalById.set(refusal.bindingId, refusal);
       continue;
     }
+    if (scalar === 'string') {
+      if (declaration.initializer.kind === 'literal' && typeof declaration.initializer.value === 'string') {
+        const binding: CompilerRustModuleConstantBindingPlan = {
+          bindingId: declaration.binding.id,
+          capability: 'literal-string-constant',
+          declarationPath,
+          dependencies: [],
+          scalar,
+        };
+        bindings.push(binding);
+        bindingById.set(binding.bindingId, binding);
+        continue;
+      }
+      const refusal = createRustModuleConstantRefusal(
+        declaration,
+        declarationPath,
+        'unsupported-expression',
+        'its initializer is not one exact string literal',
+      );
+      refusals.push(refusal);
+      refusalById.set(refusal.bindingId, refusal);
+      continue;
+    }
     const decision = classifyRustModuleConstantExpression(declaration.initializer, module, {
       ...context,
       bindingById,
@@ -603,7 +626,9 @@ function getRustModuleConstantDeclaredScalar(
   declaration: RustNamedModuleConstant,
 ): CompilerRustModuleConstantScalar | undefined {
   if (declaration.type?.kind !== 'primitive') return undefined;
-  return declaration.type.name === 'boolean' || declaration.type.name === 'number' ? declaration.type.name : undefined;
+  return declaration.type.name === 'boolean' || declaration.type.name === 'number' || declaration.type.name === 'string'
+    ? declaration.type.name
+    : undefined;
 }
 
 function isRustModuleArrayIdentity(declaration: RustNamedModuleVariable): boolean {

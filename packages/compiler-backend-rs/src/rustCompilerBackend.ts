@@ -503,8 +503,10 @@ interface EmitContext {
   // Declarations this module exports through `export { name }`: the IR records the local export
   // entry rather than a second exported flag on the declaration.
   moduleExportBindingIds: ReadonlySet<string>;
+  stringConstantReadBindingIds: ReadonlySet<string>;
   moduleArrayImportRefusals: ReadonlyMap<string, Readonly<CompilerRustModuleArrayImportRefusal>>;
   moduleConstantBindings: ReadonlyMap<string, Readonly<CompilerRustModuleConstantBindingPlan>>;
+  moduleConstantPlan: Readonly<CompilerRustModuleConstantPlan>;
   moduleConstantRefusals: ReadonlyMap<string, Readonly<CompilerRustModuleConstantRefusal>>;
   moduleStateBindings: ReadonlyMap<string, RustModuleStateEmission>;
   classBindingNames: ReadonlyMap<string, string>;
@@ -1099,7 +1101,14 @@ function emitIrModuleRustWithContext(
     moduleExportBindingIds,
     moduleArrayImportRefusals,
     moduleConstantBindings,
+    moduleConstantPlan,
     moduleConstantRefusals,
+    stringConstantReadBindingIds: collectRustStringConstantReadBindingIdsRust(
+      module,
+      moduleConstantPlan,
+      contextSourceModules,
+      moduleResolution,
+    ),
     moduleStateBindings,
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
@@ -2772,7 +2781,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const sharedClassField = emitSharedClassFieldRust(expression, context);
       if (sharedClassField) return sharedClassField;
       const namespaceImportMember = getRustNamespaceImportMemberRust(expression.object, expression.name, context);
-      if (namespaceImportMember !== undefined) return namespaceImportMember;
+      if (namespaceImportMember !== undefined) {
+        return isRustStringConstantNamespaceMemberRust(expression.object, expression.name, context)
+          ? `${namespaceImportMember}.to_owned()`
+          : namespaceImportMember;
+      }
       const namespaceMember = expression.namespaceMember;
       if (namespaceMember?.kind === 'binding') {
         const owner = context.numericEnumNamespaceNames.get(namespaceMember.binding.id);
@@ -5580,7 +5593,8 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
       ? recordRuntimeTypeRust(targetName, context)
       : targetName;
   }
-  return getBindingTargetNameRust(reference.binding, context);
+  const target = getBindingTargetNameRust(reference.binding, context);
+  return context.stringConstantReadBindingIds.has(reference.binding.id) ? `${target}.to_owned()` : target;
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
@@ -8146,6 +8160,14 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
   // The arm projection already borrows the carrier and clones the selected payload. Treating the
   // source binding as moved would clone that new owned payload a second time.
   if (nominalExtraction) return source;
+  // A string constant read already produced a fresh owned String in its adaptation.
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.stringConstantReadBindingIds.has(expression.reference.binding.id)
+  ) {
+    return source;
+  }
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
@@ -14643,6 +14665,26 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   if (refusal) emissionRuleError(context, refusal.message, refusal.code);
   const plan = context.moduleConstantBindings.get(declaration.binding.id);
   const declarationIndex = context.module.declarations.indexOf(declaration);
+  if (plan?.capability === 'literal-string-constant') {
+    if (
+      plan.declarationPath.length !== 2 ||
+      plan.declarationPath[0] !== 'declarations' ||
+      plan.declarationPath[1] !== declarationIndex ||
+      declaration.type.kind !== 'primitive' ||
+      declaration.type.name !== 'string' ||
+      declaration.initializer.kind !== 'literal' ||
+      typeof declaration.initializer.value !== 'string'
+    ) {
+      emissionRuleError(
+        context,
+        `module constant ${declaration.binding.name} has no matching literal string constant proof`,
+        'rust-module-constant-initializer-unsupported',
+      );
+    }
+    return [
+      `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: &'static str = ${JSON.stringify(declaration.initializer.value)};`,
+    ];
+  }
   if (
     !plan ||
     plan.capability !== 'primitive-const-expression' ||
@@ -14692,6 +14734,144 @@ function emitModuleStateDeclarationRust(state: Readonly<RustModuleStateEmission>
     '}',
   );
   return lines;
+}
+
+// A string constant is emitted as `&'static str`; every value read must adapt into the owned String
+// carrier. Classification follows the same export lane the emitted `use` item does, so a read is
+// adapted exactly when the binding it names resolves to one planned literal string constant.
+function collectRustStringConstantReadBindingIdsRust(
+  module: Readonly<IrModule>,
+  plan: Readonly<CompilerRustModuleConstantPlan>,
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  const localPlan = plan.modules.find((candidate) => isRustCompilerModuleIdentityEqual(candidate.module, module));
+  for (const binding of localPlan?.bindings ?? []) {
+    if (binding.capability === 'literal-string-constant') ids.add(binding.bindingId);
+  }
+  for (const imported of module.imports) {
+    if (imported.typeOnly) continue;
+    for (const binding of imported.bindings) {
+      if (binding.typeOnly || binding.imported === '*' || binding.imported === 'default') continue;
+      const target = resolveImportModuleFromGraphRust(
+        imported.specifier,
+        binding.imported,
+        moduleResolution,
+        modules,
+        module,
+      );
+      if (!target) continue;
+      const location = resolveRustStringConstantProviderRust(
+        target,
+        binding.imported,
+        modules,
+        moduleResolution,
+        new Set(),
+      );
+      if (location && isRustPlannedStringConstantProviderRust(plan, location)) {
+        ids.add(binding.binding.id);
+      }
+    }
+  }
+  return ids;
+}
+
+interface RustStringConstantProviderLocation {
+  readonly bindingId: string;
+  readonly module: Readonly<IrModule>;
+}
+
+function resolveRustStringConstantProviderRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  visited: ReadonlySet<string>,
+): RustStringConstantProviderLocation | undefined {
+  const key = `${getRustModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return undefined;
+  const nextVisited = new Set(visited).add(key);
+  const direct = module.declarations.flatMap((declaration): RustStringConstantProviderLocation[] =>
+    declaration.kind === 'variable' &&
+    'binding' in declaration &&
+    declaration.exported &&
+    declaration.binding.name === exportedName
+      ? [{ bindingId: declaration.binding.id, module }]
+      : [],
+  );
+  const local = module.exports.flatMap((entry): RustStringConstantProviderLocation[] => {
+    if (entry.kind !== 'local' || entry.typeOnly || entry.exported !== exportedName) return [];
+    const declaration = module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'variable' && 'binding' in candidate && candidate.binding.id === entry.binding.id,
+    );
+    return declaration && 'binding' in declaration ? [{ bindingId: declaration.binding.id, module }] : [];
+  });
+  const forwarded = module.exports.flatMap((entry): RustStringConstantProviderLocation[] => {
+    if (entry.kind !== 'all' && entry.kind !== 'reexport') return [];
+    if (entry.typeOnly) return [];
+    const importedName =
+      entry.kind === 'all' ? exportedName : entry.exported === exportedName ? entry.imported : undefined;
+    if (!importedName) return [];
+    const target = resolveImportModuleFromGraphRust(entry.specifier, importedName, moduleResolution, modules, module);
+    const location = target
+      ? resolveRustStringConstantProviderRust(target, importedName, modules, moduleResolution, nextVisited)
+      : undefined;
+    return location ? [location] : [];
+  });
+  const unique = [
+    ...new Map(
+      [...direct, ...local, ...forwarded].map((location) => [
+        `${getRustModuleIdentityKey(location.module)}\0${location.bindingId}`,
+        location,
+      ]),
+    ).values(),
+  ];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
+function isRustPlannedStringConstantProviderRust(
+  plan: Readonly<CompilerRustModuleConstantPlan>,
+  location: RustStringConstantProviderLocation,
+): boolean {
+  const providerPlan = plan.modules.find((candidate) =>
+    isRustCompilerModuleIdentityEqual(candidate.module, location.module),
+  );
+  return (
+    providerPlan?.bindings.some(
+      (binding) => binding.bindingId === location.bindingId && binding.capability === 'literal-string-constant',
+    ) ?? false
+  );
+}
+
+function isRustStringConstantNamespaceMemberRust(
+  object: Readonly<IrExpression>,
+  member: string,
+  context: EmitContext,
+): boolean {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return false;
+  const bindingId = object.reference.binding.id;
+  const imported = context.module.imports.find((item) =>
+    item.bindings.some((candidate) => candidate.binding.id === bindingId && candidate.imported === '*'),
+  );
+  if (!imported) return false;
+  const target = resolveImportModuleFromGraphRust(
+    imported.specifier,
+    member,
+    context.moduleResolution,
+    context.sourceModules,
+    context.module,
+  );
+  if (!target) return false;
+  const location = resolveRustStringConstantProviderRust(
+    target,
+    member,
+    context.sourceModules,
+    context.moduleResolution,
+    new Set(),
+  );
+  return location ? isRustPlannedStringConstantProviderRust(context.moduleConstantPlan, location) : false;
 }
 
 function refuseRustModuleVariableSynchronization(binding: Readonly<IrBindingIdentity>, context: EmitContext): never {
