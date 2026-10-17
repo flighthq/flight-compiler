@@ -528,6 +528,64 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     expect('result' in second ? second.result.compilation.files : []).toEqual(files);
   });
 
+  const directoryIndex = {
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource(
+      '/flight/packages/math/src/geometry/index.ts',
+      'export function convert(value: unknown): { value: number } { return value as { value: number }; }',
+    ),
+    upstreamDirectory: '/flight',
+  };
+  const directoryChild = {
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource('/flight/packages/math/src/geometry/tools.ts', 'export const answer = 1;'),
+    upstreamDirectory: '/flight',
+  };
+  const compileDirectoryIndexPlaceholder = (sources: readonly (typeof directoryIndex)[]) =>
+    compileTypeScriptPackageGraph({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      bestEffort: true,
+      graph: {
+        entries: [{ name: 'Tools', packageName: '@scope/math', source: 'packages/math/src/geometry/tools.ts' }],
+        moduleDependencies: [],
+        packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources,
+    });
+
+  it('declares emitted children inside a refused directory-index placeholder', () => {
+    const first = compileDirectoryIndexPlaceholder([directoryIndex, directoryChild]);
+    const second = compileDirectoryIndexPlaceholder([directoryChild, directoryIndex]);
+
+    expect(second.compilation.files).toEqual(first.compilation.files);
+    expect(first.compilation.files.map((file) => file.path)).toEqual([
+      'geometry/mod.rs',
+      'geometry/tools.rs',
+      'lib.rs',
+    ]);
+    const placeholder = first.compilation.files.find((file) => file.path === 'geometry/mod.rs');
+    expect(placeholder?.contents).toContain('pub mod tools;');
+    expect(placeholder?.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
+    expect(first.report.bestEffort?.modules).toContainEqual(
+      expect.objectContaining({ path: 'geometry/mod.rs', status: 'refused-placeholder' }),
+    );
+    expect(first.report.bestEffort?.modules).toContainEqual(
+      expect.objectContaining({ path: 'geometry/tools.rs', status: 'emitted' }),
+    );
+  });
+
+  it.skipIf(!rustcAvailable)(
+    'compiles a finalized tree whose refused directory-index placeholder declares its emitted children',
+    () => {
+      const result = compileDirectoryIndexPlaceholder([directoryIndex, directoryChild]);
+      compileFinalizedRustSourceTree(result.compilation.files);
+    },
+  );
+
   it('attributes an import of a module outside the requested emit paths to selection', () => {
     const outcome = rustBestEffortRun([consumer, provider], ['packages/math/src/consumer.ts']);
     const failure = 'error' in outcome ? outcome.error : undefined;

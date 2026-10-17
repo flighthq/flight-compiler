@@ -433,10 +433,60 @@ describe('createRustCompilerBackend', () => {
     expect(placeholder.contents).toContain('provider.ts:1:1');
     expect(placeholder.contents).toContain('//   function convert(value: unknown): unknown -- :1');
     expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
+    expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?mod\s/mu);
     expect(emitPlaceholder(provider, refusal)).toEqual(placeholder);
     expect(() => emitPlaceholder(consumer, { message: 'not planned' })).toThrow(
       'without a path in the finalized source-tree plan',
     );
+  });
+
+  it('keeps the finalized child module declarations in a refused directory-index placeholder', () => {
+    const index = lower('geometry/index.ts', "export { answer } from './tools.js';").module;
+    const tools = lower('geometry/tools.ts', 'export const answer = 1;').module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: getRustTestModuleIdentity(index),
+          specifier: './tools.js',
+          target: getRustTestModuleIdentity(tools),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [index, tools],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      ...createRustSourceTreeFinalization(session, [tools], [tools]),
+      placeholderModules: [index],
+      refusals: [
+        {
+          code: 'rust-placeholder-test',
+          message: 'index refused for the witness',
+          module: getRustTestModuleIdentity(index),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(index, { message: 'index refused for the witness' });
+    if (!placeholder) throw new Error('expected a placeholder file for the refused index module');
+
+    expect(placeholder.path).toBe('geometry/mod.rs');
+    expect(placeholder.contents).toContain(
+      '// Child modules planned for this file, which this run emitted separately:',
+    );
+    expect(placeholder.contents).toContain('pub mod tools;');
+    const stoppedAt = placeholder.contents.indexOf('// stopped at:');
+    const declarations = placeholder.contents.indexOf('pub mod tools;');
+    const surface = placeholder.contents.indexOf('// This module declared nothing');
+    expect(stoppedAt).toBeGreaterThan(-1);
+    expect(declarations).toBeGreaterThan(stoppedAt);
+    expect(surface).toBeGreaterThan(declarations);
+    expect(placeholder.contents).not.toMatch(/^\s*(?:pub\s+)?(?:fn|struct|enum|type|const)\b/mu);
+    expect(emitPlaceholder(index, { message: 'index refused for the witness' })).toEqual(placeholder);
   });
 
   it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {

@@ -315,6 +315,42 @@ describe('emitEmittedFileSourceFragmentRust', () => {
       'rust-source-tree-finalization-placeholder-retained',
     );
   });
+
+  it('keeps planned child module declarations in a refused directory-index placeholder', () => {
+    const index = lower('@scope/math', 'geometry/index.ts', "export { answer } from './tools.js';");
+    const tools = lower('@scope/math', 'geometry/tools.ts', 'export const answer = 1;');
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: identity(index),
+          specifier: './tools.js',
+          target: identity(tools),
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    let plan: Readonly<CompilerRustSourceTreePlan> | undefined;
+    const outcome = finalize(
+      {
+        facade: createFacade([tools]),
+        moduleFiles: [retained(tools, 'geometry/tools.rs')],
+        placeholderModules: [index],
+        refusals: [{ code: 'rust-placeholder-test', message: 'index refused', module: identity(index) }],
+      },
+      [index, tools],
+      resolution,
+      (observed) => {
+        plan = observed;
+      },
+    );
+
+    const placeholderFile = plan?.files.find((file) => file.filePath === 'geometry/mod.rs');
+    expect(placeholderFile?.ownership).toEqual({ kind: 'placeholder', module: identity(index) });
+    expect(placeholderFile?.sourceFragment).toBe('pub mod tools;');
+    expect(outcome.result.packageFiles.map(({ file }) => file.path)).toEqual(['lib.rs']);
+    expect(outcome.result.packageFiles[0]?.file.contents).toBe('pub mod geometry;\n');
+    expect(outcome.result.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(['geometry/tools.rs']);
+  });
 });
 
 describe('isCompilerRustSourceTreeFinalizationFailure', () => {
