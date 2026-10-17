@@ -2682,12 +2682,16 @@ function emitArraySpliceCallRust(
     Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
   context: EmitContext,
 ): string {
-  const [start, deleteCount] = expression.arguments;
-  if (!start || !deleteCount || expression.arguments.length !== 2) {
-    return emissionError(context, 'array.splice deletion emission requires start and deleteCount');
+  const [start, deleteCount, ...inserted] = expression.arguments;
+  if (!start || !deleteCount || expression.arguments.length < 2) {
+    return emissionError(context, 'array.splice emission requires start and deleteCount');
   }
   const startName = getGeneratedTargetNameRust('array_splice_start', context);
   const deleteName = getGeneratedTargetNameRust('array_splice_delete_count', context);
+  const insertedItems = inserted.map((item, index) => ({
+    emitted: emitOwnedOperandRust(item, context),
+    name: getGeneratedTargetNameRust(`array_splice_item${String(index)}`, context),
+  }));
   const receiverName = getGeneratedTargetNameRust('array_splice_values', context);
   const lengthName = getGeneratedTargetNameRust('array_splice_length', context);
   const normalizedStartName = getGeneratedTargetNameRust('array_splice_normalized_start', context);
@@ -2706,7 +2710,18 @@ function emitArraySpliceCallRust(
     : borrowedParameter
       ? `&mut *${emitExpression(expression.callee.object, context)}`
       : `&mut ${emitExpression(expression.callee.object, context)}`;
-  return `{ let ${startName}: f64 = ${emitExpression(start, context)}; let ${deleteName}: f64 = ${emitExpression(deleteCount, context)}; let ${sharedBinding ? 'mut ' : ''}${receiverName} = ${receiver}; let ${lengthName} = ${receiverName}.len(); let ${normalizedStartName} = if ${startName}.is_nan() { 0.0 } else { ${startName}.trunc() }; let ${startIndexName}: usize = if ${normalizedStartName} < 0.0 { ${lengthName} - ((-${normalizedStartName}).min(${lengthName} as f64) as usize) } else { ${normalizedStartName}.min(${lengthName} as f64) as usize }; let ${availableName} = ${lengthName} - ${startIndexName}; let ${normalizedDeleteName} = if ${deleteName}.is_nan() { 0.0 } else { ${deleteName}.trunc() }; let ${actualDeleteName}: usize = if ${normalizedDeleteName} <= 0.0 { 0 } else { ${normalizedDeleteName}.min(${availableName} as f64) as usize }; let ${endName} = ${startIndexName} + ${actualDeleteName}; ${receiverName}.drain(${startIndexName}..${endName}).collect::<Vec<_>>() }`;
+  const initializers = [
+    `let ${startName}: f64 = ${emitExpression(start, context)};`,
+    `let ${deleteName}: f64 = ${emitExpression(deleteCount, context)};`,
+    ...insertedItems.map(({ emitted, name }) => `let ${name} = ${emitted};`),
+  ];
+  // JavaScript evaluates every splice argument before it mutates the array. Materializing them before
+  // the Rust receiver borrow preserves that order and keeps each insertion operand single-shot.
+  const mutation =
+    insertedItems.length === 0
+      ? `${receiverName}.drain(${startIndexName}..${endName}).collect::<Vec<_>>()`
+      : `${receiverName}.splice(${startIndexName}..${endName}, vec![${insertedItems.map(({ name }) => name).join(', ')}]).collect::<Vec<_>>()`;
+  return `{ ${[...initializers, `let ${sharedBinding ? 'mut ' : ''}${receiverName} = ${receiver};`, `let ${lengthName} = ${receiverName}.len();`, `let ${normalizedStartName} = if ${startName}.is_nan() { 0.0 } else { ${startName}.trunc() };`, `let ${startIndexName}: usize = if ${normalizedStartName} < 0.0 { ${lengthName} - ((-${normalizedStartName}).min(${lengthName} as f64) as usize) } else { ${normalizedStartName}.min(${lengthName} as f64) as usize };`, `let ${availableName} = ${lengthName} - ${startIndexName};`, `let ${normalizedDeleteName} = if ${deleteName}.is_nan() { 0.0 } else { ${deleteName}.trunc() };`, `let ${actualDeleteName}: usize = if ${normalizedDeleteName} <= 0.0 { 0 } else { ${normalizedDeleteName}.min(${availableName} as f64) as usize };`, `let ${endName} = ${startIndexName} + ${actualDeleteName};`, mutation].join(' ')} }`;
 }
 
 function emitArrayShiftCallRust(
@@ -6301,13 +6316,16 @@ interface RustArrayMutationRefusal {
     | 'rust-array-unshift-invocation-unrepresented'
     | 'rust-array-unshift-result-carrier-unrepresented'
     | 'rust-array-unshift-result-observation-unrepresented'
+    | 'rust-array-splice-element-carrier-unrepresented'
     | 'rust-array-splice-index-domain-unrepresented'
     | 'rust-array-splice-invocation-unrepresented'
-    | 'rust-array-splice-result-carrier-unrepresented';
+    | 'rust-array-splice-result-carrier-unrepresented'
+    | 'rust-array-splice-sparse-unrepresented';
 }
 
 function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
+  const variableInitializers = new Map<string, Readonly<IrExpression>>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
   const growthCalls: Array<
@@ -6354,6 +6372,7 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
     },
     variable(variable) {
       if (variable.initializer) {
+        if ('binding' in variable) variableInitializers.set(variable.binding.id, variable.initializer);
         uses.set(variable.initializer, {
           bindingId: 'binding' in variable ? variable.binding.id : undefined,
           kind: 'variable',
@@ -6437,14 +6456,16 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
       expression.callee.optionalChain !== undefined ||
       !signature ||
       signature.providedArgumentCount === 'dynamic' ||
-      signature.providedArgumentCount !== 2 ||
-      expression.arguments.length !== 2 ||
+      signature.providedArgumentCount < 2 ||
+      signature.providedArgumentCount !== expression.arguments.length ||
+      expression.arguments.length < 2 ||
       expression.arguments.some((argument) => argument.kind === 'spread') ||
       !isRustStableArrayMutationReceiverRust(expression.callee.object)
     ) {
       refusals.push({
         member: 'splice',
-        message: 'array.splice currently requires a non-optional stable receiver and exactly two non-spread arguments',
+        message:
+          'array.splice currently requires a non-optional stable receiver and at least two fixed non-spread arguments',
         rule: 'rust-array-splice-invocation-unrepresented',
       });
       continue;
@@ -6466,7 +6487,34 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
       continue;
     }
 
+    if (
+      isRustSparseArrayValueRust(expression.callee.object, variableInitializers, new Set()) ||
+      expression.arguments.slice(2).some((item) => isRustSparseArrayValueRust(item, variableInitializers, new Set()))
+    ) {
+      refusals.push({
+        member: 'splice',
+        message: 'array.splice cannot preserve sparse array holes in the dense Rust Vec carrier',
+        rule: 'rust-array-splice-sparse-unrepresented',
+      });
+      continue;
+    }
+
     const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (
+      receiver?.kind !== 'array' ||
+      expression.arguments
+        .slice(2)
+        .some((item) => !isRustArrayGrowthElementRepresentedRust(item, receiver.element, context))
+    ) {
+      refusals.push({
+        member: 'splice',
+        message:
+          'array.splice inserted item needs the exact Rust element carrier; coercive or identity-changing adaptation is not represented',
+        rule: 'rust-array-splice-element-carrier-unrepresented',
+      });
+      continue;
+    }
     if (!receiverType || !isRustArraySpliceResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
       refusals.push({
         member: 'splice',
@@ -6487,6 +6535,25 @@ function assertArrayMutationSemanticsRust(module: Readonly<IrModule>, context: E
 
 function isRustStableArrayMutationReceiverRust(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding';
+}
+
+function isRustSparseArrayValueRust(
+  expression: Readonly<IrExpression>,
+  variableInitializers: ReadonlyMap<string, Readonly<IrExpression>>,
+  seenBindings: Set<string>,
+): boolean {
+  if (expression.kind === 'array') {
+    return expression.elements.some(
+      (element) =>
+        element === undefined || isRustSparseArrayValueRust(element, variableInitializers, new Set(seenBindings)),
+    );
+  }
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const bindingId = expression.reference.binding.id;
+  if (seenBindings.has(bindingId)) return false;
+  seenBindings.add(bindingId);
+  const initializer = variableInitializers.get(bindingId);
+  return initializer ? isRustSparseArrayValueRust(initializer, variableInitializers, seenBindings) : false;
 }
 
 function inferRustArrayGrowthArgumentTypeRust(

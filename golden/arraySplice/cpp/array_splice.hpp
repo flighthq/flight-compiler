@@ -15,4 +15,8 @@ inline void drop(flight::Array<double> values, double start, double delete_count
   values.splice(start, delete_count);
 }
 
+inline flight::Array<double> replace(flight::Array<double> values, double start, double delete_count, double first, double second) {
+  return values.splice(start, delete_count, first, second);
+}
+
 } // namespace flighthq_golden

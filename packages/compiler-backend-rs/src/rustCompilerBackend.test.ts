@@ -13297,15 +13297,90 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     if (rustcAvailable) runRustSource(output, 'assert_eq!(cut_shared(), 22.0);');
   });
 
+  it('preserves fixed-arity splice insertion, extreme indices, and once-only argument order', () => {
+    const result = lower(
+      'array-splice-insertion.ts',
+      `function record(log: number[], value: number): number { log.push(value); return value; }
+       export function replace(
+         items: number[],
+         start: number,
+         deleteCount: number,
+         first: number,
+         second: number,
+       ): number[] {
+         return items.splice(start, deleteCount, first, second);
+       }
+       export function tracked(items: number[], log: number[]): number[] {
+         return items.splice(
+           record(log, -2.8),
+           record(log, 1.9),
+           record(log, 8),
+           record(log, 9),
+         );
+       }
+       export function local(): number {
+         const values = [1, 4];
+         const removed = values.splice(1, 0, 2, 3);
+         return removed.length * 100 + values.length * 10 + (values[2] ?? 0);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_splice_item0 = first; let array_splice_item1 = second;');
+    expect(output).toContain(
+      '.splice(array_splice_start_index..array_splice_end, vec![array_splice_item0, array_splice_item1])',
+    );
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut middle = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(replace(&mut middle, 1.9, 2.8, 8.0, 9.0), vec![2.0, 3.0]);',
+          'assert_eq!(middle, vec![1.0, 8.0, 9.0, 4.0]);',
+          'let mut ordered = vec![1.0, 2.0, 3.0, 4.0];',
+          'let mut log = vec![];',
+          'assert_eq!(tracked(&mut ordered, &mut log), vec![3.0]);',
+          'assert_eq!(ordered, vec![1.0, 2.0, 8.0, 9.0, 4.0]);',
+          'assert_eq!(log, vec![-2.8, 1.9, 8.0, 9.0]);',
+          'let mut append = vec![1.0, 2.0];',
+          'assert_eq!(replace(&mut append, f64::INFINITY, f64::NEG_INFINITY, 3.0, 4.0), Vec::<f64>::new());',
+          'assert_eq!(append, vec![1.0, 2.0, 3.0, 4.0]);',
+          'let mut replace_all = vec![1.0, 2.0];',
+          'assert_eq!(replace(&mut replace_all, f64::NEG_INFINITY, f64::INFINITY, 3.0, 4.0), vec![1.0, 2.0]);',
+          'assert_eq!(replace_all, vec![3.0, 4.0]);',
+          'let mut nan = vec![1.0, 2.0];',
+          'assert_eq!(replace(&mut nan, f64::NAN, f64::NAN, 5.0, 6.0), Vec::<f64>::new());',
+          'assert_eq!(nan, vec![5.0, 6.0, 1.0, 2.0]);',
+          'assert_eq!(local(), 43.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves fixed-arity splice insertion through a shared alias', () => {
+    const result = lower(
+      'shared-array-splice-insertion.ts',
+      `export function replaceShared(): number {
+         const values = [1, 2, 3, 4];
+         const alias = values;
+         const removed = alias.splice(-2.8, 1.9, 8, 9);
+         return (removed[0] ?? 0) * 1000 + values.length * 100 + values.indexOf(8) * 10 + values.indexOf(9);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let mut array_splice_values = alias.borrow_mut()');
+    expect(output).toContain('.splice(array_splice_start_index..array_splice_end, vec![');
+    expect(output).toContain('values.borrow().iter().position');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(replace_shared(), 3523.0);');
+  });
+
   it.each([
     {
       rule: 'rust-array-splice-invocation-unrepresented',
       source: 'export function cut(values: number[], start: number): number[] { return values.splice(start); }',
-    },
-    {
-      rule: 'rust-array-splice-invocation-unrepresented',
-      source:
-        'export function insert(values: number[], start: number, value: number): number[] { return values.splice(start, 0, value); }',
     },
     {
       rule: 'rust-array-splice-invocation-unrepresented',
@@ -13320,7 +13395,30 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       rule: 'rust-array-splice-index-domain-unrepresented',
       source: 'export function cut(values: number[], start: any): number[] { return values.splice(start, 1); }',
     },
-  ])('stably refuses unsupported two-argument splice semantics with $rule', ({ rule, source }) => {
+    {
+      rule: 'rust-array-splice-element-carrier-unrepresented',
+      source: 'export function insert(values: number[], value: any): number[] { return values.splice(0, 0, value); }',
+    },
+    {
+      rule: 'rust-array-splice-element-carrier-unrepresented',
+      source:
+        'export function insert(values: (number | string)[], value: number): (number | string)[] { return values.splice(0, 0, value); }',
+    },
+    {
+      rule: 'rust-array-splice-invocation-unrepresented',
+      source:
+        'export function insert(values: number[], more: number[]): number[] { return values.splice(0, 0, ...more); }',
+    },
+    {
+      rule: 'rust-array-splice-sparse-unrepresented',
+      source:
+        'export function insert(): number[] { const values = [1, , 3]; const alias = values; return alias.splice(0, 0, 2); }',
+    },
+    {
+      rule: 'rust-array-splice-sparse-unrepresented',
+      source: 'export function insert(rows: number[][]): number[][] { return rows.splice(0, 0, [1, , 3]); }',
+    },
+  ])('stably refuses unsupported splice semantics with $rule', ({ rule, source }) => {
     const result = lower('array-splice-refused.ts', source);
     expect(result.diagnostics).toEqual([]);
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
@@ -13497,6 +13595,20 @@ describe('emitIrModuleRust array element access with coalescing', () => {
          const values = [1, 2, 3];
          const alias = values;
          alias.splice(values.length, 1);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
+  it('uses the shared-array borrow-conflict plan for a splice insertion item that reads an alias', () => {
+    const result = lower(
+      'array-splice-insertion-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         alias.splice(0, 0, values[0] ?? 0);
          return alias.length;
        }`,
     );

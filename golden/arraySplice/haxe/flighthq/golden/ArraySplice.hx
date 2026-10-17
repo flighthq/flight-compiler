@@ -10,3 +10,7 @@ function cut(values:Array<Float>, start:Float, deleteCount:Float):Array<Float> {
 function drop(values:Array<Float>, start:Float, deleteCount:Float):Void {
   values.splice(Std.int(start), Std.int(deleteCount));
 }
+
+function replace(values:Array<Float>, start:Float, deleteCount:Float, first:Float, second:Float):Array<Float> {
+  return (function() { final spliceReceiver = values; final splicePosition:Int = Std.int(start); final spliceRemoved = spliceReceiver.splice(splicePosition, Std.int(deleteCount)); spliceReceiver.insert(splicePosition, first); spliceReceiver.insert(splicePosition + 1, second); return spliceRemoved; })();
+}
