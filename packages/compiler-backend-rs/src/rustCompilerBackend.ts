@@ -3974,7 +3974,7 @@ function getArrayCallbackMemberRust(
     : getArrayTransformMemberRust(expression);
 }
 
-type RustArrayTransformMember = 'forEach' | 'map';
+type RustArrayTransformMember = 'flatMap' | 'forEach' | 'map';
 
 function isArrayTransformCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
@@ -3982,14 +3982,15 @@ function isArrayTransformCallRust(
   Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
   if (expression.callee.kind !== 'property' || expression.callee.member?.receiver !== 'array') return false;
   const member = expression.callee.member.name;
-  return member === 'forEach' || member === 'map';
+  return member === 'flatMap' || member === 'forEach' || member === 'map';
 }
 
 function getArrayTransformMemberRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
     Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
 ): RustArrayTransformMember {
-  return expression.callee.member?.name === 'map' ? 'map' : 'forEach';
+  const member = expression.callee.member?.name;
+  return member === 'map' ? 'map' : member === 'flatMap' ? 'flatMap' : 'forEach';
 }
 
 function isArrayFillCallRust(
@@ -4246,7 +4247,7 @@ function emitArrayTransformCallRust(
   if (!callback || !signature || signature.parameters.length > 2) {
     return emissionError(context, `array.${member} emission requires one statically known fixed callback`);
   }
-  const prefix = member === 'map' ? 'array_map' : 'array_for_each';
+  const prefix = member === 'map' ? 'array_map' : member === 'flatMap' ? 'array_flat_map' : 'array_for_each';
   const receiverName = getGeneratedTargetNameRust(`${prefix}_receiver`, context);
   const callbackName = getGeneratedTargetNameRust(`${prefix}_callback`, context);
   const valuesName = getGeneratedTargetNameRust(`${prefix}_values`, context);
@@ -4269,7 +4270,9 @@ function emitArrayTransformCallRust(
   const transformed =
     member === 'map'
       ? `${valuesName}.iter().enumerate().map(|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})).collect::<Vec<_>>()`
-      : `${valuesName}.iter().enumerate().for_each(|(${indexName}, ${elementName})| { let _ = (${callbackName})(${arguments_.join(', ')}); })`;
+      : member === 'flatMap'
+        ? `${valuesName}.iter().enumerate().flat_map(|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})).collect::<Vec<_>>()`
+        : `${valuesName}.iter().enumerate().for_each(|(${indexName}, ${elementName})| { let _ = (${callbackName})(${arguments_.join(', ')}); })`;
   const release = sharedBinding ? ` drop(${valuesName});` : '';
   return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${valuesName} = ${receiverValues}; let ${resultName} = ${transformed};${release} ${resultName} }`;
 }
@@ -10694,6 +10697,7 @@ type RustArrayOperationMember =
   | 'filter'
   | 'find'
   | 'findIndex'
+  | 'flatMap'
   | 'forEach'
   | 'map'
   | 'reverse'
@@ -10770,6 +10774,13 @@ interface RustArrayOperationRefusal {
     | 'rust-array-for-each-element-carrier-unrepresented'
     | 'rust-array-for-each-invocation-unrepresented'
     | 'rust-array-for-each-result-carrier-unrepresented'
+    | 'rust-array-flat-map-alias-borrow-conflict'
+    | 'rust-array-flat-map-callback-carrier-unrepresented'
+    | 'rust-array-flat-map-callback-return-carrier-unrepresented'
+    | 'rust-array-flat-map-element-carrier-unrepresented'
+    | 'rust-array-flat-map-invocation-unrepresented'
+    | 'rust-array-flat-map-result-carrier-unrepresented'
+    | 'rust-array-flat-map-sparse-receiver-unrepresented'
     | 'rust-array-for-each-sparse-receiver-unrepresented'
     | 'rust-array-map-alias-borrow-conflict'
     | 'rust-array-map-callback-carrier-unrepresented'
@@ -10871,7 +10882,7 @@ function assertArrayCallbackInvocationSemanticsRust(module: Readonly<IrModule>):
   });
   const member = [...unsupported].sort(compareTextCodeUnits)[0];
   if (member === undefined) return;
-  const ruleMember = member === 'forEach' ? 'for-each' : member;
+  const ruleMember = member === 'forEach' ? 'for-each' : member === 'flatMap' ? 'flat-map' : member;
   throw createBackendEmissionFailure(
     'rust',
     module,
@@ -11558,7 +11569,7 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   for (const { expression, member } of transformCalls) {
-    const ruleMember = member === 'forEach' ? 'for-each' : member;
+    const ruleMember = member === 'forEach' ? 'for-each' : member === 'flatMap' ? 'flat-map' : member;
     const callback = expression.arguments[0];
     const signature = expression.semantics.signature;
     if (
@@ -11653,6 +11664,34 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           member,
           message: 'array.forEach result requires an exact Rust unit carrier',
           rule: 'rust-array-for-each-result-carrier-unrepresented',
+        });
+        continue;
+      }
+    } else if (member === 'flatMap') {
+      const flattenedElement = callbackReturn.kind === 'array' ? callbackReturn.element : undefined;
+      const flattenedDomain =
+        flattenedElement === undefined
+          ? undefined
+          : getRustDensePrimitiveArrayCarrierDomainRust(flattenedElement, context);
+      if (callbackReturn.kind !== 'array' || flattenedElement === undefined || flattenedDomain === undefined) {
+        refusals.push({
+          member,
+          message: 'array.flatMap callback result requires an exact dense boolean, number, or string array carrier',
+          rule: 'rust-array-flat-map-callback-return-carrier-unrepresented',
+        });
+        continue;
+      }
+      const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+      if (
+        result.kind !== 'array' ||
+        result.readonly ||
+        getRustDensePrimitiveArrayCarrierDomainRust(result.element, context) !== flattenedDomain ||
+        emitType(result.element, context) !== emitType(flattenedElement, context)
+      ) {
+        refusals.push({
+          member,
+          message: 'array.flatMap result requires a fresh Rust Vec of the callback element carrier',
+          rule: 'rust-array-flat-map-result-carrier-unrepresented',
         });
         continue;
       }

@@ -9637,7 +9637,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('collect');
   });
 
-  it('emits array flatMap as a collected Rust flat-map iterator', () => {
+  it('emits array flatMap through the staged flat_map and collect chain', () => {
     const output = emitIrModuleRust(
       lower(
         'flat-map.ts',
@@ -9646,8 +9646,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         }`,
       ).module,
     ).contents;
-    expect(output).toContain('.into_iter().flat_map(');
+    expect(output).toContain('.iter().enumerate().flat_map(');
     expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).not.toContain('into_iter().flat_map');
   });
 
   it('emits array indexOf as position search', () => {
@@ -24250,4 +24251,167 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
       );
     },
   );
+});
+
+describe('emitIrModuleRust array flatMap', () => {
+  it('stages dense receivers and adapts callback parameters for flatMap', () => {
+    const result = lower(
+      'array-flat-map-exact.ts',
+      `export function pairs(values: number[]): number[] {
+         return values.flatMap((value: number, index: number): number[] => [value, index]);
+       }
+       export function letters(values: readonly string[]): string[] {
+         return values.flatMap((value: string): string[] => [value]);
+       }
+       export function labels(values: boolean[]): number[] {
+         return values.flatMap((): number[] => [1, 0]);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.iter().enumerate().flat_map(');
+    expect(output).toContain('(array_flat_map_callback)(array_flat_map_element.clone(), array_flat_map_index as f64)');
+    expect(output).toContain('.collect::<Vec<_>>()');
+    expect(output).not.toContain('into_iter().flat_map');
+  });
+
+  it('stages the receiver, then the callback, then the borrow', () => {
+    const result = lower(
+      'array-flat-map-evaluation.ts',
+      `function recordReceiver(log: number[], marker: number, values: number[]): number[] {
+         log.push(marker);
+         return values;
+       }
+       function recordCallback(log: number[], marker: number): (value: number) => number[] {
+         log.push(marker);
+         return (value: number): number[] => [value, value];
+       }
+       export function evaluated(log: number[]): number[] {
+         return recordReceiver(log, 1, [1, 2, 3]).flatMap(recordCallback(log, 2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_flat_map_receiver = &record_receiver(');
+    const callback = output.indexOf('let array_flat_map_callback = &record_callback(', receiver);
+    const values = output.indexOf('let array_flat_map_values = array_flat_map_receiver;', callback);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(callback).toBeGreaterThan(receiver);
+    expect(values).toBeGreaterThan(callback);
+  });
+
+  it('releases a shared flatMap borrow before either alias is reused', () => {
+    const result = lower(
+      'array-flat-map-shared.ts',
+      `export function pairs(): number[] {
+         const values = [1, 2];
+         const alias = values;
+         const doubled = alias.flatMap((value: number): number[] => [value, value]);
+         values.push(3);
+         return doubled.length > alias.length ? doubled : [];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_flat_map_receiver = &alias;');
+    expect(output).toContain('let array_flat_map_values = array_flat_map_receiver.borrow();');
+    expect(output).toContain('drop(array_flat_map_values);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-flat-map-invocation-unrepresented',
+      source: 'export function pick(values: number[]): number[] { return values.flatMap(); }',
+    },
+    {
+      rule: 'rust-array-flat-map-invocation-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.flatMap((value: number): number[] => [value], undefined); }',
+    },
+    {
+      rule: 'rust-array-flat-map-invocation-unrepresented',
+      source:
+        'export function pick(values: number[], callbacks: [(value: number) => number[]]): number[] { return values.flatMap(...callbacks); }',
+    },
+    {
+      rule: 'rust-array-flat-map-element-carrier-unrepresented',
+      source:
+        'export function pick(values: (number | string)[]): number[] { return values.flatMap((value: number | string): number[] => typeof value === "number" ? [value] : []); }',
+    },
+    {
+      rule: 'rust-array-flat-map-sparse-receiver-unrepresented',
+      source:
+        'export function pick(values: (number | undefined)[]): number[] { return values.flatMap((value: number | undefined): number[] => [value ?? 0]); }',
+    },
+    {
+      rule: 'rust-array-flat-map-callback-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.flatMap((a: number, b: number, c: number[]): number[] => [a + b + c.length]); }',
+    },
+    {
+      rule: 'rust-array-flat-map-callback-return-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.flatMap((value: number): number => value); }',
+    },
+    {
+      rule: 'rust-array-flat-map-callback-return-carrier-unrepresented',
+      source:
+        'export function pick(values: number[]): number[] { return values.flatMap((value: number): { v: number }[] => [{ v: value }]); }',
+    },
+    {
+      rule: 'rust-array-flat-map-alias-borrow-conflict',
+      source:
+        'export function pick(values: number[]): number[] { return values.flatMap((value: number): number[] => values.length > 0 ? [value] : []); }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-flat-map-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a mutated non-callback flatMap result carrier', () => {
+    const result = lower(
+      'array-flat-map-result.ts',
+      'export function pick(values: number[]): number[] { return values.flatMap((value: number): number[] => [value]); }',
+    );
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const call = declaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (call?.expression?.kind !== 'call') throw new Error('expected the flatMap call');
+    call.expression.semantics.resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-array-flat-map-result-carrier-unrepresented',
+    );
+  });
+
+  it('leaves map, forEach, and reduce behavior untouched', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-flat-map-neighbors.ts',
+        `export function doubled(values: number[]): number[] {
+           return values.map((value: number): number => value * 2);
+         }
+         export function visited(values: number[]): number {
+           let count: number = 0;
+           values.forEach((value: number): void => { count = count + 1; });
+           return count;
+         }
+         export function summed(values: number[]): number {
+           return values.reduce((acc: number, value: number): number => acc + value, 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('array_map_');
+    expect(output).toContain('array_for_each_');
+    expect(output).toContain('.into_iter().fold(');
+  });
 });
