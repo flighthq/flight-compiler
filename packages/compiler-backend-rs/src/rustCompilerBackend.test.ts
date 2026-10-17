@@ -33375,6 +33375,525 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain('return Choice::AB2(value);');
   });
 
+  it('extracts exact discriminated record arms through direct if/else consuming positions', () => {
+    const result = lower(
+      'discriminated-nominal-union-extraction.ts',
+      `interface Alpha { readonly kind: 'alpha'; readonly value: number }
+       interface Beta { readonly kind: 'beta'; readonly count: number }
+       type Choice = Alpha | Beta;
+       interface Box { alpha: Alpha; choice: Choice }
+       function consumeAlpha(_value: Alpha): number { return 1; }
+       function consumeBeta(_value: Beta): number { return 2; }
+       function consumeChoice(_value: Choice): number { return 3; }
+       export function split(choice: Choice, box: Box): number {
+         if (choice.kind === 'alpha') {
+           let local: Alpha = choice;
+           local = choice;
+           box.alpha = choice;
+           consumeAlpha(choice);
+           const raw: Choice = choice;
+           box.choice = choice;
+           consumeChoice(choice);
+           return local.value + raw.kind.length;
+         } else {
+           return consumeBeta(choice);
+         }
+       }
+       export function keep(choice: Choice): Choice {
+         if (choice.kind === 'alpha') { return choice; }
+         else { return choice; }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const alpha = 'match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }';
+    const beta = 'match &choice { Choice::Beta(value) => value.clone(), _ => unreachable!() }';
+    expect(output).toContain('if matches!(&choice, Choice::Alpha(_)) {');
+    expect(output).toContain(`let mut local: Alpha = ${alpha};`);
+    expect(output).toContain(`local = ${alpha}`);
+    expect(output).toContain(`box_.alpha = ${alpha}`);
+    expect(output).toContain(`consume_alpha(${alpha})`);
+    expect(output).toContain(`return consume_beta(${beta});`);
+    expect(output).toContain('let raw: Choice = choice.clone();');
+    expect(output).toContain('box_.choice = choice.clone()');
+    expect(output).toContain('consume_choice(choice.clone())');
+    expect(output.match(/if matches!\(&choice, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(2);
+    expect(output.match(/choice\.kind\(\) ==/gu)).toHaveLength(0);
+    expect(output.match(/Choice::Alpha\(value\) => value\.clone\(\)/gu)).toHaveLength(4);
+    expect(output.match(/Choice::Beta\(value\) => value\.clone\(\)/gu)).toHaveLength(1);
+    expect(output.match(/return choice\.clone\(\);/gu)).toHaveLength(2);
+  });
+
+  it('maps negative discriminant polarity and allocated collision variants exactly once', () => {
+    const result = lower(
+      'discriminated-nominal-union-polarity.ts',
+      `interface A_B { readonly tag: 'first'; readonly left: number }
+       interface AB { readonly tag: 'second'; readonly right: number }
+       type Choice = A_B | AB;
+       function first(_value: A_B): number { return 1; }
+       function second(_value: AB): number { return 2; }
+       export function select(choice: Choice): number {
+         if (choice.tag !== 'second') { return first(choice); }
+         else { return second(choice); }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('AB(AB)');
+    expect(output).toContain('AB2(AB_2)');
+    expect(output).toContain('if !matches!(&choice, Choice::AB2(_)) {');
+    expect(output).toContain('Choice::AB(value) => value.clone()');
+    expect(output).toContain('Choice::AB2(value) => value.clone()');
+    expect(output.match(/matches!\(&choice/gu)).toHaveLength(1);
+  });
+
+  it('keeps canonical discriminated owner and arm identity through a type reexport', () => {
+    const recordsSource = ts.createSourceFile(
+      '/flight/packages/math/src/discriminated-records.ts',
+      `export interface Alpha { readonly kind: 'alpha'; readonly value: number }
+       export interface Beta { readonly kind: 'beta'; readonly count: number }
+       export type Choice = Alpha | Beta;
+       export function alpha(_value: Alpha): number { return 1; }
+       export function beta(_value: Beta): number { return 2; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/discriminated-facade.ts',
+      `export type { Alpha, Beta, Choice } from './discriminated-records.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/discriminated-consumer.ts',
+      `import type { Choice } from './discriminated-facade.js';
+       import { alpha, beta } from './discriminated-records.js';
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') { return alpha(choice); }
+         else { return beta(choice); }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Discriminated-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/discriminated-facade.ts',
+          },
+          specifier: './discriminated-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/discriminated-records.ts' },
+        },
+        {
+          importer: {
+            name: 'Discriminated-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/discriminated-consumer.ts',
+          },
+          specifier: './discriminated-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/discriminated-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Discriminated-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/discriminated-consumer.ts',
+          },
+          specifier: './discriminated-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/discriminated-records.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [recordsResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: recordsSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(recordsResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const records = recordsResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules: [consumer, facade, records],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('if matches!(&choice, Choice::Alpha(_)) {');
+    expect(output).toContain('match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }');
+    expect(output).toContain('match &choice { Choice::Beta(value) => value.clone(), _ => unreachable!() }');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
+    [
+      'a guard clause without an explicit else',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         return beta(choice);
+       }`,
+    ],
+    [
+      'a nested conditional expression',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice, flag: boolean): number {
+         if (choice.kind === 'alpha') return flag ? alpha(choice) : 0;
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a reversed literal comparison',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if ('alpha' === choice.kind) return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a loose literal comparison',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind == 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a computed discriminant access',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice['kind'] === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a mutable discriminant declaration',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'three record arms',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       interface Gamma { readonly kind: 'gamma'; label: string }
+       type Choice = Alpha | Beta | Gamma;
+       function alpha(_value: Alpha): number { return 1; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return 0;
+       }`,
+    ],
+    [
+      'an alias binding',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         const alias: Choice = choice;
+         if (alias.kind === 'alpha') return alpha(alias);
+         else return beta(alias);
+       }`,
+    ],
+    [
+      'a rebound binding',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice, replacement: Choice): number {
+         choice = replacement;
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'nested control flow',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice, flag: boolean): number {
+         if (choice.kind === 'alpha') {
+           if (flag) return alpha(choice);
+           else return 0;
+         } else return beta(choice);
+       }`,
+    ],
+    [
+      'a closure extraction',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') {
+           const read = () => alpha(choice);
+           return read();
+         } else return beta(choice);
+       }`,
+    ],
+    [
+      'an async function',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export async function split(choice: Choice): Promise<number> {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a property-held union',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       interface Box { choice: Choice }
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(box: Box): number {
+         if (box.choice.kind === 'alpha') return alpha(box.choice);
+         else return beta(box.choice);
+       }`,
+    ],
+    [
+      'an optional literal tag',
+      `interface Alpha { readonly kind?: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'ambiguous literal tags',
+      `interface Alpha { readonly kind: 'same'; value: number }
+       interface Beta { readonly kind: 'same'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'same') return alpha(choice);
+         else return 0;
+       }`,
+    ],
+    [
+      'a clone-unsafe payload',
+      `interface Alpha { readonly kind: 'alpha'; values: number[] }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ],
+    [
+      'a standalone member test',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       export function isAlpha(choice: Choice): boolean { return choice.kind === 'alpha'; }`,
+    ],
+  ])('refuses discriminated nominal extraction from %s', (_name, source) => {
+    const result = lower('discriminated-nominal-union-refusal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
+  });
+
+  it('requires exact condition and per-use narrowing evidence', () => {
+    const source = `interface Alpha { readonly kind: 'alpha'; value: number }
+interface Beta { readonly kind: 'beta'; count: number }
+type Choice = Alpha | Beta;
+interface OtherAlpha { readonly kind: 'alpha'; value: number }
+interface OtherBeta { readonly kind: 'other'; count: number }
+type OtherChoice = OtherAlpha | OtherBeta;
+function alpha(_value: Alpha): number { return 1; }
+function beta(_value: Beta): number { return 2; }
+export function split(choice: Choice): number {
+  if (choice.kind === 'alpha') return alpha(choice);
+  else return beta(choice);
+}`;
+    const getGuardAndUse = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'split',
+      );
+      const guard = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const returned = guard?.kind === 'if' ? guard.consequent : undefined;
+      const call = returned?.kind === 'return' ? returned.expression : undefined;
+      const use = call?.kind === 'call' ? call.arguments[0] : undefined;
+      if (guard?.kind !== 'if' || guard.condition.kind !== 'binary' || use?.kind !== 'identifier') {
+        throw new Error('expected exact discriminated if/else use');
+      }
+      return { guard: guard.condition, use };
+    };
+    const expectRefusal = (mutate: (module: IrModule) => void) => {
+      const module = structuredClone(lower('discriminated-nominal-union-evidence.ts', source).module);
+      mutate(module);
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+        'rust-discriminated-nominal-arm-extraction-unrepresented',
+      );
+    };
+
+    expectRefusal((module) => {
+      const { use } = getGuardAndUse(module);
+      delete (use as { narrowedType?: IrType }).narrowedType;
+    });
+    expectRefusal((module) => {
+      const { guard } = getGuardAndUse(module);
+      delete (guard.semantics as { unionMemberTest?: unknown }).unionMemberTest;
+    });
+    expectRefusal((module) => {
+      const { guard } = getGuardAndUse(module);
+      const evidence = guard.semantics.unionMemberTest;
+      if (!evidence) throw new Error('expected member-test evidence');
+      (evidence as { whenResult: boolean }).whenResult = false;
+    });
+    expectRefusal((module) => {
+      const { use } = getGuardAndUse(module);
+      const choice = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Choice',
+      );
+      const beta = choice?.kind === 'typeAlias' && choice.type.kind === 'union' ? choice.type.types[1] : undefined;
+      if (!beta) throw new Error('expected Beta member');
+      (use as { narrowedType?: IrType }).narrowedType = structuredClone(beta);
+    });
+    expectRefusal((module) => {
+      const { guard } = getGuardAndUse(module);
+      const evidence = guard.semantics.unionMemberTest;
+      const otherChoice = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'OtherChoice',
+      );
+      const otherAlpha =
+        otherChoice?.kind === 'typeAlias' && otherChoice.type.kind === 'union' ? otherChoice.type.types[0] : undefined;
+      if (!evidence || !otherAlpha) throw new Error('expected cross-owner evidence');
+      (evidence as { member: IrType }).member = structuredClone(otherAlpha);
+    });
+  });
+
+  it('keeps discriminated refusal output deterministic and rolls salvage state back per declaration', () => {
+    const source = `interface Alpha { readonly kind: 'alpha'; readonly values: number[] }
+interface Beta { readonly kind: 'beta'; readonly count: number }
+type Choice = Alpha | Beta;
+function alpha(_value: Alpha): number { return 1; }
+function beta(_value: Beta): number { return 2; }
+export function broken(choice: Choice): number {
+  if (choice.kind === 'alpha') return alpha(choice);
+  else return beta(choice);
+}
+export function keep(value: Beta): Choice { return value; }`;
+    const module = lower('discriminated-nominal-union-salvage.ts', source).module;
+    const refusal = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const repeated = captureBackendEmissionFailure(() => emitIrModuleRust(structuredClone(module)));
+    expect(refusal.rule).toBe('rust-discriminated-nominal-arm-extraction-unrepresented');
+    expect(repeated.rule).toBe(refusal.rule);
+    expect(repeated.message).toBe(refusal.message);
+
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-discriminated-nominal-arm-extraction-unrepresented',
+          message: refusal.message,
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: refusal.message, sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 6');
+    expect(placeholder.contents).toContain('// refusal: rust-discriminated-nominal-arm-extraction-unrepresented');
+    expect(placeholder.contents).toContain('enum Choice');
+    expect(placeholder.contents).toContain('pub fn keep(value: Beta) -> Choice');
+    expect(placeholder.contents).toContain('return Choice::Beta(value);');
+    expect(placeholder.contents).not.toContain('AnonymousUnion');
+  });
+
+  it('does not steal nominal-union cast or shared-member refusal ownership', () => {
+    const cast = lower(
+      'discriminated-nominal-union-cast.ts',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Choice = Alpha | Beta;
+       export function refused(value: Alpha | Beta): Choice { return value as Choice; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(cast))).toBe('rust-union-cast-unsupported');
+
+    const member = lower(
+      'discriminated-nominal-union-member.ts',
+      `interface Alpha { readonly kind: 'alpha'; readonly shared: number }
+       interface Beta { readonly kind: 'beta'; readonly shared: string }
+       type Choice = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Choice): number {
+         if (choice.kind === 'alpha') return alpha(choice);
+         else return beta(choice);
+       }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(member))).toBe('rust-union-member-type-mismatch');
+  });
+
   it('emits one declaration-owned dual-sentinel enum across the supported contextual positions', () => {
     const result = lower(
       'dual-sentinel-nominal-union-construction.ts',

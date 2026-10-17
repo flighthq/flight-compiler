@@ -199,6 +199,33 @@ interface RustDualSentinelCarrierView {
   readonly undefinedVariantName: string;
 }
 
+interface RustDiscriminatedNominalEnumPlan {
+  readonly kind: 'discriminatedNominalEnum';
+  readonly owner: Readonly<IrTypeReference>;
+  readonly ownerIdentity: RustExactNominalTypeIdentity;
+  readonly tagName: string;
+  readonly valueVariants: readonly Readonly<{
+    identity: RustExactNominalTypeIdentity;
+    name: string;
+    sourceAlternative: IrType;
+    tagValue: string;
+  }>[];
+}
+
+interface RustDiscriminatedNominalUnionBranch {
+  readonly bindingId: string;
+  readonly direct: boolean;
+  readonly expectedIdentityKey: string;
+  readonly ownerIdentityKey: string;
+  readonly tagName: string;
+}
+
+interface RustDiscriminatedNominalUnionIfElsePlan {
+  readonly consequent: RustDiscriminatedNominalUnionBranch;
+  readonly otherwise: RustDiscriminatedNominalUnionBranch;
+  readonly test: string;
+}
+
 interface RustOptionalGeneratedEnumAllocation {
   readonly key: string;
   readonly module: Readonly<IrModule>;
@@ -498,6 +525,8 @@ interface EmitContext {
     Readonly<{ length: number; element: Readonly<RustExactScalarCarrier> }>
   >;
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
+  discriminatedNominalUnionAliasBindingIds: ReadonlySet<string>;
+  discriminatedNominalUnionBranch?: RustDiscriminatedNominalUnionBranch | undefined;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
   primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
@@ -1054,6 +1083,7 @@ function emitIrModuleRustWithContext(
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
   const denseArrayConstructorInitializers = collectRustDenseArrayConstructorInitializersRust(module);
+  const discriminatedNominalUnionAliasBindingIds = collectRustDiscriminatedNominalUnionAliasBindingIds(module);
   const contextSourceModules = replaceIrModuleBackendContext(sourceModules, module);
   const targetNameMaps = createRustTargetNameMaps(contextSourceModules);
   const optionalGeneratedEnumAllocations = new Map<string, RustOptionalGeneratedEnumAllocation>();
@@ -1106,6 +1136,8 @@ function emitIrModuleRustWithContext(
           : [],
       ),
     ),
+    discriminatedNominalUnionAliasBindingIds,
+    discriminatedNominalUnionBranch: undefined,
     primitiveUnionEnums,
     primitiveUnionBindingIds,
     runtimeTypeNames: new Set<string>(),
@@ -1864,6 +1896,19 @@ function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: E
 }
 
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    context.discriminatedNominalUnionBranch?.direct === true &&
+    (expression.kind === 'await' ||
+      expression.kind === 'conditional' ||
+      expression.kind === 'function' ||
+      (expression.kind === 'binary' &&
+        (expression.operator === '&&' || expression.operator === '||' || expression.operator === '??')))
+  ) {
+    return emitExpression(expression, {
+      ...context,
+      discriminatedNominalUnionBranch: { ...context.discriminatedNominalUnionBranch, direct: false },
+    });
+  }
   switch (expression.kind) {
     case 'array':
       return `vec![${expression.elements
@@ -2153,6 +2198,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           context,
         );
         if (nominalTest) return nominalTest;
+        refuseRustDiscriminatedNominalUnionMemberTestIfCandidateRust(expression.semantics.unionMemberTest, context);
       }
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
@@ -2170,7 +2216,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             ? [`${union.name}::${evidence.literal === 'null' ? union.nullVariantName : union.undefinedVariantName}`]
             : [`${union.name}::${union.nullVariantName}`, `${union.name}::${union.undefinedVariantName}`];
           const emittedOperand =
-            emitRustDualSentinelRawCarrierRust(operand, context) ?? emitExpression(operand, context);
+            emitRustNominalUnionRawCarrierRust(operand, context) ?? emitExpression(operand, context);
           const test = `matches!(&${emittedOperand}, ${patterns.join(' | ')})`;
           return expression.operator === '!=' || expression.operator === '!==' ? `!${test}` : test;
         }
@@ -2614,7 +2660,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'function':
       return emitFunctionExpressionRust(expression, context);
     case 'identifier': {
-      const nominalExtraction = emitRustDualSentinelNominalArmExtractionRust(expression, context);
+      const nominalExtraction = emitRustNominalArmExtractionRust(expression, context);
       if (nominalExtraction) return nominalExtraction;
       if (expression.reference.kind === 'binding') {
         const moduleState = context.moduleStateBindings.get(expression.reference.binding.id);
@@ -2710,6 +2756,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'objectRest':
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
+      if (expression.narrowedType && expression.type) {
+        const representation = createRustUnionRepresentationPlanForTypeRust(expression.type, context);
+        if (
+          representation.kind === 'nominalEnum' &&
+          representation.sentinels.kind === 'none' &&
+          hasIrTypeContextualGeneralUnionCandidateRust(expression.type, representation, context)
+        ) {
+          refuseRustDiscriminatedNominalArmExtractionRust(context);
+        }
+      }
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
       const asyncMethodSelfField = emitAsyncMethodSelfFieldReadRust(expression, context);
       if (asyncMethodSelfField) return asyncMethodSelfField;
@@ -8085,7 +8141,7 @@ function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>
 // need, and a binding consumed once is left to move.
 function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   const nominalExtraction =
-    expression.kind === 'identifier' ? emitRustDualSentinelNominalArmExtractionRust(expression, context) : undefined;
+    expression.kind === 'identifier' ? emitRustNominalArmExtractionRust(expression, context) : undefined;
   const source = nominalExtraction ?? emitExpression(expression, context);
   // The arm projection already borrows the carrier and clones the selected payload. Treating the
   // source binding as moved would clone that new owned payload a second time.
@@ -9030,6 +9086,78 @@ function createRustDualSentinelNominalEnumPlanRust(
   };
 }
 
+function createRustDiscriminatedNominalEnumPlanRust(
+  type: Readonly<IrType>,
+  tagName: string,
+  context: EmitContext,
+): RustDiscriminatedNominalEnumPlan | undefined {
+  const union = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (
+    union.kind !== 'nominalEnum' ||
+    union.sentinels.kind !== 'none' ||
+    union.owner.typeArguments.length > 0 ||
+    union.valueVariants.length !== 2
+  ) {
+    return undefined;
+  }
+  const ownerIdentity = getIrNamedTypeIdentityRust(union.owner, context);
+  const declaration = ownerIdentity?.location.declaration;
+  if (
+    !ownerIdentity ||
+    declaration?.kind !== 'typeAlias' ||
+    declaration.typeParameters.length > 0 ||
+    declaration.type.kind !== 'union' ||
+    declaration.type.types.length !== 2
+  ) {
+    return undefined;
+  }
+  const members = getIrUnionTypeMemberRecordsRust(declaration.type, context);
+  if (!members || members.length !== 2) return undefined;
+  const valueVariants = members.map((member) => {
+    const identity = getIrExactNominalRecordIdentityRust(member.sourceAlternative, context);
+    const property = member.properties.find((candidate) => candidate.name === tagName);
+    const plannedMatches = identity
+      ? union.valueVariants.filter(
+          (variant) => getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === identity.key,
+        )
+      : [];
+    if (
+      !identity ||
+      plannedMatches.length !== 1 ||
+      !property ||
+      property.computedKey !== undefined ||
+      property.optional ||
+      !property.readonly ||
+      property.phantom === true ||
+      property.role !== undefined ||
+      property.type.kind !== 'literal' ||
+      typeof property.type.value !== 'string'
+    ) {
+      return undefined;
+    }
+    return {
+      identity,
+      name: member.variantName,
+      sourceAlternative: member.sourceAlternative,
+      tagValue: property.type.value,
+    };
+  });
+  if (
+    valueVariants.some((variant) => variant === undefined) ||
+    new Set(valueVariants.map((variant) => variant?.identity.key)).size !== 2 ||
+    new Set(valueVariants.map((variant) => variant?.tagValue)).size !== 2
+  ) {
+    return undefined;
+  }
+  return {
+    kind: 'discriminatedNominalEnum',
+    owner: union.owner,
+    ownerIdentity,
+    tagName,
+    valueVariants: valueVariants as RustDiscriminatedNominalEnumPlan['valueVariants'],
+  };
+}
+
 function allocateRustUnionVariantName(preferredName: string, occupied: Set<string>): string {
   let name = preferredName;
   for (let suffix = 2; occupied.has(name); suffix += 1) name = `${preferredName}${String(suffix)}`;
@@ -9160,7 +9288,7 @@ function emitExactNominalGeneralUnionConstructionRust(
       expression.kind === 'property')
   ) {
     return expression.kind === 'identifier'
-      ? emitRustDualSentinelRawOwnedBindingRust(expression, context)
+      ? emitRustNominalUnionRawOwnedBindingRust(expression, context)
       : emitOwnedOperandRust(expression, context);
   }
 
@@ -9545,6 +9673,22 @@ function collectIrModuleBindingTypesRust(module: Readonly<IrModule>): ReadonlyMa
   return result;
 }
 
+function collectRustDiscriminatedNominalUnionAliasBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  const result = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        variable.initializer?.kind === 'identifier' &&
+        variable.initializer.reference.kind === 'binding'
+      ) {
+        result.add(variable.binding.id);
+      }
+    },
+  });
+  return result;
+}
+
 function collectIrModuleAssignableBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
   const result = new Set<string>();
   analyzeIrModuleTraversal(module, {
@@ -9660,13 +9804,20 @@ function getIrExpressionDualSentinelCarrierRust(
   return anonymous ? { name: anonymous.name, nullVariantName: 'Null', undefinedVariantName: 'Undefined' } : undefined;
 }
 
-function emitRustDualSentinelRawCarrierRust(
+function emitRustNominalUnionRawCarrierRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): string | undefined {
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   const declaredType = context.bindingTypes.get(expression.reference.binding.id);
-  if (!declaredType || !createRustDualSentinelNominalEnumPlanRust(declaredType, context)) return undefined;
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
   const bindingId = expression.reference.binding.id;
   const moduleState = context.moduleStateBindings.get(bindingId);
   if (moduleState) return `${moduleState.readName}()`;
@@ -9684,12 +9835,12 @@ function emitRustDualSentinelRawCarrierRust(
   return target;
 }
 
-function emitRustDualSentinelRawOwnedBindingRust(
+function emitRustNominalUnionRawOwnedBindingRust(
   expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
   context: EmitContext,
 ): string {
   if (expression.reference.kind !== 'binding') return emitExpression(expression, context);
-  const source = emitRustDualSentinelRawCarrierRust(expression, context);
+  const source = emitRustNominalUnionRawCarrierRust(expression, context);
   if (!source) return emitExpression(expression, context);
   const direct = emitIdentifierReferenceRust(expression.reference, context);
   if (source !== direct) return source;
@@ -9702,6 +9853,176 @@ function emitRustDualSentinelRawOwnedBindingRust(
     );
   }
   return `${source}.clone()`;
+}
+
+function getRustDiscriminatedNominalUnionIfElsePlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'if' }>>,
+  context: EmitContext,
+): RustDiscriminatedNominalUnionIfElsePlan | undefined {
+  const condition = statement.condition;
+  if (condition.kind !== 'binary') return undefined;
+  const evidence = condition.semantics.unionMemberTest;
+  const property = condition.left.kind === 'property' ? condition.left : undefined;
+  const subject = property?.object.kind === 'identifier' ? property.object : undefined;
+  const rejectedSubject =
+    condition.left.kind === 'element' && condition.left.object.kind === 'identifier'
+      ? condition.left.object
+      : undefined;
+  const syntacticReference = subject?.reference ?? rejectedSubject?.reference;
+  const syntacticBinding = syntacticReference?.kind === 'binding' ? syntacticReference.binding : undefined;
+  const testedBinding = evidence?.binding ?? syntacticBinding;
+  if (!testedBinding) return undefined;
+  const declaredType = context.bindingTypes.get(testedBinding.id);
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    representation.sentinels.kind !== 'none' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
+  const literal =
+    condition.right.kind === 'literal' && typeof condition.right.value === 'string' ? condition.right : undefined;
+  const operatorResult = condition.operator === '===' ? true : condition.operator === '!==' ? false : undefined;
+  if (
+    context.discriminatedNominalUnionBranch !== undefined ||
+    !statement.otherwise ||
+    !evidence ||
+    !property ||
+    property.optional ||
+    property.optionalChain !== undefined ||
+    property.namespaceMember !== undefined ||
+    property.structuralAccess !== undefined ||
+    !subject ||
+    subject.reference.kind !== 'binding' ||
+    subject.reference.binding.id !== evidence.binding.id ||
+    !literal ||
+    operatorResult === undefined ||
+    evidence.whenResult !== operatorResult ||
+    context.nativeAsyncFunction ||
+    context.discriminatedNominalUnionAliasBindingIds.has(testedBinding.id) ||
+    context.moduleStateBindings.has(testedBinding.id) ||
+    isRustBindingReferencePlannedRust(testedBinding.id, context) ||
+    context.reboundBindingIds.has(testedBinding.id) ||
+    context.referentMutatedBindingIds.has(testedBinding.id)
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+  const plan = createRustDiscriminatedNominalEnumPlanRust(declaredType, property.name, context);
+  if (!plan) refuseRustDiscriminatedNominalArmExtractionRust(context);
+  const evidenceIdentity = getIrExactNominalRecordIdentityRust(evidence.member, context);
+  const literalMatches = plan.valueVariants.filter((variant) => variant.tagValue === literal.value);
+  const evidenceMatches = evidenceIdentity
+    ? plan.valueVariants.filter((variant) => variant.identity.key === evidenceIdentity.key)
+    : [];
+  if (
+    !evidenceIdentity ||
+    literalMatches.length !== 1 ||
+    evidenceMatches.length !== 1 ||
+    literalMatches[0]!.identity.key !== evidenceMatches[0]!.identity.key
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+  const selected = evidenceMatches[0]!;
+  const complement = plan.valueVariants.find((variant) => variant.identity.key !== selected.identity.key);
+  if (!complement) refuseRustDiscriminatedNominalArmExtractionRust(context);
+  const matchingBranch = {
+    bindingId: evidence.binding.id,
+    direct: true,
+    expectedIdentityKey: selected.identity.key,
+    ownerIdentityKey: plan.ownerIdentity.key,
+    tagName: plan.tagName,
+  } as const;
+  const complementBranch = {
+    bindingId: evidence.binding.id,
+    direct: true,
+    expectedIdentityKey: complement.identity.key,
+    ownerIdentityKey: plan.ownerIdentity.key,
+    tagName: plan.tagName,
+  } as const;
+  const owner = emitType(plan.owner, context);
+  const test = `matches!(&${getBindingTargetNameRust(evidence.binding, context)}, ${owner}::${selected.name}(_))`;
+  return {
+    consequent: evidence.whenResult ? matchingBranch : complementBranch,
+    otherwise: evidence.whenResult ? complementBranch : matchingBranch,
+    test: evidence.whenResult ? test : `!${test}`,
+  };
+}
+
+function refuseRustDiscriminatedNominalUnionMemberTestIfCandidateRust(
+  evidence: Readonly<IrUnionMemberTestEvidence>,
+  context: EmitContext,
+): void {
+  const declaredType = context.bindingTypes.get(evidence.binding.id);
+  if (!declaredType) return;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind === 'nominalEnum' &&
+    representation.sentinels.kind === 'none' &&
+    hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+}
+
+function emitRustDiscriminatedNominalArmExtractionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  const declaredType = context.bindingTypes.get(bindingId);
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    representation.sentinels.kind !== 'none' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
+  const branch = context.discriminatedNominalUnionBranch;
+  const hasNarrowingEvidence = expression.narrowedType !== undefined || expression.narrowedMember !== undefined;
+  if (!branch || branch.bindingId !== bindingId) {
+    if (hasNarrowingEvidence) refuseRustDiscriminatedNominalArmExtractionRust(context);
+    return undefined;
+  }
+  if (!branch.direct || !expression.narrowedType) refuseRustDiscriminatedNominalArmExtractionRust(context);
+  const plan = createRustDiscriminatedNominalEnumPlanRust(declaredType, branch.tagName, context);
+  const narrowedIdentity = getIrExactNominalRecordIdentityRust(expression.narrowedType, context);
+  const matches =
+    plan && narrowedIdentity
+      ? plan.valueVariants.filter((variant) => variant.identity.key === narrowedIdentity.key)
+      : [];
+  if (
+    !plan ||
+    plan.ownerIdentity.key !== branch.ownerIdentityKey ||
+    !narrowedIdentity ||
+    narrowedIdentity.key !== branch.expectedIdentityKey ||
+    matches.length !== 1 ||
+    context.moduleStateBindings.has(bindingId) ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    context.reboundBindingIds.has(bindingId) ||
+    context.referentMutatedBindingIds.has(bindingId) ||
+    context.deepCloneUnsafeBindingIds.has(bindingId) ||
+    !isIrDualSentinelNominalArmCloneSafeRust(expression.narrowedType, context, new Set())
+  ) {
+    refuseRustDiscriminatedNominalArmExtractionRust(context);
+  }
+  const target = emitIdentifierReferenceRust(expression.reference, context);
+  const owner = emitType(plan.owner, context);
+  return `match &${target} { ${owner}::${matches[0]!.name}(value) => value.clone(), _ => unreachable!() }`;
+}
+
+function emitRustNominalArmExtractionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  return (
+    emitRustDualSentinelNominalArmExtractionRust(expression, context) ??
+    emitRustDiscriminatedNominalArmExtractionRust(expression, context)
+  );
 }
 
 function emitRustDualSentinelNominalArmExtractionRust(
@@ -9863,6 +10184,14 @@ function refuseRustDualSentinelNominalArmExtractionRust(context: EmitContext): n
     context,
     'dual-sentinel nominal arm extraction requires one stable direct binding, present evidence, one exact non-generic named record arm, and value-safe clone ownership',
     'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
+  );
+}
+
+function refuseRustDiscriminatedNominalArmExtractionRust(context: EmitContext): never {
+  emissionRuleError(
+    context,
+    'discriminated nominal arm extraction requires one stable direct binding, an explicit two-branch strict literal-tag test over exactly two non-generic named record arms, exact branch-local checker evidence, and value-safe clone ownership',
+    'rust-discriminated-nominal-arm-extraction-unrepresented',
   );
 }
 
@@ -13160,6 +13489,24 @@ function emitSynchronousTryFinallyRust(
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
+  if (
+    context.discriminatedNominalUnionBranch?.direct === true &&
+    ((statement.kind === 'block' && statement.label !== undefined) ||
+      statement.kind === 'do' ||
+      statement.kind === 'for' ||
+      statement.kind === 'forIn' ||
+      statement.kind === 'forOf' ||
+      statement.kind === 'if' ||
+      statement.kind === 'switch' ||
+      statement.kind === 'throw' ||
+      statement.kind === 'try' ||
+      statement.kind === 'while')
+  ) {
+    return emitStatement(statement, {
+      ...context,
+      discriminatedNominalUnionBranch: { ...context.discriminatedNominalUnionBranch, direct: false },
+    });
+  }
   switch (statement.kind) {
     case 'block':
       return [
@@ -13231,6 +13578,27 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     }
     case 'if': {
+      const discriminated = getRustDiscriminatedNominalUnionIfElsePlanRust(statement, context);
+      if (discriminated) {
+        return [
+          `if ${discriminated.test} {`,
+          ...indentSourceLines(
+            emitStatementBody(statement.consequent, {
+              ...context,
+              discriminatedNominalUnionBranch: discriminated.consequent,
+            }),
+          ),
+          '}',
+          'else {',
+          ...indentSourceLines(
+            emitStatementBody(statement.otherwise!, {
+              ...context,
+              discriminatedNominalUnionBranch: discriminated.otherwise,
+            }),
+          ),
+          '}',
+        ];
+      }
       const lines = [
         `if ${normalizeSourceTextGrouping(emitExpression(statement.condition, context))} {`,
         ...indentSourceLines(emitStatementBody(statement.consequent, context)),
