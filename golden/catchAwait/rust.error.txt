@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/catchAwait.ts: async try protection requires exactly one direct suspension and no later or neighboring suspension
