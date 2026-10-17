@@ -1,7 +1,15 @@
+import ts from 'typescript';
+
+import { createIrModuleTargetNameAllocation } from '../../compiler-emission/src/index.js';
+import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { IrBindingIdentity, IrModule, IrTypeBindingIdentity } from '../../compiler-types/src/index.js';
 import {
   convertPackageNameToRustCrateName,
   convertSourcePathToRustModuleName,
+  createRustBindingNameRules,
   createRustCompilerModuleLocator,
+  getRustConstantBindingIds,
+  getRustPreferredBindingName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
 
@@ -160,5 +168,99 @@ describe('isRustCompilerKeyword', () => {
     expect(isRustCompilerKeyword('_')).toBe(true);
     expect(isRustCompilerKeyword('Type')).toBe(false);
     expect(isRustCompilerKeyword('value')).toBe(false);
+  });
+});
+
+describe('createRustBindingNameRules', () => {
+  const rules = createRustBindingNameRules();
+
+  it('splits acronym boundaries and separates the two casing families', () => {
+    expect(rules.snakeCase('HTTPServer')).toBe('http_server');
+    expect(rules.snakeCase('widget')).toBe('widget');
+    expect(rules.pascalCase('foo_bar')).toBe('FooBar');
+    expect(rules.pascalCase('HTTPServer')).toBe('HTTPServer');
+  });
+
+  it('applies keyword suffixes, `this`, and dotted type paths', () => {
+    expect(rules.safeRustValueName('this')).toBe('self');
+    expect(rules.safeRustValueName('type')).toBe('type_');
+    expect(rules.safeRustTypeName('foo.bar')).toBe('Foo::Bar');
+    expect(rules.safeRustTypeName('Self')).toBe('Self_');
+  });
+});
+
+describe('getRustConstantBindingIds', () => {
+  it('selects only immutable, non-pattern variable bindings', () => {
+    const module = {
+      declarations: [
+        { binding: { id: 'immutable' }, kind: 'variable', mutable: false },
+        { binding: { id: 'mutable' }, kind: 'variable', mutable: true },
+        { binding: { id: 'pattern' }, kind: 'variable', mutable: false, pattern: {} },
+        { binding: { id: 'function' }, kind: 'function' },
+      ],
+    } as unknown as IrModule;
+
+    expect([...getRustConstantBindingIds(module)]).toEqual(['immutable']);
+  });
+});
+
+describe('getRustPreferredBindingName', () => {
+  function binding(changes: Readonly<Record<string, unknown>>) {
+    return {
+      id: 'binding',
+      kind: 'import',
+      name: 'Widget',
+      packageName: '@scope/pkg',
+      scope: 'module',
+      source: 'packages/pkg/src/consumer.ts',
+      space: 'value',
+      ...changes,
+    } as unknown as IrBindingIdentity | IrTypeBindingIdentity;
+  }
+
+  it('type-shapes an uppercase import and value-shapes a lowercase one', () => {
+    expect(getRustPreferredBindingName(binding({}), new Set())).toBe('Widget');
+    expect(getRustPreferredBindingName(binding({ name: 'widget' }), new Set())).toBe('widget');
+  });
+
+  it('names declarations by their declared space and constants by screaming snake', () => {
+    expect(getRustPreferredBindingName(binding({ kind: 'class', name: 'Store' }), new Set())).toBe('Store');
+    expect(getRustPreferredBindingName(binding({ kind: 'interface', name: 'Value', space: 'type' }), new Set())).toBe(
+      'Value',
+    );
+    expect(
+      getRustPreferredBindingName(
+        binding({ id: 'constant', kind: 'variable', name: 'maxValue' }),
+        new Set(['constant']),
+      ),
+    ).toBe('MAX_VALUE');
+    expect(getRustPreferredBindingName(binding({ name: 'type' }), new Set())).toBe('type_');
+  });
+
+  it('produces the emitter-exact map once collision suffixes are applied, imports included', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/pkg/src/consumer.ts',
+      "import { Widget } from './provider.js';\nfunction widget(): Widget { return new Widget(); }\nexport { widget };\nexport const f0: number = 1;",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const module = lowerTypeScriptSource(sourceFile, {
+      packageName: '@probe/pkg',
+      upstreamDirectory: '/flight',
+    }).module;
+    const constants = getRustConstantBindingIds(module);
+    const names = new Map(
+      createIrModuleTargetNameAllocation(module, (binding) => ({
+        namespace: 'identifier',
+        preferredName: getRustPreferredBindingName(binding, constants),
+      })).map((allocation) => [allocation.name, allocation.identity]),
+    );
+
+    // The import keeps its type-shaped spelling and the indirect function keeps its base name: the two
+    // spellings that diverged when the plan used its own value-shaped import preference.
+    expect(names.has('Widget')).toBe(true);
+    expect(names.has('widget')).toBe(true);
+    expect(names.has('widget_2')).toBe(false);
+    expect(names.has('F0')).toBe(true);
   });
 });

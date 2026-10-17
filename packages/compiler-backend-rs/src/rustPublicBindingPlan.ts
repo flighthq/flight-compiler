@@ -29,6 +29,8 @@ import type {
 import {
   convertPackageNameToRustCrateName,
   createRustCompilerModuleLocator,
+  getRustConstantBindingIds,
+  getRustPreferredBindingName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
 
@@ -172,20 +174,14 @@ function createRustPublicTargetNameMaps(
 ): ReadonlyMap<string, ReadonlyMap<string, string>> {
   const maps = new Map<string, ReadonlyMap<string, string>>();
   for (const module of modules) {
-    const constants = new Set(
-      module.declarations.flatMap((declaration) =>
-        declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
-          ? [declaration.binding.id]
-          : [],
-      ),
-    );
+    const constants = getRustConstantBindingIds(module);
     try {
       maps.set(
         getRustPublicModuleIdentityKey(module),
         new Map(
           createIrModuleTargetNameAllocation(module, (binding) => ({
             namespace: 'identifier',
-            preferredName: getRustPublicPreferredBindingName(binding, constants),
+            preferredName: getRustPreferredBindingName(binding, constants),
           })).map((allocation) => [allocation.identity, allocation.name]),
         ),
       );
@@ -279,7 +275,7 @@ function createRustPublicBindings(
           .get(getRustPublicModuleIdentityKey(declarationModule))
           ?.get(slot.route.binding.id);
         const spelling = direct
-          ? (allocated ?? getRustPublicPreferredBindingName(slot.route.binding, new Set()))
+          ? (allocated ?? getRustPreferredBindingName(slot.route.binding, new Set()))
           : getRustPublicExportName(slot.lane, slot.exportName);
         binding = {
           availability: 'available',
@@ -405,16 +401,6 @@ function assertRustPublicBindingsUnique(bindings: readonly Readonly<CompilerRust
       `Rust public binding collision: ${subjects.join(', ')}`,
     );
   }
-}
-
-function getRustPublicPreferredBindingName(
-  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
-  constants: ReadonlySet<string>,
-): string {
-  if (constants.has(binding.id)) return rustPublicSnakeCase(binding.name).toUpperCase();
-  return binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
-    ? rustPublicTypeName(binding.name)
-    : rustPublicValueName(binding.name);
 }
 
 function getRustPublicExportName(space: 'type' | 'value', name: string): string {

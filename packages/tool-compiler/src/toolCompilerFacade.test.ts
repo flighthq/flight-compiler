@@ -448,3 +448,93 @@ describe('@flighthq/tool-compiler package subpath imports', () => {
     expect(consumerFile?.contents).toContain('use beta_lib::helper;');
   });
 });
+
+describe('@flighthq/tool-compiler Rust allocator agreement', () => {
+  type PlanBinding = Readonly<{
+    binding: Readonly<{ availability: string; locator?: Readonly<{ spelling: string }> | undefined }>;
+    identity: Readonly<{ exportRoute: string }>;
+  }>;
+
+  function locatorSpelling(
+    result: Readonly<{ report: Readonly<{ publicBindings?: unknown }> }>,
+    exportName: string,
+  ): string | undefined {
+    const bindings = (result.report.publicBindings as Readonly<{ bindings: readonly PlanBinding[] }> | undefined)
+      ?.bindings;
+    return bindings?.find(
+      (binding) =>
+        binding.binding.availability === 'available' &&
+        binding.identity.exportRoute.includes(`${JSON.stringify(exportName)}`),
+    )?.binding.locator?.spelling;
+  }
+
+  const provider = (source: string) => ({
+    packageName: '@probe/pkg',
+    packageRoot: '/flight/packages/pkg',
+    upstreamDirectory: '/flight',
+    sourceFile: parseTypeScriptSource('/flight/packages/pkg/src/provider.ts', source),
+  });
+  const consumer = (source: string) => ({
+    packageName: '@probe/pkg',
+    packageRoot: '/flight/packages/pkg',
+    upstreamDirectory: '/flight',
+    sourceFile: parseTypeScriptSource('/flight/packages/pkg/src/consumer.ts', source),
+  });
+  const consumerIdentity = { name: 'Consumer', packageName: '@probe/pkg', source: 'packages/pkg/src/consumer.ts' };
+  const providerIdentity = { name: 'Provider', packageName: '@probe/pkg', source: 'packages/pkg/src/provider.ts' };
+  const compile = (sources: readonly ReturnType<typeof consumer>[]) =>
+    compileTypeScriptPackageGraph({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      graph: {
+        entries: [consumerIdentity],
+        moduleDependencies: [{ importer: consumerIdentity, specifier: './provider.js', target: providerIdentity }],
+        packages: [{ dependencies: [], name: '@probe/pkg', root: '/flight/packages/pkg' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources,
+    });
+
+  it('reports the emitted spelling for a directly exported colliding function', () => {
+    const result = compile([
+      consumer("import { Widget } from './provider.js';\nexport function widget(): Widget { return new Widget(); }"),
+      provider('export class Widget { value: number = 1; }'),
+    ]);
+    const consumerFile = result.compilation.files.find(({ path }) => path === 'consumer.rs');
+
+    expect(consumerFile?.contents).toContain('pub fn widget()');
+    expect(locatorSpelling(result, 'widget')).toBe('widget');
+  });
+
+  it('allocates an indirect export and its imports exactly as the emitter does', () => {
+    const result = compile([
+      consumer(
+        "import { F0, Widget } from './provider.js';\nfunction widget(): Widget { return new Widget(); }\nexport { widget };\nexport const f0: F0 = new F0();",
+      ),
+      provider('export class F0 { v: number = 0; }\nexport class Widget { value: number = 1; }'),
+    ]);
+    const consumerFile = result.compilation.files.find(({ path }) => path === 'consumer.rs');
+
+    // Emitter output is unchanged by the shared rules: the uppercase import keeps its type-shaped name
+    // (the constant forces the `F0_2` alias), and the indirect function keeps its base name.
+    expect(consumerFile?.contents).toContain('use crate::provider::{F0 as F0_2, Widget};');
+    expect(consumerFile?.contents).toContain('fn widget()');
+    expect(consumerFile?.contents).toContain('pub const F0: F0_2');
+    expect(locatorSpelling(result, 'widget')).toBe('widget');
+    expect(locatorSpelling(result, 'f0')).toBe('F0');
+  });
+
+  it('answers the same plan and files when the sources are ordered differently', () => {
+    const sources = [
+      consumer(
+        "import { F0, Widget } from './provider.js';\nfunction widget(): Widget { return new Widget(); }\nexport { widget };\nexport const f0: F0 = new F0();",
+      ),
+      provider('export class F0 { v: number = 0; }\nexport class Widget { value: number = 1; }'),
+    ];
+    const first = compile(sources);
+    const second = compile([...sources].reverse());
+
+    expect(second.report.publicBindings).toEqual(first.report.publicBindings);
+    expect(second.compilation.files).toEqual(first.compilation.files);
+  });
+});

@@ -107,9 +107,15 @@ import type {
 import { getCompilerRustAmbientMemberBinding } from './rustAmbientMemberBinding.js';
 import {
   convertPackageNameToRustCrateName,
+  createRustBindingNameRules,
   createRustCompilerModuleLocator,
-  isRustCompilerKeyword,
+  getRustConstantBindingIds,
+  getRustPreferredBindingName,
 } from './rustCompilerIdentity.js';
+
+// Emission's spelling rules. The public-binding plan reads the same record, so a name that is later
+// collision-suffixed cannot be allocated differently by the plan than by the emitted source.
+const { pascalCase, safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
 import {
   analyzeIrModuleOwnershipEvidenceRust,
   collectIrModuleMovedBindingIdsRust,
@@ -460,13 +466,13 @@ function emitIrModuleRustWithContext(
   const arrayBoundsPlan = createRustArrayBoundsPlan(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
-  const constantIdentities = collectRustConstantBindingIds(module);
+  const constantIdentities = getRustConstantBindingIds(module);
   let targetNames: Map<string, string>;
   try {
     targetNames = new Map(
       createIrModuleTargetNameAllocation(module, (binding) => ({
         namespace: 'identifier',
-        preferredName: getPreferredBindingNameRust(binding, constantIdentities),
+        preferredName: getRustPreferredBindingName(binding, constantIdentities),
       })).map((allocation) => [allocation.identity, allocation.name]),
     );
   } catch (error) {
@@ -8719,16 +8725,6 @@ function getElementAccessTupleIndexRust(
   return expression.index.value;
 }
 
-function collectRustConstantBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
-  return new Set(
-    module.declarations.flatMap((declaration) =>
-      declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
-        ? [declaration.binding.id]
-        : [],
-    ),
-  );
-}
-
 // Every module's allocation, computed the same way its own emission computes it. A module whose names
 // collide cannot be emitted at all, and its own emission reports that; leaving it out here keeps an
 // importing module's resolution defensive instead of failing it early for someone else's collision.
@@ -8738,13 +8734,13 @@ function createRustTargetNameMaps(
   const maps = new Map<string, ReadonlyMap<string, string>>();
   for (const module of modules) {
     try {
-      const constants = collectRustConstantBindingIds(module);
+      const constants = getRustConstantBindingIds(module);
       maps.set(
         getRustModuleIdentityKey(module),
         new Map(
           createIrModuleTargetNameAllocation(module, (binding) => ({
             namespace: 'identifier',
-            preferredName: getPreferredBindingNameRust(binding, constants),
+            preferredName: getRustPreferredBindingName(binding, constants),
           })).map((allocation) => [allocation.identity, allocation.name]),
         ),
       );
@@ -8968,19 +8964,6 @@ function getRustNamespaceImportMemberRust(
 // to read, and this is the rule it has always used; it is the fallback, not the answer.
 function getRustNameShapeFallback(name: string, typeOnly: boolean): string {
   return typeOnly || /^[A-Z]/u.test(name) ? safeRustTypeName(name) : safeRustValueName(name);
-}
-
-function getPreferredBindingNameRust(
-  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
-  constants: ReadonlySet<string>,
-): string {
-  if (constants.has(binding.id)) return screamingSnakeCase(binding.name);
-  return binding.space === 'type' ||
-    binding.kind === 'class' ||
-    binding.kind === 'enum' ||
-    (binding.kind === 'import' && /^[A-Z]/u.test(binding.name))
-    ? safeRustTypeName(binding.name)
-    : safeRustValueName(binding.name);
 }
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
@@ -11910,15 +11893,6 @@ function isRustMultiPackageGraphRust(sourceModules: readonly Readonly<IrModule>[
   return new Set(sourceModules.map((candidate) => candidate.packageName)).size > 1;
 }
 
-function safeRustTypeName(name: string): string {
-  const stripped = name.startsWith('#') ? name.slice(1) : name;
-  const value = stripped
-    .split('.')
-    .map((segment) => pascalCase(segment))
-    .join('::');
-  return isRustCompilerKeyword(value) ? `${value}_` : value;
-}
-
 // A union alias becomes a Rust enum only when every alternative is a named record available through
 // this module's own declarations or imports. Anonymous shapes still have no stable variant identity.
 function getIrUnionTypeMemberRecordsRust(
@@ -12780,33 +12754,6 @@ function recordRuntimeTypeRust(name: string, context: EmitContext): string {
 
 function constantRustName(name: string): string {
   return safeRustValueName(name).toUpperCase();
-}
-
-function safeRustValueName(name: string): string {
-  if (name === 'this') return 'self';
-  const stripped = name.startsWith('#') ? name.slice(1) : name;
-  const value = snakeCase(stripped);
-  return isRustCompilerKeyword(value) ? `${value}_` : value;
-}
-
-function pascalCase(value: string): string {
-  return value
-    .split(/[-_]/u)
-    .filter(Boolean)
-    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
-    .join('');
-}
-
-function screamingSnakeCase(value: string): string {
-  return snakeCase(value).toUpperCase();
-}
-
-function snakeCase(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
-    .replace(/([A-Z]+)([A-Z][a-z])/gu, '$1_$2')
-    .replace(/[-\s]+/gu, '_')
-    .toLowerCase();
 }
 
 const rustTypedArrayConstructorNames = new Set([

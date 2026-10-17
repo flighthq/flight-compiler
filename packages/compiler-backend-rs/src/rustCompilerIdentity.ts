@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import type { IrBindingIdentity, IrModule, IrTypeBindingIdentity } from '../../compiler-types/src/index.js';
 
 export function convertPackageNameToRustCrateName(packageName: string): string {
   const scopeSeparator = packageName.indexOf('/');
@@ -46,6 +47,18 @@ export function convertSourcePathToRustModuleName(sourcePath: string): string | 
   return isRustCompilerKeyword(moduleName) ? `${moduleName}_` : moduleName;
 }
 
+// The spelling rules one Rust binding name follows. One record, so the emitter and the public-binding
+// plan cannot disagree about a name that is later collision-suffixed: a constant is screaming snake, a
+// type, class, enum, or uppercase import is type-shaped, and everything else is a value name.
+export function createRustBindingNameRules(): Readonly<{
+  pascalCase: (value: string) => string;
+  safeRustTypeName: (name: string) => string;
+  safeRustValueName: (name: string) => string;
+  snakeCase: (value: string) => string;
+}> {
+  return { pascalCase, safeRustTypeName, safeRustValueName, snakeCase: bindingNameSnakeCase };
+}
+
 export function createRustCompilerModuleLocator(
   identity: Readonly<{ packageName: string; source: string }>,
   options: Readonly<{ multiPackage: boolean }>,
@@ -81,6 +94,31 @@ export function createRustCompilerModuleLocator(
   return { filePath, modulePath, source };
 }
 
+export function getRustConstantBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  return new Set(
+    module.declarations.flatMap((declaration) =>
+      declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
+        ? [declaration.binding.id]
+        : [],
+    ),
+  );
+}
+
+// The preferred name a binding starts from before collision suffixes are applied. This is the single
+// rule both the emitter allocation and the public-binding-plan allocation call.
+export function getRustPreferredBindingName(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  constants: ReadonlySet<string>,
+): string {
+  if (constants.has(binding.id)) return screamingSnakeCase(binding.name);
+  return binding.space === 'type' ||
+    binding.kind === 'class' ||
+    binding.kind === 'enum' ||
+    (binding.kind === 'import' && /^[A-Z]/u.test(binding.name))
+    ? safeRustTypeName(binding.name)
+    : safeRustValueName(binding.name);
+}
+
 export function isRustCompilerKeyword(value: string): boolean {
   return rustCompilerKeywords.has(value);
 }
@@ -104,6 +142,44 @@ function snakeCase(value: string): string {
     .replace(/[^A-Za-z0-9]+/gu, '_')
     .replace(/^_+|_+$/gu, '')
     .toLowerCase();
+}
+
+function screamingSnakeCase(value: string): string {
+  return bindingNameSnakeCase(value).toUpperCase();
+}
+
+// Binding-name casing splits acronym boundaries, unlike the source-path casing above: `HTTPServer` is
+// `http_server`, where a module segment is a path word.
+function bindingNameSnakeCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/gu, '$1_$2')
+    .replace(/[-\s]+/gu, '_')
+    .toLowerCase();
+}
+
+function pascalCase(value: string): string {
+  return value
+    .split(/[-_]/u)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join('');
+}
+
+function safeRustTypeName(name: string): string {
+  const stripped = name.startsWith('#') ? name.slice(1) : name;
+  const value = stripped
+    .split('.')
+    .map((segment) => pascalCase(segment))
+    .join('::');
+  return isRustCompilerKeyword(value) ? `${value}_` : value;
+}
+
+function safeRustValueName(name: string): string {
+  if (name === 'this') return 'self';
+  const stripped = name.startsWith('#') ? name.slice(1) : name;
+  const value = bindingNameSnakeCase(stripped);
+  return isRustCompilerKeyword(value) ? `${value}_` : value;
 }
 
 const rustCompilerKeywords = new Set([
