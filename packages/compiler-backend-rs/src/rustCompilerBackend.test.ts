@@ -4408,6 +4408,104 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     },
   );
 
+  it.each([
+    [
+      'expression then assignment settlement',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<number>): Promise<number> { let cleaned = 0; try { return await primary; } finally { await first; cleaned = await second; cleaned; } }',
+      'match first.settle() {',
+      'cleaned = finally_second_value;',
+    ],
+    [
+      'assignment then declaration settlement',
+      'export async function attempt(primary: Promise<number>, first: Promise<number>, second: Promise<number>): Promise<number> { let cleaned = 0; try { return await primary; } finally { cleaned = await first; cleaned; const finished: number = await second; finished; } }',
+      'cleaned = finally_first_value;',
+      'let finished: f64 = finally_second_value;',
+    ],
+    [
+      'declaration then expression settlement',
+      'export async function attempt(primary: Promise<number>, first: Promise<number>, second: Promise<void>): Promise<number> { try { return await primary; } finally { const cleaned: number = await first; cleaned; await second; } }',
+      'let cleaned: f64 = finally_first_value;',
+      'match second.settle() {',
+    ],
+  ])('lowers two-await finalizer with %s in source order', (_name, source, firstEffect, secondEffect) => {
+    const output = emitIrModuleRust(lower('try-two-await-finalizer.ts', source).module).contents;
+    const firstSettlement = output.indexOf('match first.settle() {');
+    const firstEffectIndex = output.indexOf(firstEffect, firstSettlement);
+    const secondSettlement = output.indexOf('match second.settle() {', firstSettlement);
+    const secondEffectIndex = output.indexOf(secondEffect, secondSettlement);
+    const preservedCompletion = output.indexOf('try_completion_result', secondSettlement);
+
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(3);
+    expect(firstSettlement).toBeGreaterThan(-1);
+    expect(firstEffectIndex).toBeGreaterThanOrEqual(firstSettlement);
+    expect(secondSettlement).toBeGreaterThan(firstEffectIndex);
+    expect(secondEffectIndex).toBeGreaterThanOrEqual(secondSettlement);
+    expect(preservedCompletion).toBeGreaterThan(secondEffectIndex);
+    expect(output).toContain('Err(finally_first_error) => Err(finally_first_error),');
+    expect(output).toContain('Err(finally_second_error) => Err(finally_second_error),');
+  });
+
+  it.each([
+    [
+      'Normal',
+      'export async function attempt(primary: Promise<void>, first: Promise<void>, second: Promise<void>): Promise<void> { try { await primary; } finally { await first; await second; } }',
+    ],
+    [
+      'Return',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await second; } }',
+    ],
+    [
+      'Error',
+      'export async function attempt(primary: Promise<void>, first: Promise<void>, second: Promise<void>): Promise<void> { try { await primary; throw new Error("source"); } finally { await first; await second; } }',
+    ],
+  ])(
+    'preserves pending %s completion only after both finalizer awaits fulfill and replaces it on either rejection',
+    (_name, source) => {
+      const output = emitIrModuleRust(lower('try-two-await-finalizer-semantics.ts', source).module).contents;
+      const firstSettlement = output.indexOf('match first.settle() {');
+      const secondSettlement = output.indexOf('match second.settle() {', firstSettlement);
+      const preservedCompletion = output.indexOf('try_completion_result', secondSettlement);
+      const secondReplacement = output.indexOf(
+        'Err(finally_second_error) => Err(finally_second_error),',
+        secondSettlement,
+      );
+      const firstReplacement = output.indexOf(
+        'Err(finally_first_error) => Err(finally_first_error),',
+        secondReplacement,
+      );
+      const finalDispatch = output.indexOf('match finally_completion_value {', firstReplacement);
+
+      expect(firstSettlement).toBeGreaterThan(-1);
+      expect(secondSettlement).toBeGreaterThan(firstSettlement);
+      expect(preservedCompletion).toBeGreaterThan(secondSettlement);
+      expect(secondReplacement).toBeGreaterThan(preservedCompletion);
+      expect(firstReplacement).toBeGreaterThan(secondReplacement);
+      expect(finalDispatch).toBeGreaterThan(firstReplacement);
+      expect(output.slice(firstSettlement, finalDispatch).match(/try_completion_result/g)).toHaveLength(1);
+    },
+  );
+
+  it('composes two-await catch before two-await finalizer without widening either plan', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-two-await-finalizer-catch.ts',
+        'export async function attempt(primary: Promise<number>, observer: Promise<void>, recovery: Promise<number>, firstCleanup: Promise<void>, secondCleanup: Promise<void>): Promise<number> { try { return await primary; } catch { await observer; return await recovery; } finally { await firstCleanup; await secondCleanup; } }',
+      ).module,
+    ).contents;
+    const protectedSettlement = output.indexOf('match primary.settle() {');
+    const firstCatchSettlement = output.indexOf('match observer.settle() {', protectedSettlement);
+    const secondCatchSettlement = output.indexOf('match recovery.settle() {', firstCatchSettlement);
+    const firstFinalizerSettlement = output.indexOf('match first_cleanup.settle() {', secondCatchSettlement);
+    const secondFinalizerSettlement = output.indexOf('match second_cleanup.settle() {', firstFinalizerSettlement);
+
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(5);
+    expect(protectedSettlement).toBeGreaterThan(-1);
+    expect(firstCatchSettlement).toBeGreaterThan(protectedSettlement);
+    expect(secondCatchSettlement).toBeGreaterThan(firstCatchSettlement);
+    expect(firstFinalizerSettlement).toBeGreaterThan(secondCatchSettlement);
+    expect(secondFinalizerSettlement).toBeGreaterThan(firstFinalizerSettlement);
+  });
+
   it('composes one-await catch before one-await finalizer without changing the completion carrier', () => {
     const output = emitIrModuleRust(
       lower(
@@ -4449,8 +4547,16 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'export async function attempt(primary: Promise<number>, cleanup: Promise<number>): Promise<number> { try { return await primary; } finally { return await cleanup; } }',
     ],
     [
-      'multiple awaits',
-      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await second; } }',
+      'three awaits',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<void>, third: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await second; await third; } }',
+    ],
+    [
+      'a first return await among two awaits',
+      'export async function attempt(primary: Promise<number>, first: Promise<number>, second: Promise<void>): Promise<number> { try { return await primary; } finally { return await first; await second; } }',
+    ],
+    [
+      'a second return await',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<number>): Promise<number> { try { return await primary; } finally { await first; return await second; } }',
     ],
     [
       'a nested await',
@@ -4464,7 +4570,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'a finalizer throw',
       'export async function attempt(primary: Promise<number>, cleanup: Promise<void>): Promise<number> { try { return await primary; } finally { await cleanup; throw new Error("replacement"); } }',
     ],
-  ])('stably refuses one-await finalizer with %s', (_name, source) => {
+  ])('stably refuses awaited finalizer with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('try-one-await-finalizer-refusal.ts', source).module),
     );
@@ -4476,7 +4582,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }).toEqual({
       classification: 'compiler-restriction',
       message:
-        'rust emission failed for @flighthq/math/packages/math/src/try-one-await-finalizer-refusal.ts: async try/finally awaited finalizer requires one flat finalizer with exactly one direct non-return await and no abrupt completion',
+        'rust emission failed for @flighthq/math/packages/math/src/try-one-await-finalizer-refusal.ts: async try/finally awaited finalizer requires one flat finalizer with exactly one or two direct non-return awaits and no abrupt completion',
       rule: 'rust-async-try-completion-unrepresented',
     });
   });
@@ -4509,6 +4615,52 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
     expect(failure.message).toContain('one direct Flight task settlement');
+  });
+
+  it.each([
+    [
+      'an indirect assignment in the first step',
+      'interface Box { value: number; } export async function attempt(primary: Promise<number>, first: Promise<number>, second: Promise<void>, box: Box): Promise<number> { try { return await primary; } finally { box.value = await first; await second; } }',
+      'rust-async-protected-assignment-place-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an indirect assignment in the second step',
+      'interface Box { value: number; } export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<number>, box: Box): Promise<number> { try { return await primary; } finally { await first; box.value = await second; } }',
+      'rust-async-protected-assignment-place-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a non-task first operand',
+      'export async function attempt(primary: Promise<number>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await 1; await second; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a non-task second operand',
+      'export async function attempt(primary: Promise<number>, first: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await 1; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a native future first operand',
+      'async function local(): Promise<void> {} export async function attempt(primary: Promise<number>, second: Promise<void>): Promise<number> { try { return await primary; } finally { await local(); await second; } }',
+      'rust-native-future-task-adapter-unavailable',
+      'target-runtime',
+    ],
+    [
+      'a native future second operand',
+      'async function local(): Promise<void> {} export async function attempt(primary: Promise<number>, first: Promise<void>): Promise<number> { try { return await primary; } finally { await first; await local(); } }',
+      'rust-native-future-task-adapter-unavailable',
+      'target-runtime',
+    ],
+  ])('preserves two-await finalizer carrier refusal for %s', (_name, source, rule, classification) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-two-await-finalizer-carrier-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe(classification);
   });
 
   it('composes protected bare FlightTask adoption with awaited catch and finalizer settlement', () => {
@@ -4555,10 +4707,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              catch { mark("bindingless-catch", log); const value = await observedNumber(recovery, "bindingless-recovery", log); mark("bindingless-after", log); return value + 1; }
              finally { mark("bindingless-finally", log); }
            }
-           export async function boundSettled(primary: Promise<number>, firstRecovery: Promise<number>, secondRecovery: Promise<number>, cleanup: Promise<void>, log: string[]): Promise<number> {
+           export async function boundSettled(primary: Promise<number>, firstRecovery: Promise<number>, secondRecovery: Promise<number>, firstCleanup: Promise<void>, secondCleanup: Promise<void>, log: string[]): Promise<number> {
              try { mark("bound-try", log); return primary; }
              catch (error) { mark("bound-catch", log); const first = await recover(error, firstRecovery, log); mark("bound-between", log); const second = await recover(error, secondRecovery, log); mark("bound-after", log); return first + second; }
-             finally { mark("bound-finally-before", log); await observedVoid(cleanup, "bound-cleanup", log); mark("bound-finally-after", log); }
+             finally { mark("bound-finally-before", log); await observedVoid(firstCleanup, "bound-first-cleanup", log); mark("bound-finally-between", log); await observedVoid(secondCleanup, "bound-second-cleanup", log); mark("bound-finally-after", log); }
            }
            export async function rethrown(primary: Promise<number>, observer: Promise<void>, cleanup: Promise<void>, log: string[]): Promise<number> {
              try { mark("rethrow-try", log); return await primary; }
@@ -4592,6 +4744,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       expect(output).toContain('let pending = native_value(4.0);');
       expect(output).toContain('let value: f64 = pending.await;');
       expect(output).toContain('Err(finally_error) => Err(finally_error),');
+      expect(output).toContain('Err(finally_first_error) => Err(finally_first_error),');
+      expect(output).toContain('Err(finally_second_error) => Err(finally_second_error),');
       expect(() =>
         runRustSourceAgainstRuntime(
           output,
@@ -4605,29 +4759,35 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(flight_runtime::block_on(bindingless(flight_runtime::FlightTask::<f64>::reject("bindingless-original"), flight_runtime::FlightTask::ready(7.0), &mut bindingless_caught_log)), 8.0);
            assert_eq!(bindingless_caught_log, vec!["bindingless-try".to_owned(), "bindingless-catch".to_owned(), "bindingless-recovery".to_owned(), "bindingless-after".to_owned(), "bindingless-finally".to_owned()]);
            let mut bound_ready_log = Vec::new();
-           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), &mut bound_ready_log)), 4.0);
-           assert_eq!(bound_ready_log, vec!["bound-try".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_ready_log)), 4.0);
+           assert_eq!(bound_ready_log, vec!["bound-try".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let mut bound_caught_log = Vec::new();
-           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), &mut bound_caught_log)), 14.0);
-           assert_eq!(bound_caught_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           assert_eq!(flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_caught_log)), 14.0);
+           assert_eq!(bound_caught_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let mut bound_first_rejection_log = Vec::new();
-           let bound_first_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::<f64>::reject("bound-first-error"), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), &mut bound_first_rejection_log))));
-           assert_eq!(bound_first_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           let bound_first_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::<f64>::reject("bound-first-error"), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_first_rejection_log))));
+           assert_eq!(bound_first_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let bound_first_payload = bound_first_rejection.expect_err("first catch rejection must replace the original and skip the second step");
            let bound_first_message = bound_first_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_first_payload.downcast_ref::<&str>().copied());
            assert_eq!(bound_first_message, Some("unhandled task rejection: bound-first-error"));
            let mut bound_second_rejection_log = Vec::new();
-           let bound_second_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<f64>::reject("bound-second-error"), flight_runtime::FlightTask::ready(()), &mut bound_second_rejection_log))));
-           assert_eq!(bound_second_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned(), "bound-finally-after".to_owned()]);
+           let bound_second_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<f64>::reject("bound-second-error"), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut bound_second_rejection_log))));
+           assert_eq!(bound_second_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned(), "bound-finally-after".to_owned()]);
            let bound_second_payload = bound_second_rejection.expect_err("second catch rejection must replace the original after the first step");
            let bound_second_message = bound_second_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_second_payload.downcast_ref::<&str>().copied());
            assert_eq!(bound_second_message, Some("unhandled task rejection: bound-second-error"));
-           let mut bound_override_log = Vec::new();
-           let bound_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::<()>::reject("bound-cleanup-error"), &mut bound_override_log))));
-           assert_eq!(bound_override_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-cleanup".to_owned()]);
-           let bound_payload = bound_override.expect_err("awaited finalizer rejection must override a pending catch return");
-           let bound_message = bound_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_payload.downcast_ref::<&str>().copied());
-           assert_eq!(bound_message, Some("unhandled task rejection: bound-cleanup-error"));
+           let mut bound_first_cleanup_rejection_log = Vec::new();
+           let bound_first_cleanup_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::<()>::reject("bound-first-cleanup-error"), flight_runtime::FlightTask::ready(()), &mut bound_first_cleanup_rejection_log))));
+           assert_eq!(bound_first_cleanup_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned()]);
+           let bound_first_cleanup_payload = bound_first_cleanup_rejection.expect_err("first awaited finalizer rejection must override a pending catch return and skip the second cleanup");
+           let bound_first_cleanup_message = bound_first_cleanup_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_first_cleanup_payload.downcast_ref::<&str>().copied());
+           assert_eq!(bound_first_cleanup_message, Some("unhandled task rejection: bound-first-cleanup-error"));
+           let mut bound_second_cleanup_rejection_log = Vec::new();
+           let bound_second_cleanup_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(bound_settled(flight_runtime::FlightTask::<f64>::reject("bound-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::<()>::reject("bound-second-cleanup-error"), &mut bound_second_cleanup_rejection_log))));
+           assert_eq!(bound_second_cleanup_rejection_log, vec!["bound-try".to_owned(), "bound-catch".to_owned(), "bound-original".to_owned(), "bound-between".to_owned(), "bound-original".to_owned(), "bound-after".to_owned(), "bound-finally-before".to_owned(), "bound-first-cleanup".to_owned(), "bound-finally-between".to_owned(), "bound-second-cleanup".to_owned()]);
+           let bound_second_cleanup_payload = bound_second_cleanup_rejection.expect_err("second awaited finalizer rejection must override a pending catch return after the first cleanup");
+           let bound_second_cleanup_message = bound_second_cleanup_payload.downcast_ref::<String>().map(String::as_str).or_else(|| bound_second_cleanup_payload.downcast_ref::<&str>().copied());
+           assert_eq!(bound_second_cleanup_message, Some("unhandled task rejection: bound-second-cleanup-error"));
            let mut rethrow_log = Vec::new();
            let rethrow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(rethrown(flight_runtime::FlightTask::<f64>::reject("terminal"), flight_runtime::FlightTask::ready(()), flight_runtime::FlightTask::ready(()), &mut rethrow_log))));
            assert_eq!(rethrow_log, vec!["rethrow-try".to_owned(), "rethrow-catch".to_owned(), "terminal".to_owned(), "rethrow-after".to_owned(), "rethrow-finally-before".to_owned(), "rethrow-cleanup".to_owned(), "rethrow-finally-after".to_owned()]);

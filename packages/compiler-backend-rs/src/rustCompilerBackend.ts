@@ -288,9 +288,22 @@ type RustAsyncTryFinalizerCompletionPlan =
       step: Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>;
     }>
   | Readonly<{
+      betweenStatements: readonly Readonly<IrStatement>[];
+      first: Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>;
+      kind: 'await-two';
+      postStatements: readonly Readonly<IrStatement>[];
+      preStatements: readonly Readonly<IrStatement>[];
+      second: Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>;
+    }>
+  | Readonly<{
       kind: 'straight';
       statements: readonly Readonly<IrStatement>[];
     }>;
+
+type RustAsyncTryAwaitFinalizerCompletionPlan = Exclude<
+  RustAsyncTryFinalizerCompletionPlan,
+  Readonly<{ kind: 'straight' }>
+>;
 
 interface RustAsyncTryProtectedTaskReturnStep {
   readonly expression: Readonly<IrExpression>;
@@ -8179,29 +8192,47 @@ function getAsyncTryFinalizerCompletionPlanRust(
     const step = getIrAsyncTryDirectAwaitStepRust(candidate);
     return step ? [{ index, step }] : [];
   });
-  const selected = steps[0];
+  const oneAwait = evidence.suspensionCount === 1 && steps.length === 1 && steps[0]?.step.kind !== 'return';
+  const twoAwaits =
+    evidence.suspensionCount === 2 &&
+    steps.length === 2 &&
+    steps[0]?.step.kind !== 'return' &&
+    steps[1]?.step.kind !== 'return';
   if (
     (finallyBody.kind === 'block' && finallyBody.label) ||
-    evidence.suspensionCount !== 1 ||
-    steps.length !== 1 ||
-    !selected ||
-    selected.step.kind === 'return' ||
+    (!oneAwait && !twoAwaits) ||
     !statements.every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable') ||
     evidence.abruptStatements.length > 0
   ) {
     emissionRuleError(
       context,
-      'async try/finally awaited finalizer requires one flat finalizer with exactly one direct non-return await and no abrupt completion',
+      'async try/finally awaited finalizer requires one flat finalizer with exactly one or two direct non-return awaits and no abrupt completion',
       'rust-async-try-completion-unrepresented',
     );
   }
-  const step = selected.step;
+  const first = steps[0]!;
+  if (twoAwaits) {
+    const second = steps[1]!;
+    return {
+      betweenStatements: statements.slice(first.index + 1, second.index),
+      first: first.step as Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>,
+      kind: 'await-two',
+      postStatements: statements.slice(second.index + 1),
+      preStatements: statements.slice(0, first.index),
+      second: second.step as Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>,
+    };
+  }
   return {
     kind: 'await',
-    postStatements: statements.slice(selected.index + 1),
-    preStatements: statements.slice(0, selected.index),
-    step,
+    postStatements: statements.slice(first.index + 1),
+    preStatements: statements.slice(0, first.index),
+    step: first.step as Exclude<RustAsyncTryDirectAwaitStep, Readonly<{ kind: 'return' }>>,
   };
+}
+
+function getAsyncTryFinalizerAwaitCountRust(plan: Readonly<RustAsyncTryFinalizerCompletionPlan>): number {
+  if (plan.kind === 'straight') return 0;
+  return plan.kind === 'await-two' ? 2 : 1;
 }
 
 function getAsyncTryFinallyCompletionPlanRust(
@@ -8260,14 +8291,14 @@ function getAsyncTryFinallyCompletionPlanRust(
     (trySteps.length > 0 ||
       protectedTaskReturn !== undefined ||
       getAsyncTryCatchAwaitCountRust(catchPlan) > 0 ||
-      finalizerPlan.kind === 'await') &&
+      getAsyncTryFinalizerAwaitCountRust(finalizerPlan) > 0) &&
     tryEvidence.suspensionCount === trySteps.length &&
     (catchEvidence?.suspensionCount ?? 0) === getAsyncTryCatchAwaitCountRust(catchPlan) &&
-    finallyEvidence.suspensionCount === (finalizerPlan.kind === 'await' ? 1 : 0);
+    finallyEvidence.suspensionCount === getAsyncTryFinalizerAwaitCountRust(finalizerPlan);
   if (!flatBodies || !exactCompletions || !exactSuspensions) {
     emissionRuleError(
       context,
-      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most two direct catch awaits with an optional used immutable String binding, and a non-abrupt finally',
+      'async try/finally local completion requires flat Normal/Return arms, one terminal protected Error(String) throw, or one terminal throw of the unchanged catch binding, direct protected awaits, at most two direct catch awaits with an optional used immutable String binding, and at most two direct non-return finalizer awaits',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -8847,10 +8878,51 @@ function emitAsyncTryAwaitCatchCompletionRust(
 }
 
 function emitAsyncTryAwaitedFinalizerCompletionRust(
-  plan: Readonly<Extract<RustAsyncTryFinalizerCompletionPlan, { kind: 'await' }>>,
+  plan: Readonly<RustAsyncTryAwaitFinalizerCompletionPlan>,
   pending: string,
   context: EmitContext,
 ): string[] {
+  if (plan.kind === 'await-two') {
+    const first = plan.first;
+    const second = plan.second;
+    assertIrAsyncTrySettledStepCarrierRust(first, context);
+    assertIrAsyncTrySettledStepCarrierRust(second, context);
+    const firstTarget = emitOwnedOperandRust(first.awaitTarget, context);
+    const firstError = getGeneratedTargetNameRust('finally_first_error', context);
+    const firstValue = getGeneratedTargetNameRust('finally_first_value', context);
+    const secondTarget = emitOwnedOperandRust(second.awaitTarget, context);
+    const secondError = getGeneratedTargetNameRust('finally_second_error', context);
+    const secondValue = getGeneratedTargetNameRust('finally_second_value', context);
+    const secondSettlement = [
+      `match ${secondTarget}.settle() {`,
+      ...indentSourceLines([
+        `Ok(${second.kind === 'expression' ? '_' : secondValue}) => {`,
+        ...indentSourceLines([
+          ...emitAsyncTrySettledStepRust(second, context, secondValue),
+          ...emitStatements(plan.postStatements, context),
+          pending,
+        ]),
+        '}',
+        `Err(${secondError}) => Err(${secondError}),`,
+      ]),
+      '}',
+    ];
+    return [
+      ...emitStatements(plan.preStatements, context),
+      `match ${firstTarget}.settle() {`,
+      ...indentSourceLines([
+        `Ok(${first.kind === 'expression' ? '_' : firstValue}) => {`,
+        ...indentSourceLines([
+          ...emitAsyncTrySettledStepRust(first, context, firstValue),
+          ...emitStatements(plan.betweenStatements, context),
+          ...secondSettlement,
+        ]),
+        '}',
+        `Err(${firstError}) => Err(${firstError}),`,
+      ]),
+      '}',
+    ];
+  }
   const step = plan.step;
   assertIrAsyncTrySettledStepCarrierRust(step, context);
   const target = emitOwnedOperandRust(step.awaitTarget, context);
@@ -8957,7 +9029,7 @@ function emitAsyncTryFinallyCompletionRust(
   const emitted = emitAsyncTryLocalCompletionRust(statement, plan, context);
   const lines = emitted.lines;
   let completion = emitted.completion;
-  if (plan.finalizerPlan.kind === 'await') {
+  if (plan.finalizerPlan.kind !== 'straight') {
     const pendingCompletion = completion;
     completion = getGeneratedTargetNameRust('finally_completion_value', context);
     lines.push(
