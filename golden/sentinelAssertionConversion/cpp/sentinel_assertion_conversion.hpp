@@ -20,15 +20,15 @@ struct Point : public flight::ReferenceEnabled {
 
 using PointSlot = std::variant<flight::Ref<Point>, double>;
 
-inline Slot present(std::optional<std::variant<double, flight::String>> value) {
+inline Slot present(std::optional<Slot> value) {
   return ([&]() -> std::variant<double, flight::String> { auto asserted_source = value; if (!asserted_source.has_value()) throw std::logic_error("asserted union alternative is not present in the value"); return asserted_source.value(); }());
 }
 
-inline std::optional<std::variant<double, flight::String>> widen(Slot value) {
-  return static_cast<std::optional<std::variant<double, flight::String>>>(value);
+inline std::optional<Slot> widen(Slot value) {
+  return static_cast<std::optional<Slot>>(value);
 }
 
-inline PointSlot present_record(std::optional<std::variant<flight::Ref<Point>, double>> value) {
+inline PointSlot present_record(std::optional<PointSlot> value) {
   return ([&]() -> std::variant<flight::Ref<Point>, double> { auto asserted_source_2 = value; if (!asserted_source_2.has_value()) throw std::logic_error("asserted union alternative is not present in the value"); return asserted_source_2.value(); }());
 }
 

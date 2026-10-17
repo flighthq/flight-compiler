@@ -8260,6 +8260,12 @@ function emitExactNominalGeneralUnionConstructionRust(
   targetType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
+  if (expression.kind === 'cast') {
+    const assertedSource = inferIrExpressionTypeRust(expression.expression, context);
+    // Union-source assertions belong to checked carrier recovery even when that carrier is itself
+    // refused. Claiming them here would replace the cast family's result or stable refusal ownership.
+    if (assertedSource && resolveIrCastUnionTypeRust(assertedSource, context).kind === 'union') return undefined;
+  }
   const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
   const candidate = hasIrTypeContextualGeneralUnionCandidateRust(targetType, plan, context);
   if (plan.kind !== 'nominalEnum') {
@@ -19635,7 +19641,9 @@ function emitGeneralUnionCastRust(
     }
   }
   const source = sourceType ? getIrCastUnionCarrierRust(sourceType, context) : undefined;
-  if (!source) {
+  // An unrepresented union source remains a cast refusal; only a non-union source can be an exact
+  // record alternative for the contextual constructor below.
+  if (!source && (!sourceType || resolveIrCastUnionTypeRust(sourceType, context).kind !== 'union')) {
     const constructed = emitExactNominalGeneralUnionConstructionRust(expression.expression, expression.type, context);
     if (constructed) return constructed;
   }
