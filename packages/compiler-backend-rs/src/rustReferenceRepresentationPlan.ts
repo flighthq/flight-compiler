@@ -2070,7 +2070,12 @@ function resolveRustSharedArrayIdentitySource(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): RustSharedArrayIdentitySource {
   if (expression.kind === 'cast' && graph.arrayKind === 'readonly') {
-    const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(expression, module);
+    const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(
+      expression,
+      module,
+      graph.modules,
+      moduleResolution,
+    );
     if (assertion?.primitiveName === primitiveName) {
       const operand = expression.expression;
       if (
@@ -2269,6 +2274,8 @@ interface RustReadonlyPrimitiveArrayIdentityAssertionPlan {
 function getRustReadonlyPrimitiveArrayIdentityAssertionPlan(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): Readonly<RustReadonlyPrimitiveArrayIdentityAssertionPlan> | undefined {
   const operand = expression.expression;
   const sourceType =
@@ -2278,8 +2285,8 @@ function getRustReadonlyPrimitiveArrayIdentityAssertionPlan(
         ? operand.semantics.resultType
         : undefined;
   if (!sourceType) return undefined;
-  const source = getRustReadonlyPrimitiveArrayIdentityShapePlan(sourceType, module.module);
-  const target = getRustReadonlyPrimitiveArrayIdentityShapePlan(expression.type, module.module);
+  const source = getRustReadonlyPrimitiveArrayIdentityShapePlan(sourceType, module, modules, moduleResolution);
+  const target = getRustReadonlyPrimitiveArrayIdentityShapePlan(expression.type, module, modules, moduleResolution);
   if (
     !source ||
     !target ||
@@ -2294,15 +2301,93 @@ function getRustReadonlyPrimitiveArrayIdentityAssertionPlan(
 
 function getRustReadonlyPrimitiveArrayIdentityShapePlan(
   type: Readonly<IrType>,
-  module: Readonly<IrModule>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
 ): Readonly<{ arrayReadonly: boolean; primitiveName: RustSharedArrayPrimitiveName }> | undefined {
-  const array = resolveRustClosedLocalTypeAliasShape(type, module, new Set());
+  const array = resolveRustReadonlyPrimitiveArrayIdentityTypePlan(
+    type,
+    module,
+    modules,
+    moduleResolution,
+    new Set(),
+    0,
+  );
   if (array?.kind !== 'array') return undefined;
-  const element = resolveRustClosedLocalTypeAliasShape(array.element, module, new Set());
+  const element = resolveRustReadonlyPrimitiveArrayIdentityTypePlan(
+    array.element,
+    module,
+    modules,
+    moduleResolution,
+    new Set(),
+    0,
+  );
   return element?.kind === 'primitive' &&
     (element.name === 'boolean' || element.name === 'number' || element.name === 'string')
     ? { arrayReadonly: array.readonly, primitiveName: element.name }
     : undefined;
+}
+
+function resolveRustReadonlyPrimitiveArrayIdentityTypePlan(
+  type: Readonly<IrType>,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  resolving: ReadonlySet<string>,
+  depth: number,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named') return type;
+  if (
+    depth > 8 ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    (type.reference.binding.space !== 'type' && type.reference.binding.kind !== 'import') ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const direct = modules.flatMap((candidate) => {
+    const declaration = candidate.module.declarations.find(
+      (item) => item.kind === 'typeAlias' && item.binding.id === bindingId,
+    );
+    return declaration?.kind === 'typeAlias' ? [{ declaration, module: candidate }] : [];
+  });
+  const imported = module.importsByBindingId.get(bindingId);
+  const resolved =
+    imported && imported.binding.imported !== '*' && imported.binding.imported !== 'default'
+      ? resolveRustReferenceImportModules(imported, module.module, modules, moduleResolution).flatMap((candidate) =>
+          candidate.module.declarations.flatMap((declaration) =>
+            declaration.kind === 'typeAlias' &&
+            declaration.exported &&
+            declaration.binding.name === imported.binding.imported
+              ? [{ declaration, module: candidate }]
+              : [],
+          ),
+        )
+      : [];
+  const locations = [
+    ...new Map(
+      [...direct, ...resolved].map((location) => [
+        `${moduleKey(location.module.module)}\0${location.declaration.binding.id}`,
+        location,
+      ]),
+    ).values(),
+  ];
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  if (location.declaration.typeParameters.length > 0) return undefined;
+  const key = `${moduleKey(location.module.module)}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return undefined;
+  return resolveRustReadonlyPrimitiveArrayIdentityTypePlan(
+    location.declaration.type,
+    location.module,
+    modules,
+    moduleResolution,
+    new Set(resolving).add(key),
+    depth + 1,
+  );
 }
 
 function getRustSharedArrayIdentityFunctionShapeReason(
@@ -3263,7 +3348,7 @@ function isRustSharedArrayIdentifierUseRepresented(
     final === 'expression' &&
     isIrExpressionValue(parent) &&
     parent.kind === 'cast' &&
-    getRustReadonlyPrimitiveArrayIdentityAssertionPlan(parent, module) &&
+    getRustReadonlyPrimitiveArrayIdentityAssertionPlan(parent, module, modules, moduleResolution) &&
     isRustSharedReadonlyArrayAssertionUseRepresented(module, modules, moduleResolution, parent, path_.slice(0, -1))
   ) {
     return true;
@@ -3336,14 +3421,15 @@ function isRustSharedReadonlyArrayAssertionUseRepresented(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   path_: CompilerIrTraversalPath,
 ): boolean {
-  const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(expression, module);
+  const assertion = getRustReadonlyPrimitiveArrayIdentityAssertionPlan(expression, module, modules, moduleResolution);
   if (!assertion) return false;
   const parent = path_.length > 0 ? getIrModuleTraversalPathValue(module.module, path_.slice(0, -1)) : undefined;
   const final = path_.at(-1);
   if (final === 'object' && isIrExpressionValue(parent)) {
     if (parent.kind === 'element') return !parent.optional;
-    if (parent.kind !== 'property' || parent.optional || parent.member?.receiver !== 'array') return false;
+    if (parent.kind !== 'property' || parent.optional) return false;
     if (parent.name === 'length') return true;
+    if (parent.member?.receiver !== 'array') return false;
     const propertyPath = path_.slice(0, -1);
     const call =
       propertyPath.at(-1) === 'callee'

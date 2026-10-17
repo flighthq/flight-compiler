@@ -23464,7 +23464,7 @@ function resolveRustReadonlyPrimitiveArrayIdentityTypeRust(
     depth > 8 ||
     type.reference.kind !== 'binding' ||
     type.reference.path.length > 0 ||
-    type.reference.binding.space !== 'type' ||
+    (type.reference.binding.space !== 'type' && type.reference.binding.kind !== 'import') ||
     type.reference.binding.kind === 'typeParameter' ||
     type.typeArguments.length > 0
   ) {
