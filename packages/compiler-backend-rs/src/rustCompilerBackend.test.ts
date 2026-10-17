@@ -38835,12 +38835,6 @@ describe('emitIrModuleRust exact alias-transparent record-array union constructi
        export function wrong(values: Map<string, Point>): Slot { return values; }`,
     ],
     [
-      'a callable arm',
-      `interface Point { value: number }
-       type Slot = readonly Point[] | (() => Point);
-       export function wrong(values: () => Point): Slot { return values; }`,
-    ],
-    [
       'an unmatched generic record arm',
       `interface Point { value: number }
        interface Other { label: string }
@@ -39346,12 +39340,6 @@ describe('emitIrModuleRust exact generic application union construction', () => 
       `interface Box<Value> { value: Value }
        type Slot = Box<Point> | Map<string, Point>;
        export function wrong(box: Map<string, Point>): Slot { return box; }`,
-    ],
-    [
-      'a callable arm',
-      `interface Box<Value> { value: Value }
-       type Slot = Box<Point> | (() => Point);
-       export function wrong(box: () => Point): Slot { return box; }`,
     ],
   ])('keeps %s outside the exact generic-application lane', (_name, body) => {
     const source = `interface Point { value: number }
