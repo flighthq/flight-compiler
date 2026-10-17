@@ -27053,6 +27053,218 @@ describe('emitIrModuleRust identity assertions', () => {
   });
 });
 
+describe('emitIrModuleRust exact numeric enum assertions', () => {
+  it('converts local member, parameter, and call values through the i32 discriminant carrier', () => {
+    const result = lower(
+      'enum-number.ts',
+      `enum Color { Red = 1, Green = 2 }
+       function pick(): Color { return Color.Green; }
+       export function member(): number { return Color.Red as number; }
+       export function parameter(value: Color): number { return value as number; }
+       export function call(): number { return pick() as number; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('((Color::Red) as i32) as f64');
+    expect(output).toContain('((value) as i32) as f64');
+    expect(output).toContain('((pick()) as i32) as f64');
+    expect(output).not.toContain('as Color');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('converts negative and i32 boundary discriminants exactly', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-boundary.ts',
+        `enum Bound { Low = -2147483648, High = 2147483647, Negative = -3 }
+         export function low(): number { return Bound.Low as number; }
+         export function high(): number { return Bound.High as number; }
+         export function negative(): number { return Bound.Negative as number; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Low = -2147483648,');
+    expect(output).toContain('High = 2147483647,');
+    expect(output).toContain('((Bound::Low) as i32) as f64');
+    expect(output).toContain('((Bound::High) as i32) as f64');
+    expect(output).toContain('((Bound::Negative) as i32) as f64');
+  });
+
+  it('resolves an alias to its numeric enum before converting', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-alias.ts',
+        `enum Shade { Light = 4 } type Tone = Shade;
+         export function tone(value: Tone): number { return value as number; }
+         export function member(): number { return Shade.Light as number; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('((value) as i32) as f64');
+    expect(output).toContain('((Shade::Light) as i32) as f64');
+  });
+
+  it('reads the namespace wrapper i32 field once for variables and members', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-wrapper.ts',
+        `export enum Flags { None = 0, Visible = 1 }
+         export namespace Flags {
+           export function toggle(flags: Flags): Flags { return flags | Flags.Visible; }
+         }
+         export function read(flags: Flags): number { return flags as number; }
+         export function readMember(): number { return Flags.Visible as number; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct Flags(i32);');
+    expect(output).toContain('((flags).0 as f64)');
+    expect(output).toContain('((Flags::Visible).0 as f64)');
+    expect(output).not.toContain('as i32) as f64');
+  });
+
+  it('converts imported enum-typed values whose declaration resolves', () => {
+    const api = lower('enum-api.ts', 'export enum Color { Red = 1, Green = 2 }').module;
+    const consumer = lower(
+      'enum-consumer.ts',
+      `import { Color } from './enum-api.js';
+       export function value(color: Color): number { return color as number; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './enum-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+
+    const output = session.emitModule(consumer)[0]!.contents;
+    expect(output).toContain('((color) as i32) as f64');
+  });
+
+  it.each([
+    {
+      name: 'a string enum',
+      source: 'enum Label { A = "a" } export function wrong(label: Label): number { return label as number; }',
+    },
+    {
+      name: 'a reverse number assertion',
+      source: 'enum Color { Red = 1 } export function wrong(value: number): Color { return value as Color; }',
+    },
+    {
+      name: 'a generic enum-typed value',
+      source:
+        'enum Color { Red = 1 } export function wrong<T extends Color>(value: T): number { return value as number; }',
+    },
+  ])('refuses $name with the deterministic cast rule', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('enum-refused.ts', source).module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+  });
+
+  it.each([
+    {
+      name: 'an imported mixed-domain enum',
+      source: 'export enum Bad { A = 1, B = "b" }',
+      specifier: './enum-bad.js',
+      consumerSource: 'export function wrong(value: Bad): number { return value as number; }',
+    },
+    {
+      name: 'an imported out-of-range enum',
+      source: 'export enum Wide { A = 4294967296 }',
+      specifier: './enum-wide.js',
+      consumerSource: 'export function wrong(value: Wide): number { return value as number; }',
+    },
+    {
+      name: 'an imported enum member read',
+      source: 'export enum Color { Red = 1 }',
+      specifier: './enum-member.js',
+      consumerSource: 'export function wrong(): number { return Color.Red as number; }',
+    },
+  ])('refuses $name with the deterministic cast rule', ({ source, specifier, consumerSource }) => {
+    const importedName = /export enum (\w+)/u.exec(source)![1]!;
+    const api = lower('enum-refused-api.ts', source).module;
+    const consumer = lower(
+      'enum-refused-consumer.ts',
+      `import { ${importedName} } from '${specifier}';\n${consumerSource}`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier,
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+    expect(getEmissionRule(() => session.emitModule(consumer))).toBe('rust-cast-requires-type-directed-lowering');
+  });
+
+  it('salvages an unrelated declaration while keeping the enum assertion', () => {
+    const module = lower(
+      'enum-salvage.ts',
+      `enum Color { Red = 1 } interface Point { value: number }
+       export function numeric(): number { return Color.Red as number; }
+       export function wrong(point: Point): string { return point as string; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'string assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'string assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('pub fn numeric');
+    expect(placeholder.contents).toContain('((Color::Red) as i32) as f64');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function numeric');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 3');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles plain and wrapper numeric enum conversions and the number control', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-native.ts',
+        `export enum Color { Red = 1, Green = 2 }
+         export enum Flags { None = 0, Visible = 1 }
+         export namespace Flags { export function toggle(flags: Flags): Flags { return flags | Flags.Visible; } }
+         export function member(): number { return Color.Green as number; }
+         export function value(color: Color): number { return color as number; }
+         export function wrapper(flags: Flags): number { return flags as number; }
+         export function control(value: number): number { return value as number; }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      `assert_eq!(member(), 2.0); assert_eq!(value(Color::Green), 2.0); assert_eq!(wrapper(Flags::Visible), 1.0); assert_eq!(control(3.0), 3.0);`,
+    );
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(

@@ -2375,22 +2375,47 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
       }
       // A number assertion keeps its existing `as f64` spelling, but only from a source that is
-      // already the exact number carrier; a String, opaque host value, record, or fieldless enum has
-      // no valid Rust cast to f64 and previously produced code rustc rejects.
+      // already the exact number carrier or a fieldless numeric enum whose integer discriminants
+      // convert exactly. A String, opaque host value, record, or string enum has no valid Rust cast
+      // to f64 and previously produced code rustc rejects.
       if (expression.type.kind === 'primitive' && expression.type.name === 'number') {
-        const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+        const sourceType = inferRustNumericEnumAssertionSourceTypeRust(expression.expression, context);
         const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
-        if (source?.kind !== 'primitive' || source.name !== 'number') {
-          emissionRuleError(
-            context,
-            'an assertion to number requires an alias-resolved source with the exact number carrier; Rust has no cast from a string, boolean, record, or opaque host value to f64',
-            'rust-cast-requires-type-directed-lowering',
-          );
+        if (source?.kind === 'primitive' && source.name === 'number') {
+          return `(${emitExpression(expression.expression, context)} as f64)`;
         }
-        return `(${emitExpression(expression.expression, context)} as f64)`;
+        const numericEnumAssertion = source
+          ? emitRustNumericEnumAssertionRust(expression.expression, source, context)
+          : undefined;
+        if (numericEnumAssertion) return numericEnumAssertion;
+        emissionRuleError(
+          context,
+          'an assertion to number requires an alias-resolved source with the exact number carrier or a numeric enum with integer i32 discriminants; Rust has no cast from a string, boolean, record, string enum, or opaque host value to f64',
+          'rust-cast-requires-type-directed-lowering',
+        );
       }
       const identityCast = emitRustIdentityCastRust(expression, context);
       if (identityCast) return identityCast;
+      // The reverse assertion cannot validate its operand: a number carries no evidence that it is
+      // one of the enum's discriminants, and Rust has no checked construction to consult.
+      const resolvedTargetType = resolveIrTypeAliasValueRust(expression.type, context, new Set());
+      const targetEnum =
+        resolvedTargetType.kind === 'named' && resolvedTargetType.reference.kind === 'binding'
+          ? getIrEnumDeclarationLocationRust(resolvedTargetType.reference.binding, context)
+          : undefined;
+      if (targetEnum) {
+        const assertedSourceType = inferIrExpressionTypeRust(expression.expression, context);
+        const assertedSource = assertedSourceType
+          ? resolveIrTypeAliasValueRust(assertedSourceType, context, new Set())
+          : undefined;
+        if (assertedSource?.kind === 'primitive' && assertedSource.name === 'number') {
+          emissionRuleError(
+            context,
+            `an assertion from number to enum ${targetEnum.declaration.binding.name} cannot validate the operand; Rust has no checked conversion from f64 to this enum`,
+            'rust-cast-requires-type-directed-lowering',
+          );
+        }
+      }
       if (expression.type.kind === 'primitive' && expression.type.name === 'boolean') {
         emissionRuleError(
           context,
@@ -19428,6 +19453,169 @@ function getIrExpressionClassDeclarationRust(
     (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
   );
   return declaration?.kind === 'class' ? declaration : undefined;
+}
+
+// A local enum member read is a variant of that enum, which the member emitter already spells as a
+// path into the type. The shared expression inference has no entry for it because a general member
+// read can mean a field, so the assertion lane supplies the exact evidence it needs.
+function inferRustNumericEnumAssertionSourceTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const inferred = inferIrExpressionTypeRust(expression, context);
+  if (inferred) return inferred;
+  if (expression.kind !== 'property') return undefined;
+  const declaration = getIrExpressionEnumDeclarationRust(expression.object, context);
+  return declaration
+    ? {
+        kind: 'named',
+        reference: { binding: declaration.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      }
+    : undefined;
+}
+
+// The one numeric conversion the Rust carrier represents exactly: an integer discriminant taken
+// through the enum's own i32 carrier. Everything the helper declines falls back to the caller's
+// deterministic cast refusal.
+function emitRustNumericEnumAssertionRust(
+  expression: Readonly<IrExpression>,
+  sourceType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (sourceType.kind !== 'named' || sourceType.reference.kind !== 'binding' || sourceType.typeArguments.length > 0) {
+    return undefined;
+  }
+  const binding = sourceType.reference.binding;
+  const location = getIrEnumDeclarationLocationRust(binding, context);
+  if (!location) return undefined;
+  const values = location.declaration.members.map((member) => member.value);
+  if (values.length === 0) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has no discriminants to assert to number`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  if (values.some((value) => typeof value !== 'number')) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has a string or mixed discriminant domain; a number assertion needs one exact numeric enum domain`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  if (
+    values.some(
+      (value) =>
+        typeof value === 'number' && (!Number.isInteger(value) || value < -2_147_483_648 || value > 2_147_483_647),
+    )
+  ) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} has a non-integer or out-of-i32-range discriminant; Rust cannot represent ${binding.name}'s value`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  const wrapper = getIrEnumNamespaceFunctionsRust(location.declaration, location.module).length > 0;
+  if (wrapper && getRustModuleIdentityKey(location.module) !== getRustModuleIdentityKey(context.module)) {
+    emissionRuleError(
+      context,
+      `enum ${binding.name} is a numeric namespace wrapper whose i32 field is private to its declaring module; assert it to number where it is declared`,
+      'rust-cast-requires-type-directed-lowering',
+    );
+  }
+  const operand = emitExpression(expression, context);
+  return wrapper ? `((${operand}).0 as f64)` : `((${operand}) as i32) as f64`;
+}
+
+// An enum declaration belongs to the module that wrote it, which may be any source module in the
+// compilation rather than the one currently emitting. Identity is the binding id, as with named
+// record declarations; a cross-module value reference names the importing module's own binding, so
+// the lookup follows the import and export lanes back to the declaration.
+function getIrEnumDeclarationLocationRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+): Readonly<{ declaration: Readonly<IrEnumDeclaration>; module: Readonly<IrModule> }> | undefined {
+  const locations = getIrEnumDeclarationLocationsRust(binding, context, module, new Set());
+  return locations.length === 1 ? locations[0] : undefined;
+}
+
+function getIrEnumDeclarationLocationsRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  visited: ReadonlySet<string>,
+): readonly Readonly<{ declaration: Readonly<IrEnumDeclaration>; module: Readonly<IrModule> }>[] {
+  const modules = [module, ...context.sourceModules];
+  const direct = modules.flatMap((candidateModule) =>
+    candidateModule.declarations.flatMap((declaration) =>
+      declaration.kind === 'enum' && declaration.binding.id === binding.id
+        ? [{ declaration, module: candidateModule }]
+        : [],
+    ),
+  );
+  if (direct.length > 0) return getUniqueRustEnumDeclarationLocations(direct);
+  const imported = modules.flatMap((importer) =>
+    importer.imports.flatMap((item) =>
+      item.bindings.flatMap((candidate) =>
+        candidate.binding.id === binding.id ? [{ candidate, importer, specifier: item.specifier }] : [],
+      ),
+    ),
+  );
+  const locations = imported.flatMap(({ candidate, importer, specifier }) => {
+    if (candidate.imported === '*' || candidate.imported === 'default') return [];
+    const targetModule = resolveImportModuleRust(specifier, candidate.imported, context, importer);
+    return targetModule
+      ? getRustExportedEnumDeclarationLocations(targetModule, candidate.imported, context, visited)
+      : [];
+  });
+  return getUniqueRustEnumDeclarationLocations(locations);
+}
+
+function getRustExportedEnumDeclarationLocations(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly Readonly<{ declaration: Readonly<IrEnumDeclaration>; module: Readonly<IrModule> }>[] {
+  const key = `${getRustModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const direct = module.declarations.flatMap((declaration) =>
+    declaration.kind === 'enum' && declaration.exported && declaration.binding.name === exportedName
+      ? [{ declaration, module }]
+      : [],
+  );
+  const local = module.exports.flatMap((entry) =>
+    entry.kind === 'local' && entry.exported === exportedName && entry.binding.space === 'value'
+      ? getIrEnumDeclarationLocationsRust(entry.binding, context, module, nextVisited)
+      : [],
+  );
+  const forwarded = module.exports.flatMap((entry) => {
+    if (entry.kind !== 'all' && entry.kind !== 'reexport') return [];
+    const importedName =
+      entry.kind === 'all' ? exportedName : entry.exported === exportedName ? entry.imported : undefined;
+    if (!importedName) return [];
+    const targetModule = resolveImportModuleRust(entry.specifier, importedName, context, module);
+    return targetModule
+      ? getRustExportedEnumDeclarationLocations(targetModule, importedName, context, nextVisited)
+      : [];
+  });
+  return getUniqueRustEnumDeclarationLocations([...direct, ...local, ...forwarded]);
+}
+
+function getUniqueRustEnumDeclarationLocations(
+  locations: readonly Readonly<{ declaration: Readonly<IrEnumDeclaration>; module: Readonly<IrModule> }>[],
+): readonly Readonly<{ declaration: Readonly<IrEnumDeclaration>; module: Readonly<IrModule> }>[] {
+  return [
+    ...new Map(
+      locations.map((location) => [
+        `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`,
+        location,
+      ]),
+    ).values(),
+  ];
 }
 
 function getIrExpressionEnumDeclarationRust(
