@@ -22170,3 +22170,58 @@ describe('emitIrModuleRust package specifier modules', () => {
     expect(() => packageSession([consumer, first, second], edges).emitModule(consumer)).toThrow(TypeError);
   });
 });
+
+describe('emitIrModuleRust indirect local exports', () => {
+  it('publishes declarations a local export names and keeps unexported siblings private', () => {
+    const module = lower(
+      'indirect-local.ts',
+      `function exportedFn(): number { return 1; }
+function privateFn(): number { return 2; }
+const exportedConst: number = 3;
+const privateConst: number = 4;
+class ExportedClass { v: number = 5; }
+class PrivateClass { v: number = 6; }
+enum ExportedEnum { A, B }
+enum PrivateEnum { C, D }
+interface Shape { size: number }
+class Impl implements Shape { size: number = 7; }
+type Name = 'a' | 'b';
+export { exportedFn, exportedConst, ExportedClass, ExportedEnum, Shape, Impl, Name };`,
+    ).module;
+    const output = emitIrModuleRust(module).contents;
+
+    expect(output).toContain('pub fn exported_fn()');
+    expect(output).toContain('fn private_fn()');
+    expect(output).toContain('pub const EXPORTED_CONST: f64');
+    expect(output).toContain('const PRIVATE_CONST: f64');
+    expect(output).toContain('pub struct ExportedClass');
+    expect(output).toContain('struct PrivateClass');
+    expect(output).toContain('pub enum ExportedEnum');
+    expect(output).toContain('enum PrivateEnum');
+    expect(output).toContain('pub trait Shape');
+    expect(output).toContain('pub struct Impl');
+    expect(output).toContain('pub type Name = String;');
+  });
+
+  it('resolves a renamed local export at its declared public spelling', () => {
+    const provider = lower('provider.ts', 'function f(): number { return 1; }\nexport { f as g };').module;
+    const consumer = lower('consumer.ts', "import { g } from './provider.js';\nexport { g };").module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [provider, consumer],
+      options: {},
+    });
+
+    expect(session.emitModule(provider)[0]!.contents).toContain('pub fn f()');
+    expect(session.emitModule(consumer)[0]!.contents).toContain('use crate::provider::f as g;');
+  });
+});

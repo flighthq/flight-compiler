@@ -518,7 +518,7 @@ describe('@flighthq/tool-compiler Rust allocator agreement', () => {
     // Emitter output is unchanged by the shared rules: the uppercase import keeps its type-shaped name
     // (the constant forces the `F0_2` alias), and the indirect function keeps its base name.
     expect(consumerFile?.contents).toContain('use crate::provider::{F0 as F0_2, Widget};');
-    expect(consumerFile?.contents).toContain('fn widget()');
+    expect(consumerFile?.contents).toContain('pub fn widget()');
     expect(consumerFile?.contents).toContain('pub const F0: F0_2');
     expect(locatorSpelling(result, 'widget')).toBe('widget');
     expect(locatorSpelling(result, 'f0')).toBe('F0');

@@ -297,6 +297,9 @@ interface EmitContext {
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
   apiReferencedBindingIds: ReadonlySet<string>;
+  // Declarations this module exports through `export { name }`: the IR records the local export
+  // entry rather than a second exported flag on the declaration.
+  moduleExportBindingIds: ReadonlySet<string>;
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
@@ -624,6 +627,7 @@ function emitIrModuleRustWithContext(
         : [],
     ),
   );
+  const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
@@ -632,7 +636,8 @@ function emitIrModuleRustWithContext(
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     anonymousUnionEnums: new Map(),
-    apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module),
+    apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module, moduleExportBindingIds),
+    moduleExportBindingIds,
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
@@ -905,7 +910,9 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
   }
   const structVisibility =
-    declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   const lines = [
     emitRustRecordDerive(
       [...instanceFields.map((field) => field.type), ...(declaration.extends ? [declaration.extends] : [])],
@@ -1126,7 +1133,10 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   if (values.some((value) => Number(value) < -2_147_483_648 || Number(value) > 2_147_483_647)) {
     emissionError(context, `enum ${declaration.binding.name} has a discriminant outside the Rust i32 range`);
   }
-  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const visibility =
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   const lines = [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     '#[repr(i32)]',
@@ -1158,7 +1168,10 @@ function emitNumericEnumNamespaceWrapperRust(
   context: EmitContext,
 ): string[] {
   const name = getBindingTargetNameRust(declaration.binding, context);
-  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const visibility =
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   const lines = [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     `${visibility}struct ${name}(i32);`,
@@ -1196,7 +1209,10 @@ function emitEnumNamespaceFunctionRust(declaration: Readonly<IrFunctionDeclarati
 // value as the enum: code compares against it and constructs from it.
 function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
   const name = getBindingTargetNameRust(declaration.binding, context);
-  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const visibility =
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   return [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     `${visibility}enum ${name} {`,
@@ -2965,7 +2981,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
   return [
-    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${returnType} {`,
+    `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${returnType} {`,
     ...indentSourceLines([
       ...declaration.parameters.flatMap((parameter) =>
         parameter.initializer
@@ -3117,7 +3133,10 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 }
 
 function emitTraitRust(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
-  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const visibility =
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   return [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
     ...declaration.properties.map((property) => {
@@ -5528,7 +5547,24 @@ function resolveIrTypeAliasValueRust(
   return target ? resolveIrTypeAliasValueRust(target, context, new Set(resolving).add(key)) : type;
 }
 
-function collectIrModuleApiReferencedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+function collectRustModuleExportBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  return new Set(module.exports.flatMap((entry) => (entry.kind === 'local' ? [entry.binding.id] : [])));
+}
+
+// A declaration the module exports through `export { name }` is as public as one written `export name`.
+// The IR records the local export entry instead of a second exported flag on the declaration, so every
+// visibility gate asks this rather than the flag alone.
+function isRustDeclarationExportedRust(
+  declaration: Readonly<{ binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>; exported: boolean }>,
+  context: EmitContext,
+): boolean {
+  return declaration.exported || context.moduleExportBindingIds.has(declaration.binding.id);
+}
+
+function collectIrModuleApiReferencedBindingIdsRust(
+  module: Readonly<IrModule>,
+  moduleExportBindingIds: ReadonlySet<string>,
+): ReadonlySet<string> {
   const ids = new Set<string>();
   function collectFromType(type: Readonly<IrType>): void {
     switch (type.kind) {
@@ -5567,7 +5603,9 @@ function collectIrModuleApiReferencedBindingIdsRust(module: Readonly<IrModule>):
     }
   }
   for (const declaration of module.declarations) {
-    if (!declaration.exported) continue;
+    if (!declaration.exported && !('binding' in declaration && moduleExportBindingIds.has(declaration.binding.id))) {
+      continue;
+    }
     if (declaration.kind === 'function') {
       for (const parameter of declaration.parameters) collectFromType(parameter.type);
       collectFromType(declaration.returns);
@@ -8495,7 +8533,7 @@ function getIrTypePrimitiveDomainRust(
 // targets diverge here is a property of the targets, not an inconsistency in the compiler.
 function emitStringLiteralUnionRust(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   return [
-    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)} = String;`,
+    `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)} = String;`,
   ];
 }
 
@@ -8505,7 +8543,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     return emitTaggedUnionRust(
       getBindingTargetNameRust(declaration.binding, context),
       declaration.type,
-      declaration.exported,
+      isRustDeclarationExportedRust(declaration, context),
       context,
     );
   }
@@ -8520,7 +8558,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       getBindingTargetNameRust(declaration.binding, context),
       createGeneralUnionVariantsRust(declaration.type.types, typeContext),
       declaration.typeParameters,
-      declaration.exported,
+      isRustDeclarationExportedRust(declaration, context),
       typeContext,
     );
   }
@@ -8532,12 +8570,12 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       getBindingTargetNameRust(declaration.binding, context),
       recordProperties,
       declaration.typeParameters,
-      declaration.exported,
+      isRustDeclarationExportedRust(declaration, context),
       context,
     );
   }
   return [
-    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, typeContext)};`,
+    `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, typeContext)};`,
   ];
 }
 
@@ -8787,7 +8825,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     );
   }
   return [
-    `${declaration.exported ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
+    `${isRustDeclarationExportedRust(declaration, context) ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
 }
 
@@ -12124,7 +12162,10 @@ function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, c
   const abstractFields = declaration.fields.filter((field) => field.abstract);
   const fieldNames = new Set(abstractFields.map((field) => field.name));
   const mutating = getIrClassMutatingMethodNamesRust(declaration);
-  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const visibility =
+    isRustDeclarationExportedRust(declaration, context) || context.apiReferencedBindingIds.has(declaration.binding.id)
+      ? 'pub '
+      : '';
   const lines = [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
