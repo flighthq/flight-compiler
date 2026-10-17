@@ -187,6 +187,16 @@ interface RustNamedTypeDeclarationLocation {
   readonly module: Readonly<IrModule>;
 }
 
+interface RustAsyncTryCompletionEvidence {
+  readonly abruptStatements: readonly Readonly<IrStatement>[];
+  readonly suspensionCount: number;
+}
+
+interface RustAsyncTryDeferredReturnPlan {
+  readonly awaitTarget: Readonly<IrExpression>;
+  readonly catchReturnExpression: Readonly<IrExpression>;
+}
+
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   // The declaration currently being emitted. A refusal names where in the source to look, and the
@@ -4528,7 +4538,109 @@ function getEnclosingTryStatementRust(
   return undefined;
 }
 
+function collectIrStatementAsyncTryCompletionEvidenceRust(
+  statement: Readonly<IrStatement>,
+): RustAsyncTryCompletionEvidence {
+  const abruptStatements: Array<Readonly<{ path: CompilerIrTraversalPath; statement: Readonly<IrStatement> }>> = [];
+  const nestedFunctionPaths: CompilerIrTraversalPath[] = [];
+  const suspensionPaths: CompilerIrTraversalPath[] = [];
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression, path_) {
+      if (expression.kind === 'await') suspensionPaths.push(path_);
+    },
+    functionSignature(_signature, path_) {
+      nestedFunctionPaths.push(path_);
+    },
+    statement(candidate, path_) {
+      if (
+        candidate.kind === 'return' ||
+        candidate.kind === 'throw' ||
+        candidate.kind === 'break' ||
+        candidate.kind === 'continue'
+      ) {
+        abruptStatements.push({ path: path_, statement: candidate });
+      }
+      if (candidate.kind === 'forOf' && candidate.await) suspensionPaths.push(path_);
+    },
+  });
+  const isNestedFunctionPath = (path_: CompilerIrTraversalPath): boolean =>
+    nestedFunctionPaths.some(
+      (functionPath) => functionPath.length < path_.length && isRustTraversalPathPrefix(functionPath, path_),
+    );
+  return {
+    abruptStatements: abruptStatements
+      .filter(({ path }) => !isNestedFunctionPath(path))
+      .map(({ statement: candidate }) => candidate),
+    suspensionCount: suspensionPaths.filter((path_) => !isNestedFunctionPath(path_)).length,
+  };
+}
+
+function getDirectIrStatementRust(statement: Readonly<IrStatement>): Readonly<IrStatement> | undefined {
+  if (statement.kind !== 'block') return statement;
+  return statement.statements.length === 1 ? statement.statements[0] : undefined;
+}
+
+function getAsyncTryDeferredReturnPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryDeferredReturnPlan | undefined {
+  if (!statement.catchClause || !statement.finallyBody) return undefined;
+  const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
+  const catchEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.catchClause.body);
+  const finallyEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.finallyBody);
+  const suspensionCount = tryEvidence.suspensionCount + catchEvidence.suspensionCount + finallyEvidence.suspensionCount;
+  if (suspensionCount === 0) return undefined;
+  const directTry = getDirectIrStatementRust(statement.tryBody);
+  const directCatch = getDirectIrStatementRust(statement.catchClause.body);
+  const hasNeighboringCompletion =
+    tryEvidence.abruptStatements.length > 0 ||
+    catchEvidence.abruptStatements.length > 0 ||
+    finallyEvidence.abruptStatements.length > 0 ||
+    suspensionCount > 1;
+  if (
+    directTry?.kind !== 'return' ||
+    directTry.expression?.kind !== 'await' ||
+    directTry.expression.expression.kind !== 'identifier' ||
+    directCatch?.kind !== 'return' ||
+    directCatch.expression === undefined ||
+    (directCatch.expression.kind !== 'identifier' && directCatch.expression.kind !== 'literal') ||
+    tryEvidence.abruptStatements.length !== 1 ||
+    tryEvidence.abruptStatements[0] !== directTry ||
+    tryEvidence.suspensionCount !== 1 ||
+    catchEvidence.abruptStatements.length !== 1 ||
+    catchEvidence.abruptStatements[0] !== directCatch ||
+    catchEvidence.suspensionCount !== 0 ||
+    finallyEvidence.abruptStatements.length !== 0 ||
+    finallyEvidence.suspensionCount !== 0
+  ) {
+    if (hasNeighboringCompletion) {
+      emissionRuleError(
+        context,
+        'async try/catch/finally completion requires one direct return-await, one direct catch return, and a non-abrupt finally',
+        'rust-async-try-completion-unrepresented',
+      );
+    }
+    return undefined;
+  }
+  return { awaitTarget: directTry.expression.expression, catchReturnExpression: directCatch.expression };
+}
+
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
+  const deferredReturn = getAsyncTryDeferredReturnPlanRust(statement, context);
+  if (deferredReturn) {
+    const catchBinding = statement.catchClause!.binding ? safeRustValueName(statement.catchClause!.binding.name) : '_';
+    const resultName = getGeneratedTargetNameRust('try_result', context);
+    const catchValue = normalizeSourceTextGrouping(
+      emitReturnedExpressionRust(deferredReturn.catchReturnExpression, context),
+    );
+    return [
+      `let ${resultName} = match ${emitOwnedOperandRust(deferredReturn.awaitTarget, context)}.settle() {`,
+      ...indentSourceLines([`Ok(__value) => __value,`, `Err(${catchBinding}) => ${catchValue},`]),
+      '};',
+      ...emitStatementBody(statement.finallyBody!, context),
+      `return ${resultName};`,
+    ];
+  }
   const tryStatements = statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody];
   const awaitIndex = tryStatements.findIndex(
     (s) =>
@@ -4536,7 +4648,11 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
       (s.kind === 'return' && s.expression?.kind === 'await'),
   );
   if (awaitIndex === -1) {
-    emissionError(context, 'async try/catch requires a recognizable await assignment or return');
+    emissionRuleError(
+      context,
+      'async try/catch requires a recognizable await assignment or return',
+      'rust-async-try-completion-unrepresented',
+    );
     return [];
   }
   const awaitStatement = tryStatements[awaitIndex]!;
@@ -4556,7 +4672,11 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
     awaitTarget = awaitStatement.expression.right.expression;
   }
   if (!awaitTarget) {
-    emissionError(context, 'async try/catch requires a direct await expression');
+    emissionRuleError(
+      context,
+      'async try/catch requires a direct await expression',
+      'rust-async-try-completion-unrepresented',
+    );
     return [];
   }
   const settleExpr = `${emitOwnedOperandRust(awaitTarget, context)}.settle()`;
@@ -4626,7 +4746,7 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
       lines.push('}');
     }
   } else {
-    emissionError(context, 'async try without catch or finally');
+    emissionRuleError(context, 'async try without catch or finally', 'rust-async-try-completion-unrepresented');
   }
   return lines;
 }
@@ -4902,6 +5022,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`panic!("{:?}", ${emitExpression(thrown, context)});`];
     }
     case 'try': {
+      if (getAsyncTryDeferredReturnPlanRust(statement, context)) {
+        return emitAsyncTryCatchRust(statement, context);
+      }
       if (context.asyncTryStatements.has(statement)) {
         return emitAsyncTryCatchRust(statement, context);
       }

@@ -1,0 +1,18 @@
+[
+  {
+    "call": "attempt",
+    "arguments": [{ "task": 4 }, 9, []],
+    "returns": "number",
+    "awaits": true,
+    "rustRef": [2],
+    "targets": ["rust"]
+  },
+  {
+    "call": "attempt",
+    "arguments": [{ "rejects": 0 }, 9, []],
+    "returns": "number",
+    "awaits": true,
+    "rustRef": [2],
+    "targets": ["rust"]
+  }
+]

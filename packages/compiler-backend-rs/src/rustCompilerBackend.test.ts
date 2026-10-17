@@ -36,25 +36,7 @@ function captureBackendEmissionFailure(run: () => unknown) {
 function compileRustSourceAgainstRuntime(contents: string): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-task-member-'));
   try {
-    const runtime = path.join(directory, 'libflight_runtime.rlib');
-    const runtimeBuild = spawnSync(
-      'rustc',
-      [
-        '--edition',
-        '2021',
-        '--crate-name',
-        'flight_runtime',
-        '--crate-type=lib',
-        '-o',
-        runtime,
-        path.join(repositoryRoot, 'golden/support/rust/flight_runtime.rs'),
-      ],
-      { encoding: 'utf8' },
-    );
-    if (runtimeBuild.status !== 0) {
-      throw new Error(`${runtimeBuild.stdout ?? ''}${runtimeBuild.stderr ?? ''}`.trim());
-    }
-
+    const runtime = compileRustRuntimeFixture(directory);
     const subject = path.join(directory, 'subject.rs');
     writeFileSync(subject, contents);
     const subjectBuild = spawnSync(
@@ -80,6 +62,28 @@ function compileRustSourceAgainstRuntime(contents: string): void {
   }
 }
 
+function compileRustRuntimeFixture(directory: string): string {
+  const runtime = path.join(directory, 'libflight_runtime.rlib');
+  const runtimeBuild = spawnSync(
+    'rustc',
+    [
+      '--edition',
+      '2021',
+      '--crate-name',
+      'flight_runtime',
+      '--crate-type=lib',
+      '-o',
+      runtime,
+      path.join(repositoryRoot, 'golden/support/rust/flight_runtime.rs'),
+    ],
+    { encoding: 'utf8' },
+  );
+  if (runtimeBuild.status !== 0) {
+    throw new Error(`${runtimeBuild.stdout ?? ''}${runtimeBuild.stderr ?? ''}`.trim());
+  }
+  return runtime;
+}
+
 function runRustSource(contents: string, main: string): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-behavior-'));
   try {
@@ -87,6 +91,26 @@ function runRustSource(contents: string, main: string): void {
     const executable = path.join(directory, 'subject');
     writeFileSync(subject, `${contents}\nfn main() { ${main} }\n`);
     const build = spawnSync('rustc', ['--edition', '2021', '-o', executable, subject], { encoding: 'utf8' });
+    if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+    const run = spawnSync(executable, [], { encoding: 'utf8' });
+    if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
+function runRustSourceAgainstRuntime(contents: string, main: string): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-runtime-behavior-'));
+  try {
+    const runtime = compileRustRuntimeFixture(directory);
+    const subject = path.join(directory, 'subject.rs');
+    const executable = path.join(directory, 'subject');
+    writeFileSync(subject, `${contents}\nfn main() { ${main} }\n`);
+    const build = spawnSync(
+      'rustc',
+      ['--edition', '2021', '--extern', `flight_runtime=${runtime}`, '-o', executable, subject],
+      { encoding: 'utf8' },
+    );
     if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
     const run = spawnSync(executable, [], { encoding: 'utf8' });
     if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
@@ -2466,6 +2490,86 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.settle();');
     expect(output).toContain('Ok(__value) => return __value,');
     expect(output).toContain('Err(__error) => panic!');
+  });
+
+  it('defers fulfilled and caught return values until after one non-abrupt finally', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-return-catch-finally-async.ts',
+        'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { try { return await task; } catch (error) { return fallback; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let try_result = match task.settle() {');
+    expect(output).toContain('Ok(__value) => __value,');
+    expect(output).toContain('Err(error) => fallback,');
+    expect(output).not.toContain('return __value;');
+    expect(output).not.toContain('return fallback;');
+    const settlement = output.indexOf('let try_result = match task.settle() {');
+    const finallyEffect = output.indexOf('log.push(array_push_argument0)');
+    const deferredReturn = output.indexOf('return try_result;');
+    expect(settlement).toBeGreaterThan(-1);
+    expect(finallyEffect).toBeGreaterThan(settlement);
+    expect(deferredReturn).toBeGreaterThan(finallyEffect);
+  });
+
+  it.skipIf(!rustcAvailable)('runs fulfilled and caught deferred returns through finally exactly once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-return-catch-finally-runtime.ts',
+        'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { try { return await task; } catch (error) { return fallback; } finally { log.push(1); } }',
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSourceAgainstRuntime(
+        output,
+        `let mut ready_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::ready(4.0), 9.0, &mut ready_log)), 4.0);
+         assert_eq!(ready_log, vec![1.0]);
+         let mut rejected_log = Vec::new();
+         assert_eq!(flight_runtime::block_on(attempt(flight_runtime::FlightTask::<f64>::reject("no"), 9.0, &mut rejected_log)), 9.0);
+         assert_eq!(rejected_log, vec![1.0]);`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'multiple returns',
+      'export async function attempt(task: Promise<number>, fallback: number, flag: boolean, log: number[]): Promise<number> { try { if (flag) return await task; return fallback; } catch { return fallback; } finally { log.push(1); } }',
+    ],
+    [
+      'a nested return',
+      'export async function attempt(task: Promise<number>, fallback: number, flag: boolean, log: number[]): Promise<number> { try { if (flag) { return await task; } } catch { return fallback; } finally { log.push(1); } return fallback; }',
+    ],
+    [
+      'break completion',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { while (true) { try { return await task; } catch { break; } finally { log.push(1); } } return fallback; }',
+    ],
+    [
+      'continue completion',
+      'export async function attempt(task: Promise<number>, fallback: number, log: number[]): Promise<number> { let done: boolean = false; while (!done) { try { return await task; } catch { done = true; continue; } finally { log.push(1); } } return fallback; }',
+    ],
+    [
+      'throw completion',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch (error) { throw error; } finally { log.push(1); } }',
+    ],
+    [
+      'an abrupt finally',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { return await task; } catch { return fallback; } finally { return 2; } }',
+    ],
+    [
+      'an additional suspension',
+      'export async function attempt(task: Promise<number>, backup: Promise<number>, log: number[]): Promise<number> { try { return await task; } catch { return await backup; } finally { log.push(1); } }',
+    ],
+  ])('stably refuses async try/catch/finally with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('unsupported-try-completion.ts', source).module),
+    );
+
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
   });
 
   it('emits array literals as vec! with optional holes as Default::default', () => {
