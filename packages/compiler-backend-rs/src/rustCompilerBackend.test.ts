@@ -13520,7 +13520,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            if (nullable !== null) nullable.value += 1;
            if (optional !== undefined) optional.value += 1;
            return nullable === nullableAlias && optional === optionalAlias && nullable !== null && nullable.value === 3 &&
-             optional !== undefined && optional.value === 5 && forwardedOptional === undefined &&
+             optional !== undefined && optional.value === 5 && other.value === 5 && forwardedOptional === undefined &&
              fromFunction !== null && aliasRoot !== null && receiver.maybeNull(true) === null &&
              receiver.absentUndefined() === undefined && receiver.liftNull() !== null;
          }`,
@@ -13549,6 +13549,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('nullable.as_ref().unwrap().borrow_mut().value');
     expect(output).toContain('optional.as_ref().unwrap().borrow_mut().value');
     expect(output).toContain('(None, None) => true');
+    if (rustcAvailable) expect(() => runRustSource(output, 'assert!(run());')).not.toThrow();
   });
 
   it('refuses borrowed and inexact class method return roots', () => {
@@ -14144,7 +14145,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            compoundAlias.label += numericRhs(4, 0) === 0 ? "c" : "";
            return omittedFunction === 0 && explicitFunction === 0 && forwarded === 3 &&
              omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
-             omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
+             omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 8 &&
              receiver === receiverAlias && receiver.value === 3 && other.value === 8 &&
              methodResult === methodResultAlias && methodResult !== receiver &&
              methodResult.value === 4 && methodResult.label === "receiver" &&
