@@ -30511,3 +30511,292 @@ describe('emitIrModuleRust array join', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-join-result-carrier-unrepresented');
   });
 });
+
+describe('emitIrModuleRust exact nominal general-union construction', () => {
+  it('constructs the representation-plan arm in each supported contextual position', () => {
+    const result = lower(
+      'nominal-union-construction.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       interface Box { choice: Choice }
+       interface Source { alpha: Alpha }
+       function makeAlpha(value: number): Alpha { return { value }; }
+       function consume(_choice: Choice): number { return 1; }
+
+       export function returned(alpha: Alpha): Choice { return alpha; }
+       export function returnedCall(value: number): Choice { return makeAlpha(value); }
+       export function stored(alpha: Alpha, beta: Beta, box: Box): Choice {
+         let choice: Choice = alpha;
+         choice = beta;
+         box.choice = alpha;
+         return choice;
+       }
+       export function passed(alpha: Alpha): number { return consume(alpha); }
+       export function asserted(alpha: Alpha): Choice { return alpha as Choice; }
+       export function property(source: Source): Choice { return source.alpha; }
+       export function preserved(choice: Choice): Choice { return choice; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return Choice::Alpha(alpha);');
+    expect(output).toContain('return Choice::Alpha(make_alpha(value));');
+    expect(output).toContain('let mut choice: Choice = Choice::Alpha(alpha.clone());');
+    expect(output).toContain('choice = Choice::Beta(beta)');
+    expect(output).toContain('box_.choice = Choice::Alpha(alpha.clone())');
+    expect(output).toContain('consume(Choice::Alpha(alpha))');
+    expect(output).toContain('return Choice::Alpha(source.alpha);');
+    expect(output).toContain('return choice;');
+    expect(output.match(/\bmake_alpha\(/gu)).toHaveLength(2);
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it('keeps canonical record identity through a type reexport and a direct imported call', () => {
+    const recordsSource = ts.createSourceFile(
+      '/flight/packages/math/src/nominal-records.ts',
+      `export interface Alpha { value: number }
+       export type Beta = { label: string };
+       export type Choice = Alpha | Beta;
+       export function consume(_choice: Choice): number { return 1; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/nominal-facade.ts',
+      `export type { Alpha, Choice } from './nominal-records.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/nominal-consumer.ts',
+      `import type { Alpha, Choice } from './nominal-facade.js';
+       import { consume } from './nominal-records.js';
+       export function returned(alpha: Alpha): Choice { return alpha; }
+       export function passed(alpha: Alpha): number { return consume(alpha); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Nominal-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/nominal-facade.ts',
+          },
+          specifier: './nominal-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/nominal-records.ts' },
+        },
+        {
+          importer: {
+            name: 'Nominal-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/nominal-consumer.ts',
+          },
+          specifier: './nominal-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/nominal-facade.ts' },
+        },
+        {
+          importer: {
+            name: 'Nominal-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/nominal-consumer.ts',
+          },
+          specifier: './nominal-records.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/nominal-records.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [recordsResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: recordsSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(recordsResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const records = recordsResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, facade, records],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('return Choice::Alpha(alpha);');
+    expect(output).toContain('consume(crate::nominal_records::Choice::Alpha(alpha))');
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it('uses the allocated representation-plan variant when preferred arm names collide', () => {
+    const result = lower(
+      'nominal-union-collision.ts',
+      `interface A_B { left: number }
+       interface AB { right: number }
+       type Choice = A_B | AB;
+       export function first(value: A_B): Choice { return value; }
+       export function second(value: AB): Choice { return value; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('AB(AB)');
+    expect(output).toContain('AB2(AB_2)');
+    expect(output).toContain('return Choice::AB(value);');
+    expect(output).toContain('return Choice::AB2(value);');
+  });
+
+  it.each([
+    [
+      'a structural lookalike',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       export function refused(value: { value: number }): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a distinct same-shape declaration',
+      `interface Alpha { value: number }
+       interface Twin { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       export function refused(value: Twin): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a sentinel owner',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta | undefined;
+       export function refused(value: Alpha): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic owner',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice<T> = Alpha | T;
+       export function refused(value: Alpha): Choice<Beta> { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an inline owner',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       export function refused(value: Alpha): Alpha | Beta { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an element source',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       export function refused(values: Alpha[]): Choice { return values[0]; }`,
+      'rust-array-index-result-absence-unrepresented',
+    ],
+    [
+      'a manufactured assertion',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       export function refused(value: number): Choice { return ({ value } as Alpha) as Choice; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a method argument',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       class Consumer { consume(_choice: Choice): number { return 1; } }
+       export function refused(consumer: Consumer, value: Alpha): number { return consumer.consume(value); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a class alternative',
+      `class Alpha { value: number; constructor(value: number) { this.value = value; } }
+       class Beta { label: string; constructor(label: string) { this.label = label; } }
+       type Choice = Alpha | Beta;
+       export function refused(value: Alpha): Choice { return value; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a rest parameter',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       function consume(..._choices: Choice[]): number { return 1; }
+       export function refused(value: Alpha): number { return consume(value); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a spread argument',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       function consume(_choice: Choice): number { return 1; }
+       export function refused(value: Alpha): number { return consume(...[value]); }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('refuses exact nominal construction from %s', (_name, source, rule) => {
+    const result = lower('nominal-union-refusal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(rule);
+  });
+
+  it('rolls back a refused lookalike while salvaging a represented declaration', () => {
+    const source = `interface Alpha { value: number }
+type Beta = { label: string };
+type Choice = Alpha | Beta;
+export function broken(value: { value: number }): Choice { return value; }
+export function keep(value: Alpha): Choice { return value; }`;
+    const module = lower('nominal-union-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-contextual-general-union-construction-unrepresented',
+          message: 'nominal union construction refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, {
+      message: 'nominal union construction refused',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 4');
+    expect(placeholder.contents).toContain('// refusal: rust-contextual-general-union-construction-unrepresented');
+    expect(placeholder.contents).toContain('enum Choice');
+    expect(placeholder.contents).toContain('pub fn keep(value: Alpha) -> Choice');
+    expect(placeholder.contents).toContain('return Choice::Alpha(value);');
+    expect(placeholder.contents).not.toContain('AnonymousUnion');
+  });
+
+  it.skipIf(!rustcAvailable)('passes the exact nominal general-union checkpoint', () => {
+    const result = lower(
+      'nominal-union-checkpoint.ts',
+      `interface Alpha { value: number }
+       type Beta = { label: string };
+       type Choice = Alpha | Beta;
+       export function returned(alpha: Alpha): Choice { return alpha; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => compileRustSourceAgainstRuntime(emitIrModuleRust(result.module).contents)).not.toThrow();
+  });
+});

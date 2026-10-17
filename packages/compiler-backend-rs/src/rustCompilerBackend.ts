@@ -124,7 +124,7 @@ import {
 
 // Emission's spelling rules. The public-binding plan reads the same record, so a name that is later
 // collision-suffixed cannot be allocated differently by the plan than by the emitted source.
-const { pascalCase, safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
+const { safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
 import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
@@ -183,6 +183,7 @@ interface RustUnionMemberRecord {
   readonly name: string;
   readonly properties: readonly IrObjectTypeProperty[];
   readonly targetName: string;
+  readonly variantName: string;
 }
 
 interface RustUnionArrayElementReceiverVariant {
@@ -1917,6 +1918,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               return `${emitExpression(expression.left, context)} = ${wrapped}`;
             }
           }
+        }
+        if (targetType) {
+          const wrapped = emitExactNominalGeneralUnionConstructionRust(expression.right, targetType, context);
+          if (wrapped) return `${emitExpression(expression.left, context)} = ${wrapped}`;
+        }
+      }
+      if (expression.operator === '=' && expression.left.kind === 'property' && !expression.left.optional) {
+        const targetType = expression.left.type;
+        if (targetType) {
+          const wrapped = emitExactNominalGeneralUnionConstructionRust(expression.right, targetType, context);
+          if (wrapped) return `${emitAssignmentTargetRust(expression.left, context)} = ${wrapped}`;
         }
       }
       if (expression.operator === '=' && expression.left.kind === 'property' && !expression.left.optional) {
@@ -4819,6 +4831,11 @@ function emitCallArgumentsRust(
   }
   assertRustCallArgumentsMatchUnionParametersRust(expression, context);
   const borrowed = getIrCallBorrowedRepresentationsRust(expression, context);
+  const referencedFunction =
+    expression.callee.kind === 'identifier'
+      ? getIrReferencedFunctionRust(expression.callee.reference, context)
+      : undefined;
+  const referencedMethod = getIrDirectClassMethodRust(expression, context);
   const emitPlannedArgument = (argument: Readonly<IrExpression>, index: number): string => {
     const representation = borrowed.get(index);
     if (context.adaptedNativeFutureArgumentPositions.get(expression) === index) {
@@ -4826,6 +4843,36 @@ function emitCallArgumentsRust(
         emissionError(context, 'adapted native-future argument lost its exact owned call position');
       }
       return emitExactNativeFutureTaskAdapterRust(argument, context);
+    }
+    const directParameter = referencedFunction?.parameters[index];
+    const trailingParameter = referencedFunction?.parameters.at(-1);
+    const parameter = directParameter ?? (trailingParameter?.rest ? trailingParameter : undefined);
+    if (parameter) {
+      const parameterType = parameter.rest && parameter.type.kind === 'array' ? parameter.type.element : parameter.type;
+      const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
+      if (hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context)) {
+        if (
+          (referencedFunction?.typeParameters.length ?? 0) > 0 ||
+          parameter.rest ||
+          argument.kind === 'spread' ||
+          representation !== undefined
+        ) {
+          refuseRustContextualGeneralUnionConstructionRust(context);
+        }
+        const constructed = emitExactNominalGeneralUnionConstructionRust(argument, parameterType, context);
+        if (constructed) return constructed;
+      }
+    }
+    const methodParameter = referencedMethod?.method.parameters[index];
+    if (
+      methodParameter &&
+      hasIrTypeContextualGeneralUnionCandidateRust(
+        methodParameter.type,
+        createRustUnionRepresentationPlanForTypeRust(methodParameter.type, context),
+        context,
+      )
+    ) {
+      refuseRustContextualGeneralUnionConstructionRust(context);
     }
     return isRustOptionalSharedClassRepresentation(representation)
       ? emitSharedClassCarrierExpressionRust(argument, representation, context)
@@ -7638,6 +7685,8 @@ function emitContextualReturnValueRust(
     }
     const callableUnion = emitContextualCallableUnionConstructionRust(expression, context.enclosingReturnType, context);
     if (callableUnion) return callableUnion;
+    const nominalUnion = emitExactNominalGeneralUnionConstructionRust(expression, context.enclosingReturnType, context);
+    if (nominalUnion) return nominalUnion;
     if (
       hasIrTypeGeneralUnionCarrierRust(context.enclosingReturnType, context) &&
       !hasSameRustRepresentationAsType(expression, context.enclosingReturnType, context)
@@ -8014,6 +8063,191 @@ function createRustUnionRepresentationPlanForTypeRust(type: Readonly<IrType>, co
       return getGeneralUnionVariantNameRust(alternative, context);
     },
   });
+}
+
+interface RustExactNominalTypeIdentity {
+  readonly key: string;
+  readonly location: RustNamedTypeDeclarationLocation;
+}
+
+// A closed named union can accept an existing declared record without changing its representation:
+// the enum arm owns exactly that record. The proof is declaration identity, never structural shape.
+// Keeping the construction in one helper makes returns, stores, calls, and assertions agree about
+// which evidence is strong enough to select an arm.
+function emitExactNominalGeneralUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
+  const candidate = hasIrTypeContextualGeneralUnionCandidateRust(targetType, plan, context);
+  if (plan.kind !== 'nominalEnum') {
+    if (candidate) refuseRustContextualGeneralUnionConstructionRust(context);
+    return undefined;
+  }
+  if (!candidate) return undefined;
+  const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  if (
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    !ownerIdentity ||
+    ownerIdentity.location.declaration.kind !== 'typeAlias' ||
+    ownerIdentity.location.declaration.typeParameters.length > 0
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+
+  const inferredSource = inferIrExpressionTypeRust(expression, context);
+  const sourceOwnerIdentity = inferredSource ? getIrNamedTypeIdentityRust(inferredSource, context) : undefined;
+  if (
+    sourceOwnerIdentity?.key === ownerIdentity.key &&
+    (expression.kind === 'call' ||
+      expression.kind === 'cast' ||
+      expression.kind === 'identifier' ||
+      expression.kind === 'property')
+  ) {
+    return emitOwnedOperandRust(expression, context);
+  }
+
+  const sourceType = getIrExpressionExactNominalRecordTypeRust(expression, context);
+  const sourceIdentity = sourceType ? getIrExactNominalRecordIdentityRust(sourceType, context) : undefined;
+  if (!sourceIdentity || isIrExpressionReferencePlannedRust(expression, context)) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const matches = plan.valueVariants.filter(
+    (variant) => getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === sourceIdentity.key,
+  );
+  if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
+  const match = matches[0]!;
+  const payload = emitExactNominalGeneralUnionPayloadRust(expression, sourceIdentity, context);
+  return `${emitType(plan.owner, context)}::${match.name}(${payload})`;
+}
+
+function emitExactNominalGeneralUnionPayloadRust(
+  expression: Readonly<IrExpression>,
+  identity: Readonly<RustExactNominalTypeIdentity>,
+  context: EmitContext,
+): string {
+  if (expression.kind === 'cast') {
+    const operandType = getIrExpressionExactNominalRecordTypeRust(expression.expression, context);
+    const operandIdentity = operandType ? getIrExactNominalRecordIdentityRust(operandType, context) : undefined;
+    if (operandIdentity?.key === identity.key) return emitOwnedOperandRust(expression.expression, context);
+  }
+  return emitOwnedOperandRust(expression, context);
+}
+
+function getIrExpressionExactNominalRecordTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'call':
+      return expression.semantics.resultType;
+    case 'cast': {
+      // An assertion may preserve an already-proved nominal identity, but it may not manufacture
+      // one for a fresh structural literal. That would turn a checker claim into an enum-arm choice.
+      if (expression.expression.kind === 'object') return undefined;
+      const assertedIdentity = getIrExactNominalRecordIdentityRust(expression.type, context);
+      const operandType = getIrExpressionExactNominalRecordTypeRust(expression.expression, context);
+      const operandIdentity = operandType ? getIrExactNominalRecordIdentityRust(operandType, context) : undefined;
+      return assertedIdentity && operandIdentity?.key === assertedIdentity.key ? expression.type : undefined;
+    }
+    case 'identifier':
+      return expression.reference.kind === 'binding'
+        ? context.bindingTypes.get(expression.reference.binding.id)
+        : undefined;
+    case 'object':
+      return expression.type;
+    case 'property':
+      return expression.structuralAccess ? undefined : expression.type;
+    default:
+      return undefined;
+  }
+}
+
+function getIrExactNominalRecordIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactNominalTypeIdentity | undefined {
+  const identity = getIrNamedTypeIdentityRust(type, context);
+  if (!identity) return undefined;
+  const declaration = identity.location.declaration;
+  return (declaration.kind === 'interface' && declaration.typeParameters.length === 0) ||
+    (declaration.kind === 'typeAlias' && declaration.typeParameters.length === 0 && declaration.type.kind === 'object')
+    ? identity
+    : undefined;
+}
+
+function getIrNamedTypeIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactNominalTypeIdentity | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  return {
+    key: `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${location.declaration.binding.id}`,
+    location,
+  };
+}
+
+function hasIrTypeContextualGeneralUnionCandidateRust(
+  type: Readonly<IrType>,
+  plan: ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>,
+  context: EmitContext,
+): boolean {
+  if (plan.kind === 'nominalEnum') {
+    return plan.valueVariants.some((variant) => variant.sourceAlternative.kind === 'named');
+  }
+  if (type.kind === 'union') {
+    return flattenIrUnionTypesRust(type.types).some((member) => member.kind === 'named');
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.space !== 'type') {
+    return false;
+  }
+  return getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set()).some(
+    (location) =>
+      location.declaration.kind === 'typeAlias' &&
+      location.declaration.type.kind === 'union' &&
+      flattenIrUnionTypesRust(location.declaration.type.types).some((member) => member.kind === 'named'),
+  );
+}
+
+function isIrExpressionReferencePlannedRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const bindingId =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? expression.reference.binding.id
+      : expression.kind === 'property' &&
+          expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'binding'
+        ? expression.object.reference.binding.id
+        : undefined;
+  return Boolean(
+    bindingId &&
+    (context.cellWrappedBindingIds.has(bindingId) ||
+      context.refCellWrappedBindingIds.has(bindingId) ||
+      context.sharedArrayBindingIds.has(bindingId) ||
+      context.sharedClassBindingRepresentations.has(bindingId) ||
+      context.sharedMapBindingIds.has(bindingId) ||
+      context.sharedSetBindingIds.has(bindingId)),
+  );
+}
+
+function refuseRustContextualGeneralUnionConstructionRust(context: EmitContext): never {
+  emissionRuleError(
+    context,
+    'contextual general-union construction requires one non-generic named owner and one exact declared record alternative; structural, absent, generic, reference-planned, ambiguous, and anonymous carriers do not select an enum arm',
+    'rust-contextual-general-union-construction-unrepresented',
+  );
 }
 
 function isIrContextualCallableParameterErasedRust(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -12600,6 +12834,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
           (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(variable.type));
         return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${wrapped};`;
       }
+    }
+    const nominalUnion = emitExactNominalGeneralUnionConstructionRust(variable.initializer, variable.type, context);
+    if (nominalUnion) {
+      const mutable =
+        variable.mutable ||
+        (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(variable.type));
+      return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${nominalUnion};`;
     }
   }
   const isArrayElementBinding = 'binding' in variable && context.arrayElementBindingIds.has(variable.binding.id);
@@ -18460,6 +18701,7 @@ function getIrUnionTypeMemberRecordsRust(
   context: EmitContext,
 ): readonly RustUnionMemberRecord[] | undefined {
   const members: RustUnionMemberRecord[] = [];
+  const variantNames = new Map<string, number>();
   for (const member of type.types) {
     if (
       member.kind !== 'named' ||
@@ -18485,7 +18727,15 @@ function getIrUnionTypeMemberRecordsRust(
           ? declaration.type.properties
           : undefined;
     if (!properties) return undefined;
-    members.push({ name, properties, targetName: getTypeBindingTargetNameRust(member.reference.binding, context) });
+    const preferredVariantName = getGeneralUnionVariantNameRust(member, context);
+    const occurrence = (variantNames.get(preferredVariantName) ?? 0) + 1;
+    variantNames.set(preferredVariantName, occurrence);
+    members.push({
+      name,
+      properties,
+      targetName: getTypeBindingTargetNameRust(member.reference.binding, context),
+      variantName: occurrence === 1 ? preferredVariantName : `${preferredVariantName}${String(occurrence)}`,
+    });
   }
   return members.length > 1 ? members : undefined;
 }
@@ -18495,34 +18745,92 @@ function getIrNamedTypeDeclarationLocationRust(
   context: EmitContext,
   module: Readonly<IrModule>,
 ): RustNamedTypeDeclarationLocation | undefined {
-  const declarationModule = [module, ...context.sourceModules].find((candidateModule) =>
-    candidateModule.declarations.some(
-      (candidate) =>
+  const locations = getIrNamedTypeDeclarationLocationsRust(binding, context, module, new Set());
+  return locations.length === 1 ? locations[0] : undefined;
+}
+
+function getIrNamedTypeDeclarationLocationsRust(
+  binding: Readonly<IrTypeBindingIdentity>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  visited: ReadonlySet<string>,
+): readonly RustNamedTypeDeclarationLocation[] {
+  const modules = [module, ...context.sourceModules];
+  const direct = modules.flatMap((candidateModule): readonly RustNamedTypeDeclarationLocation[] => {
+    const declaration = candidateModule.declarations.find(
+      (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
         (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === binding.id,
-    ),
-  );
-  const local = declarationModule?.declarations.find(
-    (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
-      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === binding.id,
-  );
-  if (local && declarationModule) return { declaration: local, module: declarationModule };
+    );
+    return declaration ? [{ declaration, module: candidateModule }] : [];
+  });
+  if (direct.length > 0) return getUniqueRustNamedTypeDeclarationLocations(direct);
   // A flattened imported declaration can retain a type reference introduced by its own module.
   // Follow the binding back to that importer rather than assuming every inherited property was
   // rebound into the subject module.
-  const importer = [module, ...context.sourceModules].find((candidateModule) =>
-    candidateModule.imports.some((item) => item.bindings.some((candidate) => candidate.binding.id === binding.id)),
+  const imported = modules.flatMap((importer) =>
+    importer.imports.flatMap((item) =>
+      item.bindings.flatMap((candidate) =>
+        candidate.binding.id === binding.id ? [{ candidate, importer, specifier: item.specifier }] : [],
+      ),
+    ),
   );
-  const imported = importer?.imports
-    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
-    .find(({ candidate }) => candidate.binding.id === binding.id);
-  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
-  const targetModule = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, importer);
-  const declaration = targetModule?.declarations.find(
-    (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
-      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
-      candidate.binding.name === imported.candidate.imported,
-  );
-  return declaration && targetModule ? { declaration, module: targetModule } : undefined;
+  const locations = imported.flatMap(({ candidate, importer, specifier }) => {
+    if (candidate.imported === '*' || candidate.imported === 'default') return [];
+    const targetModule = resolveImportModuleRust(specifier, candidate.imported, context, importer);
+    return targetModule
+      ? getRustExportedNamedTypeDeclarationLocations(targetModule, candidate.imported, context, visited)
+      : [];
+  });
+  return getUniqueRustNamedTypeDeclarationLocations(locations);
+}
+
+function getRustExportedNamedTypeDeclarationLocations(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly RustNamedTypeDeclarationLocation[] {
+  const key = `${getRustModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const direct = module.declarations.flatMap((declaration): readonly RustNamedTypeDeclarationLocation[] => {
+    if (
+      (declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') ||
+      !declaration.exported ||
+      declaration.binding.name !== exportedName
+    ) {
+      return [];
+    }
+    return [{ declaration, module }];
+  });
+  const local = module.exports.flatMap((entry): readonly RustNamedTypeDeclarationLocation[] => {
+    if (entry.kind !== 'local' || entry.exported !== exportedName || entry.binding.space !== 'type') return [];
+    return getIrNamedTypeDeclarationLocationsRust(entry.binding, context, module, nextVisited);
+  });
+  const forwarded = module.exports.flatMap((entry): readonly RustNamedTypeDeclarationLocation[] => {
+    if (entry.kind !== 'all' && entry.kind !== 'reexport') return [];
+    const importedName =
+      entry.kind === 'all' ? exportedName : entry.exported === exportedName ? entry.imported : undefined;
+    if (!importedName) return [];
+    const targetModule = resolveImportModuleRust(entry.specifier, importedName, context, module);
+    return targetModule
+      ? getRustExportedNamedTypeDeclarationLocations(targetModule, importedName, context, nextVisited)
+      : [];
+  });
+  return getUniqueRustNamedTypeDeclarationLocations([...direct, ...local, ...forwarded]);
+}
+
+function getUniqueRustNamedTypeDeclarationLocations(
+  locations: readonly RustNamedTypeDeclarationLocation[],
+): readonly RustNamedTypeDeclarationLocation[] {
+  return [
+    ...new Map(
+      locations.map((location) => [
+        `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`,
+        location,
+      ]),
+    ).values(),
+  ];
 }
 
 function getIrCallBorrowedRepresentationsRust(
@@ -18541,6 +18849,31 @@ function getIrCallBorrowedRepresentationsRust(
       ([position, carrier]) => [position, carrier.representation] as const,
     ),
   ]);
+}
+
+function getIrDirectClassMethodRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<{ method: Readonly<IrClassMethod>; module: Readonly<IrModule> }> | undefined {
+  if (
+    expression.callee.kind !== 'property' ||
+    expression.callee.structuralAccess ||
+    expression.callee.object.kind !== 'identifier'
+  ) {
+    return undefined;
+  }
+  const callee = expression.callee;
+  let receiverType = getIrSharedClassIdentityExpressionTypeRust(callee.object, context);
+  const receiverRepresentation = getRustSharedClassExpressionRepresentationRust(callee.object, context);
+  if (receiverType && isRustOptionalSharedClassRepresentation(receiverRepresentation)) {
+    receiverType = getRustSharedClassPayloadTypeRust(receiverType, receiverRepresentation, context);
+  }
+  const location = getIrClassDeclarationLocationForTypeRust(receiverType, context, context.module);
+  const methods = location?.declaration.methods.filter(
+    (candidate) => !candidate.static && candidate.accessor === undefined && candidate.name === callee.name,
+  );
+  const method = methods?.length === 1 ? methods[0] : undefined;
+  return location && method ? { method, module: location.module } : undefined;
 }
 
 function getIrClassMethodCallParameterPlanRust(
@@ -18933,7 +19266,19 @@ function emitGeneralUnionCastRust(
   context: EmitContext,
 ): string | undefined {
   const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  const targetPlan = createRustUnionRepresentationPlanForTypeRust(expression.type, context);
+  if (targetPlan.kind === 'nominalEnum' && sourceType) {
+    const sourceIdentity = getIrNamedTypeIdentityRust(sourceType, context);
+    const ownerIdentity = getIrNamedTypeIdentityRust(targetPlan.owner, context);
+    if (sourceIdentity && sourceIdentity.key === ownerIdentity?.key) {
+      return emitOwnedOperandRust(expression.expression, context);
+    }
+  }
   const source = sourceType ? getIrCastUnionCarrierRust(sourceType, context) : undefined;
+  if (!source) {
+    const constructed = emitExactNominalGeneralUnionConstructionRust(expression.expression, expression.type, context);
+    if (constructed) return constructed;
+  }
   const destination = getIrCastUnionCarrierRust(expression.type, context);
   if (source && !destination) {
     const single = getIrCastSingleAlternativeRust(expression.type, context);
@@ -18956,15 +19301,18 @@ function emitGeneralUnionCastRust(
   // Widening, or changing which sentinel the absence is, stays a refusal.
   const narrowsPresence = source.absence !== 'none' && destination.absence === 'none';
   if (source.absence !== destination.absence && !narrowsPresence) return undefined;
-  const convertible = destination.members.filter((member) =>
-    source.members.some((candidate) => candidate.name === member.name && candidate.targetName === member.targetName),
-  );
+  const convertible = destination.members.flatMap((member) => {
+    const sourceMember = source.members.find(
+      (candidate) => candidate.name === member.name && candidate.targetName === member.targetName,
+    );
+    return sourceMember ? [{ destination: member, source: sourceMember }] : [];
+  });
   if (convertible.length === 0) return undefined;
   const match = (operand: string): string =>
     `match ${operand} { ${convertible
       .map(
-        (member) =>
-          `${source.enumName}::${pascalCase(member.name)}(value) => ${destination.enumName}::${pascalCase(member.name)}(value),`,
+        ({ destination: destinationMember, source: sourceMember }) =>
+          `${source.enumName}::${sourceMember.variantName}(value) => ${destination.enumName}::${destinationMember.variantName}(value),`,
       )
       .join(' ')} _ => panic!("asserted union alternative is not present in the value"), }`;
   const operand = emitExpression(expression.expression, context);
@@ -18987,8 +19335,18 @@ function emitIrCastSingleAlternativeUnionRust(
   alternative: Readonly<{ name: string; targetName: string }>,
   context: EmitContext,
 ): string {
+  const sourceMember = source.members.find(
+    (member) => member.name === alternative.name && member.targetName === alternative.targetName,
+  );
+  if (!sourceMember) {
+    emissionRuleError(
+      context,
+      'asserted union alternative has no exact Rust source variant',
+      'rust-union-cast-unsupported',
+    );
+  }
   const match = (operand: string): string =>
-    `match ${operand} { ${source.enumName}::${pascalCase(alternative.name)}(value) => Some(value), _ => panic!("asserted union alternative is not present in the value"), }`;
+    `match ${operand} { ${source.enumName}::${sourceMember.variantName}(value) => Some(value), _ => panic!("asserted union alternative is not present in the value"), }`;
   const operand = emitExpression(expression.expression, context);
   if (source.absence === 'none') return match(operand);
   return `match ${operand} { Some(value) => ${match('value')}, None => None, }`;
@@ -19209,15 +19567,15 @@ function emitTaggedUnionRust(
   const visibility = exported ? 'pub ' : '';
   const lines = [emitRustRecordDerive(type.types, context), `${visibility}enum ${targetName} {`];
   for (const member of members) {
-    lines.push(`  ${pascalCase(member.name)}(${member.targetName}),`);
+    lines.push(`  ${member.variantName}(${member.targetName}),`);
   }
   lines.push('}', '', `impl ${targetName} {`);
   for (const member of members) {
     lines.push(
       `  ${visibility}fn as_${safeRustValueName(member.name)}(&self) -> &${member.targetName} {`,
       '    match self {',
-      `      ${targetName}::${pascalCase(member.name)}(value) => value,`,
-      ...(members.length > 1 ? [`      _ => panic!("${targetName} is not ${pascalCase(member.name)}"),`] : []),
+      `      ${targetName}::${member.variantName}(value) => value,`,
+      ...(members.length > 1 ? [`      _ => panic!("${targetName} is not ${member.variantName}"),`] : []),
       '    }',
       '  }',
     );
@@ -19255,7 +19613,7 @@ function emitTaggedUnionRust(
       '    match self {',
       ...members.map(
         (member) =>
-          `      ${targetName}::${pascalCase(member.name)}(value) => value.${safeRustValueName(property.name)}.clone(),`,
+          `      ${targetName}::${member.variantName}(value) => value.${safeRustValueName(property.name)}.clone(),`,
       ),
       '    }',
       '  }',
