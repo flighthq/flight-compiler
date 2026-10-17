@@ -1500,6 +1500,7 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          value: number;
          constructor(value: number) { this.value = value; }
          inspect(other?: Counter): number { return other !== undefined ? other.value : this.value; }
+         write(other?: Counter): void { if (other !== undefined) other.value += 1; }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -1507,9 +1508,14 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-consumer.ts',
       `import { Counter } from './optional-class-method-provider.js';
+       function relay(receiver: Counter, other?: Counter): void {
+         if (other === undefined) return;
+         receiver.write(other);
+       }
        export function run(): number {
          const receiver: Counter = new Counter(1); const receiverAlias: Counter = receiver;
          const other: Counter = new Counter(4); const otherAlias: Counter = other;
+         relay(receiverAlias, otherAlias);
          return receiverAlias.inspect(otherAlias) + receiver.inspect();
        }`,
       ts.ScriptTarget.Latest,
@@ -1554,6 +1560,60 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(getModulePlan(importedPlan, provider).refusals).toEqual([]);
     expect(getModulePlan(importedPlan, consumer).refusals).toEqual([]);
     expect(getModulePlan(importedPlan, provider).callables).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).referentMutatedBindings.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['other', 'otherAlias']),
+    );
+  });
+
+  it('propagates optional class method argument mutation through local function wrappers', () => {
+    const module = lower(
+      'optional-class-method-mutation-propagation.ts',
+      `class Counter {
+         value = 0;
+         label = "";
+         write(amount: number, other?: Counter): void {
+           if (other === undefined) return;
+           other.value = amount;
+           other.value += amount;
+           other.label += "!";
+         }
+       }
+       function forward(receiver: Counter, other?: Counter): void {
+         if (other === undefined) return;
+         receiver.write(2, other);
+       }
+       function relay(receiver: Counter, other?: Counter): void { forward(receiver, other); }
+       export function run(): number {
+         const receiver = new Counter(); const receiverAlias = receiver;
+         const other = new Counter(); const otherAlias = other;
+         relay(receiverAlias, otherAlias);
+         return other.value;
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'forward' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 1, representation: 'optional-undefined-shared-ref-cell-class' },
+          ],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'relay' }),
+          parameters: [
+            { position: 0, representation: 'borrowed-class' },
+            { position: 1, representation: 'optional-undefined-shared-ref-cell-class' },
+          ],
+        }),
+      ]),
+    );
+    expect(modulePlan.referentMutatedBindings.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['other', 'other']),
+    );
   });
 
   it('requires exact optional class method evidence and refuses receiver overlap', () => {
@@ -1594,14 +1654,48 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
-  it('refuses optional class method parameters outside narrowed readonly primitive projection', () => {
+  it('preserves optional class method mutation conflict, result, operator, and domain refusals', () => {
+    const cases = [
+      [
+        `class Counter { value = 1; write(other?: Counter): void { if (other !== undefined) other.value += other.value; } }`,
+        'rust-reference-shared-class-borrow-conflict',
+      ],
+      [
+        `class Counter { value = 1; write(other?: Counter): number { return other === undefined ? 0 : (other.value += 1); } }`,
+        'rust-reference-shared-class-mutator-result-unrepresented',
+      ],
+      [
+        `class Counter { value = 1; write(other?: Counter): void { if (other !== undefined) other.value **= 2; } }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+      [
+        `class Counter { label = ""; write(other?: Counter): void { if (other !== undefined) other.label += 1; } }`,
+        'rust-reference-shared-class-use-unrepresented',
+      ],
+    ] as const;
+
+    for (const [index, [declaration, code]] of cases.entries()) {
+      const module = lower(
+        `optional-class-method-mutation-refusal-${String(index)}.ts`,
+        `${declaration} export function run(): number { const value = new Counter(); return ${index === 3 ? 'value.label.length' : 'value.value'}; }`,
+      );
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
+  it('refuses optional class method parameters outside narrowed direct primitive projection', () => {
     const cases = [
       `class Counter { value = 1; read(other?: Counter): number { other!.value = 2; return other!.value; } }`,
       `class Counter { value = 1; current(): number { return this.value; } read(other?: Counter): number { return other === undefined ? 0 : other.current(); } }`,
       `class Counter { value = 1; read(other?: Counter): number { const captured = (): number => other === undefined ? 0 : other.value; return captured(); } }`,
+      `class Counter { value = 1; read(other?: Counter): number { const escaped = other; return escaped === undefined ? 0 : escaped.value; } }`,
       `class Counter { value = 1; read(other?: Counter): number { return other?.value ?? 0; } }`,
       `class Counter { value = 1; read(other: Counter | undefined): number { return other === undefined ? 0 : other.value; } }`,
       `class Counter { value = 1; read(other: Counter = new Counter()): number { return other.value; } }`,
+      `class Counter { value = 1; read(other?: Counter, scale?: number): number { return other === undefined ? 0 : other.value * (scale ?? 1); } }`,
+      `class Counter { value = 1; read(first?: Counter, second?: Counter): number { return first === undefined || second === undefined ? 0 : first.value + second.value; } }`,
     ];
 
     for (const [index, declaration] of cases.entries()) {
@@ -1615,6 +1709,22 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
       );
     }
+
+    const rest = lower(
+      'optional-class-method-rest-refusal.ts',
+      `class Counter { value = 1; read(other?: Counter): number { return other === undefined ? 0 : other.value; } }
+       export function run(): number { const value = new Counter(); return value.value; }`,
+    );
+    const declaration = rest.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.name === 'Counter',
+    );
+    const method = declaration?.kind === 'class' ? declaration.methods.find(({ name }) => name === 'read') : undefined;
+    const parameter = method?.parameters[0];
+    if (!parameter) throw new Error('Expected optional class method parameter');
+    (parameter as { rest: boolean }).rest = true;
+    expect(getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [rest] }), rest).refusals).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
+    );
   });
 
   it('elects the class carrier when readonly aliases remain live through fields and methods', () => {

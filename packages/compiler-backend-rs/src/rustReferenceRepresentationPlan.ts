@@ -71,6 +71,7 @@ interface RustSimpleClassConstructorPlan {
 
 interface RustSimpleClassMethodPlan {
   readonly identity: string;
+  readonly mutatedOptionalClassParameterPositions: ReadonlySet<number>;
   readonly optionalClassParameters: ReadonlyMap<
     number,
     RustSharedClassCarrierType & Readonly<{ representation: 'optional-undefined-shared-ref-cell-class' }>
@@ -192,12 +193,23 @@ function collectRustReferenceClassMethodParameterMutations(
   for (const module of modules) {
     for (const { call, enclosingFunction } of module.calls) {
       const method = getRustSimpleClassMethodCall(call, module, modules, moduleResolution);
-      if (!method?.mutating || method.receiver.reference.kind !== 'binding') continue;
-      const receiverId = method.receiver.reference.binding.id;
-      const position = enclosingFunction.declaration.parameters.findIndex(
-        (parameter) => parameter.binding.id === receiverId,
-      );
-      if (position >= 0) enclosingFunction.mutatedParameterPositions.add(position);
+      if (!method) continue;
+      if (method.mutating && method.receiver.reference.kind === 'binding') {
+        const receiverId = method.receiver.reference.binding.id;
+        const position = enclosingFunction.declaration.parameters.findIndex(
+          (parameter) => parameter.binding.id === receiverId,
+        );
+        if (position >= 0) enclosingFunction.mutatedParameterPositions.add(position);
+      }
+      for (const argumentPosition of method.plan.mutatedOptionalClassParameterPositions) {
+        const argument = call.arguments[argumentPosition];
+        if (!argument || argument.kind !== 'identifier' || argument.reference.kind !== 'binding') continue;
+        const argumentId = argument.reference.binding.id;
+        const parameterPosition = enclosingFunction.declaration.parameters.findIndex(
+          (parameter) => parameter.binding.id === argumentId,
+        );
+        if (parameterPosition >= 0) enclosingFunction.mutatedParameterPositions.add(parameterPosition);
+      }
     }
   }
 }
@@ -2613,7 +2625,9 @@ function addRustSharedClassFieldBorrowConflictRefusal(
   }
   const receiverId = assignment.left.object.reference.binding.id;
   const group = module.sharedClasses.groupByBindingId.get(receiverId);
-  if (!group || !expressionUsesRustSharedClassGroup(assignment.right, group, module)) return;
+  const readsReceiver = irExpressionUsesBindingInPlan(assignment.right, receiverId);
+  const readsAliasGroup = group && expressionUsesRustSharedClassGroup(assignment.right, group, module);
+  if (!readsReceiver && !readsAliasGroup) return;
   addRustReferenceRefusal(
     refusals,
     'rust-reference-shared-class-borrow-conflict',
@@ -3320,7 +3334,7 @@ function addRustOptionalClassMethodRefusals(
         refusals,
         'rust-reference-shared-class-member-unrepresented',
         getRustSimpleClassMethodIdentity(module, declaration, method),
-        `class method ${declaration.binding.name}.${method.name} is outside the readonly trailing optional simple-class parameter carrier`,
+        `class method ${declaration.binding.name}.${method.name} is outside the bounded trailing optional simple-class parameter carrier`,
       );
     }
   }
@@ -3354,7 +3368,7 @@ function addRustOptionalClassMethodRefusals(
           refusals,
           'rust-reference-shared-class-member-unrepresented',
           `${getRustSimpleClassMethodIdentity(location.module, location.declaration, location.method)}:${JSON.stringify(path_)}`,
-          `class method ${location.declaration.binding.name}.${location.method.name} is outside the readonly trailing optional simple-class parameter carrier`,
+          `class method ${location.declaration.binding.name}.${location.method.name} is outside the bounded trailing optional simple-class parameter carrier`,
         );
         return;
       }
@@ -5024,20 +5038,18 @@ function getRustSimpleClassMethodPlan(
     });
   }
   if (optionalClassParameters.size > 1) return undefined;
-  if (
-    !isRustSimpleClassMethodBodySupported(
-      method,
-      declaration,
-      optionalClassParameters,
-      module,
-      modules,
-      moduleResolution,
-    )
-  ) {
-    return undefined;
-  }
+  const mutatedOptionalClassParameterPositions = getRustSimpleClassMethodBodyMutationPositions(
+    method,
+    declaration,
+    optionalClassParameters,
+    module,
+    modules,
+    moduleResolution,
+  );
+  if (!mutatedOptionalClassParameterPositions) return undefined;
   return {
     identity: getRustSimpleClassMethodIdentity(module, declaration, method),
+    mutatedOptionalClassParameterPositions,
     optionalClassParameters,
   };
 }
@@ -5066,14 +5078,14 @@ function isRustSimpleClassMethodResultType(type: Readonly<IrType>): boolean {
   );
 }
 
-function isRustSimpleClassMethodBodySupported(
+function getRustSimpleClassMethodBodyMutationPositions(
   method: Readonly<IrClassMethod>,
   declaration: Readonly<IrClassDeclaration>,
   optionalClassParameters: RustSimpleClassMethodPlan['optionalClassParameters'],
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
-): boolean {
+): ReadonlySet<number> | undefined {
   const fieldNames = new Set(declaration.fields.filter((field) => !field.static).map((field) => field.name));
   const methodNames = new Set(
     declaration.methods.filter((candidate) => !candidate.static).map((candidate) => candidate.name),
@@ -5089,6 +5101,15 @@ function isRustSimpleClassMethodBodySupported(
       return parameter ? [[parameter.binding.id, parameter] as const] : [];
     }),
   );
+  const optionalParameterPositionsById = new Map(
+    [...optionalClassParameters.keys()].flatMap((position) => {
+      const parameter = method.parameters[position];
+      return parameter ? [[parameter.binding.id, position] as const] : [];
+    }),
+  );
+  const mutatedOptionalClassParameterPositions = new Set<number>();
+  const mutatedOptionalParameterIds = new Set<string>();
+  const sentinelCheckedOptionalParameterIds = new Set<string>();
   let supported = true;
   for (const statement of method.body) {
     analyzeIrStatementSubtreeTraversal(statement, {
@@ -5105,8 +5126,34 @@ function isRustSimpleClassMethodBodySupported(
           return false;
         }
         if (expression.kind === 'assignment') {
-          if ([...optionalParametersById].some(([id]) => irExpressionUsesBindingInPlan(expression.left, id))) {
-            supported = false;
+          const usesOptionalParameter = [...optionalParametersById].some(([id]) =>
+            irExpressionUsesBindingInPlan(expression.left, id),
+          );
+          if (usesOptionalParameter) {
+            const left = expression.left;
+            const parameter =
+              left.kind === 'property' &&
+              !left.optional &&
+              left.structuralAccess === undefined &&
+              left.object.kind === 'identifier' &&
+              left.object.reference.kind === 'binding' &&
+              left.object.presence === 'narrowedPresent'
+                ? optionalParametersById.get(left.object.reference.binding.id)
+                : undefined;
+            const location = parameter
+              ? getRustReferenceClassDeclaration(parameter.type, module, modules, moduleResolution)
+              : undefined;
+            const field =
+              left.kind === 'property'
+                ? location?.declaration.fields.find((candidate) => !candidate.static && candidate.name === left.name)
+                : undefined;
+            const position = parameter ? optionalParameterPositionsById.get(parameter.binding.id) : undefined;
+            if (!parameter || !field || !isRustSimpleClassField(field) || position === undefined) {
+              supported = false;
+            } else {
+              mutatedOptionalClassParameterPositions.add(position);
+              mutatedOptionalParameterIds.add(parameter.binding.id);
+            }
           }
         }
         if (
@@ -5129,6 +5176,7 @@ function isRustSimpleClassMethodBodySupported(
               isRustReferenceSentinelExpression(sentinel, 'undefined')
             ) {
               allowedOptionalReferences.add(candidate);
+              sentinelCheckedOptionalParameterIds.add(candidate.reference.binding.id);
             }
           }
         }
@@ -5188,12 +5236,13 @@ function isRustSimpleClassMethodBodySupported(
       },
     });
   }
-  return (
-    supported &&
+  return supported &&
     thisReferences.every((reference) => allowedThisReferences.has(reference)) &&
     optionalReferences.every((reference) => allowedOptionalReferences.has(reference)) &&
-    [...optionalParametersById].every(([id]) => projectedOptionalParameterIds.has(id))
-  );
+    [...optionalParametersById].every(([id]) => projectedOptionalParameterIds.has(id)) &&
+    [...mutatedOptionalParameterIds].every((id) => sentinelCheckedOptionalParameterIds.has(id))
+    ? mutatedOptionalClassParameterPositions
+    : undefined;
 }
 
 function getRustSimpleClassMutatingMethodNames(declaration: Readonly<IrClassDeclaration>): ReadonlySet<string> {

@@ -10575,8 +10575,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('use std::rc::Rc;');
     expect(output).toContain('let values: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new()));');
     expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
-    expect(output).toContain('alias.borrow_mut().value = 2.0;');
-    expect(output).toContain('alias.borrow_mut().label = "changed".to_owned();');
+    expect(output).toContain('let class_field_right = 2.0; alias.borrow_mut().value = class_field_right;');
+    expect(output).toContain(
+      'let class_field_right_2 = "changed".to_owned(); alias.borrow_mut().label = class_field_right_2;',
+    );
     expect(output).not.toContain('alias.borrow_mut().label.clone() =');
     expect(output).toContain('values.borrow().value');
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
@@ -10748,8 +10750,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('Some(Rc::clone(&required))');
     expect(output).toContain('let alias: Option<Rc<RefCell<Counter>>> = value.clone();');
     expect(output).toContain('alias.as_ref().unwrap().borrow_mut().increment(2.0)');
-    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().value = 4.0');
-    expect(output).toContain('alias.as_ref().unwrap().borrow_mut().label = "done".to_owned()');
+    expect(output).toContain(
+      'let class_field_right = 4.0; alias.as_ref().unwrap().borrow_mut().value = class_field_right;',
+    );
+    expect(output).toContain(
+      'let class_field_right_2 = "done".to_owned(); alias.as_ref().unwrap().borrow_mut().label = class_field_right_2;',
+    );
     expect(output).not.toContain('alias.as_ref().unwrap().borrow_mut().label.clone() =');
     if (rustcAvailable) {
       expect(() =>
@@ -11378,7 +11384,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'let values: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new(1.0, "ready".to_owned())));',
     );
     expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
-    expect(output).toContain('alias.borrow_mut().value = 3.0;');
+    expect(output).toContain('let class_field_right = 3.0; alias.borrow_mut().value = class_field_right;');
     expect(output).toContain('values.borrow().label.clone()');
     if (rustcAvailable) {
       expect(() => runRustSource(output, 'assert_eq!(alias_constructed_counter(), 4.0);')).not.toThrow();
@@ -11814,6 +11820,40 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.borrow_mut().merge(Some(Rc::clone(&other_alias)))');
   });
 
+  it('stages direct optional class method field mutation without changing receiver mutability', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-class-method-mutation.ts',
+        `class Counter {
+           value: number;
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+           write(other?: Counter): void {
+             if (other === undefined) return;
+             other.value = this.value;
+             other.value += 2;
+             other.label += "!";
+           }
+         }
+         export function run(): number {
+           const receiver = new Counter(3, "receiver"); const receiverAlias = receiver;
+           const other = new Counter(1, "other"); const otherAlias = other;
+           receiverAlias.write(otherAlias);
+           return other.value + (other.label === "other!" ? 1 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn write(&self, mut other: Option<Rc<RefCell<Counter>>>)');
+    expect(output).toMatch(
+      /let class_field_right(?:_\d+)? = self\.value; other\.as_ref\(\)\.unwrap\(\)\.borrow_mut\(\)\.value = class_field_right(?:_\d+)?;/u,
+    );
+    expect(output).toMatch(
+      /let class_field_current(?:_\d+)? = other\.as_ref\(\)\.unwrap\(\)\.borrow\(\)\.value; let class_field_right(?:_\d+)? = 2\.0; let class_field_updated(?:_\d+)? = class_field_current(?:_\d+)? \+ class_field_right(?:_\d+)?; other\.as_ref\(\)\.unwrap\(\)\.borrow_mut\(\)\.value = class_field_updated(?:_\d+)?;/u,
+    );
+    expect(output).toContain('.borrow().write(Some(Rc::clone(&other_alias)))');
+  });
+
   it('composes optional function, constructor, and method class carriers', () => {
     const output = emitIrModuleRust(
       lower(
@@ -11845,7 +11885,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('fn forward(value: Option<Rc<RefCell<Counter>>>) -> f64');
     expect(output).toContain('fn new(owner: Option<Rc<RefCell<Counter>>>) -> Self');
     expect(output).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
-    expect(output).toContain('value.as_ref().unwrap().borrow_mut().value = 3.0');
+    expect(output).toContain(
+      'let class_field_right = 3.0; value.as_ref().unwrap().borrow_mut().value = class_field_right;',
+    );
     expect(output).toContain('adjust(value.clone())');
     expect(output).toContain('Snapshot::new(Some(Rc::clone(&receiver_alias)))');
     expect(output).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
@@ -11858,6 +11900,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          value: number;
          constructor(value: number) { this.value = value; }
          inspect(other?: Counter): number { return other !== undefined ? other.value : this.value; }
+         write(other?: Counter): void { if (other !== undefined) other.value += this.value; }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -11865,9 +11908,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-consumer.ts',
       `import { Counter } from './optional-class-method-provider.js';
+       function relay(receiver: Counter, other?: Counter): void {
+         if (other === undefined) return;
+         receiver.write(other);
+       }
        export function run(): number {
          const receiver: Counter = new Counter(1); const receiverAlias: Counter = receiver;
          const other: Counter = new Counter(4); const otherAlias: Counter = other;
+         relay(receiverAlias, otherAlias);
          return receiverAlias.inspect(otherAlias) + receiver.inspect();
        }`,
       ts.ScriptTarget.Latest,
@@ -11910,6 +11958,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     const consumerOutput = session.emitModule(consumer)[0]!.contents;
 
     expect(providerOutput).toContain('fn inspect(&self, other: Option<Rc<RefCell<Counter>>>) -> f64');
+    expect(providerOutput).toContain('fn write(&self, mut other: Option<Rc<RefCell<Counter>>>)');
+    expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
+    expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
+    expect(consumerOutput).toContain('fn relay(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
+    expect(consumerOutput).toContain('receiver.write(other.clone())');
+    expect(consumerOutput).toContain('relay(&*receiver_alias.borrow(), Some(Rc::clone(&other_alias)))');
     expect(consumerOutput).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
     expect(consumerOutput).toContain('.borrow().inspect(None)');
   });
@@ -11964,6 +12018,12 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            label: string;
            constructor(value: number, label: string) { this.value = value; this.label = label; }
            inspect(other?: Counter): number { return other === undefined ? this.value : other.value; }
+           write(other?: Counter): void {
+             if (other === undefined) return;
+             other.value = this.value;
+             other.value += 2;
+             other.label += "!";
+           }
          }
          class Snapshot {
            value: number;
@@ -11987,6 +12047,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const omittedMethod = receiver.inspect();
            const explicitMethod = receiverAlias.inspect(undefined);
            const distinctMethod = receiver.inspect(otherAlias);
+           const mutatedMethod = new Counter(1, "method"); const mutatedMethodAlias = mutatedMethod;
+           receiverAlias.write(mutatedMethodAlias);
            const compound = new Counter(2, "a"); const compoundAlias = compound;
            const optionalCompound: Counter | undefined = compoundAlias;
            let compoundOrder = 0;
@@ -12004,6 +12066,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
              omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
              receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
+             mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              compound === compoundAlias && compound.value === 10 && compoundAlias.value === 10 &&
              compound.label === "abc" && compoundAlias.label === "abc" && compoundOrder === 1234;
          }`,
@@ -12212,7 +12275,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('return Rc::clone(&value);');
     expect(output).toContain('let returned: Rc<RefCell<Counter>> = make_counter();');
     expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&returned);');
-    expect(output).toContain('alias.borrow_mut().value = 3.0;');
+    expect(output).toContain('let class_field_right_2 = 3.0; alias.borrow_mut().value = class_field_right_2;');
     expect(output).toContain('returned.borrow().value');
     if (rustcAvailable) {
       expect(() => runRustSource(output, 'assert_eq!(local_counter_return(), 3.0);')).not.toThrow();
@@ -12320,7 +12383,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
     expect(output).toContain('!Rc::ptr_eq(');
-    expect(output).toContain('alias.borrow_mut().value = 4.0;');
+    expect(output).toContain('let class_field_right = 4.0; alias.borrow_mut().value = class_field_right;');
     expect(output).toContain('first.borrow().value');
     if (rustcAvailable) {
       expect(() => runRustSource(output, 'assert_eq!(class_identity(), 47.0);')).not.toThrow();
@@ -12350,7 +12413,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
     expect(output).toContain('!Rc::ptr_eq(');
-    expect(output).toContain('alias.borrow_mut().value = 4.0;');
+    expect(output).toContain('let class_field_right = 4.0; alias.borrow_mut().value = class_field_right;');
     expect(output).toContain('first.borrow().value');
     if (rustcAvailable) {
       expect(() => runRustSource(output, 'assert_eq!(class_loose_identity(), 47.0);')).not.toThrow();
@@ -12460,7 +12523,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('fn forward() -> Rc<RefCell<Counter>>');
     expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
     expect(output).toContain('!Rc::ptr_eq(');
-    expect(output).toContain('alias.borrow_mut().value = 5.0;');
+    expect(output).toContain('let class_field_right = 5.0; alias.borrow_mut().value = class_field_right;');
     if (rustcAvailable) {
       expect(() =>
         compileRustModulePair(
@@ -12523,7 +12586,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('fn forward() -> Rc<RefCell<Counter>>');
     expect(output.match(/Rc::ptr_eq\(/gu)).toHaveLength(3);
     expect(output).toContain('!Rc::ptr_eq(');
-    expect(output).toContain('alias.borrow_mut().value = 5.0;');
+    expect(output).toContain('let class_field_right = 5.0; alias.borrow_mut().value = class_field_right;');
     if (rustcAvailable) {
       expect(() =>
         compileRustModulePair(
@@ -12658,7 +12721,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(providerOutput).toContain('return Rc::clone(&value);');
     expect(output).toContain('let returned: Rc<RefCell<Counter>> = make_counter();');
     expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&returned);');
-    expect(output).toContain('alias.borrow_mut().value = 4.0;');
+    expect(output).toContain('let class_field_right = 4.0; alias.borrow_mut().value = class_field_right;');
     expect(output).toContain('returned.borrow().value');
     if (rustcAvailable) {
       expect(() =>
@@ -12689,7 +12752,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ).contents;
 
     expect(output).toContain('let alias = Rc::clone(&alias);');
-    expect(output).toContain('alias.borrow_mut().value = 2.0');
+    expect(output).toContain('let class_field_right = 2.0; alias.borrow_mut().value = class_field_right;');
     expect(output).toContain('values.borrow().value');
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
