@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   compareTextCodeUnits,
   normalizeCompilerStructuralValueCanonical,
+  normalizePathPortable,
 } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
 import {
@@ -2332,14 +2333,35 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           'rust-union-cast-unsupported',
         );
       }
-      if (!isIrCastTargetNumericRust(expression.type)) {
-        emissionError(
+      // A number assertion keeps its existing `as f64` spelling, but only from a source that is
+      // already the exact number carrier; a String, opaque host value, record, or fieldless enum has
+      // no valid Rust cast to f64 and previously produced code rustc rejects.
+      if (expression.type.kind === 'primitive' && expression.type.name === 'number') {
+        const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+        const source = sourceType ? resolveIrTypeAliasValueRust(sourceType, context, new Set()) : undefined;
+        if (source?.kind !== 'primitive' || source.name !== 'number') {
+          emissionRuleError(
+            context,
+            'an assertion to number requires an alias-resolved source with the exact number carrier; Rust has no cast from a string, boolean, record, or opaque host value to f64',
+            'rust-cast-requires-type-directed-lowering',
+          );
+        }
+        return `(${emitExpression(expression.expression, context)} as f64)`;
+      }
+      const identityCast = emitRustIdentityCastRust(expression, context);
+      if (identityCast) return identityCast;
+      if (expression.type.kind === 'primitive' && expression.type.name === 'boolean') {
+        emissionRuleError(
           context,
-          `cast to ${expression.type.kind} requires Rust type-directed lowering`,
+          'an assertion to boolean is representable only when the source already has the exact boolean carrier; Rust has no cast to bool',
           'rust-cast-requires-type-directed-lowering',
         );
       }
-      return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
+      emissionError(
+        context,
+        `cast to ${expression.type.kind} requires Rust type-directed lowering`,
+        'rust-cast-requires-type-directed-lowering',
+      );
     }
     case 'conditional':
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
@@ -19397,11 +19419,6 @@ function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
   return lines;
 }
 
-function isIrCastTargetNumericRust(type: Readonly<IrType>): boolean {
-  if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
-  return false;
-}
-
 function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
   if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
   if (type.kind === 'union') {
@@ -19605,6 +19622,84 @@ function resolveIrCastUnionTypeRust(type: Readonly<IrType>, context: EmitContext
   const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, context.module);
   if (location?.declaration.kind !== 'typeAlias') return type;
   return resolveIrCastUnionTypeRust(location.declaration.type, context, depth + 1);
+}
+
+// An assertion whose representation the target already has is the value itself. Only exact evidence
+// is accepted here: alias-resolved string/boolean primitives, the same nominal record declaration,
+// the same unknown identity, and same-readonly arrays/tuples with recursively identical elements.
+// Structural lookalikes, unions, readonly/mutable conversions, generics, classes/reference carriers,
+// and expressions without exact type evidence keep their existing refusals.
+function emitRustIdentityCastRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  if (!sourceType) return undefined;
+  return isRustIdentityCastPairRust(sourceType, expression.type, context)
+    ? emitOwnedOperandRust(expression.expression, context)
+    : undefined;
+}
+
+function isRustIdentityCastPairRust(source: Readonly<IrType>, target: Readonly<IrType>, context: EmitContext): boolean {
+  // Two references to the same canonical declaration are the same value representation even when
+  // one side spells an alias. Distinct declarations of the same shape are structural lookalikes and
+  // are deliberately not equal.
+  const sourceDeclaration = getRustIdentityCastDeclarationRust(source, context);
+  const targetDeclaration = getRustIdentityCastDeclarationRust(target, context);
+  if (sourceDeclaration && targetDeclaration && sourceDeclaration === targetDeclaration) return true;
+  const resolvedSource = resolveIrTypeAliasValueRust(source, context, new Set());
+  const resolvedTarget = resolveIrTypeAliasValueRust(target, context, new Set());
+  if (resolvedSource !== source || resolvedTarget !== target) {
+    return isRustIdentityCastPairRust(resolvedSource, resolvedTarget, context);
+  }
+  if (sourceDeclaration || targetDeclaration) return false;
+  if (source.kind === 'primitive' && target.kind === 'primitive') {
+    return (
+      source.name === target.name && (source.name === 'string' || source.name === 'boolean' || source.name === 'number')
+    );
+  }
+  if (source.kind === 'unknown' && target.kind === 'unknown') return source.source === target.source;
+  if (source.kind === 'array' && target.kind === 'array') {
+    return source.readonly === target.readonly && isRustIdentityCastPairRust(source.element, target.element, context);
+  }
+  if (source.kind === 'tuple' && target.kind === 'tuple') {
+    return (
+      source.readonly === target.readonly &&
+      source.elements.length === target.elements.length &&
+      source.elements.every((element, index) => {
+        const candidate = target.elements[index];
+        if (!candidate || element.optional !== candidate.optional || element.rest !== candidate.rest) return false;
+        return isRustIdentityCastPairRust(element.type, candidate.type, context);
+      })
+    );
+  }
+  return false;
+}
+
+// The declaration key for a named interface or a type alias that can be named exactly. Any binding
+// space is accepted because an imported interface can carry a value-space import binding; the
+// declaration found through the import is the authority.
+function getRustIdentityCastDeclarationRust(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(
+    type.reference.binding as Readonly<IrTypeBindingIdentity>,
+    context,
+    context.module,
+  );
+  if (!location) return undefined;
+  const declaration = location.declaration;
+  const eligible =
+    (declaration.kind === 'interface' && declaration.typeParameters.length === 0) ||
+    (declaration.kind === 'typeAlias' && declaration.typeParameters.length === 0);
+  if (!eligible) return undefined;
+  return `${location.module.packageName}\0${normalizePathPortable(location.module.source)}\0${declaration.binding.id}`;
 }
 
 function emitPrimitiveUnionCastRust(

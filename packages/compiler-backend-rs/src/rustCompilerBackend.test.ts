@@ -26857,6 +26857,202 @@ describe('emitIrModuleRust dense literal array construction', () => {
   });
 });
 
+describe('emitIrModuleRust identity assertions', () => {
+  it('emits exact string, boolean, and number assertions as the value itself', () => {
+    const result = lower(
+      'identity-primitives.ts',
+      `export function text(value: string): string { return value as string; }
+       export function flag(value: boolean): boolean { return value as boolean; }
+       export function numeric(value: number): number { return value as number; }
+       export function literal(): string { return "x" as string; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return value as f64;');
+    expect(output).not.toContain('as bool');
+    expect(output).not.toContain('as String');
+    expect(output).toContain('"x".to_owned()');
+    expect(output.match(/return value;/gu)).toHaveLength(2);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('emits nominal records, alias spellings, arrays, tuples, and unknown identity as the operand', () => {
+    const result = lower(
+      'identity-records.ts',
+      `interface Point { value: number }
+       type PointAlias = Point;
+       export function same(point: Point): Point { return point as Point; }
+       export function aliased(point: Point): PointAlias { return point as PointAlias; }
+       export function points(values: Point[]): Point[] { return values as Point[]; }
+       export function readonlyPoints(values: readonly Point[]): readonly Point[] { return values as readonly Point[]; }
+       export function pair(value: [number, string]): [number, string] { return value as [number, string]; }
+       export function erased(value: unknown): unknown { return value as unknown; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return point;');
+    expect(output).toContain('return values;');
+    expect(output).toContain('pub fn pair(value: (f64, String))');
+    expect(output).toContain('return value;');
+    expect(output).not.toContain('as Point');
+    expect(output).not.toContain('as Vec');
+    expect(output).not.toContain('as (');
+    expect(output).not.toContain('as unknown');
+  });
+
+  it('emits an imported interface identity assertion across modules', () => {
+    const api = lower('identity-api.ts', 'export interface Point { value: number }').module;
+    const consumer = lower(
+      'identity-consumer.ts',
+      `import { Point } from './identity-api.js';
+       export function same(point: Point): Point { return point as Point; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './identity-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+
+    const output = session.emitModule(consumer)[0]!.contents;
+    expect(output).toContain('return point;');
+    expect(output).not.toContain('as Point');
+  });
+
+  it.each([
+    {
+      name: 'a structural lookalike',
+      source:
+        'interface Point { value: number } interface Other { value: number } export function wrong(point: Point): Other { return point as Other; }',
+    },
+    {
+      name: 'any asserted to unknown',
+      source: 'export function wrong(value: any): unknown { return value as unknown; }',
+    },
+    {
+      name: 'a readonly conversion',
+      source:
+        'interface Point { value: number } export function wrong(values: Point[]): readonly Point[] { return values as readonly Point[]; }',
+    },
+    {
+      name: 'a mutable conversion from readonly',
+      source:
+        'interface Point { value: number } export function wrong(values: readonly Point[]): Point[] { return values as Point[]; }',
+    },
+    {
+      name: 'a generic record',
+      source:
+        'interface Box<T> { value: T } export function wrong(box: Box<number>): Box<number> { return box as Box<number>; }',
+    },
+    {
+      name: 'a class identity',
+      source: 'class Point { value = 0 } export function wrong(point: Point): Point { return point as Point; }',
+    },
+    {
+      name: 'a callable identity',
+      source:
+        'export function wrong(fn: (value: number) => number): (value: number) => number { return fn as (value: number) => number; }',
+    },
+    {
+      name: 'unavailable source evidence',
+      source:
+        'interface Point { value: number } export function wrong(flag: boolean, point: Point): Point { return (flag ? point : point) as Point; }',
+    },
+  ])('refuses $name with the deterministic cast rule', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('identity-refused.ts', source).module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+  });
+
+  it.each([
+    ['a string to boolean', 'export function wrong(value: string): boolean { return value as boolean; }'],
+    ['a number to boolean', 'export function wrong(value: number): boolean { return value as boolean; }'],
+    ['a string to number', 'export function wrong(value: string): number { return value as number; }'],
+    [
+      'an observed unknown to number',
+      'export function wrong(value: unknown): number { const observed = value; return value as number; }',
+    ],
+    [
+      'a record to number',
+      'interface Point { value: number } export function wrong(point: Point): number { return point as number; }',
+    ],
+  ])('refuses %s with the numeric safety rule', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('identity-numeric-safety.ts', source).module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+  });
+
+  it('keeps union carrier assertions on the union rule', () => {
+    const result = lower(
+      'identity-union.ts',
+      `interface A { value: number } interface B { value: string }
+       export function wrong(shape: A | B): A | B { return shape as A | B; }`,
+    );
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('salvages an unrelated declaration while keeping the identity assertion', () => {
+    const module = lower(
+      'identity-salvage.ts',
+      `interface Point { value: number }
+       interface Other { value: number }
+       export function same(point: Point): Point { return point as Point; }
+       export function wrong(point: Point): Other { return point as Other; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'structural assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'structural assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('pub fn same');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function same');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 4');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles exact identity assertions and the numeric control', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'identity-native.ts',
+        `interface Point { value: number }
+         export function text(value: string): string { return value as string; }
+         export function flag(value: boolean): boolean { return value as boolean; }
+         export function numeric(value: number): number { return value as number; }
+         export function same(point: Point): Point { return point as Point; }`,
+      ).module,
+    ).contents;
+    runRustSource(
+      output,
+      `assert_eq!(text("a".to_owned()), "a".to_owned()); assert!(flag(true)); assert_eq!(numeric(1.0), 1.0); assert_eq!(same(Point { value: 2.0 }).value, 2.0);`,
+    );
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(
