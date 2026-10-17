@@ -3975,6 +3975,45 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('Ok(None) => {}');
   });
 
+  it('composes one nonterminal protected await with one- and two-await no-finally catches', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-nonterminal-protected-await-no-finally.ts',
+        'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } function observe(error: string, task: Promise<void>): Promise<void> { error; return task; } export async function expressed(primary: Promise<void>, recovery: Promise<number>): Promise<number> { try { await primary; return 1; } catch { return await recovery; } } export async function assigned(primary: Promise<number>, first: Promise<void>, second: Promise<number>): Promise<number> { let result = 0; try { result = await primary; result += 1; } catch (error) { await observe(error, first); const value = await recover(error, second); result = value; } return result; } export async function declared(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { const value = await primary; return value + 1; } catch (error) { return await recover(error, recovery); } }',
+      ).module,
+    ).contents;
+
+    const assigned = output.indexOf('pub async fn assigned(');
+    const protectedSettlement = output.indexOf('match primary.settle() {', assigned);
+    const protectedEffect = output.indexOf('result = try_value', protectedSettlement);
+    const protectedPost = output.indexOf('result += 1.0;', protectedEffect);
+    const firstCatchSettlement = output.indexOf('observe(error.clone(), first', protectedPost);
+    const secondCatchSettlement = output.indexOf('recover(error.clone(), second', firstCatchSettlement);
+    const continuation = output.indexOf('return result;', secondCatchSettlement);
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(7);
+    expect(protectedSettlement).toBeGreaterThan(assigned);
+    expect(protectedEffect).toBeGreaterThan(protectedSettlement);
+    expect(protectedPost).toBeGreaterThan(protectedEffect);
+    expect(firstCatchSettlement).toBeGreaterThan(protectedPost);
+    expect(secondCatchSettlement).toBeGreaterThan(firstCatchSettlement);
+    expect(continuation).toBeGreaterThan(secondCatchSettlement);
+    expect(output).toContain('Ok(None) => {}');
+    expect(output).toContain('let value: f64 = try_value');
+  });
+
+  it('moves only an exact catch rethrow after a nonterminal protected await', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-nonterminal-protected-await-rethrow.ts',
+        'function observe(error: string, task: Promise<void>): Promise<void> { error; return task; } export async function attempt(primary: Promise<number>, first: Promise<void>, second: Promise<void>): Promise<number> { try { const value = await primary; return value; } catch (error) { await observe(error, first); await observe(error, second); throw error; } }',
+      ).module,
+    ).contents;
+
+    expect(output.match(/observe\(error\.clone\(\)/g)).toHaveLength(2);
+    expect(output).toContain('Err(error)');
+    expect(output).not.toContain('Err(error.clone())');
+  });
+
   it('settles two flat catch awaits in order for bound and bindingless no-finally completion', () => {
     const output = emitIrModuleRust(
       lower(
@@ -4055,10 +4094,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       'an arbitrary throw',
       'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); throw "replacement"; } }',
     ],
-    [
-      'a nonterminal protected await',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { const value = await primary; return value; } catch (error) { return await recover(error, recovery); } }',
-    ],
   ])('stably refuses no-finally one-await catch with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('try-bound-catch-await-refusal.ts', source).module),
@@ -4066,6 +4101,52 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
+  });
+
+  it.each([
+    [
+      'two protected awaits',
+      'export async function attempt(first: Promise<void>, second: Promise<number>, recovery: Promise<number>): Promise<number> { try { await first; return await second; } catch { return await recovery; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a nested protected await',
+      'export async function attempt(primary: Promise<void>, recovery: Promise<number>, enabled: boolean): Promise<number> { try { if (enabled) await primary; return 1; } catch { return await recovery; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a protected source throw',
+      'export async function attempt(primary: Promise<void>, recovery: Promise<number>): Promise<number> { try { await primary; throw new Error("source"); } catch { return await recovery; } }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a protected bare task return after settlement',
+      'export async function attempt(observer: Promise<void>, primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { await observer; return primary; } catch { return await recovery; } }',
+      'rust-async-task-adoption-protected-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an indirect protected assignment place',
+      'interface Box { value: number; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, box: Box): Promise<number> { try { box.value = await primary; return box.value; } catch { return await recovery; } }',
+      'rust-async-protected-assignment-place-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a native future protected operand',
+      'async function local(): Promise<number> { return 1; } export async function attempt(recovery: Promise<number>): Promise<number> { try { const value = await local(); return value; } catch { return await recovery; } }',
+      'rust-native-future-task-adapter-unavailable',
+      'target-runtime',
+    ],
+  ])('preserves nonterminal protected awaited-catch refusal for %s', (_name, source, rule, classification) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('try-nonterminal-protected-await-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe(classification);
   });
 
   it.each([
@@ -4497,6 +4578,13 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              catch { mark("no-final-bindingless-catch", log); await observedNumber(recovery, "no-final-bindingless-recovery", log); mark("no-final-bindingless-after", log); }
              mark("no-final-bindingless-continue", log);
              return 7;
+           }
+           export async function nonterminalNoFinal(primary: Promise<number>, firstRecovery: Promise<number>, secondRecovery: Promise<number>, log: string[]): Promise<number> {
+             let result = 0;
+             try { result = await observedNumber(primary, "nonterminal-protected", log); mark("nonterminal-protected-after", log); }
+             catch (error) { mark("nonterminal-catch", log); const first = await recover(error, firstRecovery, log); mark("nonterminal-between", log); const second = await recover(error, secondRecovery, log); result = first + second; mark("nonterminal-catch-after", log); }
+             mark("nonterminal-continue", log);
+             return result;
            }`,
         ).module,
       ).contents;
@@ -4575,7 +4663,25 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(no_final_bindingless_override_log, vec!["no-final-bindingless-try".to_owned(), "no-final-bindingless-catch".to_owned(), "no-final-bindingless-recovery".to_owned()]);
            let no_final_bindingless_payload = no_final_bindingless_override.expect_err("bindingless catch rejection must replace the discarded original rejection");
            let no_final_bindingless_message = no_final_bindingless_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_bindingless_payload.downcast_ref::<&str>().copied());
-           assert_eq!(no_final_bindingless_message, Some("unhandled task rejection: bindingless-replacement"));`,
+           assert_eq!(no_final_bindingless_message, Some("unhandled task rejection: bindingless-replacement"));
+           let mut nonterminal_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), &mut nonterminal_ready_log)), 4.0);
+           assert_eq!(nonterminal_ready_log, vec!["nonterminal-protected".to_owned(), "nonterminal-protected-after".to_owned(), "nonterminal-continue".to_owned()]);
+           let mut nonterminal_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::<f64>::reject("nonterminal-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::ready(8.0), &mut nonterminal_caught_log)), 14.0);
+           assert_eq!(nonterminal_caught_log, vec!["nonterminal-protected".to_owned(), "nonterminal-catch".to_owned(), "nonterminal-original".to_owned(), "nonterminal-between".to_owned(), "nonterminal-original".to_owned(), "nonterminal-catch-after".to_owned(), "nonterminal-continue".to_owned()]);
+           let mut nonterminal_first_rejection_log = Vec::new();
+           let nonterminal_first_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::<f64>::reject("nonterminal-original"), flight_runtime::FlightTask::<f64>::reject("nonterminal-first-error"), flight_runtime::FlightTask::ready(8.0), &mut nonterminal_first_rejection_log))));
+           assert_eq!(nonterminal_first_rejection_log, vec!["nonterminal-protected".to_owned(), "nonterminal-catch".to_owned(), "nonterminal-original".to_owned()]);
+           let nonterminal_first_payload = nonterminal_first_rejection.expect_err("first catch rejection must replace the nonterminal protected rejection");
+           let nonterminal_first_message = nonterminal_first_payload.downcast_ref::<String>().map(String::as_str).or_else(|| nonterminal_first_payload.downcast_ref::<&str>().copied());
+           assert_eq!(nonterminal_first_message, Some("unhandled task rejection: nonterminal-first-error"));
+           let mut nonterminal_second_rejection_log = Vec::new();
+           let nonterminal_second_rejection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(nonterminal_no_final(flight_runtime::FlightTask::<f64>::reject("nonterminal-original"), flight_runtime::FlightTask::ready(6.0), flight_runtime::FlightTask::<f64>::reject("nonterminal-second-error"), &mut nonterminal_second_rejection_log))));
+           assert_eq!(nonterminal_second_rejection_log, vec!["nonterminal-protected".to_owned(), "nonterminal-catch".to_owned(), "nonterminal-original".to_owned(), "nonterminal-between".to_owned(), "nonterminal-original".to_owned()]);
+           let nonterminal_second_payload = nonterminal_second_rejection.expect_err("second catch rejection must replace the nonterminal protected rejection");
+           let nonterminal_second_message = nonterminal_second_payload.downcast_ref::<String>().map(String::as_str).or_else(|| nonterminal_second_payload.downcast_ref::<&str>().copied());
+           assert_eq!(nonterminal_second_message, Some("unhandled task rejection: nonterminal-second-error"));`,
         ),
       ).not.toThrow();
     },
