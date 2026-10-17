@@ -58,6 +58,7 @@ import type {
   CompilerModuleResolutionPlan,
   CompilerRuntimeExternalConstructorInvocation,
   CompilerRustReferenceRepresentationPlan,
+  CompilerRustReferenceRepresentation,
   CompilerRustSourceTreeFilePlan,
   CompilerRustSourceTreeReferencePlan,
   EmittedFile,
@@ -210,7 +211,8 @@ interface EmitContext {
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
-  borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
+  borrowedClassParameterIds: ReadonlySet<string>;
+  borrowedParameterRepresentations: ReadonlyMap<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>;
   callableObjectRecords: Map<string, RustCallableObjectRecord>;
   deferredBindingIds: ReadonlySet<string>;
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
@@ -411,11 +413,23 @@ function emitIrModuleRustWithContext(
   );
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
-  const borrowedParameterPositions = new Map<string, ReadonlySet<number>>(
+  const borrowedParameterRepresentations = new Map<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>(
     referenceModulePlan?.callables.map((callable) => [
       callable.binding.id,
-      new Set(callable.parameters.map((parameter) => parameter.position)),
+      new Map(callable.parameters.map((parameter) => [parameter.position, parameter.representation])),
     ]) ?? [],
+  );
+  const borrowedClassParameterIds = new Set(
+    module.declarations.flatMap((declaration) => {
+      if (declaration.kind !== 'function') return [];
+      const representations = borrowedParameterRepresentations.get(declaration.binding.id);
+      return declaration.parameters.flatMap((parameter, position) =>
+        representations?.get(position) === 'borrowed-class' ||
+        representations?.get(position) === 'mutable-borrowed-class'
+          ? [parameter.binding.id]
+          : [],
+      );
+    }),
   );
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
   const primitiveUnionBindingIds = new Map<string, string>();
@@ -460,7 +474,8 @@ function emitIrModuleRustWithContext(
     cellWrappedBindingIds,
     refCellWrappedBindingIds,
     classBindingNames,
-    borrowedParameterPositions,
+    borrowedClassParameterIds,
+    borrowedParameterRepresentations,
     callableObjectRecords: new Map(),
     deferredBindingIds: new Set(
       ownershipEvidence.bindings.flatMap((evidence) =>
@@ -547,13 +562,26 @@ function emitIrModuleRustWithContext(
   // the callee's own declaration knows which positions those are.
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'function') continue;
-    const borrowed = new Set([
-      ...(borrowedParameterPositions.get(declaration.binding.id) ?? []),
-      ...declaration.parameters.flatMap((parameter, index) =>
-        context.referentMutatedParameterIds.has(parameter.binding.id) ? [index] : [],
-      ),
-    ]);
-    if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
+    const borrowed = new Map(borrowedParameterRepresentations.get(declaration.binding.id) ?? []);
+    for (const [index, parameter] of declaration.parameters.entries()) {
+      if (!context.referentMutatedParameterIds.has(parameter.binding.id) || borrowed.has(index)) continue;
+      if (parameter.type.kind === 'array') borrowed.set(index, 'mutable-borrowed-vec');
+      if (
+        parameter.type.kind === 'named' &&
+        parameter.type.reference.kind === 'ambient' &&
+        parameter.type.reference.name === 'Map'
+      ) {
+        borrowed.set(index, 'mutable-borrowed-hash-map');
+      }
+      if (
+        parameter.type.kind === 'named' &&
+        parameter.type.reference.kind === 'ambient' &&
+        parameter.type.reference.name === 'Set'
+      ) {
+        borrowed.set(index, 'mutable-borrowed-hash-set');
+      }
+    }
+    if (borrowed.size > 0) borrowedParameterRepresentations.set(declaration.binding.id, borrowed);
   }
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayMutationSemanticsRust(module, context);
@@ -1801,8 +1829,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const needsClone =
         expression.object.kind === 'element' ||
         (expression.object.kind === 'identifier' &&
-          expression.object.reference.kind === 'this' &&
-          isIrSelfFieldNonCopyRust(expression.name, context));
+          ((expression.object.reference.kind === 'this' && isIrSelfFieldNonCopyRust(expression.name, context)) ||
+            (expression.object.reference.kind === 'binding' &&
+              isIrBorrowedClassFieldNonCopyRust(expression.object.reference.binding, expression.name, context))));
       const owned = needsClone ? '.clone()' : '';
       return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}${owned}`;
     }
@@ -2495,13 +2524,18 @@ function emitCallArgumentsRust(
     emissionError(context, 'extra JavaScript call arguments require target-neutral erasure lowering');
   }
   assertRustCallArgumentsMatchUnionParametersRust(expression, context);
-  const borrowed = getIrCallBorrowedPositionsRust(expression, context);
+  const borrowed = getIrCallBorrowedRepresentationsRust(expression, context);
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
   if (!defaults && !optionals) {
-    return expression.arguments.map((argument, index) =>
-      borrowed.has(index) ? emitLentOperandRust(argument, context) : emitOwnedOperandRust(argument, context),
-    );
+    return expression.arguments.map((argument, index) => {
+      const representation = borrowed.get(index);
+      return representation === 'borrowed-class'
+        ? emitBorrowedClassOperandRust(argument, context)
+        : representation
+          ? emitLentOperandRust(argument, context)
+          : emitOwnedOperandRust(argument, context);
+    });
   }
   const plan = defaults ?? optionals;
   if (!plan) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
@@ -4134,6 +4168,22 @@ function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitCo
     : `&mut ${source}`;
 }
 
+function emitBorrowedClassOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.sharedClassBindingIds.has(expression.reference.binding.id)
+  ) {
+    return `&*${emitIdentifierReferenceRust(expression.reference, context)}.borrow()`;
+  }
+  const source = emitExpression(expression, context);
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.borrowedClassParameterIds.has(expression.reference.binding.id)
+    ? source
+    : `&${source}`;
+}
+
 function getRustSharedArrayBindingRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -4164,6 +4214,16 @@ function getIrSharedClassFieldRust(
   return getIrSharedClassDeclarationRust(binding, context)?.fields.find(
     (field) => !field.static && field.name === name,
   );
+}
+
+function isIrBorrowedClassFieldNonCopyRust(
+  binding: Readonly<IrBindingIdentity>,
+  name: string,
+  context: EmitContext,
+): boolean {
+  if (!context.borrowedClassParameterIds.has(binding.id)) return false;
+  const field = getIrSharedClassFieldRust(binding, name, context);
+  return field !== undefined && !isIrTypeCopyValueRust(field.type);
 }
 
 function getIrSharedClassDeclarationRust(
@@ -4583,6 +4643,12 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
       );
     }
     return `${getBindingTargetNameRust(parameter.binding, context)}: &mut ${emitType(parameterType, context)}`;
+  }
+  if (context.borrowedClassParameterIds.has(parameter.binding.id)) {
+    if (parameter.initializer || parameter.optional || parameter.rest) {
+      emissionError(context, `borrowed class parameter ${parameter.binding.name} must be fixed and required in Rust`);
+    }
+    return `${getBindingTargetNameRust(parameter.binding, context)}: &${emitType(parameterType, context)}`;
   }
   // A parameter the body assigns to is a local binding in Rust as much as in the source language, and
   // Rust will not accept the assignment without `mut`. Emitting it unconditionally would instead earn
@@ -7360,13 +7426,13 @@ function getIrNamedTypeDeclarationLocationRust(
   return declaration && targetModule ? { declaration, module: targetModule } : undefined;
 }
 
-function getIrCallBorrowedPositionsRust(
+function getIrCallBorrowedRepresentationsRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
-): ReadonlySet<number> {
+): ReadonlyMap<number, CompilerRustReferenceRepresentation> {
   return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-    ? (context.borrowedParameterPositions.get(expression.callee.reference.binding.id) ?? new Set())
-    : new Set();
+    ? (context.borrowedParameterRepresentations.get(expression.callee.reference.binding.id) ?? new Map())
+    : new Map();
 }
 
 function getIrClassConcreteBaseRust(

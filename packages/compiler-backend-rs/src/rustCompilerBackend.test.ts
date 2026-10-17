@@ -8209,6 +8209,114 @@ describe('emitIrModuleRust', () => {
     }
   });
 
+  it('lends one shared class through readonly and method-mutating local parameters', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'local-counter-parameters.ts',
+        `class Counter {
+           value = 0;
+           label = "ready";
+           increment(): void { this.value += 1; }
+         }
+         function inspect(counter: Counter): string { return counter.label; }
+         function write(counter: Counter): void { counter.increment(); }
+         export function localCounterParameters(): number {
+           const values = new Counter();
+           const alias = values;
+           const label = inspect(alias);
+           write(alias);
+           return values.value + (label === "ready" ? 1 : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn inspect(counter: &Counter) -> String');
+    expect(output).toContain('counter.label.clone()');
+    expect(output).toContain('fn write(counter: &mut Counter)');
+    expect(output.match(/inspect\(&\*alias\.borrow\(\)\)/gu)).toHaveLength(1);
+    expect(output.match(/write\(&mut \*alias\.borrow_mut\(\)\)/gu)).toHaveLength(1);
+    expect(output).toContain('values.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(local_counter_parameters(), 2.0);')).not.toThrow();
+    }
+  });
+
+  it('evaluates an exact temporary class argument once before a readonly call', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'temporary-counter-parameter.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         function inspect(counter: Counter): number { return counter.value; }
+         export function temporaryCounterParameter(): number {
+           let calls = 0;
+           const next = (): number => { calls += 1; return calls; };
+           return inspect(new Counter(next())) * 10 + calls;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn inspect(counter: &Counter) -> f64');
+    expect(output.match(/inspect\(&Counter::new\(next\(\)\)\)/gu)).toHaveLength(1);
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(temporary_counter_parameter(), 11.0);')).not.toThrow();
+    }
+  });
+
+  it('lends an imported exact class to readonly and mutating functions without moving its owner', () => {
+    const provider = lower(
+      'parameter-counter-provider.ts',
+      `export class Counter {
+         value = 0;
+         label = "ready";
+         increment(): void { this.value += 1; }
+       }
+       export function inspect(counter: Counter): string { return counter.label; }
+       export function write(counter: Counter): void { counter.increment(); }`,
+    ).module;
+    const consumer = lower(
+      'imported-counter-parameters.ts',
+      `import { Counter, inspect, write } from './parameter-counter-provider.js';
+       export function importedCounterParameters(): number {
+         const values: Counter = new Counter();
+         const alias: Counter = values;
+         inspect(alias);
+         write(alias);
+         return values.value;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './parameter-counter-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn inspect(counter: &Counter) -> String');
+    expect(providerOutput).toContain('pub fn write(counter: &mut Counter)');
+    expect(output.match(/inspect\(&\*alias\.borrow\(\)\)/gu)).toHaveLength(1);
+    expect(output.match(/write\(&mut \*alias\.borrow_mut\(\)\)/gu)).toHaveLength(1);
+    expect(output).toContain('values.borrow().value');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('parameter_counter_provider', providerOutput, 'imported_counter_parameters', output),
+      ).not.toThrow();
+    }
+  });
+
   it('captures a shared class only in a proven synchronous non-escaping closure', () => {
     const output = emitIrModuleRust(
       lower(

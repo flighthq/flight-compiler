@@ -245,6 +245,156 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ]);
   });
 
+  it('plans readonly and method-mutating exact class parameters', () => {
+    const module = lower(
+      'class-parameters.ts',
+      `class Counter {
+         value = 0;
+         label = "ready";
+         increment(): void { this.value += 1; }
+       }
+       function inspect(counter: Counter): string { return counter.label; }
+       function write(counter: Counter): void { counter.increment(); }
+       export function run(): number {
+         const values = new Counter();
+         const alias = values;
+         const label = inspect(alias);
+         write(alias);
+         return values.value + (label === "ready" ? 1 : 0);
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'inspect' }),
+          parameters: [{ position: 0, representation: 'borrowed-class' }],
+        }),
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'write' }),
+          parameters: [{ position: 0, representation: 'mutable-borrowed-class' }],
+        }),
+      ]),
+    );
+    expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+  });
+
+  it('refuses unsafe class-parameter boundaries and overlapping or wrong-owner borrows', () => {
+    const cases: readonly [Readonly<IrModule>, string][] = [
+      [
+        lower(
+          'class-parameter-return.ts',
+          `class Counter { value = 0; }
+           function escape(counter: Counter): Counter { return counter; }
+           export function run(): number { const value = new Counter(); const alias = value; escape(alias); return value.value; }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-storage.ts',
+          `class Counter { value = 0; }
+           function store(counter: Counter): { counter: Counter } { return { counter }; }
+           export function run(): number { const value = new Counter(); const alias = value; store(alias); return value.value; }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-dynamic.ts',
+          `class Counter { value = 0; }
+           class Other { value = 1; }
+           function inspect(counter: Counter | Other): number { return counter.value; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-default.ts',
+          `class Counter { value = 0; }
+           function inspect(counter: Counter = new Counter()): number { return counter.value; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-generic-rest.ts',
+          `class Counter { value = 0; }
+           function inspect<T>(counter: Counter, ...extra: T[]): number { return counter.value + extra.length; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-async.ts',
+          `class Counter { value = 0; }
+           async function inspect(counter: Counter): Promise<number> { return counter.value; }
+           export function run(): number { const value = new Counter(); const alias = value; inspect(alias); return value.value; }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-owner.ts',
+          `class Counter { value = 0; }
+           class Other { value = 1; }
+           function inspect(counter: Counter): number { return counter.value; }
+           export function run(): number { const value = new Other(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-call-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-overlap.ts',
+          `class Counter { value = 0; }
+           function copy(left: Counter, right: Counter): void { left.value = right.value; }
+           export function run(): number { const value = new Counter(); const alias = value; copy(alias, value); return value.value; }`,
+        ),
+        'rust-reference-shared-class-borrow-conflict',
+      ],
+      [
+        lower(
+          'class-parameter-inheritance.ts',
+          `class Base { value = 0; }
+           class Counter extends Base {}
+           function inspect(counter: Counter): number { return counter.value; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-type-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-accessor.ts',
+          `class Counter { stored = 0; get value(): number { return this.stored; } }
+           function inspect(counter: Counter): number { return counter.value; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-member-unrepresented',
+      ],
+      [
+        lower(
+          'class-parameter-identity-field.ts',
+          `class Child { value = 0; }
+           class Counter { child = new Child(); }
+           function inspect(counter: Counter): number { return counter.child.value; }
+           export function run(): number { const value = new Counter(); const alias = value; return inspect(alias); }`,
+        ),
+        'rust-reference-shared-class-field-unrepresented',
+      ],
+    ];
+
+    for (const [module, code] of cases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+  });
+
   it('elects the class carrier for exact primitive constructor arguments', () => {
     const module = lower(
       'alias-class-constructor.ts',

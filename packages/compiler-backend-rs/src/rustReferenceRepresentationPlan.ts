@@ -127,6 +127,7 @@ export function createCompilerRustReferenceRepresentationPlan(
     throw new TypeError('Rust reference representation planning requires flight-compiler-module-resolution/1');
   }
   const modules = createRustReferenceModuleRecords(input.modules);
+  collectRustReferenceClassMethodParameterMutations(modules, input.moduleResolution);
   propagateRustReferenceArrayParameterMutation(modules, input.moduleResolution);
   propagateRustReferenceClassParameterMutation(modules, input.moduleResolution);
   propagateRustReferenceHashCollectionParameterMutation(modules, input.moduleResolution, 'map');
@@ -146,6 +147,23 @@ export function createCompilerRustReferenceRepresentationPlan(
     schema: 'flight-rust-reference-representation-plan/1',
   };
   return cloneAndFreezeRustReferenceRepresentationPlan(plan);
+}
+
+function collectRustReferenceClassMethodParameterMutations(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  for (const module of modules) {
+    for (const { call, enclosingFunction } of module.calls) {
+      const method = getRustSimpleClassMethodCall(call, module, modules, moduleResolution);
+      if (!method?.mutating || method.receiver.reference.kind !== 'binding') continue;
+      const receiverId = method.receiver.reference.binding.id;
+      const position = enclosingFunction.declaration.parameters.findIndex(
+        (parameter) => parameter.binding.id === receiverId,
+      );
+      if (position >= 0) enclosingFunction.mutatedParameterPositions.add(position);
+    }
+  }
 }
 
 function createRustReferenceModuleRecords(
@@ -339,12 +357,19 @@ function createRustReferenceModulePlan(
       getRustReferenceArrayMutationPositions(function_),
       'mutable-borrowed-vec',
     );
+    const classPositions = getRustReferenceClassBorrowPositions(function_, module, modules, moduleResolution);
+    addRustReferenceCallablePlan(callables, function_.declaration.binding, classPositions, 'borrowed-class');
+    const mutatedClassPositions = getRustReferenceClassMutationPositions(function_, module, modules, moduleResolution);
     addRustReferenceCallablePlan(
       callables,
       function_.declaration.binding,
-      getRustReferenceClassMutationPositions(function_, module, modules, moduleResolution),
+      new Set([...mutatedClassPositions].filter((position) => classPositions.has(position))),
       'mutable-borrowed-class',
     );
+    for (const position of mutatedClassPositions) {
+      const parameter = function_.declaration.parameters[position];
+      if (parameter && classPositions.has(position)) mutatedBindings.set(parameter.binding.id, parameter.binding);
+    }
     for (const kind of RUST_SHARED_HASH_COLLECTION_KINDS) {
       addRustReferenceCallablePlan(
         callables,
@@ -514,26 +539,31 @@ function addRustReferenceClassCallPlan(
   target: RustReferenceFunctionRecord,
   targetModule: RustReferenceModuleRecord,
 ): void {
-  const positions = getRustReferenceClassMutationPositions(target, targetModule, modules, moduleResolution);
+  const positions = getRustReferenceClassBorrowPositions(target, targetModule, modules, moduleResolution);
+  const mutablePositions = getRustReferenceClassMutationPositions(target, targetModule, modules, moduleResolution);
   const callableBinding =
     call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding'
       ? call.callee.reference.binding
       : target.declaration.binding;
-  addRustReferenceCallablePlan(callables, callableBinding, positions, 'mutable-borrowed-class');
+  addRustReferenceCallablePlan(callables, callableBinding, positions, 'borrowed-class');
+  addRustReferenceCallablePlan(
+    callables,
+    callableBinding,
+    new Set([...mutablePositions].filter((position) => positions.has(position))),
+    'mutable-borrowed-class',
+  );
   for (const position of positions) {
     const argument = call.arguments[position];
+    const parameter = target.declaration.parameters[position];
     if (
-      argument?.kind === 'identifier' &&
-      argument.reference.kind === 'binding' &&
-      isRustSharedClassTypeSupported(
-        module.bindingTypes.get(argument.reference.binding.id),
-        module,
-        modules,
-        moduleResolution,
-      )
+      argument &&
+      parameter &&
+      isRustReferenceExactClassArgument(argument, module, parameter.type, targetModule, modules, moduleResolution)
     ) {
-      mutatedBindings.set(argument.reference.binding.id, argument.reference.binding);
-      addRustSharedClassCallBorrowConflictRefusal(module, call, position, refusals);
+      if (mutablePositions.has(position) && argument.kind === 'identifier' && argument.reference.kind === 'binding') {
+        mutatedBindings.set(argument.reference.binding.id, argument.reference.binding);
+        addRustSharedClassCallBorrowConflictRefusal(module, call, position, refusals);
+      }
       continue;
     }
     addRustReferenceRefusal(
@@ -543,7 +573,7 @@ function addRustReferenceClassCallPlan(
       `argument ${String(position)} to ${target.declaration.binding.name} lacks an exact represented simple-class binding`,
     );
   }
-  for (const position of getRustReferenceAnyClassMutationPositions(target, targetModule)) {
+  for (const position of getRustReferenceAnyClassParameterPositions(target, targetModule)) {
     if (positions.has(position)) continue;
     const argument = call.arguments[position];
     if (!argument || !isRustReferenceClassExpression(argument, module)) continue;
@@ -963,7 +993,7 @@ function activateRustSharedClassCallMutations(
         for (const argument of call.arguments) activateRustSharedClassGroupsUsedInExpression(module, argument);
         continue;
       }
-      for (const position of getRustReferenceClassMutationPositions(
+      for (const position of getRustReferenceClassBorrowPositions(
         target.function,
         target.module,
         modules,
@@ -1551,7 +1581,7 @@ function isRustSharedClassIdentifierUseRepresented(
     const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
     return (
       target.kind === 'function' &&
-      getRustReferenceClassMutationPositions(target.function, target.module, modules, moduleResolution).has(position)
+      getRustReferenceClassBorrowPositions(target.function, target.module, modules, moduleResolution).has(position)
     );
   }
   return false;
@@ -2115,6 +2145,121 @@ function getRustReferenceClassMutationPositions(
   );
 }
 
+function getRustReferenceClassBorrowPositions(
+  function_: RustReferenceFunctionRecord,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): ReadonlySet<number> {
+  return new Set(
+    function_.declaration.parameters.flatMap((_, position) =>
+      isRustReferenceClassBorrowPositionSupported(function_, position, module, modules, moduleResolution, new Set())
+        ? [position]
+        : [],
+    ),
+  );
+}
+
+function isRustReferenceClassBorrowPositionSupported(
+  function_: RustReferenceFunctionRecord,
+  position: number,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  visiting: ReadonlySet<string>,
+): boolean {
+  const declaration = function_.declaration;
+  const parameter = declaration.parameters[position];
+  if (
+    !parameter ||
+    declaration.async ||
+    declaration.overloads.length > 0 ||
+    declaration.typeParameters.length > 0 ||
+    declaration.parameters.some((candidate) => candidate.initializer || candidate.optional || candidate.rest) ||
+    !isRustSharedClassTypeSupported(parameter.type, module, modules, moduleResolution)
+  ) {
+    return false;
+  }
+  const key = `${moduleKey(module.module)}:${declaration.binding.id}:${String(position)}`;
+  if (visiting.has(key)) return true;
+  const nextVisiting = new Set(visiting).add(key);
+  const evidence = module.ownership.bindings.find((candidate) => candidate.binding.id === parameter.binding.id);
+  if (
+    !evidence ||
+    evidence.boundaries.some(
+      (boundary) => boundary === 'closureCapture' || boundary === 'structuralRecord' || boundary === 'suspension',
+    )
+  ) {
+    return false;
+  }
+  return evidence.uses.every((use) => {
+    const expression = getIrModuleTraversalPathValue(module.module, use.path);
+    if (
+      !isIrExpressionValue(expression) ||
+      expression.kind !== 'identifier' ||
+      expression.reference.kind !== 'binding' ||
+      expression.reference.binding.id !== parameter.binding.id
+    ) {
+      return false;
+    }
+    const parent = getIrModuleTraversalPathValue(module.module, use.path.slice(0, -1));
+    if (use.path.at(-1) === 'object' && isIrExpressionValue(parent) && parent.kind === 'property') {
+      if (parent.optional || parent.structuralAccess) return false;
+      if (getRustReferenceClassField(expression, parent.name, module, modules, moduleResolution)) return true;
+      const call = getIrModuleTraversalPathValue(module.module, use.path.slice(0, -2));
+      return (
+        isCallExpression(call) &&
+        call.callee === parent &&
+        getRustSimpleClassMethodCall(call, module, modules, moduleResolution) !== undefined
+      );
+    }
+    if (use.path.at(-2) !== 'arguments' || typeof use.path.at(-1) !== 'number') return false;
+    const call = getIrModuleTraversalPathValue(module.module, use.path.slice(0, -2));
+    if (!isCallExpression(call) || call.optional) return false;
+    const target = resolveRustReferenceCallTarget(call, module, modules, moduleResolution);
+    if (target.kind !== 'function') return false;
+    const targetPosition = use.path.at(-1) as number;
+    const targetParameter = target.function.declaration.parameters[targetPosition];
+    return (
+      targetParameter !== undefined &&
+      isRustReferenceSameClassType(
+        parameter.type,
+        module,
+        targetParameter.type,
+        target.module,
+        modules,
+        moduleResolution,
+      ) &&
+      isRustReferenceClassBorrowPositionSupported(
+        target.function,
+        targetPosition,
+        target.module,
+        modules,
+        moduleResolution,
+        nextVisiting,
+      )
+    );
+  });
+}
+
+function getRustReferenceAnyClassParameterPositions(
+  function_: RustReferenceFunctionRecord,
+  module: RustReferenceModuleRecord,
+): ReadonlySet<number> {
+  return new Set(
+    function_.declaration.parameters.flatMap((parameter, position) =>
+      isRustPotentialClassParameterType(parameter.type, module.module) ? [position] : [],
+    ),
+  );
+}
+
+function isRustPotentialClassParameterType(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
+  if (isRustClassLikeType(type, module) || type.kind === 'unknown') return true;
+  return (type.kind === 'union' || type.kind === 'intersection')
+    ? type.types.some((member) => isRustPotentialClassParameterType(member, module))
+    : false;
+}
+
 function getRustReferenceAnyClassMutationPositions(
   function_: RustReferenceFunctionRecord,
   module: RustReferenceModuleRecord,
@@ -2364,6 +2509,55 @@ function getRustReferenceClassDeclaration(
     ),
   );
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+function isRustReferenceSameClassType(
+  left: Readonly<IrType>,
+  leftModule: RustReferenceModuleRecord,
+  right: Readonly<IrType>,
+  rightModule: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  const leftLocation = getRustReferenceClassDeclaration(left, leftModule, modules, moduleResolution);
+  const rightLocation = getRustReferenceClassDeclaration(right, rightModule, modules, moduleResolution);
+  return (
+    leftLocation !== undefined &&
+    rightLocation !== undefined &&
+    moduleKey(leftLocation.module.module) === moduleKey(rightLocation.module.module) &&
+    leftLocation.declaration.binding.id === rightLocation.declaration.binding.id
+  );
+}
+
+function isRustReferenceExactClassArgument(
+  expression: Readonly<IrExpression>,
+  module: RustReferenceModuleRecord,
+  parameterType: Readonly<IrType>,
+  parameterModule: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  let argumentType: Readonly<IrType> | undefined;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    argumentType = module.bindingTypes.get(expression.reference.binding.id);
+  } else if (expression.kind === 'call') {
+    argumentType = expression.semantics.resultType;
+  } else if (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'binding'
+  ) {
+    argumentType = {
+      kind: 'named',
+      reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+      typeArguments: expression.typeArguments,
+    };
+  }
+  return (
+    argumentType !== undefined &&
+    isRustSharedClassTypeSupported(argumentType, module, modules, moduleResolution) &&
+    isRustReferenceSameClassType(argumentType, module, parameterType, parameterModule, modules, moduleResolution)
+  );
 }
 
 function getRustReferenceClassField(

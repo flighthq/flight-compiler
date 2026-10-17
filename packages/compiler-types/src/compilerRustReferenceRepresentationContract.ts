@@ -4,6 +4,7 @@ import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionCon
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export type CompilerRustReferenceRepresentation =
+  | 'borrowed-class'
   | 'mutable-borrowed-class'
   | 'mutable-borrowed-hash-map'
   | 'mutable-borrowed-hash-set'
