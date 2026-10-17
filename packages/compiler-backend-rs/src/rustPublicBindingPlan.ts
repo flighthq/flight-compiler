@@ -50,7 +50,7 @@ export function createCompilerRustPublicBindingPlan(
       createRustPublicModuleLocator(identity, cratesByPackage.get(identity.packageName)!, crates.length > 1),
     ]),
   );
-  assertRustPublicModuleLocatorsUnique(identities, locators);
+  assertRustPublicModuleLocatorsUnique(identities, locators, createRustPublicRefusedIdentityKeys(input));
   const targetNames = createRustPublicTargetNameMaps(input.modules);
   const bindings = createRustPublicBindings(input, locators, targetNames);
   assertRustPublicBindingsUnique(bindings);
@@ -90,12 +90,10 @@ function collectRustPublicModuleIdentities(
 ): readonly CompilerModuleIdentity[] {
   const identities = new Map<string, CompilerModuleIdentity>();
   const add = (identity: Readonly<CompilerModuleIdentity>): void => {
-    const normalized = {
-      name: identity.name.normalize('NFC'),
-      packageName: identity.packageName.normalize('NFC'),
-      source: normalizePathPortable(identity.source),
-    };
-    identities.set(getRustPublicModuleIdentityKey(normalized), normalized);
+    identities.set(
+      getRustPublicModuleIdentityKey(normalizeRustPublicModuleIdentity(identity)),
+      normalizeRustPublicModuleIdentity(identity),
+    );
   };
   input.modules.forEach(add);
   for (const facadeModule of input.facade.modules) {
@@ -148,9 +146,14 @@ function createRustPublicModuleLocator(
   return { crate, modulePath, source };
 }
 
+// A locator is only an available-binding fact for a module that can emit. Refused modules keep their
+// locator in the plan (the arrays stay complete and deterministic) but never supply a binding that
+// names a file, so two refused modules sharing a locator is a reported source collision, not an
+// invariant failure. A locator shared by two emitting modules remains a defect.
 function assertRustPublicModuleLocatorsUnique(
   identities: readonly Readonly<CompilerModuleIdentity>[],
   locators: ReadonlyMap<string, Readonly<CompilerRustPublicModuleLocator>>,
+  refusedKeys: ReadonlySet<string>,
 ): void {
   const byLocator = new Map<string, CompilerModuleIdentity[]>();
   for (const identity of identities) {
@@ -160,6 +163,8 @@ function assertRustPublicModuleLocatorsUnique(
   }
   for (const [locator, collisions] of byLocator) {
     if (collisions.length < 2) continue;
+    const available = collisions.filter((identity) => !refusedKeys.has(getRustPublicModuleIdentityKey(identity)));
+    if (available.length < 2) continue;
     const subjects = collisions.map(getRustPublicModuleIdentityKey);
     throw createRustPublicBindingPlanningFailure(
       'rust-public-module-collision',
@@ -167,6 +172,22 @@ function assertRustPublicModuleLocatorsUnique(
       `Rust module locator ${locator.replaceAll('\0', '::')} is shared by ${subjects.join(', ')}`,
     );
   }
+}
+
+function createRustPublicRefusedIdentityKeys(input: Readonly<CompilerRustPublicBindingPlanInput>): ReadonlySet<string> {
+  return new Set(
+    (input.refusals ?? []).map((refusal) =>
+      getRustPublicModuleIdentityKey(normalizeRustPublicModuleIdentity(refusal.module)),
+    ),
+  );
+}
+
+function normalizeRustPublicModuleIdentity(identity: Readonly<CompilerModuleIdentity>): CompilerModuleIdentity {
+  return {
+    name: identity.name.normalize('NFC'),
+    packageName: identity.packageName.normalize('NFC'),
+    source: normalizePathPortable(identity.source),
+  };
 }
 
 function createRustPublicTargetNameMaps(
@@ -289,9 +310,7 @@ function getRustPublicFacadeSpelling(
   targetNames: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): string {
   if (slot.source.kind !== 'local-binding') return getRustPublicExportName(slot.lane, slot.exportName);
-  const spelling = targetNames
-    .get(getRustPublicModuleIdentityKey(publicModule))
-    ?.get(slot.source.bindingId);
+  const spelling = targetNames.get(getRustPublicModuleIdentityKey(publicModule))?.get(slot.source.bindingId);
   if (spelling === undefined) {
     throw new TypeError(`Rust public local binding allocation is absent for ${slot.source.bindingId}`);
   }

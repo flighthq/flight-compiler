@@ -175,11 +175,7 @@ describe('createCompilerRustPublicBindingPlan', () => {
       'packages/api/src/contract.ts',
       "import { F0 } from '@scope/model';\nexport const f0: F0 = new F0();\nexport { F0 as PublicF0 };",
     );
-    const provider = lower(
-      '@scope/model',
-      'packages/model/src/index.ts',
-      'export class F0 { value: number = 0; }',
-    );
+    const provider = lower('@scope/model', 'packages/model/src/index.ts', 'export class F0 { value: number = 0; }');
     const imported = entry.imports[0]?.bindings[0]?.binding;
     const declaration = provider.declarations.find(
       (candidate) => 'binding' in candidate && candidate.binding.name === 'F0',
@@ -252,6 +248,39 @@ describe('createCompilerRustPublicBindingPlan', () => {
       }),
     ).toThrow('Rust public binding planning requires flight-compiler-module-facade/1');
   });
+});
+
+it('keeps refused identities in the plan when their locators collide', () => {
+  const myWidget = lower('@scope/math', 'packages/math/src/myWidget.ts', 'export const a = 1;');
+  const myWidgetLower = lower('@scope/math', 'packages/math/src/my_widget.ts', 'export const b = 2;');
+  const facade: CompilerModuleFacadePlan = {
+    modules: [],
+    schema: 'flight-compiler-module-facade/1',
+    semantics: {
+      bindingAccess: 'live',
+      explicitPrecedence: 'named-over-star',
+      starAmbiguity: 'refuse-distinct-resolutions',
+      starDefault: 'excluded',
+      typeValueLanes: 'independent',
+    },
+  };
+  const modules = [myWidget, myWidgetLower];
+  const refusals = modules.map((module) => ({
+    code: 'duplicate-emitted-path',
+    message: 'source path collision',
+    module: identity(module),
+  }));
+
+  const plan = createCompilerRustPublicBindingPlan({ facade, modules, refusals });
+  expect(plan.modules).toHaveLength(2);
+  expect(new Set(plan.modules.map((module) => module.locator.modulePath.join('/')))).toEqual(new Set(['my_widget']));
+
+  // One refused and one available identity sharing a locator is unambiguous: only the available
+  // module can emit a file. Two available identities remain a defect.
+  expect(createCompilerRustPublicBindingPlan({ facade, modules, refusals: [refusals[0]!] }).modules).toHaveLength(2);
+  expect(() => createCompilerRustPublicBindingPlan({ facade, modules })).toThrow(
+    expect.objectContaining({ code: 'rust-public-module-collision', kind: 'rust-public-binding-planning' }),
+  );
 });
 
 describe('isCompilerRustPublicBindingPlanningFailure', () => {

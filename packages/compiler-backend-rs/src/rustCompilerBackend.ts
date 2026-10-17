@@ -476,6 +476,10 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
             }>
           >
         | undefined;
+      // A module refused for a duplicate emitted path has no placeholder of its own: the finalization
+      // plan suppresses it so the tree stays collision-free. The orchestration asks for one anyway, and
+      // undefined is its documented answer for a module that owns no file.
+      let suppressedPlaceholderKeys: ReadonlySet<string> | undefined;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [emitIrModuleRustWithContext(module, modules, moduleResolution, options, referenceRepresentationPlan)];
@@ -483,10 +487,11 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         emitRefusalPlaceholder(
           module: Readonly<IrModule>,
           refusal: Readonly<CompilerRefusalPlaceholderRequest>,
-        ): EmittedFile {
+        ): EmittedFile | undefined {
           const key = getRustPlaceholderModuleKey(module);
           const planned = placeholderFiles?.get(key);
           if (planned === undefined) {
+            if (suppressedPlaceholderKeys?.has(key)) return undefined;
             throw new Error(
               `Rust refusal placeholder for ${formatRustPlaceholderModule(module)} was requested without a path in the finalized source-tree plan`,
             );
@@ -519,6 +524,11 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
         },
         finalizePackageGraph(finalization: Readonly<CompilerBackendPackageGraphFinalization>) {
           try {
+            suppressedPlaceholderKeys = new Set(
+              (finalization.refusals ?? [])
+                .filter((refusal) => refusal.code === 'duplicate-emitted-path')
+                .map((refusal) => getRustPlaceholderModuleKey(refusal.module)),
+            );
             return createCompilerRustSourceTreeFinalization({
               finalization,
               observePlan(plan) {

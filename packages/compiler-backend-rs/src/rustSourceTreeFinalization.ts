@@ -27,6 +27,7 @@ export function createCompilerRustSourceTreeFinalization(
   const placeholderModules = createCompilerRustPlaceholderModules(
     request.finalization.placeholderModules ?? [],
     retainedFilesByModule,
+    createCompilerRustSuppressedPlaceholderKeys(request.finalization.refusals ?? []),
   );
   const unavailableModules = createCompilerRustUnavailableModules(
     request.finalization.refusals ?? [],
@@ -236,6 +237,7 @@ function createCompilerRustRetainedSemanticModules(
 function createCompilerRustPlaceholderModules(
   modules: readonly Readonly<IrModule>[],
   retainedFilesByModule: ReadonlyMap<string, readonly Readonly<CompilerBackendModuleFile>[]>,
+  suppressedKeys: ReadonlySet<string>,
 ): readonly Readonly<IrModule>[] {
   const byKey = new Map<string, Readonly<IrModule>>();
   for (const module of modules) {
@@ -247,9 +249,23 @@ function createCompilerRustPlaceholderModules(
         `Rust source-tree finalization was asked to place a refusal placeholder for ${key}, but that module retained output`,
       );
     }
+    // A duplicate-path refusal means another module owns the same emitted path, so this module cannot
+    // own a placeholder file there. It stays reported as refused; the plan simply does not declare a
+    // file for it, which keeps the module tree collision-free without inventing a second path.
+    if (suppressedKeys.has(key)) continue;
     byKey.set(key, module);
   }
   return [...byKey.entries()].sort(([left], [right]) => compareTextCodeUnits(left, right)).map(([, module]) => module);
+}
+
+function createCompilerRustSuppressedPlaceholderKeys(
+  refusals: readonly Readonly<CompilerBackendPublicBindingRefusal>[],
+): ReadonlySet<string> {
+  return new Set(
+    refusals
+      .filter((refusal) => refusal.code === 'duplicate-emitted-path')
+      .map((refusal) => getCompilerRustSourceTreeModuleKey(refusal.module)),
+  );
 }
 
 function createCompilerRustUnavailableModules(

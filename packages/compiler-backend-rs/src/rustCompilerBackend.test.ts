@@ -702,6 +702,71 @@ export function keep(value: number): number { return value + 1; }`;
     expect(placeholder.contents).toContain('pub fn keep(value: f64) -> f64');
   });
 
+  it('suppresses placeholders for duplicate-path refusals and stays loud for unplanned identities', () => {
+    const alpha = lower('dup-a.ts', 'export const a = 1;').module;
+    const beta = lower('dup-b.ts', 'export const b = 2;').module;
+    const gamma = lower('gamma.ts', 'export const g = 3;').module;
+    const keep = lower('keep.ts', 'export function keep(value: number): number { return value + 1; }').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [alpha, beta, gamma, keep],
+      options: {},
+    });
+    const finalized = session.finalizePackageGraph!({
+      ...createRustSourceTreeFinalization(session, [keep], [keep]),
+      placeholderModules: [alpha, beta, gamma],
+      refusals: [
+        { code: 'duplicate-emitted-path', message: 'source path collision', module: getRustTestModuleIdentity(alpha) },
+        { code: 'duplicate-emitted-path', message: 'source path collision', module: getRustTestModuleIdentity(beta) },
+        { code: 'fixture-refusal', message: 'gamma refused', module: getRustTestModuleIdentity(gamma) },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+
+    expect(finalized.packageFiles.map(({ file }) => file.path)).toEqual(['lib.rs']);
+    expect(emitPlaceholder(alpha, { message: 'source path collision' })).toBeUndefined();
+    expect(emitPlaceholder(beta, { message: 'source path collision' })).toBeUndefined();
+    expect(emitPlaceholder(gamma, { message: 'gamma refused' })?.path).toBe('gamma.rs');
+    expect(() => emitPlaceholder(keep, { message: 'not planned' })).toThrow(
+      'without a path in the finalized source-tree plan',
+    );
+  });
+
+  it('still refuses placeholder modules that share a path without duplicate-path evidence', () => {
+    const myWidget = lower('myWidget.ts', 'export const a = 1;').module;
+    const myWidgetLower = lower('my_widget.ts', 'export const b = 2;').module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      modules: [myWidget, myWidgetLower],
+      options: {},
+    });
+    let failure: unknown;
+    try {
+      session.finalizePackageGraph!({
+        facade: createRustSourceTreeFacade([]),
+        moduleFiles: [],
+        placeholderModules: [myWidget, myWidgetLower],
+        refusals: [
+          {
+            code: 'fixture-refusal',
+            message: 'myWidget refused',
+            module: getRustTestModuleIdentity(myWidget),
+          },
+          {
+            code: 'fixture-refusal',
+            message: 'my_widget refused',
+            module: getRustTestModuleIdentity(myWidgetLower),
+          },
+        ],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 'rust-source-tree-module-collision',
+      kind: 'compiler-backend-finalization',
+    });
+  });
+
   it.skipIf(!rustcAvailable)('assembles a finalized nested source tree accepted by rustc', () => {
     const root = lower(
       'index.ts',

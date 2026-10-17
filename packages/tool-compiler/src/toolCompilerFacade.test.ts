@@ -784,19 +784,29 @@ describe('@flighthq/tool-compiler output path collision attribution', () => {
     expect(refusedRefusals(second)).toEqual(refusedRefusals(first));
   });
 
-  it('surfaces the Rust source-name collision at public binding planning', () => {
-    let failure: unknown;
-    try {
-      compile(createRustCompilerBackend(), collisionSources());
-    } catch (error) {
-      failure = error;
+  it('surfaces the Rust source-name collision in the report', () => {
+    const first = compile(createRustCompilerBackend(), collisionSources());
+    const second = compile(createRustCompilerBackend(), [...collisionSources()].reverse());
+
+    for (const result of [first, second]) {
+      expect(result.compilation.files).toEqual([]);
+      const refusals = refusedRefusals(result);
+      expect(refusals).toHaveLength(2);
+      for (const refusal of refusals) {
+        expect(refusal).toMatchObject({
+          classification: 'source-portability',
+          code: 'duplicate-emitted-path',
+          stage: 'emission',
+        });
+        expect(refusal!.message).toContain('myWidget.ts');
+        expect(refusal!.message).toContain('my_widget.ts');
+        expect(refusal!.message).toContain('my_widget.rs');
+        expect(refusal!.message).toContain('case- and Unicode-insensitively');
+      }
+      expect(result.report.publicBindings).toBeDefined();
     }
-    // The generic record-level classification is produced first, but Rust's public binding plan
-    // refuses the shared module locator before a report can be returned. That precedence is existing
-    // behavior this classification change must not alter.
-    expect(failure).toMatchObject({ code: 'rust-public-module-collision', kind: 'rust-public-binding-planning' });
-    expect(String((failure as Error).message)).toContain('packages/math/src/myWidget.ts');
-    expect(String((failure as Error).message)).toContain('packages/math/src/my_widget.ts');
+    expect(refusedRefusals(second)).toEqual(refusedRefusals(first));
+    expect(second.report.publicBindings).toEqual(first.report.publicBindings);
   });
 
   it('preserves the cpp best-effort collision outcome', () => {
@@ -814,13 +824,19 @@ describe('@flighthq/tool-compiler output path collision attribution', () => {
   });
 
   it('preserves the Rust best-effort collision outcome', () => {
-    let failure: unknown;
-    try {
-      compile(createRustCompilerBackend(), collisionSources(), true);
-    } catch (error) {
-      failure = error;
+    const first = compile(createRustCompilerBackend(), collisionSources(), true);
+    const second = compile(createRustCompilerBackend(), [...collisionSources()].reverse(), true);
+
+    for (const result of [first, second]) {
+      expect(result.compilation.files).toEqual([]);
+      expect(result.report.modules.map((module) => module.status)).toEqual(['refused', 'refused']);
+      // Suppressed placeholders own no file, so the manifest carries the refusal without a path.
+      expect(result.report.bestEffort?.modules.map((module) => [module.status, module.path])).toEqual([
+        ['refused-placeholder', undefined],
+        ['refused-placeholder', undefined],
+      ]);
     }
-    expect(failure).toMatchObject({ code: 'rust-source-tree-module-collision', kind: 'compiler-backend-finalization' });
+    expect(second.report.bestEffort).toEqual(first.report.bestEffort);
   });
 });
 
