@@ -24652,7 +24652,7 @@ describe('emitIrModuleRust exact dense array reduce', () => {
 
 describe('emitIrModuleRust exact array callback native checkpoint', () => {
   it.skipIf(!rustcAvailable)(
-    'runs findIndex/some/every/find/filter/map/forEach/flatMap and explicit-initial reduce across carriers, arities, empties, reuse, and shared borrows',
+    'runs findIndex/some/every/find/filter/map/forEach/flatMap, explicit-initial reduce, and String/boolean join across carriers, arities, empties, reuse, and shared borrows',
     () => {
       const result = lower(
         'array-callback-native.ts',
@@ -24767,6 +24767,32 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
            const total = alias.reduce((accumulated: number, value: number): number => accumulated + value, 0);
            values.push(3);
            return total * 10 + alias.length;
+         }
+         export function joinStrings(values: string[], separator: string): string {
+           return values.join(separator);
+         }
+         export function joinStringsDefault(values: string[]): string {
+           return values.join();
+         }
+         export function joinFlags(values: boolean[], separator: string): string {
+           return values.join(separator);
+         }
+         export function joinFlagsDefault(values: boolean[]): string {
+           return values.join();
+         }
+         export function joinSharedStrings(): string {
+           const values = ["a", "b"];
+           const alias = values;
+           const joined = alias.join("-");
+           values.push("c");
+           return alias.length > 2 ? joined + "!" : joined;
+         }
+         export function joinSharedFlags(): string {
+           const values = [true, false];
+           const alias = values;
+           const joined = alias.join();
+           values.push(true);
+           return alias.length > 2 ? joined + "!" : joined;
          }`,
       );
 
@@ -24776,6 +24802,8 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
       expect(output).toContain('array_flat_map_');
       expect(output).toContain('array_reduce_result');
       expect(output).toContain('array_reduce_initial');
+      expect(output).toContain('if *value { "true" } else { "false" }');
+      expect(output).toContain('array_join_separator');
       // Only the shared cases release a borrow, and their generated names carry the allocation
       // suffix left by the earlier non-shared calls, so pin the drop sites by their base and count.
       expect(output.match(/drop\(array_flat_map_values_\d+\);/gu)).toHaveLength(1);
@@ -24821,6 +24849,18 @@ describe('emitIrModuleRust exact array callback native checkpoint', () => {
           'assert_eq!(reduce_labels(vec![]), "".to_owned());',
           'assert_eq!(reduce_reuse(vec![1.0, 2.0]), 5.0);',
           'assert_eq!(reduce_shared(), 33.0);',
+          'assert_eq!(join_strings(vec!["a".to_owned(), "b".to_owned()], "-".to_owned()), "a-b".to_owned());',
+          'assert_eq!(join_strings(Vec::<String>::new(), "-".to_owned()), "".to_owned());',
+          'assert_eq!(join_strings(vec!["a".to_owned()], "-".to_owned()), "a".to_owned());',
+          'assert_eq!(join_strings_default(vec!["a".to_owned(), "b".to_owned()]), "a,b".to_owned());',
+          'assert_eq!(join_strings_default(Vec::<String>::new()), "".to_owned());',
+          'assert_eq!(join_flags(vec![true, false], "-".to_owned()), "true-false".to_owned());',
+          'assert_eq!(join_flags(Vec::<bool>::new(), "-".to_owned()), "".to_owned());',
+          'assert_eq!(join_flags(vec![true], "-".to_owned()), "true".to_owned());',
+          'assert_eq!(join_flags_default(vec![true, false]), "true,false".to_owned());',
+          'assert_eq!(join_flags_default(Vec::<bool>::new()), "".to_owned());',
+          'assert_eq!(join_shared_strings(), "a-b!".to_owned());',
+          'assert_eq!(join_shared_flags(), "true,false!".to_owned());',
         ].join(' '),
       );
     },
@@ -25276,5 +25316,138 @@ describe('emitIrModuleRust static Array.isArray', () => {
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
       'rust-array-is-array-result-carrier-unrepresented',
     );
+  });
+});
+
+describe('emitIrModuleRust array join', () => {
+  it('keeps exact String join emission, adds the default comma, and accepts readonly receivers', () => {
+    const result = lower(
+      'array-join-strings.ts',
+      `export function joined(values: string[]): string {
+         return values.join(", ");
+       }
+       export function defaulted(values: readonly string[]): string {
+         return values.join();
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return values.join(", ");');
+    expect(output).toContain('return values.join(",");');
+  });
+
+  it('maps exact boolean elements to true/false and joins them', () => {
+    const result = lower(
+      'array-join-flags.ts',
+      `export function joined(values: boolean[]): string {
+         return values.join("-");
+       }
+       export function defaulted(values: readonly boolean[]): string {
+         return values.join();
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('if *value { "true" } else { "false" }');
+    expect(output).toContain('.join(array_join_separator)');
+    expect(output).toContain('let array_join_separator = "-";');
+    expect(output).toContain('let array_join_separator_2 = ",";');
+  });
+
+  it('evaluates the receiver then the separator once and releases shared borrows', () => {
+    const result = lower(
+      'array-join-evaluation.ts',
+      `function makeReceiver(): string[] {
+         return ["a", "b"];
+       }
+       function makeSeparator(): string {
+         return "-";
+       }
+       export function evaluated(): string {
+         return makeReceiver().join(makeSeparator());
+       }
+       export function sharedStrings(): string {
+         const values = ["a", "b"];
+         const alias = values;
+         const joined = alias.join("-");
+         values.push("c");
+         return alias.length > 2 ? joined + "!" : joined;
+       }
+       export function sharedFlags(): string {
+         const values = [true, false];
+         const alias = values;
+         const joined = alias.join();
+         values.push(true);
+         return alias.length > 2 ? joined + "!" : joined;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('make_receiver()');
+    const separator = output.indexOf('make_separator()', receiver);
+    expect(receiver).toBeGreaterThan(-1);
+    expect(separator).toBeGreaterThan(receiver);
+    // One occurrence for the declaration and one for the single call site, in that order.
+    expect(output.split('make_receiver()').length - 1).toBe(2);
+    expect(output.split('make_separator()').length - 1).toBe(2);
+    expect(output).toContain('alias.borrow().join("-")');
+    expect(output).toContain('let array_join_receiver = alias.borrow();');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-join-element-carrier-unrepresented',
+      source: 'export function pick(values: number[]): string { return values.join(","); }',
+    },
+    {
+      rule: 'rust-array-join-element-carrier-unrepresented',
+      source: 'export function pick(values: (string | number)[]): string { return values.join(","); }',
+    },
+    {
+      rule: 'rust-array-join-sparse-receiver-unrepresented',
+      source: 'export function pick(values: (string | undefined)[]): string { return values.join(","); }',
+    },
+    {
+      rule: 'rust-array-join-invocation-unrepresented',
+      source:
+        'export function pick(values: string[], separators: [string]): string { return values.join(...separators); }',
+    },
+    {
+      rule: 'rust-array-join-invocation-unrepresented',
+      source: 'export function pick(values: string[]): string { return values.join?.(",") ?? ""; }',
+    },
+  ])('refuses $rule', ({ rule, source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('array-join-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a non-string separator and a mutated non-string result', () => {
+    expect(
+      getEmissionRule(() =>
+        emitIrModuleRust(
+          lower(
+            'array-join-separator.ts',
+            `export function pick(values: string[], separator: string | number): string {
+               return values.join(separator);
+             }`,
+          ).module,
+        ),
+      ),
+    ).toBe('rust-array-join-separator-carrier-unrepresented');
+
+    const result = lower(
+      'array-join-result.ts',
+      'export function pick(values: string[]): string { return values.join(","); }',
+    );
+    const resultDeclaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    if (resultDeclaration?.kind !== 'function') throw new Error('expected the lowered function');
+    const resultCall = resultDeclaration.body.find((statement) => statement.kind === 'return') as
+      | Readonly<{ expression?: Readonly<{ kind: string; semantics: { resultType: unknown } }> }>
+      | undefined;
+    if (resultCall?.expression?.kind !== 'call') throw new Error('expected the join call');
+    resultCall.expression.semantics.resultType = { kind: 'primitive', name: 'number' };
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-join-result-carrier-unrepresented');
   });
 });

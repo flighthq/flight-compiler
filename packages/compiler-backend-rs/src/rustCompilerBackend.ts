@@ -1730,20 +1730,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (isArraySliceCallRust(expression)) return emitArraySliceCallRust(expression, context);
       if (isArraySpliceCallRust(expression)) return emitArraySpliceCallRust(expression, context);
       if (getArrayGrowthMemberRust(expression)) return emitArrayGrowthCallRust(expression, context);
-      // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
-      // one. The separator is the only argument, so the borrow is decided here rather than by a
-      // general rule about where an owned string may stand.
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'array' &&
-        expression.callee.member.name === 'join'
-      ) {
-        const separator = expression.arguments[0];
-        if (expression.arguments.length !== 1 || !separator) {
-          emissionError(context, 'joining a collection requires exactly one separator argument');
-        }
-        return `${emitSharedReferenceReceiverRust(expression.callee.object, false, context)}.join(${emitBorrowedTextRust(separator, context)})`;
-      }
+      if (isArrayJoinCallRust(expression)) return emitArrayJoinCallRust(expression, context);
       // Typed arrays use runtime views rather than Vec: slice copies storage, while subarray creates
       // a distinct view sharing storage. Their bounds stay numeric until the runtime applies source
       // relative-index rules (including negative and infinite bounds).
@@ -4076,6 +4063,17 @@ function getArrayTransformMemberRust(
   return member === 'map' ? 'map' : member === 'flatMap' ? 'flatMap' : 'forEach';
 }
 
+function isArrayJoinCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'join'
+  );
+}
+
 function isArrayFillCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -4428,6 +4426,37 @@ function emitArrayReduceCallRust(
   const folded = `${valuesName}.iter().enumerate().fold(${initialName}, |${accumulatorName}, (${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')}))`;
   const release = sharedBinding ? ` drop(${valuesName});` : '';
   return `{ let ${receiverName} = ${emittedReceiver}; ${callbackInitializer} let ${initialName} = ${emitExpression(initial, context)}; let ${valuesName} = ${receiverValues}; let ${resultName} = ${folded};${release} ${resultName} }`;
+}
+
+// JavaScript's join renders exact dense strings with their own spelling and booleans as
+// "true"/"false"; number elements need the JavaScript number-to-string contract, so planning refuses
+// them. String receivers keep the exact prior emission (explicit separator included) and gain the
+// default comma; boolean receivers stage the receiver, then the separator, then map and join.
+function emitArrayJoinCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const separator = expression.arguments[0];
+  if (expression.arguments.length > 1 || separator?.kind === 'spread') {
+    return emissionError(context, 'array.join emission requires at most one fixed separator');
+  }
+  const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+  const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+  const domain =
+    receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+  const emittedSeparator = separator ? emitBorrowedTextRust(separator, context) : '","';
+  if (domain === 'boolean') {
+    const receiverName = getGeneratedTargetNameRust('array_join_receiver', context);
+    const separatorName = getGeneratedTargetNameRust('array_join_separator', context);
+    const resultName = getGeneratedTargetNameRust('array_join_result', context);
+    const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+    const receiverInitializer = sharedBinding
+      ? `${getBindingTargetNameRust(sharedBinding, context)}.borrow()`
+      : `&${emitExpression(expression.callee.object, context)}`;
+    return `{ let ${receiverName} = ${receiverInitializer}; let ${separatorName} = ${emittedSeparator}; let ${resultName} = ${receiverName}.iter().map(|value| if *value { "true" } else { "false" }).collect::<Vec<_>>().join(${separatorName}); ${resultName} }`;
+  }
+  return `${emitSharedReferenceReceiverRust(expression.callee.object, false, context)}.join(${emittedSeparator})`;
 }
 
 function emitArrayCopyWithinCallRust(
@@ -10919,6 +10948,7 @@ type RustArrayOperationMember =
   | 'findIndex'
   | 'flatMap'
   | 'forEach'
+  | 'join'
   | 'map'
   | 'reduce'
   | 'reverse'
@@ -11002,6 +11032,11 @@ interface RustArrayOperationRefusal {
     | 'rust-array-flat-map-invocation-unrepresented'
     | 'rust-array-flat-map-result-carrier-unrepresented'
     | 'rust-array-flat-map-sparse-receiver-unrepresented'
+    | 'rust-array-join-element-carrier-unrepresented'
+    | 'rust-array-join-invocation-unrepresented'
+    | 'rust-array-join-result-carrier-unrepresented'
+    | 'rust-array-join-separator-carrier-unrepresented'
+    | 'rust-array-join-sparse-receiver-unrepresented'
     | 'rust-array-for-each-sparse-receiver-unrepresented'
     | 'rust-array-map-alias-borrow-conflict'
     | 'rust-array-map-callback-carrier-unrepresented'
@@ -11572,6 +11607,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       member: RustArrayTransformMember;
     }>
   > = [];
+  const joinCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
   const reduceCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
@@ -11632,6 +11671,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
           searchPredicateCalls.push({ expression, member: getArraySearchPredicateMemberRust(expression) });
         } else if (isArrayTransformCallRust(expression)) {
           transformCalls.push({ expression, member: getArrayTransformMemberRust(expression) });
+        } else if (isArrayJoinCallRust(expression)) {
+          joinCalls.push(expression);
         } else if (isArrayReduceCallRust(expression)) {
           reduceCalls.push(expression);
         } else if (isArraySortCallRust(expression)) {
@@ -12349,6 +12390,81 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         message: 'array.reduce callback captures the receiver while its shared borrow is active',
         rule: 'rust-array-reduce-alias-borrow-conflict',
       });
+    }
+  }
+
+  for (const expression of joinCalls) {
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      (signature !== undefined && signature.providedArgumentCount === 'dynamic') ||
+      expression.arguments.length > 1 ||
+      expression.arguments.some((argument) => argument.kind === 'spread')
+    ) {
+      refusals.push({
+        member: 'join',
+        message: 'array.join requires a non-optional invocation with zero or one fixed non-spread separator',
+        rule: 'rust-array-join-invocation-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    if (receiver?.kind === 'array' && hasIrTypeUndefinedMemberRust(receiver.element)) {
+      refusals.push({
+        member: 'join',
+        message:
+          'array.join on elements that admit undefined would need a hole-to-empty-string arm; exact dense string or boolean receivers are required',
+        rule: 'rust-array-join-sparse-receiver-unrepresented',
+      });
+      continue;
+    }
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || (receiverDomain !== 'string' && receiverDomain !== 'boolean')) {
+      refusals.push({
+        member: 'join',
+        message:
+          receiverDomain === 'number'
+            ? 'array.join on exact number elements requires an exact JavaScript number-to-string format; use string elements or an explicit target formatter'
+            : 'array.join elements require exact dense string or boolean carriers; other element carriers are not represented',
+        rule: 'rust-array-join-element-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const separator = expression.arguments[0];
+    if (separator) {
+      const separatorType = inferIrExpressionTypeRust(separator, context);
+      const separatorResolved = separatorType
+        ? resolveIrTypeAliasValueRust(separatorType, context, new Set())
+        : undefined;
+      if (
+        !separatorResolved ||
+        getRustDensePrimitiveArrayCarrierDomainRust(separatorResolved, context) !== 'string' ||
+        emitType(separatorResolved, context) !== 'String'
+      ) {
+        refusals.push({
+          member: 'join',
+          message: 'array.join separator requires an exact string carrier',
+          rule: 'rust-array-join-separator-carrier-unrepresented',
+        });
+        continue;
+      }
+    }
+
+    const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+    if (result.kind !== 'primitive' || result.name !== 'string' || emitType(result, context) !== 'String') {
+      refusals.push({
+        member: 'join',
+        message: 'array.join result requires an exact Rust String carrier',
+        rule: 'rust-array-join-result-carrier-unrepresented',
+      });
+      continue;
     }
   }
 
