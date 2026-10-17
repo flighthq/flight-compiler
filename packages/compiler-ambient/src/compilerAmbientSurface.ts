@@ -123,6 +123,7 @@ interface Array<T> {
   length: number;
   [index: number]: T;
   concat(...values: readonly T[][]): T[];
+  copyWithin(target: number, start?: number, end?: number): T[];
   every(predicate: (value: T, index: number) => boolean): boolean;
   fill(value: T, start?: number, end?: number): T[];
   filter(predicate: (value: T, index: number) => boolean): T[];

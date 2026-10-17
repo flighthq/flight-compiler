@@ -17,7 +17,7 @@ describe('createCompilerRustAmbientMemberBindingPlan', () => {
     expect(identities).toEqual([...identities].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)));
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(82);
+    expect(second.bindings).toHaveLength(83);
   });
 });
 
@@ -129,6 +129,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'fill', receiver: 'array' })).toEqual({
       kind: 'method',
       targetName: 'fill',
+    });
+  });
+
+  it('records array copyWithin as a method with dedicated backend semantics', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'copyWithin', receiver: 'array' })).toEqual({
+      kind: 'method',
+      targetName: 'copy_within',
     });
   });
 

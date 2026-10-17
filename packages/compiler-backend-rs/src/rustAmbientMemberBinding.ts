@@ -38,6 +38,7 @@ export function getCompilerRustAmbientMemberBinding(
 const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemberBinding>> = {
   'arrayBuffer.byteLength': { kind: 'countingMethod', targetName: 'byte_length' },
   'array.concat': { kind: 'method', targetName: 'extend' },
+  'array.copyWithin': { kind: 'method', targetName: 'copy_within' },
   'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
   'array.fill': { kind: 'method', targetName: 'fill' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },

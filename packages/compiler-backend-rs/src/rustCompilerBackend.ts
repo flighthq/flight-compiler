@@ -248,6 +248,7 @@ interface EmitContext {
   arrayElementBindingIds: ReadonlySet<string>;
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   arrayElementPlaces: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
+  arrayCopyWithinObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayFillObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   arrayReverseObservedCalls: Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   asyncTryStatements: ReadonlySet<object>;
@@ -384,7 +385,8 @@ function emitIrModuleRustWithContext(
   sourceTree?: Readonly<RustSourceTreeEmissionContext> | undefined,
 ): EmittedFile {
   // Method arity must be refused before the shared extra-argument pass, whose target ABI cannot
-  // preserve fill bounds or search fromIndex semantics after erasing extra arguments.
+  // preserve copyWithin/fill bounds or search fromIndex semantics after erasing extra arguments.
+  assertArrayCopyWithinInvocationSemanticsRust(sourceModule);
   assertArrayFillInvocationSemanticsRust(sourceModule);
   assertArraySearchInvocationSemanticsRust(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -558,6 +560,7 @@ function emitIrModuleRustWithContext(
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     arrayElementOptionReads: arrayBoundsPlan.optionElementReads,
     arrayElementPlaces: arrayBoundsPlan.elementPlaces,
+    arrayCopyWithinObservedCalls: new Set(),
     arrayFillObservedCalls: new Set(),
     arrayReverseObservedCalls: new Set(),
     asyncTryStatements,
@@ -1522,6 +1525,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
         if (sharedClassMethod) return sharedClassMethod;
       }
+      if (isArrayCopyWithinCallRust(expression)) return emitArrayCopyWithinCallRust(expression, context);
       if (isArrayFillCallRust(expression)) return emitArrayFillCallRust(expression, context);
       if (getArraySearchMemberRust(expression)) return emitArraySearchCallRust(expression, context);
       if (isArrayConcatCallRust(expression)) return emitArrayConcatCallRust(expression, context);
@@ -3355,6 +3359,17 @@ function isArrayFillCallRust(
   );
 }
 
+function isArrayCopyWithinCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'copyWithin'
+  );
+}
+
 function isArrayConcatCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
@@ -3446,6 +3461,69 @@ function emitArraySearchCallRust(
   // A reference to each operand extends temporary lifetimes through the search without moving a
   // reusable source. The shared receiver borrow starts only after the candidate has been evaluated.
   return `{ let ${receiverName} = ${emittedReceiver}; let ${candidateName} = &${emitExpression(argument, context)}; ${result} }`;
+}
+
+function emitArrayCopyWithinCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const [target, start, end] = expression.arguments;
+  if (!target || expression.arguments.length < 1 || expression.arguments.length > 3) {
+    return emissionError(context, 'array.copyWithin emission requires a target and at most start and end bounds');
+  }
+  const observed = context.arrayCopyWithinObservedCalls.has(expression);
+  const receiverName = getGeneratedTargetNameRust('array_copy_within_receiver', context);
+  const targetName = getGeneratedTargetNameRust('array_copy_within_target', context);
+  const startName = getGeneratedTargetNameRust('array_copy_within_start', context);
+  const endName = getGeneratedTargetNameRust('array_copy_within_end', context);
+  const valuesName = getGeneratedTargetNameRust('array_copy_within_values', context);
+  const lengthName = getGeneratedTargetNameRust('array_copy_within_length', context);
+  const normalizedTargetName = getGeneratedTargetNameRust('array_copy_within_normalized_target', context);
+  const targetIndexName = getGeneratedTargetNameRust('array_copy_within_target_index', context);
+  const normalizedStartName = getGeneratedTargetNameRust('array_copy_within_normalized_start', context);
+  const startIndexName = getGeneratedTargetNameRust('array_copy_within_start_index', context);
+  const normalizedEndName = getGeneratedTargetNameRust('array_copy_within_normalized_end', context);
+  const endIndexName = getGeneratedTargetNameRust('array_copy_within_end_index', context);
+  const countName = getGeneratedTargetNameRust('array_copy_within_count', context);
+  const copiedName = getGeneratedTargetNameRust('array_copy_within_copied', context);
+  const offsetName = getGeneratedTargetNameRust('array_copy_within_offset', context);
+  const valueName = getGeneratedTargetNameRust('array_copy_within_value', context);
+  const sharedBinding = getRustSharedArrayBindingRust(expression.callee.object, context);
+  const receiver = emitExpression(expression.callee.object, context);
+  if (sharedBinding) context.needsRcImport.add('Rc');
+  const receiverInitializer = sharedBinding
+    ? `Rc::clone(&${getBindingTargetNameRust(sharedBinding, context)})`
+    : observed
+      ? receiver
+      : emitLentOperandRust(expression.callee.object, context);
+  const valuesInitializer = sharedBinding
+    ? `${receiverName}.borrow_mut()`
+    : observed
+      ? `&mut ${receiverName}`
+      : receiverName;
+  const relativeIndex = (normalized: string) =>
+    `if ${normalized} < 0.0 { ${lengthName} - ((-${normalized}).min(${lengthName} as f64) as usize) } else { ${normalized}.min(${lengthName} as f64) as usize }`;
+  const initializers = [
+    `let ${observed && !sharedBinding ? 'mut ' : ''}${receiverName} = ${receiverInitializer};`,
+    `let ${targetName}: f64 = ${emitExpression(target, context)};`,
+    `let ${startName}: f64 = ${start ? emitExpression(start, context) : '0.0'};`,
+    `let ${endName}: f64 = ${end ? emitExpression(end, context) : 'f64::INFINITY'};`,
+    `let ${sharedBinding ? 'mut ' : ''}${valuesName} = ${valuesInitializer};`,
+    `let ${lengthName} = ${valuesName}.len();`,
+    `let ${normalizedTargetName} = if ${targetName}.is_nan() { 0.0 } else { ${targetName}.trunc() };`,
+    `let ${targetIndexName}: usize = ${relativeIndex(normalizedTargetName)};`,
+    `let ${normalizedStartName} = if ${startName}.is_nan() { 0.0 } else { ${startName}.trunc() };`,
+    `let ${startIndexName}: usize = ${relativeIndex(normalizedStartName)};`,
+    `let ${normalizedEndName} = if ${endName}.is_nan() { 0.0 } else { ${endName}.trunc() };`,
+    `let ${endIndexName}: usize = ${relativeIndex(normalizedEndName)};`,
+    `let ${countName} = ${endIndexName}.saturating_sub(${startIndexName}).min(${lengthName} - ${targetIndexName});`,
+    `let ${copiedName} = ${valuesName}[${startIndexName}..${startIndexName} + ${countName}].to_vec();`,
+  ];
+  const mutation = `for (${offsetName}, ${valueName}) in ${copiedName}.into_iter().enumerate() { ${valuesName}[${targetIndexName} + ${offsetName}] = ${valueName}; }`;
+  const result = observed ? receiverName : '()';
+  const releaseSharedBorrow = sharedBinding && observed ? [`drop(${valuesName});`] : [];
+  return `{ ${[...initializers, mutation, ...releaseSharedBorrow, result].join(' ')} }`;
 }
 
 function emitArrayFillCallRust(
@@ -5383,7 +5461,7 @@ function getRustSharedArrayBindingRust(
 function isIrSharedArrayIdentityMethodCallRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   return (
     expression.kind === 'call' &&
-    (isArrayReverseCallRust(expression) || isArrayFillCallRust(expression)) &&
+    (isArrayReverseCallRust(expression) || isArrayCopyWithinCallRust(expression) || isArrayFillCallRust(expression)) &&
     getRustSharedArrayBindingRust(expression.callee.object, context) !== undefined
   );
 }
@@ -8441,6 +8519,7 @@ type RustArrayOperationMember =
   | RustArrayGrowthMember
   | RustArraySearchMember
   | 'concat'
+  | 'copyWithin'
   | 'fill'
   | 'reverse'
   | 'slice'
@@ -8470,6 +8549,12 @@ interface RustArrayOperationRefusal {
     | 'rust-array-index-of-element-carrier-unrepresented'
     | 'rust-array-index-of-invocation-unrepresented'
     | 'rust-array-index-of-result-carrier-unrepresented'
+    | 'rust-array-copy-within-alias-borrow-conflict'
+    | 'rust-array-copy-within-bounds-domain-unrepresented'
+    | 'rust-array-copy-within-element-carrier-unrepresented'
+    | 'rust-array-copy-within-identity-carrier-unrepresented'
+    | 'rust-array-copy-within-invocation-unrepresented'
+    | 'rust-array-copy-within-result-carrier-unrepresented'
     | 'rust-array-fill-alias-borrow-conflict'
     | 'rust-array-fill-bounds-domain-unrepresented'
     | 'rust-array-fill-element-carrier-unrepresented'
@@ -8553,6 +8638,41 @@ function assertArrayFillInvocationSemanticsRust(module: Readonly<IrModule>): voi
   );
 }
 
+function assertArrayCopyWithinInvocationSemanticsRust(module: Readonly<IrModule>): void {
+  let unsupported = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call' || !isArrayCopyWithinCallRust(expression)) return;
+      const signature = expression.semantics.signature;
+      if (
+        expression.optional ||
+        expression.semantics.optionalChain !== undefined ||
+        expression.callee.optional ||
+        expression.callee.optionalChain !== undefined ||
+        !signature ||
+        signature.providedArgumentCount === 'dynamic' ||
+        signature.providedArgumentCount !== expression.arguments.length ||
+        expression.arguments.length < 1 ||
+        expression.arguments.length > 3 ||
+        expression.arguments.some((argument) => argument.kind === 'spread') ||
+        !isRustStableArrayOperationReceiverRust(expression.callee.object)
+      ) {
+        unsupported = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (!unsupported) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'array.copyWithin requires a non-optional stable receiver, one target, and at most start and end bounds',
+    'rust-array-copy-within-invocation-unrepresented',
+    { classification: 'target-runtime' },
+  );
+}
+
 function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
@@ -8564,6 +8684,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     }>
   > = [];
   const reverseCalls: Array<
+    Readonly<Extract<IrExpression, { kind: 'call' }>> &
+      Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
+  > = [];
+  const copyWithinCalls: Array<
     Readonly<Extract<IrExpression, { kind: 'call' }>> &
       Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>
   > = [];
@@ -8611,6 +8735,8 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
         const searchMember = getArraySearchMemberRust(expression);
         if (growthMember) {
           growthCalls.push({ callee: expression.callee, expression });
+        } else if (isArrayCopyWithinCallRust(expression)) {
+          copyWithinCalls.push(expression);
         } else if (isArrayFillCallRust(expression)) {
           fillCalls.push(expression);
         } else if (searchMember) {
@@ -8655,6 +8781,104 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
   }
 
   const refusals: RustArrayOperationRefusal[] = [];
+  for (const expression of copyWithinCalls) {
+    const signature = expression.semantics.signature;
+    if (
+      expression.optional ||
+      expression.semantics.optionalChain !== undefined ||
+      expression.callee.optional ||
+      expression.callee.optionalChain !== undefined ||
+      !signature ||
+      signature.providedArgumentCount === 'dynamic' ||
+      signature.providedArgumentCount !== expression.arguments.length ||
+      expression.arguments.length < 1 ||
+      expression.arguments.length > 3 ||
+      expression.arguments.some((argument) => argument.kind === 'spread') ||
+      !isRustStableArrayOperationReceiverRust(expression.callee.object)
+    ) {
+      refusals.push({
+        member: 'copyWithin',
+        message:
+          'array.copyWithin requires a non-optional stable receiver, one target, and at most start and end bounds',
+        rule: 'rust-array-copy-within-invocation-unrepresented',
+      });
+      continue;
+    }
+    if (expression.arguments.some((bound) => !isRustExactNumberExpressionRust(bound, context))) {
+      refusals.push({
+        member: 'copyWithin',
+        message: 'array.copyWithin target, start, and provided end require exact numeric values',
+        rule: 'rust-array-copy-within-bounds-domain-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
+    const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
+    const receiverDomain =
+      receiver?.kind === 'array' ? getRustDensePrimitiveArrayCarrierDomainRust(receiver.element, context) : undefined;
+    if (receiver?.kind !== 'array' || receiver.readonly || !receiverDomain) {
+      refusals.push({
+        member: 'copyWithin',
+        message:
+          'array.copyWithin elements require an exact mutable boolean, number, or string value carrier; union and identity-bearing carriers are not represented',
+        rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      });
+      continue;
+    }
+    if (
+      !receiverType ||
+      !isRustArrayIdentityResultCarrierRust(receiverType, expression.semantics.resultType, context)
+    ) {
+      refusals.push({
+        member: 'copyWithin',
+        message: 'array.copyWithin result does not have the exact mutable Rust Vec element carrier of the receiver',
+        rule: 'rust-array-copy-within-result-carrier-unrepresented',
+      });
+      continue;
+    }
+
+    const receiverObject = expression.callee.object;
+    const receiverBindingId =
+      receiverObject.kind === 'identifier' && receiverObject.reference.kind === 'binding'
+        ? receiverObject.reference.binding.id
+        : undefined;
+    if (
+      receiverBindingId &&
+      expression.arguments.some((argument) => irExpressionUsesBindingRust(argument, receiverBindingId))
+    ) {
+      refusals.push({
+        member: 'copyWithin',
+        message: 'array.copyWithin arguments read the receiver while its mutable borrow is active',
+        rule: 'rust-array-copy-within-alias-borrow-conflict',
+      });
+      continue;
+    }
+
+    const use = uses.get(expression);
+    if (use?.kind === 'discarded') continue;
+    if (receiverObject.kind !== 'identifier' || receiverObject.reference.kind !== 'binding') continue;
+    const receiverId = receiverObject.reference.binding.id;
+    const receiverShared = context.sharedArrayBindingIds.has(receiverId);
+    const receiverBorrowed = context.referentMutatedParameterIds.has(receiverId);
+    const representedVariableAlias =
+      !receiverBorrowed &&
+      use?.kind === 'variable' &&
+      use.bindingId !== undefined &&
+      context.sharedArrayBindingIds.has(use.bindingId) === receiverShared;
+    const representedOwnedReturn = use?.kind === 'return' && !receiverShared && !receiverBorrowed;
+    if (!representedVariableAlias && !representedOwnedReturn) {
+      refusals.push({
+        member: 'copyWithin',
+        message:
+          'observed array.copyWithin identity requires a represented local move or shared local alias carrier; borrowed, returned-shared, or nested identity is not represented',
+        rule: 'rust-array-copy-within-identity-carrier-unrepresented',
+      });
+      continue;
+    }
+    context.arrayCopyWithinObservedCalls.add(expression);
+  }
+
   for (const expression of fillCalls) {
     const signature = expression.semantics.signature;
     const [value, ...bounds] = expression.arguments;
@@ -8715,7 +8939,10 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       });
       continue;
     }
-    if (!receiverType || !isRustArrayFillResultCarrierRust(receiverType, expression.semantics.resultType, context)) {
+    if (
+      !receiverType ||
+      !isRustArrayIdentityResultCarrierRust(receiverType, expression.semantics.resultType, context)
+    ) {
       refusals.push({
         member: 'fill',
         message: 'array.fill result does not have the exact mutable Rust Vec element carrier of the receiver',
@@ -9306,7 +9533,7 @@ function getRustDensePrimitiveArrayCarrierDomainRust(
   return typeof resolved.value === 'string' ? 'string' : undefined;
 }
 
-function isRustArrayFillResultCarrierRust(
+function isRustArrayIdentityResultCarrierRust(
   receiverType: Readonly<IrType>,
   resultType: Readonly<IrType>,
   context: EmitContext,
@@ -11192,6 +11419,7 @@ const rustMathSpreadFoldTargets: Readonly<Record<string, { folder: string; ident
 };
 
 const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'copyWithin',
   'fill',
   'pop',
   'push',

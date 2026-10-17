@@ -453,6 +453,7 @@ function isRustOwnershipPathPrefix(prefix: CompilerIrTraversalPath, path: Compil
 const RUST_OWNERSHIP_LOOP_STATEMENT_KINDS: ReadonlySet<string> = new Set(['do', 'for', 'forIn', 'forOf', 'while']);
 
 const RUST_REFERENT_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'array.copyWithin',
   'array.fill',
   'array.push',
   'array.pop',

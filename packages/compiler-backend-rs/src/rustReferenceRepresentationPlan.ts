@@ -713,6 +713,9 @@ function createRustSharedArrayAnalysis(
         variable.initializer.callee.optional === false &&
         variable.initializer.callee.member?.receiver === 'array' &&
         ((variable.initializer.callee.member.name === 'reverse' && variable.initializer.arguments.length === 0) ||
+          (variable.initializer.callee.member.name === 'copyWithin' &&
+            variable.initializer.arguments.length >= 1 &&
+            variable.initializer.arguments.length <= 3) ||
           (variable.initializer.callee.member.name === 'fill' &&
             variable.initializer.arguments.length >= 1 &&
             variable.initializer.arguments.length <= 3)) &&
@@ -4185,6 +4188,7 @@ function freezeRustReferenceRepresentationPlanValue(value: unknown, seen: WeakSe
 }
 
 const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'copyWithin',
   'fill',
   'pop',
   'push',

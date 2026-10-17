@@ -59,6 +59,12 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('class RelativeTimeFormat');
   });
 
+  it('declares mutable array copyWithin with optional source bounds', () => {
+    const source = createCompilerAmbientSurfaceSource();
+
+    expect(source).toContain('copyWithin(target: number, start?: number, end?: number): T[];');
+  });
+
   it('declares the typed array index signatures the type-directed operator layer requires', () => {
     const source = createCompilerAmbientSurfaceSource();
 

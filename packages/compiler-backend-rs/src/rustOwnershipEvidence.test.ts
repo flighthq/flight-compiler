@@ -205,6 +205,13 @@ describe('collectIrModuleMovedBindingIdsRust', () => {
 });
 
 describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
+  it('detects array copyWithin as referent mutation', () => {
+    const module = lower(`
+      export function copy(values: number[]): void { values.copyWithin(0, 1); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['values']);
+  });
+
   it('detects array fill as referent mutation', () => {
     const module = lower(`
       export function overwrite(values: number[]): void { values.fill(0); }

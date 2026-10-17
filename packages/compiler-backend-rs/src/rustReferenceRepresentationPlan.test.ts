@@ -201,6 +201,35 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([]);
   });
 
+  it('promotes an observed copyWithin result only when the original array identity remains live', () => {
+    const shared = lower(
+      'copy-within-result-shared.ts',
+      `export function sharedCopy(): number {
+         const values = [1, 2, 3];
+         const returned = values.copyWithin(0, 1);
+         returned.push(4);
+         return values.length;
+       }`,
+    );
+    const moved = lower(
+      'copy-within-result-moved.ts',
+      `export function movedCopy(): number {
+         const values = [1, 2, 3];
+         const returned = values.copyWithin(0, 1);
+         return returned.length;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [shared] }), shared)
+        .sharedArrayBindings.map(({ binding }) => binding.name)
+        .sort(),
+    ).toEqual(['returned', 'values']);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [moved] }), moved).sharedArrayBindings,
+    ).toEqual([]);
+  });
+
   it('refuses overlapping shared-array borrows before emitting RefCell runtime failure', () => {
     const module = lower(
       'alias-conflict.ts',

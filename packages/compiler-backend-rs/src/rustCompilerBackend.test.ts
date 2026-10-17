@@ -15736,6 +15736,306 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(getEmissionRule(() => emitIrModuleRust(lowered.module))).toBe(rule);
   });
 
+  it('preserves exact copyWithin bounds and overlap across primitive carriers', () => {
+    const result = lower(
+      'array-copy-within-exact.ts',
+      `export function targetOnly(): number[] {
+         const values = [1, 2, 3, 4, 5];
+         values.copyWithin(3);
+         return values;
+       }
+       export function targetStart(): number[] {
+         const values = [1, 2, 3, 4, 5];
+         values.copyWithin(0, 3);
+         return values;
+       }
+       export function range(target: number, start: number, end: number): number[] {
+         const values = [1, 2, 3, 4, 5];
+         values.copyWithin(target, start, end);
+         return values;
+       }
+       export function booleans(): boolean[] {
+         const values = [false, true, false, true];
+         return values.copyWithin(1, 2, 4);
+       }
+       export function strings(): string[] {
+         const values = ["a", "b", "c", "d"];
+         return values.copyWithin(1, 0, 3);
+       }
+       export function empty(): number[] {
+         const values: number[] = [];
+         return values.copyWithin(0, 0);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('array_copy_within_target.is_nan()');
+    expect(output).toContain('array_copy_within_start.trunc()');
+    expect(output).toContain('array_copy_within_end.is_nan()');
+    expect(output).toContain('.saturating_sub(array_copy_within_start_index)');
+    expect(output).toContain('].to_vec()');
+    expect(output).toContain('.into_iter().enumerate()');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'assert_eq!(target_only(), vec![1.0, 2.0, 3.0, 1.0, 2.0]);',
+          'assert_eq!(target_start(), vec![4.0, 5.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(1.0, 0.0, 4.0), vec![1.0, 1.0, 2.0, 3.0, 4.0]);',
+          'assert_eq!(range(0.0, 1.0, 5.0), vec![2.0, 3.0, 4.0, 5.0, 5.0]);',
+          'assert_eq!(range(-2.0, 0.0, 2.0), vec![1.0, 2.0, 3.0, 1.0, 2.0]);',
+          'assert_eq!(range(1.8, 2.8, 4.9), vec![1.0, 3.0, 4.0, 4.0, 5.0]);',
+          'assert_eq!(range(0.0, -3.8, -1.2), vec![3.0, 4.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(f64::NAN, 2.0, 4.0), vec![3.0, 4.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(1.0, f64::NAN, 2.0), vec![1.0, 1.0, 2.0, 4.0, 5.0]);',
+          'assert_eq!(range(1.0, 1.0, f64::NAN), vec![1.0, 2.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(f64::NEG_INFINITY, 3.0, f64::INFINITY), vec![4.0, 5.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(f64::INFINITY, 0.0, 5.0), vec![1.0, 2.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(2.0, f64::NEG_INFINITY, 2.0), vec![1.0, 2.0, 1.0, 2.0, 5.0]);',
+          'assert_eq!(range(0.0, f64::INFINITY, f64::INFINITY), vec![1.0, 2.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(0.0, 2.0, f64::NEG_INFINITY), vec![1.0, 2.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(range(2.0, 2.0, 2.0), vec![1.0, 2.0, 3.0, 4.0, 5.0]);',
+          'assert_eq!(booleans(), vec![false, false, true, true]);',
+          'assert_eq!(strings(), vec!["a".to_owned(), "a".to_owned(), "b".to_owned(), "c".to_owned()]);',
+          'assert_eq!(empty(), Vec::<f64>::new());',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('evaluates copyWithin receiver and arguments once from left to right before mutation', () => {
+    const result = lower(
+      'array-copy-within-evaluation.ts',
+      `function record(log: number[], marker: number, value: number): number {
+         log.push(marker);
+         return value;
+       }
+       export function tracked(log: number[]): number[] {
+         const values = [1, 2, 3, 4];
+         values.copyWithin(record(log, 1, 1), record(log, 2, 0), record(log, 3, 3));
+         values.push(record(log, 4, 5));
+         return values;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const receiver = output.indexOf('let array_copy_within_receiver = &mut values;');
+    const target = output.indexOf('let array_copy_within_target: f64 = record(');
+    const start = output.indexOf('let array_copy_within_start: f64 = record(');
+    const end = output.indexOf('let array_copy_within_end: f64 = record(');
+    const mutation = output.indexOf('for (array_copy_within_offset, array_copy_within_value) in');
+    expect(receiver).toBeGreaterThan(-1);
+    expect(target).toBeGreaterThan(receiver);
+    expect(start).toBeGreaterThan(target);
+    expect(end).toBeGreaterThan(start);
+    expect(mutation).toBeGreaterThan(end);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut log = vec![];',
+          'assert_eq!(tracked(&mut log), vec![1.0, 1.0, 2.0, 3.0, 5.0]);',
+          'assert_eq!(log, vec![1.0, 2.0, 3.0, 4.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('mutates borrowed arrays and forwards owned copyWithin results for follow-up mutation', () => {
+    const result = lower(
+      'array-copy-within-owned.ts',
+      `export function borrowed(values: string[]): void { values.copyWithin(1, 0, 2); }
+       export function returned(): number[] {
+         const values = [1, 2, 3, 4];
+         return values.copyWithin(0, 2);
+       }
+       export function moved(): number {
+         const values = [1, 2, 3, 4];
+         const returned = values.copyWithin(1, 0, 3);
+         returned.push(5);
+         return (returned[0] ?? 0) * 10000 + (returned[1] ?? 0) * 1000 + (returned[2] ?? 0) * 100 + (returned[3] ?? 0) * 10 + returned.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub fn borrowed(values: &mut Vec<String>)');
+    expect(output).toContain('let mut array_copy_within_receiver_2 = values;');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let mut words = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];',
+          'borrowed(&mut words);',
+          'assert_eq!(words, vec!["a".to_owned(), "a".to_owned(), "b".to_owned()]);',
+          'assert_eq!(returned(), vec![3.0, 4.0, 3.0, 4.0]);',
+          'assert_eq!(moved(), 11235.0);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves copyWithin receiver identity through shared aliases and returned-result use', () => {
+    const result = lower(
+      'shared-array-copy-within-exact.ts',
+      `export function sharedCopy(): number {
+         const values = [1, 2, 3, 4];
+         const alias = values;
+         const returned = alias.copyWithin(1, 0, 3);
+         returned.push(5);
+         values.push(6);
+         return (alias[0] ?? 0) * 100000 + (alias[1] ?? 0) * 10000 + (alias[2] ?? 0) * 1000 + (alias[3] ?? 0) * 100 + (alias[4] ?? 0) * 10 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_copy_within_receiver = Rc::clone(&alias)');
+    expect(output).toContain('let mut array_copy_within_values = array_copy_within_receiver.borrow_mut()');
+    expect(output).toContain('drop(array_copy_within_values); array_copy_within_receiver');
+    expect(output).toContain('returned.borrow_mut().push');
+    expect(output).toContain('values.borrow_mut().push');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_copy(), 112356.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-copy-within-invocation-unrepresented',
+      source: 'export function copy(values: number[]): number[] | undefined { return values.copyWithin?.(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-invocation-unrepresented',
+      source:
+        'export function copy(left: number[], right: number[], pick: boolean): void { (pick ? left : right).copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-invocation-unrepresented',
+      source:
+        'export function copy(values: number[], range: [number, number, number]): number[] { return values.copyWithin(...range); }',
+    },
+    {
+      rule: 'rust-array-copy-within-bounds-domain-unrepresented',
+      source: 'export function copy(values: number[], target: any): void { values.copyWithin(target, 0); }',
+    },
+    {
+      rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      source: 'export function copy(values: (number | string)[]): void { values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      source: 'export function copy(values: any[]): void { values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      source: 'export function copy(values: number[][]): void { values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      source: 'class Point { x: number = 0; } export function copy(values: Point[]): void { values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-element-carrier-unrepresented',
+      source: 'interface Point { x: number } export function copy(values: Point[]): void { values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-sparse-array-literal-runtime-required',
+      source: 'export function copy(): void { const values = [1, , 3]; values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-identity-carrier-unrepresented',
+      source: 'export function copy(values: number[]): number[] { return values.copyWithin(0, 1); }',
+    },
+    {
+      rule: 'rust-array-copy-within-identity-carrier-unrepresented',
+      source: 'export function copy(): number { const values = [1, 2, 3]; return values.copyWithin(0, 1).length; }',
+    },
+  ])('stably refuses unsupported exact copyWithin semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-copy-within-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses zero, excess, incompatible, and readonly copyWithin carriers', () => {
+    const getCopyWithinCall = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'copy',
+      );
+      const returned =
+        declaration?.kind === 'function'
+          ? declaration.body.find((statement) => statement.kind === 'return')
+          : undefined;
+      if (declaration?.kind !== 'function' || returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+        throw new Error('expected returned array.copyWithin call');
+      }
+      return { call: returned.expression, declaration };
+    };
+    const source = 'export function copy(values: number[]): number[] { return values.copyWithin(0, 1, 2); }';
+
+    for (const argumentCount of [0, 4]) {
+      const invocation = lower(`array-copy-within-${argumentCount}.ts`, source);
+      const call = getCopyWithinCall(invocation.module).call;
+      if (argumentCount === 0) {
+        (call.arguments as unknown as unknown[]).splice(0);
+      } else {
+        (call.arguments as unknown as unknown[]).push(call.arguments[2]);
+      }
+      delete (call.semantics as { signature?: unknown }).signature;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(invocation.module)).rule).toBe(
+        'rust-array-copy-within-invocation-unrepresented',
+      );
+    }
+
+    const mismatchedResult = lower('array-copy-within-result-carrier.ts', source);
+    const result = getCopyWithinCall(mismatchedResult.module).call;
+    (result.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(mismatchedResult.module)).rule).toBe(
+      'rust-array-copy-within-result-carrier-unrepresented',
+    );
+
+    const readonlyReceiver = lower('array-copy-within-readonly-carrier.ts', source);
+    const receiver = getCopyWithinCall(readonlyReceiver.module).declaration.parameters[0];
+    if (!receiver || receiver.type.kind !== 'array') throw new Error('expected array copyWithin receiver parameter');
+    (receiver.type as { readonly: boolean }).readonly = true;
+    expect(captureBackendEmissionFailure(() => emitIrModuleRust(readonlyReceiver.module)).rule).toBe(
+      'rust-array-copy-within-element-carrier-unrepresented',
+    );
+  });
+
+  it('refuses a non-shared copyWithin argument that reads its receiver during the mutable borrow', () => {
+    const result = lower(
+      'array-copy-within-direct-borrow-conflict.ts',
+      `export function conflict(): void {
+         const values = [1, 2, 3];
+         values.copyWithin(values[0] ?? 0, 1);
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-array-copy-within-alias-borrow-conflict');
+  });
+
+  it('uses the shared-array borrow-conflict rule for copyWithin arguments that read a receiver alias', () => {
+    const result = lower(
+      'array-copy-within-borrow-conflict.ts',
+      `export function conflict(): number {
+         const values = [1, 2, 3];
+         const alias = values;
+         alias.copyWithin(values[0] ?? 0, 1);
+         values.push(4);
+         return alias.length;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('preserves exact fill bounds across number, boolean, and string carriers', () => {
     const result = lower(
       'array-fill-exact.ts',
