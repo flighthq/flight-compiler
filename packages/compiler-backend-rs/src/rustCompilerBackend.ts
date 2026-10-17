@@ -2668,6 +2668,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (enumeration) {
         return `${getBindingTargetNameRust(enumeration.binding, context)}::${safeRustTypeName(expression.name)}`;
       }
+      const importedEnumMember = emitRustImportedEnumMemberRust(expression, context);
+      if (importedEnumMember) return importedEnumMember;
       // Reading a member of a narrowed `Option` only needs to look at it, so it is borrowed open
       // rather than copied out.
       const borrowedNarrow = emitBorrowedNarrowedReceiverRust(expression.object, context);
@@ -13559,6 +13561,103 @@ function getRustNamespaceImportMemberRust(
     memberName = resolution.kind === 'resolved' ? resolution.name : undefined;
   }
   return `${getBindingTargetNameRust(object.reference.binding, context)}::${memberName ?? safeRustValueName(member)}`;
+}
+
+// An imported enum member is a variant of a foreign type. The consumer's `use` item owns the only
+// spelling it may use: the import alias, which keeps any collision renaming in step with that item.
+// The declaration is still resolved so the member and the enum itself are facts rather than guesses.
+// A named import reads `Alias::Variant`; a namespace import reads through the already-correct
+// `alias::Enum` path emitted for its inner member.
+function emitRustImportedEnumMemberRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const object = expression.object;
+  if (object.kind === 'identifier' && object.reference.kind === 'binding') {
+    const imported = getRustNamedImportBindingRust(object.reference.binding.id, context);
+    if (!imported) return undefined;
+    const targetModule = resolveImportModuleRust(imported.specifier, imported.imported, context);
+    if (!targetModule) return undefined;
+    const declaration = resolveRustImportedEnumDeclarationRust(
+      targetModule,
+      imported.imported,
+      imported.space,
+      context,
+    );
+    if (!declaration) return undefined;
+    assertRustImportedEnumMemberExistsRust(declaration, expression.name, context);
+    return `${getBindingTargetNameRust(object.reference.binding, context)}::${safeRustTypeName(expression.name)}`;
+  }
+  if (object.kind !== 'property' || object.object.kind !== 'identifier' || object.object.reference.kind !== 'binding')
+    return undefined;
+  const namespace = getRustNamespaceImportBindingRust(object.object.reference.binding.id, context);
+  if (!namespace) return undefined;
+  const targetModule = resolveImportModuleRust(namespace.specifier, object.name, context);
+  if (!targetModule) return undefined;
+  const declaration = resolveRustImportedEnumDeclarationRust(targetModule, object.name, 'value', context);
+  if (!declaration) return undefined;
+  assertRustImportedEnumMemberExistsRust(declaration, expression.name, context);
+  return `${emitExpression(object, context)}::${safeRustTypeName(expression.name)}`;
+}
+
+function getRustNamedImportBindingRust(
+  bindingId: string,
+  context: EmitContext,
+): Readonly<{ imported: string; space: 'type' | 'value'; specifier: string }> | undefined {
+  for (const item of context.module.imports) {
+    for (const candidate of item.bindings) {
+      if (candidate.binding.id === bindingId && candidate.imported !== '*' && candidate.imported !== 'default') {
+        return { imported: candidate.imported, space: candidate.binding.space, specifier: item.specifier };
+      }
+    }
+  }
+  return undefined;
+}
+
+function getRustNamespaceImportBindingRust(
+  bindingId: string,
+  context: EmitContext,
+): Readonly<{ specifier: string }> | undefined {
+  const imported = context.module.imports.find((item) =>
+    item.bindings.some((candidate) => candidate.binding.id === bindingId && candidate.imported === '*'),
+  );
+  return imported ? { specifier: imported.specifier } : undefined;
+}
+
+// The shared export lane decides whether the name is reachable at all, and keeps its own rule ids for
+// ambiguity, ungrounded explicit chains, and unreachable star export lanes. Only a uniquely grounded
+// enum declaration answers here; a non-enum export is not this shape and stays on its existing path.
+function resolveRustImportedEnumDeclarationRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  preferredSpace: 'type' | 'value',
+  context: EmitContext,
+): Readonly<IrEnumDeclaration> | undefined {
+  const resolution = resolveRustDeclaredExportRust(module, exportedName, preferredSpace, context);
+  assertRustDeclaredExportResolutionRust(resolution, module, exportedName, context);
+  if (resolution.kind !== 'resolved' || resolution.space !== 'value') return undefined;
+  const locations = getRustExportedEnumDeclarationLocations(module, exportedName, context, new Set());
+  if (locations.length > 1) {
+    emissionRuleError(
+      context,
+      `imported enum ${exportedName} of ${formatRustModuleSubjectRust(module)} reaches multiple enum declarations`,
+      'rust-imported-enum-member-unresolved',
+    );
+  }
+  return locations[0]?.declaration;
+}
+
+function assertRustImportedEnumMemberExistsRust(
+  declaration: Readonly<IrEnumDeclaration>,
+  member: string,
+  context: EmitContext,
+): void {
+  if (declaration.members.some((candidate) => candidate.name === member)) return;
+  emissionRuleError(
+    context,
+    `imported enum ${declaration.binding.name} has no member ${member}`,
+    'rust-imported-enum-member-unresolved',
+  );
 }
 
 // The rule a name gets when nothing can be asked. A single-module emission has no declaring allocation
