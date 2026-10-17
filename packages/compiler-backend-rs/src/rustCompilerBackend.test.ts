@@ -16407,3 +16407,48 @@ describe('emitIrModuleRust object key iteration refusal', () => {
     expect(indexedFailure.rule).not.toBe('rust-object-key-iteration-unproven');
   });
 });
+
+describe('emitIrModuleRust control-flow refusal diagnostics', () => {
+  it('carries deterministic rules at the defensive statement-value and C-style-for sites', () => {
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    const count = (needle: string): number => source.split(needle).length - 1;
+
+    // Both families are defensive: the elected lowering passes normalize statement-value calls and
+    // C-style loops before emission, so reachability cannot prove coverage and the source does.
+    expect(count("'statement-value call requires a zero-argument function carrier'")).toBe(1);
+    expect(count("'statement-value call requires a final value return'")).toBe(1);
+    expect(count("'rust-statement-value-call-unsupported'")).toBe(2);
+    expect(count("'C-style for loops require control-flow lowering before Rust emission'")).toBe(1);
+    expect(count("'rust-c-style-for-lowering-required'")).toBe(1);
+    // Neighbouring defensive families keep their own metadata: the binding-pattern count is unchanged
+    // and the async-iteration refusal still takes no rule.
+    expect(count("'rust-binding-pattern-lowering-required'")).toBe(4);
+    expect(count("'async iteration requires Flight task lowering')")).toBe(1);
+  });
+
+  it('emits the supported shapes those rules guard, and keeps the reachable neighbour on its own rule', () => {
+    const cStyle = emitIrModuleRust(
+      lower(
+        'control-flow-supported.ts',
+        'export function f(): number { let s = 0; for (let i = 0; i < 3; i++) { s += i; } return s; }',
+      ).module,
+    ).contents;
+    expect(cStyle).toContain('pub fn f(');
+    expect(cStyle).not.toContain('C-style for loops require control-flow lowering');
+
+    const statementValue = emitIrModuleRust(
+      lower('statement-value-supported.ts', 'export function f(): number { ((): number => 1)(); }').module,
+    ).contents;
+    expect(statementValue).toContain('pub fn f(');
+    expect(statementValue).not.toContain('statement-value call requires');
+
+    const open = lower(
+      'object-key-neighbour.ts',
+      'export function f(x: Record<string, number>): number { let s = 0; for (const key in x) { s += 1; } return s; }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(open));
+    expect(failure.rule).toBe('rust-object-key-iteration-unproven');
+    expect(failure.rule).not.toBe('rust-c-style-for-lowering-required');
+    expect(failure.rule).not.toBe('rust-statement-value-call-unsupported');
+  });
+});

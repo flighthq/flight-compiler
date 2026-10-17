@@ -4845,11 +4845,19 @@ function emitStatementValueExpressionRust(
   context: EmitContext,
 ): string {
   if (expression.callee.kind !== 'function' || expression.arguments.length > 0) {
-    emissionError(context, 'statement-value call requires a zero-argument function carrier');
+    emissionError(
+      context,
+      'statement-value call requires a zero-argument function carrier',
+      'rust-statement-value-call-unsupported',
+    );
   }
   const completion = expression.callee.body.at(-1);
   if (completion?.kind !== 'return' || !completion.expression) {
-    emissionError(context, 'statement-value call requires a final value return');
+    emissionError(
+      context,
+      'statement-value call requires a final value return',
+      'rust-statement-value-call-unsupported',
+    );
   }
   const statements = emitStatements(expression.callee.body.slice(0, -1), context);
   return `{ ${[...statements, emitExpression(completion.expression, context)].join(' ')} }`;
@@ -4877,7 +4885,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'expression':
       return [`${emitExpression(statement.expression, context)};`];
     case 'for':
-      emissionError(context, 'C-style for loops require control-flow lowering before Rust emission');
+      emissionError(
+        context,
+        'C-style for loops require control-flow lowering before Rust emission',
+        'rust-c-style-for-lowering-required',
+      );
     case 'forIn':
       if ('pattern' in statement.variable)
         emissionError(
