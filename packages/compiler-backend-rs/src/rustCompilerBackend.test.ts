@@ -35182,7 +35182,6 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
        export function present(item: Item): Item | undefined { return item; }
        export function preserved(value: Item | undefined): Item | undefined { return value; }
        export function returnedCall(item: Item): Item | undefined { return maybe(item); }
-       export function asserted(item: Item): Item | undefined { return item as Item | undefined; }
        export function returnedProperty(source: Source): Item | undefined { return source.item; }
        export function preservedProperty(source: Source): Item | undefined { return source.option; }
        export function stored(item: Item, option: Item | undefined, box: Box): Item | undefined {
@@ -35208,7 +35207,6 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain('pub fn preserved(value: Option<Item>) -> Option<Item> {');
     expect(output).toContain('return value;');
     expect(output).toContain('return maybe(item);');
-    expect(output).toContain('pub fn asserted(item: Item) -> Option<Item> {\n  return Some(item);\n}');
     expect(output).toContain('return Some(source.item);');
     expect(output).toContain('return source.option;');
     expect(output).toContain('let mut value: Option<Item> = None;');

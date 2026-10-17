@@ -5754,14 +5754,14 @@ function emitCallArgumentsRust(
       const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
       const singlePayloadOption = getIrSinglePayloadOptionShapeRust(parameterType, context);
       const generalUnionCandidate = hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context);
-      if (!optionalSharedClass && singlePayloadOption && representation === undefined) {
-        if (
-          (referencedFunction?.typeParameters.length ?? 0) > 0 ||
-          parameter.rest ||
-          parameter.optional ||
-          parameter.initializer !== undefined ||
-          argument.kind === 'spread'
-        ) {
+      if (
+        !optionalSharedClass &&
+        singlePayloadOption &&
+        representation === undefined &&
+        !parameter.optional &&
+        parameter.initializer === undefined
+      ) {
+        if ((referencedFunction?.typeParameters.length ?? 0) > 0 || parameter.rest || argument.kind === 'spread') {
           refuseRustContextualGeneralUnionConstructionRust(context);
         }
         const constructed = emitExactContextualGeneralUnionConstructionRust(argument, parameterType, context);
@@ -5787,13 +5787,15 @@ function emitCallArgumentsRust(
     const methodSinglePayloadOption = methodParameter
       ? getIrSinglePayloadOptionShapeRust(methodParameter.type, context)
       : undefined;
-    if (!optionalSharedClass && methodParameter && methodSinglePayloadOption && representation === undefined) {
-      if (
-        methodParameter.rest ||
-        methodParameter.optional ||
-        methodParameter.initializer !== undefined ||
-        argument.kind === 'spread'
-      ) {
+    if (
+      !optionalSharedClass &&
+      methodParameter &&
+      methodSinglePayloadOption &&
+      representation === undefined &&
+      !methodParameter.optional &&
+      methodParameter.initializer === undefined
+    ) {
+      if (methodParameter.rest || argument.kind === 'spread') {
         refuseRustContextualGeneralUnionConstructionRust(context);
       }
       const constructed = emitExactContextualGeneralUnionConstructionRust(argument, methodParameter.type, context);
@@ -9464,7 +9466,9 @@ function emitExactContextualGeneralUnionConstructionRust(
     // Reference planning has already selected an Rc/RefCell/borrowed carrier for this expression.
     // Its dedicated return, local, store, or argument lane must emit or refuse that carrier before
     // ordinary value-to-Option construction is considered.
-    if (isIrExpressionReferencePlannedRust(expression, context)) return undefined;
+    if (isIrExpressionReferencePlannedRust(expression, context)) {
+      refuseRustContextualGeneralUnionConstructionRust(context);
+    }
     const emitOperand = ownership === 'owned' ? emitOwnedOperandRust : emitExpression;
     const sourceType = getIrExpressionExactContextualConstructionTypeRust(expression, context);
     const hasTargetRepresentation =
@@ -9472,15 +9476,10 @@ function emitExactContextualGeneralUnionConstructionRust(
     const hasPayloadRepresentation =
       sourceType !== undefined && emitType(sourceType, context) === emitType(singlePayloadOption.payloadType, context);
     const sentinel = getIrSharedClassSentinelExpressionRust(expression);
-    if (sentinel) {
-      if (sentinel === singlePayloadOption.absence) return 'None';
-      refuseRustContextualGeneralUnionConstructionRust(context);
-    }
+    if (sentinel) return 'None';
     if (hasTargetRepresentation) return emitOperand(expression, context);
     if (isIrExpressionOptionShapedRust(expression, context)) {
-      if (hasPayloadRepresentation) return emitOperand(expression, context);
-      emitOperand(expression, context);
-      refuseRustContextualGeneralUnionConstructionRust(context);
+      return emitOperand(expression, context);
     }
     if (hasPayloadRepresentation) {
       return `Some(${emitOperand(expression, context)})`;
@@ -9681,6 +9680,14 @@ function isIrExpressionReferencePlannedRust(expression: Readonly<IrExpression>, 
         ? expression.object.reference.binding.id
         : undefined;
   return bindingId !== undefined && isRustBindingReferencePlannedRust(bindingId, context);
+}
+
+function isIrExpressionClosureCapturedRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const bindingId = expression.reference.binding.id;
+  return [...context.closureEvidenceByExpression.values()].some((closure) =>
+    closure.captures.some((capture) => capture.binding.id === bindingId),
+  );
 }
 
 function isRustBindingReferencePlannedRust(bindingId: string, context: EmitContext): boolean {
@@ -22380,7 +22387,16 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
     return expression.optional || expression.absent === 'optionalMember';
   }
   if (expression.kind === 'call') {
-    return expression.optional || isArrayPopCallRust(expression) || isArrayShiftCallRust(expression);
+    const optionalMappedCall =
+      expression.callee.kind === 'property' &&
+      expression.callee.optional &&
+      expression.callee.optionalChain !== undefined &&
+      expression.callee.member !== undefined &&
+      getCompilerRustAmbientMemberBinding(expression.callee.member) !== undefined &&
+      isIrExpressionOptionShapedRust(expression.callee.object, context);
+    return (
+      expression.optional || optionalMappedCall || isArrayPopCallRust(expression) || isArrayShiftCallRust(expression)
+    );
   }
   // An array index is absent-admitting in the source language whatever the index is, which is why
   // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
@@ -23795,6 +23811,17 @@ function emitGeneralUnionCastRust(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   context: EmitContext,
 ): string | undefined {
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  const sourceSinglePayloadOption = sourceType ? getIrSinglePayloadOptionShapeRust(sourceType, context) : undefined;
+  if (
+    sourceSinglePayloadOption &&
+    (isIrExpressionReferencePlannedRust(expression.expression, context) ||
+      isIrExpressionClosureCapturedRust(expression.expression, context))
+  ) {
+    if (emitType(sourceSinglePayloadOption.payloadType, context) === emitType(expression.type, context)) {
+      refuseRustContextualGeneralUnionConstructionRust(context);
+    }
+  }
   const presence = getRustExactPresenceAssertionConversionPlanRust(expression, context);
   if (presence) {
     const operand = emitOwnedOperandRust(expression.expression, context);
@@ -23802,7 +23829,6 @@ function emitGeneralUnionCastRust(
       ? `match ${operand} { Some(value) => value, None => panic!("asserted union alternative is not present in the value"), }`
       : `Some(${operand})`;
   }
-  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
   const targetPlan = createRustUnionRepresentationPlanForTypeRust(expression.type, context);
   if (targetPlan.kind === 'nominalEnum' && sourceType) {
     const sourceIdentity = getIrNamedTypeIdentityRust(sourceType, context);
@@ -23812,15 +23838,24 @@ function emitGeneralUnionCastRust(
     }
   }
   const source = sourceType ? getIrCastUnionCarrierRust(sourceType, context) : undefined;
+  const targetSinglePayloadOption = getIrSinglePayloadOptionShapeRust(expression.type, context);
   // An unrepresented union source remains a cast refusal; only a non-union source can be an exact
-  // record alternative for the contextual constructor below.
+  // record alternative for the contextual constructor below. A single-payload Option assertion is
+  // not contextual construction: primitive payloads retain the union-cast refusal, while nominal
+  // payloads retain the contextual-construction refusal rather than manufacturing an enum identity.
   if (!source && (!sourceType || resolveIrCastUnionTypeRust(sourceType, context).kind !== 'union')) {
-    const constructed = emitExactContextualGeneralUnionConstructionRust(
-      expression.expression,
-      expression.type,
-      context,
-    );
-    if (constructed) return constructed;
+    if (targetSinglePayloadOption) {
+      if (getIrExactNominalRecordIdentityRust(targetSinglePayloadOption.payloadType, context)) {
+        refuseRustContextualGeneralUnionConstructionRust(context);
+      }
+    } else {
+      const constructed = emitExactContextualGeneralUnionConstructionRust(
+        expression.expression,
+        expression.type,
+        context,
+      );
+      if (constructed) return constructed;
+    }
   }
   const destination = getIrCastUnionCarrierRust(expression.type, context);
   if (source && !destination) {
