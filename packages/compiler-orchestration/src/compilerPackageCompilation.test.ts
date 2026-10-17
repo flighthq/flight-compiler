@@ -2,6 +2,7 @@ import { createBackendEmissionFailure } from '../../compiler-emission/src/index.
 import { createCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import type {
   CompilerBackend,
+  CompilerBackendModuleFileReplacement,
   CompilerBackendPackageGraphFinalization,
   CompilerModuleIdentity,
   CompilerPackageCompilationProgress,
@@ -402,18 +403,20 @@ describe('compileTypeScriptPackageGraph', () => {
             const provenance = [...modules]
               .reverse()
               .map(({ name, packageName, source: sourcePath }) => ({ name, packageName, source: sourcePath }));
-            return [
-              {
-                file: { contents: modules.map((module) => module.name).join(','), path: 'abi/source.cpp' },
-                owner: { kind: 'package', packageName: '@local/source' },
-                provenance,
-              },
-              {
-                file: { contents: 'package header', path: 'abi/source.h' },
-                owner: { kind: 'package', packageName: '@local/source' },
-                provenance,
-              },
-            ];
+            return {
+              packageFiles: [
+                {
+                  file: { contents: modules.map((module) => module.name).join(','), path: 'abi/source.cpp' },
+                  owner: { kind: 'package', packageName: '@local/source' },
+                  provenance,
+                },
+                {
+                  file: { contents: 'package header', path: 'abi/source.h' },
+                  owner: { kind: 'package', packageName: '@local/source' },
+                  provenance,
+                },
+              ],
+            };
           },
         }),
         emitModule: () => {
@@ -484,6 +487,8 @@ describe('compileTypeScriptPackageGraph', () => {
     const refusedIdentity = identity(refused, 'Refused');
     const compile = (sources: readonly TypeScriptPackageGraphSource[]) => {
       let received: Readonly<CompilerBackendPackageGraphFinalization> | undefined;
+      let returnedPackageFile: { contents: string; path: string } | undefined;
+      let returnedReplacementFile: { contents: string; path: string } | undefined;
       const backend: CompilerBackend = {
         createEmissionSession: () => ({
           emitModule(module) {
@@ -511,16 +516,26 @@ describe('compileTypeScriptPackageGraph', () => {
                 ]),
               ).values(),
             ];
-            return [
-              {
-                file: {
-                  contents: finalization.moduleFiles.map(({ file }) => file.path).join('\n'),
-                  path: 'package/summary.txt',
+            const artifacts = {
+              moduleFileReplacements: [...finalization.moduleFiles].reverse().map(({ file, module }) => ({
+                file: { contents: `final ${file.contents}`, path: `final/${file.path}` },
+                module,
+                retainedPath: file.path,
+              })),
+              packageFiles: [
+                {
+                  file: {
+                    contents: finalization.moduleFiles.map(({ file }) => file.path).join('\n'),
+                    path: 'package/summary.txt',
+                  },
+                  owner: { kind: 'package' as const, packageName: '@local/source' },
+                  provenance,
                 },
-                owner: { kind: 'package', packageName: '@local/source' },
-                provenance,
-              },
-            ];
+              ],
+            };
+            returnedReplacementFile = artifacts.moduleFileReplacements[0]?.file;
+            returnedPackageFile = artifacts.packageFiles[0]?.file;
+            return artifacts;
           },
         }),
         emitModule: () => {
@@ -539,6 +554,9 @@ describe('compileTypeScriptPackageGraph', () => {
         sources,
       });
       if (!received) throw new Error('Package-graph finalization did not run');
+      if (!returnedPackageFile || !returnedReplacementFile) throw new Error('Finalized files were not returned');
+      returnedPackageFile.path = 'mutated/package.txt';
+      returnedReplacementFile.path = 'mutated/replacement.txt';
       return { finalization: received, result };
     };
 
@@ -546,6 +564,7 @@ describe('compileTypeScriptPackageGraph', () => {
     const second = compile([owner, refused, entry]);
 
     expect(second.finalization).toEqual(first.finalization);
+    expect(second.result.compilation).toEqual(first.result.compilation);
     expect(first.finalization.facade.modules.map(({ module }) => module)).toEqual([entryIdentity]);
     expect(first.finalization.facade.modules[0]?.slots).toEqual([
       expect.objectContaining({ exportName: 'inspect', lane: 'value' }),
@@ -562,18 +581,102 @@ describe('compileTypeScriptPackageGraph', () => {
       status: 'refused',
     });
     expect(first.result.compilation.files.map(({ path }) => path)).toEqual([
-      'a/Entry.txt',
-      'a/Owner.txt',
+      'final/a/Entry.txt',
+      'final/a/Owner.txt',
+      'final/z/Entry.txt',
+      'final/z/Owner.txt',
       'package/summary.txt',
-      'z/Entry.txt',
-      'z/Owner.txt',
     ]);
+    expect(first.result.compilation.files.every(Object.isFrozen)).toBe(true);
+    expect(first.result.report.files).toContainEqual({
+      dependencies: [],
+      module: entryIdentity,
+      path: 'final/a/Entry.txt',
+    });
     expect(first.result.report.files).toContainEqual({
       dependencies: [],
       owner: { kind: 'package', packageName: '@local/source' },
       path: 'package/summary.txt',
       provenance: [entryIdentity, ownerIdentity],
     });
+  });
+
+  it('requires exact complete retained module replacements and rejects their output collisions', () => {
+    const input = source('@local/source', 'source', 'input.ts', 'export const value = 1;');
+    const refused = source('@local/source', 'source', 'refused.ts', 'export const refused = 1;');
+    const inputIdentity = identity(input, 'Input');
+    const refusedIdentity = identity(refused, 'Refused');
+    const replace = (
+      retained: CompilerBackendPackageGraphFinalization['moduleFiles'][number],
+      path = `final/${retained.file.path}`,
+    ): CompilerBackendModuleFileReplacement => ({
+      file: { contents: `final ${retained.file.contents}`, path },
+      module: retained.module,
+      retainedPath: retained.file.path,
+    });
+    const compile = (
+      createReplacements: (
+        finalization: Readonly<CompilerBackendPackageGraphFinalization>,
+      ) => readonly CompilerBackendModuleFileReplacement[],
+    ) =>
+      compileTypeScriptPackageGraph({
+        backend: {
+          createEmissionSession: () => ({
+            emitModule(module) {
+              if (module.name === 'Refused') {
+                throw createBackendEmissionFailure('fixture', module, 'refused by fixture');
+              }
+              return [
+                { contents: 'a', path: 'a/Input.txt' },
+                { contents: 'b', path: 'b/Input.txt' },
+              ];
+            },
+            finalizePackageGraph: (finalization) => ({
+              moduleFileReplacements: createReplacements(finalization),
+              packageFiles: [],
+            }),
+          }),
+          emitModule: () => [],
+          name: 'fixture',
+        } satisfies CompilerBackend,
+        backendOptions: {},
+        graph: graph(
+          [inputIdentity, refusedIdentity],
+          [],
+          [{ dependencies: [], name: '@local/source', root: input.packageRoot }],
+        ),
+        sources: [refused, input],
+      });
+    const invalidReplacement = expect.objectContaining({
+      code: 'invalid-module-file-replacement',
+      kind: 'compiler-invariant',
+    });
+
+    expect(() => compile((finalization) => [replace(finalization.moduleFiles[0]!)])).toThrow(invalidReplacement);
+    expect(() =>
+      compile((finalization) => [replace(finalization.moduleFiles[0]!), replace(finalization.moduleFiles[0]!)]),
+    ).toThrow(invalidReplacement);
+    expect(() =>
+      compile((finalization) => [
+        replace(finalization.moduleFiles[0]!),
+        {
+          ...replace(finalization.moduleFiles[1]!),
+          module: refusedIdentity,
+        },
+      ]),
+    ).toThrow(invalidReplacement);
+    expect(() =>
+      compile((finalization) => [
+        replace(finalization.moduleFiles[0]!),
+        {
+          ...replace(finalization.moduleFiles[1]!),
+          retainedPath: 'missing/Input.txt',
+        },
+      ]),
+    ).toThrow(invalidReplacement);
+    expect(() =>
+      compile((finalization) => finalization.moduleFiles.map((retained) => replace(retained, 'same/output.txt'))),
+    ).toThrow(expect.objectContaining({ code: 'duplicate-emitted-path', kind: 'compiler-invariant' }));
   });
 
   it('fails package-finalized output on unsafe paths and package-local path collisions', () => {
@@ -583,17 +686,19 @@ describe('compileTypeScriptPackageGraph', () => {
         backend: {
           createEmissionSession: ({ modules }) => ({
             emitModule: (module) => [{ contents: module.name, path: 'Input.txt' }],
-            finalizePackageGraph: () => [
-              {
-                file: { contents: 'package output', path },
-                owner: { kind: 'package', packageName: '@local/source' },
-                provenance: modules.map(({ name, packageName, source: sourcePath }) => ({
-                  name,
-                  packageName,
-                  source: sourcePath,
-                })),
-              },
-            ],
+            finalizePackageGraph: () => ({
+              packageFiles: [
+                {
+                  file: { contents: 'package output', path },
+                  owner: { kind: 'package', packageName: '@local/source' },
+                  provenance: modules.map(({ name, packageName, source: sourcePath }) => ({
+                    name,
+                    packageName,
+                    source: sourcePath,
+                  })),
+                },
+              ],
+            }),
           }),
           emitModule: () => [],
           name: 'fixture',

@@ -17,8 +17,11 @@ import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { createCompilerTypeScriptAnalysisIdentity, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileTypeScriptPackageGraphOptions,
+  CompilerBackendModuleFile,
+  CompilerBackendModuleFileReplacement,
   CompilerBackendPackageFile,
   CompilerBackendPackageGraphFinalization,
+  CompilerBackendPackageGraphFinalizationResult,
   CompilerDiagnostic,
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
@@ -220,17 +223,12 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
-  const packageFiles = (
-    emissionSession?.finalizePackageGraph?.(
-      createCompilerBackendPackageGraphFinalization(records, exports, bestEffort, emitPathPrefixes),
-    ) ?? []
-  ).map(
-    (artifact): PackageEmissionRecord => ({
-      file: normalizeEmittedFile(artifact.file),
-      owner: { kind: 'package', packageName: artifact.owner.packageName },
-      provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
-    }),
+  const finalization = createCompilerBackendPackageGraphFinalization(records, exports, bestEffort, emitPathPrefixes);
+  const finalizationResult = createCompilerBackendPackageGraphFinalizationResult(
+    emissionSession?.finalizePackageGraph?.(finalization),
   );
+  applyCompilerBackendModuleFileReplacements(records, finalization.moduleFiles, finalizationResult);
+  const packageFiles = finalizationResult.packageFiles;
   validateCompilerPackageGraphPackageFiles(packageFiles, packages, modules);
   const publicBindings = options.backend.createPublicBindingPlan?.({
     facade: exports,
@@ -330,7 +328,12 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     }
   }
 
-  validateCompilerPackageGraphPackageFileCollisions(records, placeholderFileOwners, packageFiles);
+  validateCompilerPackageGraphPackageFileCollisions(
+    records,
+    placeholderFileOwners,
+    packageFiles,
+    finalizationResult.moduleFileReplacements !== undefined,
+  );
   const files = [...records.values()]
     .filter(
       (record) =>
@@ -460,13 +463,109 @@ function createCompilerBackendPackageGraphFinalization(
         module: cloneCompilerPackageGraphIdentity(record.module),
       })),
     );
-  return freezeCompilerBackendPackageGraphFinalization(structuredClone({ facade, moduleFiles }));
+  return freezeCompilerBackendPackageGraphValue(structuredClone({ facade, moduleFiles }));
 }
 
-function freezeCompilerBackendPackageGraphFinalization<Value>(value: Value): Value {
+function createCompilerBackendPackageGraphFinalizationResult(
+  result: Readonly<CompilerBackendPackageGraphFinalizationResult> | undefined,
+): Readonly<CompilerBackendPackageGraphFinalizationResult> {
+  const moduleFileReplacements = result?.moduleFileReplacements?.map((replacement) => ({
+    file: normalizeEmittedFile(replacement.file),
+    module: cloneCompilerPackageGraphIdentity(replacement.module),
+    retainedPath: replacement.retainedPath,
+  }));
+  moduleFileReplacements?.sort(compareCompilerBackendModuleFileReplacements);
+  const packageFiles: PackageEmissionRecord[] = (result?.packageFiles ?? []).map((artifact) => ({
+    file: normalizeEmittedFile(artifact.file),
+    owner: { kind: 'package', packageName: artifact.owner.packageName },
+    provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
+  }));
+  return freezeCompilerBackendPackageGraphValue({
+    ...(moduleFileReplacements === undefined ? {} : { moduleFileReplacements }),
+    packageFiles,
+  });
+}
+
+function applyCompilerBackendModuleFileReplacements(
+  records: ReadonlyMap<string, ModuleEmissionRecord>,
+  retainedModuleFiles: readonly Readonly<CompilerBackendModuleFile>[],
+  result: Readonly<CompilerBackendPackageGraphFinalizationResult>,
+): void {
+  const replacements = result.moduleFileReplacements;
+  if (replacements === undefined) return;
+
+  const retainedByKey = new Map<string, Readonly<CompilerBackendModuleFile>>();
+  for (const retained of retainedModuleFiles) {
+    retainedByKey.set(getCompilerBackendModuleFileKey(retained.module, retained.file.path), retained);
+  }
+  if (replacements.length !== retainedModuleFiles.length) {
+    throw createCompilerInvariantFailure(
+      'invalid-module-file-replacement',
+      'package-graph',
+      `Backend returned ${String(replacements.length)} module file replacements for ${String(retainedModuleFiles.length)} retained files`,
+    );
+  }
+
+  const seen = new Set<string>();
+  for (const replacement of replacements) {
+    const key = getCompilerBackendModuleFileKey(replacement.module, replacement.retainedPath);
+    const retained = retainedByKey.get(key);
+    if (retained === undefined) {
+      throw createCompilerInvariantFailure(
+        'invalid-module-file-replacement',
+        key,
+        `Backend replaced a module file that was not retained: ${key}`,
+      );
+    }
+    if (seen.has(key)) {
+      throw createCompilerInvariantFailure(
+        'invalid-module-file-replacement',
+        key,
+        `Backend replaced a retained module file more than once: ${key}`,
+      );
+    }
+    seen.add(key);
+
+    const record = records.get(getCompilerPackageGraphModuleKey(retained.module));
+    const fileIndex = record?.files.findIndex((file) => file.path === retained.file.path) ?? -1;
+    if (!record || fileIndex < 0) {
+      throw createCompilerInvariantFailure(
+        'invalid-module-file-replacement',
+        key,
+        `Backend replacement target is no longer present: ${key}`,
+      );
+    }
+    record.files[fileIndex] = replacement.file;
+  }
+
+  if (seen.size !== retainedByKey.size) {
+    const missing = [...retainedByKey.keys()].find((key) => !seen.has(key))!;
+    throw createCompilerInvariantFailure(
+      'invalid-module-file-replacement',
+      missing,
+      `Backend did not replace retained module file: ${missing}`,
+    );
+  }
+}
+
+function getCompilerBackendModuleFileKey(module: Readonly<CompilerModuleIdentity>, retainedPath: string): string {
+  return JSON.stringify([module.packageName, module.source, module.name, retainedPath]);
+}
+
+function compareCompilerBackendModuleFileReplacements(
+  left: Readonly<CompilerBackendModuleFileReplacement>,
+  right: Readonly<CompilerBackendModuleFileReplacement>,
+): number {
+  return (
+    compareCompilerPackageGraphModules(left.module, right.module) ||
+    compareTextCodeUnits(left.retainedPath, right.retainedPath)
+  );
+}
+
+function freezeCompilerBackendPackageGraphValue<Value>(value: Value): Value {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
-    for (const member of Object.values(value)) freezeCompilerBackendPackageGraphFinalization(member);
+    for (const member of Object.values(value)) freezeCompilerBackendPackageGraphValue(member);
   }
   return value;
 }
@@ -1129,8 +1228,9 @@ function validateCompilerPackageGraphPackageFileCollisions(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   placeholderFiles: readonly Readonly<{ file: EmittedFile; packageName: string }>[],
   packageFiles: readonly Readonly<PackageEmissionRecord>[],
+  hasModuleFileReplacements: boolean,
 ): void {
-  if (packageFiles.length === 0) return;
+  if (packageFiles.length === 0 && !hasModuleFileReplacements) return;
   const paths = new Map<string, string>();
   const reserve = (packageName: string, filePath: string): void => {
     const label = `${packageName}/${filePath}`;

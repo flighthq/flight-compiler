@@ -217,6 +217,7 @@ const compilerInvariantCodes = {
   'insufficient-emitted-source-syntax-files': true,
   'insufficient-target-compilation-smoke-files': true,
   'invalid-generated-file-provenance': true,
+  'invalid-module-file-replacement': true,
   'invalid-emitted-source-parser': true,
   'invalid-emitted-source-syntax-diagnostic': true,
   'invalid-target-compilation-smoke-adapter': true,

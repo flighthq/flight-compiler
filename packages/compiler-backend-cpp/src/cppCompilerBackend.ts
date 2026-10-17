@@ -546,11 +546,13 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
                       `${right.packageName}\0${right.source}\0${right.name}`,
                     ),
                   );
-                return emitCompilerCppCAbiPackage(plan, cAbi, options.upstreamCommit).map((file) => ({
-                  file,
-                  owner: { kind: 'package' as const, packageName: cAbi.packageName },
-                  provenance,
-                }));
+                return {
+                  packageFiles: emitCompilerCppCAbiPackage(plan, cAbi, options.upstreamCommit).map((file) => ({
+                    file,
+                    owner: { kind: 'package' as const, packageName: cAbi.packageName },
+                    provenance,
+                  })),
+                };
               },
             }
           : {}),

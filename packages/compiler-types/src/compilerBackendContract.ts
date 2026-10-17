@@ -27,6 +27,14 @@ export interface CompilerBackendModuleFile {
   readonly module: CompilerModuleIdentity;
 }
 
+/** A finalized replacement keyed to one exact retained module output. */
+export interface CompilerBackendModuleFileReplacement {
+  readonly file: EmittedFile;
+  readonly module: CompilerModuleIdentity;
+  /** The retained input file path this replacement owns; the replacement file may choose a new path. */
+  readonly retainedPath: string;
+}
+
 /** A graph-finalized file owned by a package rather than by one arbitrarily chosen module. */
 export interface CompilerBackendPackageFile {
   readonly file: EmittedFile;
@@ -43,6 +51,12 @@ export interface CompilerBackendPackageGraphFinalization {
   readonly facade: CompilerModuleFacadePlan;
   /** Ordered by module identity, then emitted path. Refused, placeholder, and unselected outputs are absent. */
   readonly moduleFiles: readonly CompilerBackendModuleFile[];
+}
+
+export interface CompilerBackendPackageGraphFinalizationResult {
+  /** When present, this must replace every retained module identity and path exactly once. */
+  readonly moduleFileReplacements?: readonly CompilerBackendModuleFileReplacement[] | undefined;
+  readonly packageFiles: readonly CompilerBackendPackageFile[];
 }
 
 export interface BackendEmitContext<Options> {
@@ -149,12 +163,15 @@ export interface CompilerBackendEmissionSession {
     | ((module: Readonly<IrModule>, failure: Readonly<CompilerRefusalPlaceholderRequest>) => EmittedFile | undefined)
     | undefined;
   /**
-   * Finalizes package-owned output once, after refusal filtering and final facade construction. The session
-   * retains the complete semantic context from `BackendEmitContext.modules`; `finalization.moduleFiles` instead
-   * describes only the selected module outputs that survived, so package files never have to infer that state.
+   * Finalizes retained module output and package-owned output once, after refusal filtering and final facade
+   * construction. The session retains the complete semantic context from `BackendEmitContext.modules`;
+   * `finalization.moduleFiles` instead describes only the selected module outputs that survived, so finalized
+   * files never have to infer that state.
    */
   readonly finalizePackageGraph?:
-    | ((finalization: Readonly<CompilerBackendPackageGraphFinalization>) => readonly CompilerBackendPackageFile[])
+    | ((
+        finalization: Readonly<CompilerBackendPackageGraphFinalization>,
+      ) => CompilerBackendPackageGraphFinalizationResult)
     | undefined;
 }
 

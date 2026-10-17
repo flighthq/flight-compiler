@@ -5,6 +5,7 @@ export type CompilerInvariantCode =
   | 'insufficient-emitted-source-syntax-files'
   | 'insufficient-target-compilation-smoke-files'
   | 'invalid-generated-file-provenance'
+  | 'invalid-module-file-replacement'
   | 'invalid-emitted-source-parser'
   | 'invalid-emitted-source-syntax-diagnostic'
   | 'invalid-target-compilation-smoke-adapter'

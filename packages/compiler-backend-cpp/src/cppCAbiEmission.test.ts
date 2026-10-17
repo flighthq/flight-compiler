@@ -472,18 +472,20 @@ describe('createCppCompilerBackend C ABI package output', () => {
     expect(disabled.emitModule(module)).toEqual(
       backend.emitModule(module, { modules: [module], options: geometryTarget }),
     );
-    expect(enabled.finalizePackageGraph?.(createPackageGraphFinalization(module, enabled.emitModule(module)))).toEqual([
-      expect.objectContaining({
-        file: expect.objectContaining({ path: 'generated/geometry_c.cpp' }),
-        owner: { kind: 'package', packageName: '@flight/geometry' },
-        provenance: [{ name: module.name, packageName: module.packageName, source: module.source }],
-      }),
-      expect.objectContaining({
-        file: expect.objectContaining({ path: 'include/geometry_c.h' }),
-        owner: { kind: 'package', packageName: '@flight/geometry' },
-        provenance: [{ name: module.name, packageName: module.packageName, source: module.source }],
-      }),
-    ]);
+    expect(enabled.finalizePackageGraph?.(createPackageGraphFinalization(module, enabled.emitModule(module)))).toEqual({
+      packageFiles: [
+        expect.objectContaining({
+          file: expect.objectContaining({ path: 'generated/geometry_c.cpp' }),
+          owner: { kind: 'package', packageName: '@flight/geometry' },
+          provenance: [{ name: module.name, packageName: module.packageName, source: module.source }],
+        }),
+        expect.objectContaining({
+          file: expect.objectContaining({ path: 'include/geometry_c.h' }),
+          owner: { kind: 'package', packageName: '@flight/geometry' },
+          provenance: [{ name: module.name, packageName: module.packageName, source: module.source }],
+        }),
+      ],
+    });
   });
 });
 

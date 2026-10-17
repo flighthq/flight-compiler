@@ -190,22 +190,38 @@ describe('compiler backend contracts', () => {
     };
     const session: CompilerBackendEmissionSession = {
       emitModule: () => [],
-      finalizePackageGraph: ({ facade, moduleFiles }) => [
-        {
-          file: { contents: facade.schema, path: 'package.txt' },
-          owner: { kind: 'package', packageName: moduleFiles[0]!.module.packageName },
-          provenance: moduleFiles.map(({ module: owner }) => owner),
-        },
-      ],
+      finalizePackageGraph: ({ facade, moduleFiles }) => ({
+        moduleFileReplacements: moduleFiles.map(({ file: retained, module: owner }) => ({
+          file: { contents: 'final module', path: 'final/module.rs' },
+          module: owner,
+          retainedPath: retained.path,
+        })),
+        packageFiles: [
+          {
+            file: { contents: facade.schema, path: 'package.txt' },
+            owner: { kind: 'package', packageName: moduleFiles[0]!.module.packageName },
+            provenance: moduleFiles.map(({ module: owner }) => owner),
+          },
+        ],
+      }),
     };
 
-    expect(session.finalizePackageGraph?.(finalization)).toEqual([
-      {
-        file: { contents: 'flight-compiler-module-facade/1', path: 'package.txt' },
-        owner: { kind: 'package', packageName: '@flighthq/math' },
-        provenance: [identity],
-      },
-    ]);
+    expect(session.finalizePackageGraph?.(finalization)).toEqual({
+      moduleFileReplacements: [
+        {
+          file: { contents: 'final module', path: 'final/module.rs' },
+          module: identity,
+          retainedPath: 'module.rs',
+        },
+      ],
+      packageFiles: [
+        {
+          file: { contents: 'flight-compiler-module-facade/1', path: 'package.txt' },
+          owner: { kind: 'package', packageName: '@flighthq/math' },
+          provenance: [identity],
+        },
+      ],
+    });
   });
 });
 
