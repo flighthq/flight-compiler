@@ -12927,19 +12927,187 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('Direction::Up');
   });
 
-  it('emits static method as associated function', () => {
+  it('emits exact local static class factories with required and no arguments', () => {
     const output = emitIrModuleRust(
       lower(
         'static-method.ts',
         `export class Factory {
           value: number;
-          constructor() { this.value = 0; }
-          static create(): Factory { return new Factory(); }
+          constructor(value: number) { this.value = value; }
+          static create(value: number): Factory { return new Factory(value); }
         }
-        export function make(): Factory { return Factory.create(); }`,
+        export class EmptyFactory {
+          value = 0;
+          static create(): EmptyFactory { return new EmptyFactory(); }
+        }
+        export function make(value: number): Factory { return Factory.create(value); }
+        export function makeEmpty(): EmptyFactory { return EmptyFactory.create(); }`,
       ).module,
     ).contents;
-    expect(output).toContain('Factory::create()');
+    expect(output).toContain('pub fn create(value: f64) -> Factory');
+    expect(output).toContain('return Factory::new(value);');
+    expect(output).toContain('pub fn create() -> EmptyFactory');
+    expect(output).toContain('return EmptyFactory::new();');
+    expect(output).toContain('pub fn make(value: f64) -> Factory');
+    expect(output).toContain('return Factory::create(value);');
+    expect(output).toContain('pub fn make_empty() -> EmptyFactory');
+    expect(output).toContain('return EmptyFactory::create();');
+  });
+
+  it('emits imported exact static class factories through associated type paths', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/static-factory-provider.ts',
+      `export class Factory {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         static create(value: number): Factory { return new Factory(value); }
+       }
+       export class EmptyFactory {
+         value = 0;
+         static create(): EmptyFactory { return new EmptyFactory(); }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/static-factory-consumer.ts',
+      `import { EmptyFactory, Factory } from './static-factory-provider.js';
+       export function make(value: number): Factory { return Factory.create(value); }
+       export function makeEmpty(): EmptyFactory { return EmptyFactory.create(); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Static-factory-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/static-factory-consumer.ts',
+          },
+          specifier: './static-factory-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/static-factory-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn create(value: f64) -> Factory');
+    expect(providerOutput).toContain('pub fn create() -> EmptyFactory');
+    expect(consumerOutput).toContain('pub fn make(value: f64) -> Factory');
+    expect(consumerOutput).toContain('return Factory::create(value);');
+    expect(consumerOutput).toContain('pub fn make_empty() -> EmptyFactory');
+    expect(consumerOutput).toContain('return EmptyFactory::create();');
+  });
+
+  it('keeps unsupported static signatures and instance return near misses on stable refusal precedence', () => {
+    const cases = [
+      {
+        rule: 'rust-reference-shared-class-member-unrepresented',
+        source: `class Counter { value = 0; }
+          class Factory {
+            value = 0;
+            static adopt(other: Counter): Factory { return other.value > 0 ? new Factory() : new Factory(); }
+          }
+          export function run(): number { return 0; }`,
+      },
+      {
+        rule: 'rust-reference-shared-class-return-unrepresented',
+        source: `class Counter { value = 0; }
+          class Other { value = 1; }
+          class Factory {
+            value = 0;
+            create(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); }
+          }
+          export function run(): number { return 0; }`,
+      },
+      {
+        rule: 'rust-reference-shared-class-return-unrepresented',
+        source: `class Factory { value = 0; create<T>(): Factory { return new Factory(); } }
+          export function run(): number { return 0; }`,
+      },
+      {
+        rule: 'rust-async-method-owner-carrier-unrepresented',
+        source: `class Factory { value = 0; static async create(): Promise<Factory> { return new Factory(); } }
+          export function run(): number { return 0; }`,
+      },
+    ] as const;
+
+    for (const [index, { rule, source }] of cases.entries()) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower(`static-factory-near-miss-${String(index)}.ts`, source).module),
+      );
+      expect(failure.rule, `case ${String(index)}`).toBe(rule);
+      expect(failure.classification, `case ${String(index)}`).toBe('compiler-restriction');
+    }
+  });
+
+  it('salvages an unrelated declaration without dropping an exact static factory or its caller', () => {
+    const source = `export class Factory {
+  value = 0;
+  static create(): Factory { return new Factory(); }
+}
+export function make(): Factory { return Factory.create(); }
+export function broken(value: unknown): { value: number } { return value as { value: number }; }`;
+    const module = lower('static-factory-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'object cast refused for the witness',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const refusal = {
+      message: 'object cast refused for the witness',
+      rule: 'rust-cast-requires-type-directed-lowering',
+      sourceText: source,
+    };
+    const placeholder = emitPlaceholder(module, refusal);
+    if (!placeholder) throw new Error('expected partial static-factory output');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('pub struct Factory');
+    expect(placeholder.contents).toContain('pub fn create() -> Factory');
+    expect(placeholder.contents).toContain('pub fn make() -> Factory');
+    expect(placeholder.contents).toContain('return Factory::create();');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken');
+    expect(placeholder.contents).not.toContain('pub fn broken');
+    expect(emitPlaceholder(module, refusal)).toEqual(placeholder);
   });
 
   it('emits counting method as cast to f64', () => {

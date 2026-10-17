@@ -5439,7 +5439,11 @@ function addRustClassMethodRefusals(
     const methodPlans = createRustSimpleClassMethodPlanningState();
     for (const method of declaration.methods) {
       if (method.async) continue;
-      const potentialReturn = isRustPotentialClassMethodReturn(method, module, modules, moduleResolution);
+      // Static methods use the ordinary associated-function emitter, not the instance-method
+      // shared-class return planner. Keep class-parameter validation below active for them, but do
+      // not turn an otherwise representable static factory return into a planner-owned refusal.
+      const potentialReturn =
+        !method.static && isRustPotentialClassMethodReturn(method, module, modules, moduleResolution);
       if (!potentialReturn && !isRustPotentialClassParameterMethod(method, module)) continue;
       if (
         getRustSimpleClassMethodPlan(

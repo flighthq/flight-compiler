@@ -3011,6 +3011,137 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('leaves exact local and imported static class factories to associated-function lowering deterministically', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/static-factory-provider.ts',
+      `export class Factory {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         static create(value: number): Factory { return new Factory(value); }
+       }
+       export class EmptyFactory {
+         value = 0;
+         static create(): EmptyFactory { return new EmptyFactory(); }
+       }
+       export function local(value: number): Factory { return Factory.create(value); }
+       export function localEmpty(): EmptyFactory { return EmptyFactory.create(); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/static-factory-consumer.ts',
+      `import { EmptyFactory, Factory } from './static-factory-provider.js';
+       export function imported(value: number): Factory { return Factory.create(value); }
+       export function importedEmpty(): EmptyFactory { return EmptyFactory.create(); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Static-factory-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/static-factory-consumer.ts',
+          },
+          specifier: './static-factory-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/static-factory-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const first = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+    const second = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [consumer, provider],
+    });
+
+    expect(second).toEqual(first);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(getModulePlan(first, provider).refusals).toEqual([]);
+    expect(getModulePlan(first, consumer).refusals).toEqual([]);
+  });
+
+  it('keeps unsupported static signatures and instance class returns on their existing refusal boundaries', () => {
+    const exactStatic = lower(
+      'static-factory-control.ts',
+      `class Factory { value = 0; static create(): Factory { return new Factory(); } }
+       export function run(): number { return Factory.create().value; }`,
+    );
+    const staticParameter = lower(
+      'static-factory-parameter.ts',
+      `class Counter { value = 0; }
+       class Factory {
+         value = 0;
+         static adopt(other: Counter): Factory { return other.value > 0 ? new Factory() : new Factory(); }
+       }
+       export function run(): number { return 0; }`,
+    );
+    const instanceCases = [
+      lower(
+        'static-factory-ambiguous-instance.ts',
+        `class Counter { value = 0; }
+         class Other { value = 1; }
+         class Factory { value = 0; create(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); } }
+         export function run(): number { return 0; }`,
+      ),
+      lower(
+        'static-factory-generic-instance.ts',
+        `class Factory { value = 0; create<T>(): Factory { return new Factory(); } }
+         export function run(): number { return 0; }`,
+      ),
+      lower(
+        'static-factory-borrowed-instance.ts',
+        `class Factory { value = 0; create(): Factory { return this; } }
+         export function run(): number { return 0; }`,
+      ),
+    ];
+    const asyncStatic = lower(
+      'static-factory-async.ts',
+      `class Factory { value = 0; static async create(): Promise<Factory> { return new Factory(); } }
+       export function run(): number { return 0; }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [exactStatic] }), exactStatic).refusals,
+    ).toEqual([]);
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [staticParameter] }), staticParameter)
+        .refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
+    );
+    for (const module of instanceCases) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-return-unrepresented' })]),
+      );
+    }
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [asyncStatic] }), asyncStatic).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-async-method-owner-carrier-unrepresented' })]),
+    );
+  });
+
   it('plans exact owned class method returns and activates local and imported result aliases', () => {
     const local = lower(
       'class-method-return.ts',

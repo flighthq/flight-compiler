@@ -2910,7 +2910,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           (candidate) => candidate.static && candidate.name === expression.name,
         );
         if (field || method) {
-          return `${getBindingTargetNameRust(classDeclaration.binding, context)}::${
+          return `${emitExpression(expression.object, context)}::${
             field ? constantRustName(expression.name) : safeRustValueName(expression.name)
           }`;
         }
@@ -22792,8 +22792,18 @@ function getIrExpressionClassDeclarationRust(
 ): Readonly<IrClassDeclaration> | undefined {
   if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
   const binding = object.reference.binding;
-  const declaration = context.module.declarations.find(
+  const local = context.module.declarations.find(
     (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
+  );
+  if (local?.kind === 'class') return local;
+  const imported = context.module.imports
+    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+    .find(({ candidate }) => candidate.binding.id === binding.id);
+  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
+  const target = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context);
+  const declaration = target?.declarations.find(
+    (candidate) =>
+      candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.candidate.imported,
   );
   return declaration?.kind === 'class' ? declaration : undefined;
 }
