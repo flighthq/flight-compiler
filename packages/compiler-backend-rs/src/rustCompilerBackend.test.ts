@@ -3105,11 +3105,53 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 
+  it('deterministically refuses optional interface member assignment at the reference-planning boundary', () => {
+    const source =
+      'interface Box { value: number; } export async function attempt(box: Box | undefined, task: Promise<number>): Promise<number> { try { box?.value = await task; } catch {} return 0; }';
+    const failures = [0, 1].map(() =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleRust(lower('try-catch-assignment-place-refusal.ts', source).module),
+      ),
+    );
+    const expected = {
+      classification: 'compiler-restriction',
+      message:
+        'rust emission failed for @flighthq/math/packages/math/src/try-catch-assignment-place-refusal.ts: class carrier box must be exactly one supported simple class plus exactly null or undefined',
+      rule: 'rust-reference-shared-class-type-unrepresented',
+    };
+
+    expect(
+      failures.map((failure) => ({
+        classification: failure.classification,
+        message: failure.message,
+        rule: failure.rule,
+      })),
+    ).toEqual([expected, expected]);
+  });
+
+  it('retains the direct protected awaited assignment-place refusal for a member target', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'try-catch-assignment-place-refusal.ts',
+          'interface Box { value: number; } export async function attempt(box: Box, task: Promise<number>): Promise<number> { try { box.value = await task; } catch {} return box.value; }',
+        ).module,
+      ),
+    );
+
+    expect({
+      classification: failure.classification,
+      message: failure.message,
+      rule: failure.rule,
+    }).toEqual({
+      classification: 'compiler-restriction',
+      message:
+        'rust emission failed for @flighthq/math/packages/math/src/try-catch-assignment-place-refusal.ts: protected awaited assignment requires one direct binding target and the simple assignment operator',
+      rule: 'rust-async-protected-assignment-place-unrepresented',
+    });
+  });
+
   it.each([
-    [
-      'member target',
-      'interface Box { value: number; } export async function attempt(box: Box, task: Promise<number>): Promise<number> { try { box.value = await task; } catch {} return box.value; }',
-    ],
     [
       'index target',
       'export async function attempt(values: number[], task: Promise<number>): Promise<number> { try { values[0] = await task; } catch {} return 0; }',
@@ -3129,10 +3171,6 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     [
       'binding without an exact elected wrapper',
       'function apply(set: (value: number | undefined) => void): void { set(undefined); } export async function attempt(task: Promise<number>): Promise<number> { let value: number | undefined = undefined; const set = (next: number | undefined): void => { value = next; }; try { value = await task; } catch {} apply(set); return 0; }',
-    ],
-    [
-      'optional member target',
-      'interface Box { value: number; } export async function attempt(box: Box | undefined, task: Promise<number>): Promise<number> { try { box?.value = await task; } catch {} return 0; }',
     ],
     [
       'dynamic key target',
