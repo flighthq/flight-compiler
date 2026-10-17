@@ -8557,6 +8557,9 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
     expect(output).toContain('enum Shape');
+    expect(output).toContain('if s.kind() == "circle".to_owned() {');
+    expect(output).toContain('return s.as_circle().radius;');
+    expect(output).toContain('return s.as_square().side;');
     expect(output).toContain('Circle(');
     expect(output).toContain('Rect(');
     expect(output).toContain('fn as_circle(');
@@ -34646,7 +34649,7 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
            const raw: Choice = choice;
            box.choice = choice;
            consumeChoice(choice);
-           return local.value + raw.kind.length;
+           return local.value + consumeChoice(raw);
          } else {
            return consumeBeta(choice);
          }
@@ -34667,11 +34670,12 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain(`box_.alpha = ${alpha}`);
     expect(output).toContain(`consume_alpha(${alpha})`);
     expect(output).toContain(`return consume_beta(${beta});`);
-    expect(output).toContain('let raw: Choice = choice.clone();');
+    expect(output).toContain('let raw_: Choice = choice.clone();');
     expect(output).toContain('box_.choice = choice.clone()');
     expect(output).toContain('consume_choice(choice.clone())');
+    expect(output).toContain('consume_choice(raw_)');
     expect(output.match(/if matches!\(&choice, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(2);
-    expect(output.match(/choice\.kind\(\) ==/gu)).toHaveLength(0);
+    expect(output).not.toContain('choice.kind() ==');
     expect(output.match(/Choice::Alpha\(value\) => value\.clone\(\)/gu)).toHaveLength(4);
     expect(output.match(/Choice::Beta\(value\) => value\.clone\(\)/gu)).toHaveLength(1);
     expect(output.match(/return choice\.clone\(\);/gu)).toHaveLength(2);
@@ -34750,10 +34754,10 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).toContain(`box_.alpha = ${alpha}`);
     expect(output).toContain(`consume_alpha(${alpha})`);
     expect(output).toContain(`result = consume_beta(${beta})`);
-    expect(output).toContain('let raw: Choice = choice.clone();');
+    expect(output).toContain('let raw_: Choice = choice.clone();');
     expect(output).toContain('box_.choice = choice.clone()');
     expect(output).toContain('consume_choice(choice.clone())');
-    expect(output).toContain('consume_choice(raw)');
+    expect(output).toContain('consume_choice(raw_)');
     expect(output.match(/if matches!\(&choice, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(2);
     expect(output).not.toContain('switch_value');
     expect(output).not.toContain('choice.kind() ==');
@@ -35076,7 +35080,7 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
 
   it.each([
     [
-      'a guard clause without an explicit else',
+      'a guard clause that consumes the narrowed whole arm',
       `interface Alpha { readonly kind: 'alpha'; value: number }
        interface Beta { readonly kind: 'beta'; count: number }
        type Choice = Alpha | Beta;
