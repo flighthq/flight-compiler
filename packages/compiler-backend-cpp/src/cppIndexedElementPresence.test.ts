@@ -104,9 +104,7 @@ describe('emitIrModuleCpp indexed element presence', () => {
     const equalNullTest = emit(
       `export function test(slots: unknown[], index: number): boolean { return slots[index] === null; }`,
     );
-    expect(returned(equalNullTest)).toBe(
-      indexed('indexed_presence.has_value() && indexed_presence.value().is_null()'),
-    );
+    expect(returned(equalNullTest)).toBe(indexed('indexed_presence.has_value() && indexed_presence.value().is_null()'));
     expect(returned(undefinedTest)).toBe(
       indexed('!indexed_presence.has_value() || indexed_presence.value().is_undefined()'),
     );
