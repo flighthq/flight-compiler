@@ -840,6 +840,148 @@ describe('@flighthq/tool-compiler output path collision attribution', () => {
   });
 });
 
+describe('@flighthq/tool-compiler explicit re-export cycles', () => {
+  const cycleSource = (file: string, contents: string) => ({
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource(`/flight/packages/math/src/${file}`, contents),
+    upstreamDirectory: '/flight',
+  });
+  const cycleSources = () => [
+    cycleSource('a.ts', "export { value } from './b.js';"),
+    cycleSource('b.ts', "export { value } from './a.js';"),
+  ];
+  const cycleEdges = () => [
+    {
+      importer: { name: 'A', packageName: '@scope/math', source: 'packages/math/src/a.ts' },
+      specifier: './b.js',
+      target: { name: 'B', packageName: '@scope/math', source: 'packages/math/src/b.ts' },
+    },
+    {
+      importer: { name: 'B', packageName: '@scope/math', source: 'packages/math/src/b.ts' },
+      specifier: './a.js',
+      target: { name: 'A', packageName: '@scope/math', source: 'packages/math/src/a.ts' },
+    },
+  ];
+  const compileCycle = (sources: ReturnType<typeof cycleSources>, bestEffort = false) =>
+    compileTypeScriptPackageGraph({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      ...(bestEffort ? { bestEffort: true } : {}),
+      graph: {
+        entries: [],
+        moduleDependencies: cycleEdges(),
+        packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources,
+    });
+  const cycleRefusals = (result: ReturnType<typeof compileCycle>) =>
+    result.report.modules.flatMap((module) => module.refusals);
+
+  it('surfaces an ungrounded cycle in strict reports deterministically', () => {
+    const first = compileCycle(cycleSources());
+    const second = compileCycle([...cycleSources()].reverse());
+
+    for (const result of [first, second]) {
+      expect(result.compilation.files).toEqual([]);
+      const refusals = cycleRefusals(result);
+      expect(refusals).toHaveLength(2);
+      for (const refusal of refusals) {
+        expect(refusal).toMatchObject({
+          classification: 'compiler-restriction',
+          code: 'unsupported-ir',
+          rule: 'rust-export-name-ungrounded',
+          stage: 'emission',
+        });
+        expect(refusal.message).toContain('has no grounded declaration');
+      }
+      expect(result.report.publicBindings).toBeDefined();
+    }
+    expect(cycleRefusals(second)).toEqual(cycleRefusals(first));
+    expect(second.report.publicBindings).toEqual(first.report.publicBindings);
+  });
+
+  it('leaves comment stubs and refused public bindings in best-effort', () => {
+    const first = compileCycle(cycleSources(), true);
+    const second = compileCycle([...cycleSources()].reverse(), true);
+
+    for (const result of [first, second]) {
+      expect(result.compilation.files.map((file) => file.path)).toEqual(['a.rs', 'b.rs', 'lib.rs']);
+      for (const file of result.compilation.files.filter((candidate) => candidate.path !== 'lib.rs')) {
+        expect(file.contents).toContain('BEST-EFFORT PLACEHOLDER');
+        expect(file.contents).toContain('has no grounded declaration');
+        expect(file.contents).not.toContain('// PARTIAL:');
+      }
+      expect(result.report.modules.map((module) => module.status)).toEqual(['refused', 'refused']);
+      expect(result.report.bestEffort?.modules.map((module) => [module.status, module.path])).toEqual([
+        ['refused-placeholder', 'a.rs'],
+        ['refused-placeholder', 'b.rs'],
+      ]);
+    }
+    expect(second.compilation.files).toEqual(first.compilation.files);
+    expect(second.report.bestEffort).toEqual(first.report.bestEffort);
+  });
+
+  it('keeps the cycle refusal ahead of a colliding source path', () => {
+    const sources = () => [
+      cycleSource('myWidget.ts', "export { value } from './my_widget.js';"),
+      cycleSource('my_widget.ts', "export { value } from './myWidget.js';"),
+    ];
+    const collisionEdges = () => [
+      {
+        importer: { name: 'MyWidget', packageName: '@scope/math', source: 'packages/math/src/myWidget.ts' },
+        specifier: './my_widget.js',
+        target: { name: 'My_widget', packageName: '@scope/math', source: 'packages/math/src/my_widget.ts' },
+      },
+      {
+        importer: { name: 'My_widget', packageName: '@scope/math', source: 'packages/math/src/my_widget.ts' },
+        specifier: './myWidget.js',
+        target: { name: 'MyWidget', packageName: '@scope/math', source: 'packages/math/src/myWidget.ts' },
+      },
+    ];
+    const strict = compileTypeScriptPackageGraph({
+      backend: createRustCompilerBackend(),
+      backendOptions: {},
+      graph: {
+        entries: [],
+        moduleDependencies: collisionEdges(),
+        packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources: sources(),
+    });
+
+    expect(strict.compilation.files).toEqual([]);
+    const refusals = cycleRefusals(strict);
+    expect(refusals).toHaveLength(2);
+    for (const refusal of refusals) {
+      expect(refusal).toMatchObject({ rule: 'rust-export-name-ungrounded', stage: 'emission' });
+      expect(refusal.code).not.toBe('duplicate-emitted-path');
+    }
+    expect(strict.report.publicBindings).toBeDefined();
+
+    let failure: unknown;
+    try {
+      compileTypeScriptPackageGraph({
+        backend: createRustCompilerBackend(),
+        backendOptions: {},
+        bestEffort: true,
+        graph: {
+          entries: [],
+          moduleDependencies: collisionEdges(),
+          packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+          schema: 'flight-compiler-package-graph/1',
+        },
+        sources: sources(),
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: 'rust-source-tree-module-collision', kind: 'compiler-backend-finalization' });
+  });
+});
+
 describe('@flighthq/tool-compiler package subpath imports', () => {
   const compile = (
     consumerSource: string,
