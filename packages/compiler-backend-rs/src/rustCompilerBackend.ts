@@ -23737,6 +23737,10 @@ function emitGeneralUnionCastRust(
       return emitIrCastSingleAlternativeUnionRust(expression, source, single, context);
     }
   }
+  if (!destination) {
+    const wholeArm = emitRustWholeArmUnionAlternativeExtractionRust(expression, context);
+    if (wholeArm) return wholeArm;
+  }
   if (!source || !destination) return undefined;
   if (source.enumName === destination.enumName) return undefined;
   // Dropping the outer absence is the `present` assertion: the source must hold a value, and a missing
@@ -23772,6 +23776,84 @@ function emitGeneralUnionCastRust(
 // `Option<alternative>`, so the assertion either selects the alternative or reports absence -- and any
 // other source alternative is the assertion being wrong at runtime. A dual-sentinel destination is not
 // this shape (Option has one absence channel), which is the same rule the carrier comparison follows.
+// A sentinel-free declaration-owned union asserted to one of its declared record alternatives is an
+// exact whole-arm selection: the carrier is a closed enum, and any other variant is the assertion
+// being wrong at runtime. Identity, not shape, decides the alternative, and the variant name comes
+// from the same general-union naming every carrier declaration and construction uses.
+function emitRustWholeArmUnionAlternativeExtractionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  const sourceType = inferIrExpressionTypeRust(expression.expression, context);
+  if (!sourceType) return undefined;
+  const resolvedSource = resolveIrCastUnionTypeRust(sourceType, context);
+  if (resolvedSource.kind !== 'union') return undefined;
+  const flattened = flattenIrUnionTypesRust(resolvedSource.types);
+  if (flattened.some((member) => member.kind === 'null' || member.kind === 'undefined')) return undefined;
+  const members = flattened.filter((member) => member.kind !== 'never');
+  if (members.length < 2) return undefined;
+  // Every named alternative must resolve to one bare record declaration. A class or reference-planned
+  // payload does not resolve to a record and keeps the existing refusal.
+  for (const member of members) {
+    if (member.kind === 'primitive' || member.kind === 'literal') continue;
+    if (!getRustWholeArmNamedRecordIdentityRust(member, context)) return undefined;
+  }
+  const destination = resolveIrTypeAliasValueRust(expression.type, context, new Set());
+  const destinationIdentity = getRustWholeArmNamedRecordIdentityRust(destination, context);
+  if (!destinationIdentity) return undefined;
+  const names = new Map<string, number>();
+  let matchedVariant: string | undefined;
+  for (const member of members) {
+    const preferred = getGeneralUnionVariantNameRust(member, context);
+    const occurrence = (names.get(preferred) ?? 0) + 1;
+    names.set(preferred, occurrence);
+    const name = occurrence === 1 ? preferred : `${preferred}${String(occurrence)}`;
+    if (member.kind !== 'named') continue;
+    if (getRustWholeArmNamedRecordIdentityRust(member, context) !== destinationIdentity) continue;
+    if (matchedVariant !== undefined) return undefined;
+    matchedVariant = name;
+  }
+  if (!matchedVariant) return undefined;
+  const [first, second, ...rest] = members;
+  if (!first || !second) return undefined;
+  // A named union alias is emitted under its own name; an inline union takes the generated carrier
+  // the union declaration itself uses.
+  const carrier =
+    sourceType.kind === 'named'
+      ? emitType(sourceType, context)
+      : emitType({ kind: 'union', types: [first, second, ...rest] }, context);
+  const operand = emitOwnedOperandRust(expression.expression, context);
+  return `match ${operand} { ${carrier}::${matchedVariant}(value) => value, _ => panic!("asserted union alternative is not present in the value"), }`;
+}
+
+// The canonical declaration identity of one bare named record type, following aliases and any
+// import/reexport lane regardless of the binding's space (an imported interface can carry a
+// value-space import binding). Classes, generics, paths, and non-record declarations answer nothing.
+function getRustWholeArmNamedRecordIdentityRust(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(
+    type.reference.binding as Readonly<IrTypeBindingIdentity>,
+    context,
+    context.module,
+    new Set(),
+  );
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  const record =
+    (declaration.kind === 'interface' && declaration.typeParameters.length === 0) ||
+    (declaration.kind === 'typeAlias' && declaration.typeParameters.length === 0 && declaration.type.kind === 'object');
+  if (!record) return undefined;
+  return `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+}
+
 function emitIrCastSingleAlternativeUnionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   source: Readonly<RustCastUnionCarrier>,

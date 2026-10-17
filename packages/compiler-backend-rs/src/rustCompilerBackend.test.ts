@@ -31246,6 +31246,199 @@ describe('emitIrModuleRust ambient constructor argument derivation', () => {
   });
 });
 
+describe('emitIrModuleRust whole-arm union member assertions', () => {
+  it('selects a record alternative from an inline union and an alias-chained destination', () => {
+    const result = lower(
+      'whole-arm-union.ts',
+      `export interface Runtime { readonly kind: string; }
+       type RuntimeAlias = Runtime;
+       type NestedAlias = RuntimeAlias;
+       type Slot = string | Runtime;
+       export function narrowNested(value: string | Runtime): NestedAlias {
+         return value as NestedAlias;
+       }
+       export function narrowFromAliasedUnion(value: Slot): RuntimeAlias {
+         return value as RuntimeAlias;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      'return match value { AnonymousUnion::Runtime(value) => value, _ => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output).toContain(
+      'return match value { Slot::Runtime(value) => value, _ => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output.match(/AnonymousUnion::Runtime\(value\) => value/gu)).toHaveLength(1);
+    expect(output.match(/Slot::Runtime\(value\) => value/gu)).toHaveLength(1);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('matches through imported and re-exported declarations by identity', () => {
+    const provider = lower('whole-arm-provider.ts', 'export interface Runtime { readonly kind: string; }').module;
+    const barrel = lower('whole-arm-barrel.ts', "export { Runtime } from './whole-arm-provider.js';").module;
+    const consumer = lower(
+      'whole-arm-consumer.ts',
+      `import { Runtime } from './whole-arm-provider.js';
+       import { Runtime as Reexported } from './whole-arm-barrel.js';
+       type Slot = string | Runtime;
+       export function direct(value: Slot): Runtime { return value as Runtime; }
+       export function reexported(value: string | Reexported): Reexported { return value as Reexported; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './whole-arm-provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './whole-arm-barrel.js',
+            target: getRustTestModuleIdentity(barrel),
+          },
+          {
+            importer: getRustTestModuleIdentity(barrel),
+            specifier: './whole-arm-provider.js',
+            target: getRustTestModuleIdentity(provider),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [provider, barrel, consumer],
+      options: {},
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain(
+      'return match value { Slot::Runtime(value) => value, _ => panic!("asserted union alternative is not present in the value"), };',
+    );
+    expect(output).toContain(
+      'return match value { AnonymousUnion::Reexported(value) => value, _ => panic!("asserted union alternative is not present in the value"), };',
+    );
+  });
+
+  it('evaluates a call source once and clones a reused binding', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'whole-arm-evaluation.ts',
+        `interface Runtime { readonly kind: string; }
+         type Slot = string | Runtime;
+         type RuntimeAlias = Runtime;
+         function pick(value: Slot): Slot { return value; }
+         export function single(value: Slot): Runtime { return pick(value) as Runtime; }
+         export function reused(value: Slot): string {
+           const first = value as RuntimeAlias;
+           const second = value as RuntimeAlias;
+           return first.kind + second.kind;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/match pick\(value\)/gu)).toHaveLength(1);
+    expect(output.match(/match value\.clone\(\)/gu)).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      name: 'a structural lookalike',
+      source: `interface Runtime { readonly kind: string; }
+               interface Other { readonly kind: string; }
+               type Slot = string | Runtime;
+               export function bad(value: Slot): Other { return value as Other; }`,
+    },
+    {
+      name: 'a class alternative',
+      source: `class Runtime { kind = ""; }
+               type Slot = string | Runtime;
+               export function bad(value: Slot): Runtime { return value as Runtime; }`,
+    },
+    {
+      name: 'a generic alternative',
+      source: `interface Box<T> { readonly value: T; }
+               interface Runtime { readonly kind: string; }
+               type Slot = string | Box<number>;
+               export function bad(value: Slot): Box<number> { return value as Box<number>; }`,
+    },
+    {
+      name: 'a sentinel-bearing source',
+      source: `interface Runtime { readonly kind: string; }
+               type Maybe = string | Runtime | undefined;
+               type RuntimeAlias = Runtime;
+               export function bad(value: Maybe): RuntimeAlias { return value as RuntimeAlias; }`,
+    },
+    {
+      name: 'a scalar destination',
+      source: `interface Runtime { readonly kind: string; }
+               type Slot = string | Runtime;
+               export function bad(value: Slot): string { return value as string; }`,
+    },
+  ])('keeps $name on the cast refusal', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('whole-arm-refused.ts', source).module))).toBe(
+      'rust-cast-requires-type-directed-lowering',
+    );
+  });
+
+  it('salvages an unrelated declaration while keeping the whole-arm assertion', () => {
+    const module = lower(
+      'whole-arm-salvage.ts',
+      `export interface Runtime { readonly kind: string; }
+type RuntimeAlias = Runtime;
+type Slot = string | Runtime;
+
+export function narrow(value: Slot): RuntimeAlias { return value as RuntimeAlias; }
+interface Point { value: number }
+export function wrong(point: Point): RuntimeAlias { return point as RuntimeAlias; }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-cast-requires-type-directed-lowering',
+          message: 'structural assertion refused',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'structural assertion refused' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('Slot::Runtime(value) => value');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: function narrow');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function wrong -- source line 7');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a whole-arm union member assertion against a constructed variant', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'whole-arm-native.ts',
+        `export interface Runtime { readonly kind: string; }
+         type RuntimeAlias = Runtime;
+         type Slot = string | Runtime;
+         export function narrow(value: Slot): RuntimeAlias { return value as RuntimeAlias; }`,
+      ).module,
+    ).contents;
+
+    runRustSource(
+      output,
+      'assert_eq!(narrow(AnonymousUnion::Runtime(Runtime { kind: "x".to_owned() })).kind, "x".to_owned());',
+    );
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(

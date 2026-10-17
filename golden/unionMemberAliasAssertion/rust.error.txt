@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/unionMemberAliasAssertion.ts: cast to named requires Rust type-directed lowering
