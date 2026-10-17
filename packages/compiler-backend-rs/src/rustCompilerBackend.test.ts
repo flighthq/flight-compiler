@@ -23979,3 +23979,117 @@ describe('emitIrModuleRust array map and forEach', () => {
     );
   });
 });
+
+describe('emitIrModuleRust exact array callback native checkpoint', () => {
+  it.skipIf(!rustcAvailable)(
+    'runs findIndex/some/every/find/filter/map/forEach across carriers, arities, empties, reuse, and shared borrows',
+    () => {
+      const result = lower(
+        'array-callback-native.ts',
+        `export function someFlag(flags: boolean[]): boolean {
+           return flags.some((flag: boolean): boolean => flag);
+         }
+         export function everyFlag(flags: boolean[]): boolean {
+           return flags.every((flag: boolean): boolean => flag);
+         }
+         export function findIndexPair(values: number[]): number {
+           return values.findIndex((value: number, index: number): boolean => value === index + 2);
+         }
+         export function findMatch(values: string[]): string | undefined {
+           return values.find((value: string): boolean => value === "match");
+         }
+         export function filterMatch(values: string[]): number {
+           return values.filter((value: string, index: number): boolean => index >= 0 && value !== "skip").length;
+         }
+         export function mapStrings(values: string[]): string[] {
+           return values.map((value: string, index: number): string => index >= 0 ? value : "fallback");
+         }
+         export function mapFlags(values: boolean[]): number[] {
+           return values.map((flag: boolean): number => flag ? 1 : 0);
+         }
+         export function eachSum(values: number[]): number {
+           let total: number = 0;
+           values.forEach((value: number, index: number): void => {
+             total = total + value + index;
+           });
+           return total;
+         }
+         export function reuse(values: number[]): number {
+           const first = values.some((value: number): boolean => value === 2);
+           const second = values.every((value: number): boolean => value > 0);
+           const third = values.filter((value: number): boolean => value > 1).length;
+           const fourth = values.map((value: number): number => value * 2).length;
+           const fifth = values.find((value: number): boolean => value === 1);
+           return (first ? 1 : 0) * 10000 + (second ? 1 : 0) * 1000 + third * 100 + fourth * 10 + (fifth ?? 0);
+         }
+         export function shared(): number {
+           const values = [1, 2, 3];
+           const alias = values;
+           const have = alias.some((value: number): boolean => value === 2);
+           const kept = values.filter((value: number): boolean => value > 1).length;
+           const found = values.find((value: number): boolean => value === 3);
+           values.push(4);
+           return (have ? 1 : 0) * 1000 + kept * 100 + (found ?? 0) * 10 + alias.length;
+         }
+         export function emptySome(values: number[]): boolean {
+           return values.some((value: number): boolean => true);
+         }
+         export function emptyEvery(values: number[]): boolean {
+           return values.every((value: number): boolean => true);
+         }
+         export function emptyFind(values: number[]): boolean {
+           return values.find((value: number): boolean => true) === undefined;
+         }
+         export function emptyFindIndex(values: number[]): number {
+           return values.findIndex((value: number): boolean => true);
+         }
+         export function emptyFilter(values: number[]): number {
+           return values.filter((value: number): boolean => true).length;
+         }
+         export function emptyMap(values: number[]): number {
+           return values.map((value: number): number => value).length;
+         }
+         export function emptyEach(values: number[]): number {
+           let count: number = 0;
+           values.forEach((value: number): void => {
+             count = count + 1;
+           });
+           return count;
+         }`,
+      );
+
+      expect(result.diagnostics).toEqual([]);
+      const output = emitIrModuleRust(result.module).contents;
+      runRustSource(
+        output,
+        [
+          'assert!(some_flag(vec![false, true, false]));',
+          'assert!(!some_flag(vec![]));',
+          'assert!(every_flag(vec![true, true]));',
+          'assert!(!every_flag(vec![true, false]));',
+          'assert!(every_flag(vec![]));',
+          'assert_eq!(find_index_pair(vec![1.0, 3.0, 5.0]), 1.0);',
+          'assert_eq!(find_index_pair(vec![]), -1.0);',
+          'assert_eq!(find_match(vec!["other".to_owned(), "match".to_owned()]).unwrap(), "match".to_owned());',
+          'assert!(find_match(vec![]).is_none());',
+          'assert_eq!(filter_match(vec!["a".to_owned(), "skip".to_owned(), "b".to_owned()]), 2.0);',
+          'assert_eq!(filter_match(vec![]), 0.0);',
+          'assert_eq!(map_strings(vec!["a".to_owned(), "b".to_owned()]), vec!["a".to_owned(), "b".to_owned()]);',
+          'assert_eq!(map_strings(vec![]), Vec::<String>::new());',
+          'assert_eq!(map_flags(vec![true, false]), vec![1.0, 0.0]);',
+          'assert_eq!(each_sum(vec![1.0, 2.0, 3.0]), 9.0);',
+          'assert_eq!(each_sum(vec![]), 0.0);',
+          'assert_eq!(reuse(vec![1.0, 2.0, 3.0]), 11231.0);',
+          'assert_eq!(shared(), 1234.0);',
+          'assert!(!empty_some(vec![]));',
+          'assert!(empty_every(vec![]));',
+          'assert!(empty_find(vec![]));',
+          'assert_eq!(empty_find_index(vec![]), -1.0);',
+          'assert_eq!(empty_filter(vec![]), 0.0);',
+          'assert_eq!(empty_map(vec![]), 0.0);',
+          'assert_eq!(empty_each(vec![]), 0.0);',
+        ].join(' '),
+      );
+    },
+  );
+});
