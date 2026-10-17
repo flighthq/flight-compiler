@@ -132,6 +132,8 @@ jobs:
       - run: npm ci
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Run the required Rust maturity checkpoint
+        run: npm run rust:maturity:checkpoint
       - name: Compile every emitted Rust fixture
         run: npm run compile:check -- --target rust
       - name: Run every eligible Rust source oracle

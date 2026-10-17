@@ -122,6 +122,28 @@ describe('collectCiWorkflowIssues', () => {
     );
   });
 
+  it('requires the Rust maturity checkpoint after toolchain installation and before target lanes', () => {
+    const missing = mutated('npm run rust:maturity:checkpoint', 'npm run typecheck');
+    const beforeInstall = mutated(
+      '      - name: Install the pinned Rust toolchain\n        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update\n      - name: Run the required Rust maturity checkpoint\n        run: npm run rust:maturity:checkpoint',
+      '      - name: Run the required Rust maturity checkpoint\n        run: npm run rust:maturity:checkpoint\n      - name: Install the pinned Rust toolchain\n        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update',
+    );
+    const afterCompile = mutated(
+      '      - name: Run the required Rust maturity checkpoint\n        run: npm run rust:maturity:checkpoint\n      - name: Compile every emitted Rust fixture\n        run: npm run compile:check -- --target rust',
+      '      - name: Compile every emitted Rust fixture\n        run: npm run compile:check -- --target rust\n      - name: Run the required Rust maturity checkpoint\n        run: npm run rust:maturity:checkpoint',
+    );
+
+    expect(collectCiWorkflowIssues(ciFile, missing)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus has 0 maturity checkpoint steps, expected 1`,
+    );
+    expect(collectCiWorkflowIssues(ciFile, beforeInstall)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus runs its maturity checkpoint before installing rustc`,
+    );
+    expect(collectCiWorkflowIssues(ciFile, afterCompile)).toContain(
+      `${ciFile}: Rust job rust-generated-corpus runs compile or oracle before its maturity checkpoint`,
+    );
+  });
+
   it('reports Rust compile and oracle commands that do not select exactly Rust', () => {
     const contents = mutated('npm run compile:check -- --target rust', 'npm run compile:check').replace(
       'npm run oracle:check -- --target rust',

@@ -51,6 +51,23 @@ export function collectCiWorkflowIssues(name: string, contents: string): readonl
       `${name}: Rust job ${rustTargetJob} has ${String(installSteps.length)} pinned toolchain install steps, expected 1`,
     );
   }
+  const maturitySteps = rustJob.steps.filter((step) => rustMaturityCheckpointPattern.test(getStepRun(step)));
+  if (maturitySteps.length !== 1) {
+    issues.push(
+      `${name}: Rust job ${rustTargetJob} has ${String(maturitySteps.length)} maturity checkpoint steps, expected 1`,
+    );
+  } else {
+    const maturityIndex = rustJob.steps.indexOf(maturitySteps[0]!);
+    if (installSteps.length === 1 && maturityIndex < rustJob.steps.indexOf(installSteps[0]!)) {
+      issues.push(`${name}: Rust job ${rustTargetJob} runs its maturity checkpoint before installing rustc`);
+    }
+    const earlierTargetLane = rustTargetLanes.some((lane) =>
+      rustJob.steps.some((step, index) => index < maturityIndex && lane.pattern.test(getStepRun(step))),
+    );
+    if (earlierTargetLane) {
+      issues.push(`${name}: Rust job ${rustTargetJob} runs compile or oracle before its maturity checkpoint`);
+    }
+  }
   for (const lane of rustTargetLanes) {
     const steps = rustJob.steps.filter((step) => lane.pattern.test(getStepRun(step)));
     if (steps.length !== 1) {
@@ -97,6 +114,7 @@ const cppTargetLanes = [
 ] as const;
 const rustTargetJob = 'rust-generated-corpus';
 const rustTargetLanes = cppTargetLanes;
+const rustMaturityCheckpointPattern = /\bnpm run rust:maturity:checkpoint(?:\s|$)/u;
 const rustToolchainInstallPattern = /\brustup toolchain install\s+["']?\$RUSTUP_TOOLCHAIN["']?(?:\s|$)/u;
 const rustToolchainVersionPattern = /^\d+\.\d+\.\d+$/u;
 const targetPattern = /(?:^|\s)--target(?:=|\s+)([^\s]+)/gu;

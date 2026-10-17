@@ -54,6 +54,7 @@
     "rehydrate": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js",
     "rehydrate:check": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js --check",
     "rehydrate:update": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js --update",
+    "rust:maturity:checkpoint": "npm run _scripts:build --silent && node ./.script-build/rustMaturityCheckpoint.js",
     "readiness:json": "npm run _scripts:build --silent && node ./.script-build/readinessReport.js --json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
