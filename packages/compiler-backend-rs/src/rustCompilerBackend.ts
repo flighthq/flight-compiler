@@ -4219,7 +4219,11 @@ function emitArraySearchPredicateCallRust(
     callback.kind === 'function'
       ? `let mut ${callbackName} = ${emitExpression(callback, context)};`
       : `let ${callbackName} = &${emitExpression(callback, context)};`;
-  const predicate = `|(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})`;
+  // Iterator::find and Iterator::filter hand their predicate a reference to the enumerated tuple, so a
+  // plain tuple pattern would bind `&usize` and `&&T` through match ergonomics and the callback would
+  // receive references. The explicit `&(...)` pattern copies the index and leaves the element as `&T`,
+  // which is what `element.clone()` and `index as f64` expect.
+  const predicate = `|&(${indexName}, ${elementName})| (${callbackName})(${arguments_.join(', ')})`;
   const search =
     member === 'find'
       ? `${valuesName}.iter().enumerate().find(${predicate}).map(|(_index, element)| element.clone())`

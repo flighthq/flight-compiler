@@ -23787,7 +23787,10 @@ describe('emitIrModuleRust array find and filter', () => {
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('.iter().enumerate().find(');
     expect(output).toContain('.iter().enumerate().filter(');
-    expect(output).toContain('(array_find_callback)(array_find_element.clone(), array_find_index as f64)');
+    expect(output).toContain(
+      '|&(array_find_index, array_find_element)| (array_find_callback)(array_find_element.clone(), array_find_index as f64)',
+    );
+    expect(output).toContain('|&(array_filter_index, array_filter_element)| (array_filter_callback)(');
     expect(output).toContain('.map(|(_index, element)| element.clone())');
     expect(output).toContain('.map(|(_index, element)| element.clone()).collect::<Vec<_>>()');
     expect(output).not.toContain('into_iter().find');
