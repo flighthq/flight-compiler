@@ -237,6 +237,12 @@ interface IrClassMethodParameterPlanRust {
       representation: 'borrowed-class' | 'mutable-borrowed-class';
     }>
   >;
+  readonly returnClass?:
+    | Readonly<{
+        classType: Readonly<IrType>;
+        representation: 'shared-ref-cell-class';
+      }>
+    | undefined;
 }
 
 interface RustAsyncTryCompletionEvidence {
@@ -1299,20 +1305,38 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
         '  }',
       ];
     }
+    const methodPlan = getIrClassMethodParameterPlanRust(method, declaration, context.module, context);
+    const sharedClassReturnRepresentation = methodPlan?.returnClass?.representation;
+    const methodContext: EmitContext = {
+      ...context,
+      enclosingReturnType: method.returns,
+      returnsAbsent: hasIrTypeAbsentMember(method.returns),
+      returnsSharedClass: sharedClassReturnRepresentation === 'shared-ref-cell-class',
+      sharedClassReturnRepresentation,
+    };
+    if (sharedClassReturnRepresentation) {
+      methodContext.needsRcImport.add('Rc');
+      methodContext.needsRefCellImport.add('RefCell');
+    }
     // Rust has no properties, so an accessor is a method. A setter takes the receiver mutably and is
     // named apart from the getter, because Rust has one namespace for both and the source had two.
     const target = getIrClassMethodTargetNameRust(method);
     const receiver = method.accessor === 'set' || mutatingMethodNames.has(target) ? '&mut self' : '&self';
     const parameters = [
       ...(method.static ? [] : [receiver]),
-      ...method.parameters.map((parameter) => emitParameter(parameter, context)),
+      ...method.parameters.map((parameter) => emitParameter(parameter, methodContext)),
     ].join(', ');
     // A setter yields nothing. The source wrote no return type and the neutral model kept that
     // unknown, but the accessor contract already decides it.
-    const returns = method.accessor === 'set' ? '()' : emitType(method.returns, context);
+    const returns =
+      method.accessor === 'set'
+        ? '()'
+        : sharedClassReturnRepresentation
+          ? emitSharedClassCarrierTypeRust(method.returns, sharedClassReturnRepresentation, methodContext)
+          : emitType(method.returns, methodContext);
     return [
-      `  ${method.visibility === 'public' && !traitMethodNames.has(method.name) ? 'pub ' : ''}fn ${target}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${returns} {`,
-      ...indentSourceLines(emitStatements(method.body, context), 2),
+      `  ${method.visibility === 'public' && !traitMethodNames.has(method.name) ? 'pub ' : ''}fn ${target}${emitTypeParameters(method.typeParameters, methodContext)}(${parameters}) -> ${returns} {`,
+      ...indentSourceLines(emitStatements(method.body, methodContext), 2),
       '  }',
     ];
   };
@@ -7446,11 +7470,12 @@ function getRustSharedClassReturnCallRepresentationRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): RustSharedClassRepresentation | undefined {
-  return expression.kind === 'call' &&
-    expression.callee.kind === 'identifier' &&
-    expression.callee.reference.kind === 'binding'
-    ? context.sharedClassReturnRepresentations.get(expression.callee.reference.binding.id)
-    : undefined;
+  if (expression.kind !== 'call') return undefined;
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
+    const representation = context.sharedClassReturnRepresentations.get(expression.callee.reference.binding.id);
+    if (representation) return representation;
+  }
+  return getIrClassMethodCallParameterPlanRust(expression, context)?.plan.returnClass?.representation;
 }
 
 function getRustSharedClassBindingRepresentationRust(
@@ -7831,6 +7856,14 @@ function getIrClassMethodParameterPlanRust(
   module: Readonly<IrModule>,
   context: EmitContext,
 ): IrClassMethodParameterPlanRust | undefined {
+  const returnRepresentation = getRustSharedClassTypeRepresentationRust(method.returns, context);
+  const returnClass =
+    returnRepresentation === 'shared-ref-cell-class'
+      ? ({
+          classType: getRustSharedClassPayloadTypeRust(method.returns, returnRepresentation, context),
+          representation: returnRepresentation,
+        } as const)
+      : undefined;
   if (
     method.abstract ||
     method.accessor !== undefined ||
@@ -7839,13 +7872,18 @@ function getIrClassMethodParameterPlanRust(
     method.overloads.length > 0 ||
     method.static ||
     method.typeParameters.length > 0 ||
-    method.returns.kind !== 'primitive' ||
-    (method.returns.name !== 'boolean' &&
-      method.returns.name !== 'number' &&
-      method.returns.name !== 'string' &&
-      method.returns.name !== 'void')
+    (!returnClass &&
+      (method.returns.kind !== 'primitive' ||
+        (method.returns.name !== 'boolean' &&
+          method.returns.name !== 'number' &&
+          method.returns.name !== 'string' &&
+          method.returns.name !== 'void')))
   ) {
     return undefined;
+  }
+  if (returnClass) {
+    const location = getIrClassDeclarationLocationForTypeRust(returnClass.classType, context, module);
+    if (!location || !isIrSimpleMethodParameterClassRust(location.declaration)) return undefined;
   }
   const optionalClassParameters = new Map<
     number,
@@ -7913,6 +7951,7 @@ function getIrClassMethodParameterPlanRust(
     mutatedClassPositions,
     optionalClassParameters,
     requiredClassParameters,
+    returnClass,
   };
 }
 

@@ -12916,6 +12916,97 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('other_alias.borrow().value');
   });
 
+  it('emits exact owned class method returns with identity-preserving result aliases', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-method-return.ts',
+        `function makeCounter(value: number, label: string): Counter { return new Counter(value, label); }
+         class Counter {
+           value: number;
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+           snapshot(useLocal: boolean): Counter {
+             const result = new Counter(this.value, this.label);
+             const alias = result;
+             const finalAlias = alias;
+             return useLocal ? finalAlias : makeCounter(this.value, this.label);
+           }
+           current(): number { return this.value; }
+           increment(amount: number): number { this.value += amount; return this.value; }
+         }
+         export function run(): boolean {
+           const receiver = new Counter(2, "ready"); const receiverAlias = receiver;
+           const result = receiverAlias.snapshot(true); const resultAlias = result;
+           resultAlias.value += 1;
+           let calls = 0;
+           const choose = (): boolean => { calls += 1; return calls === 1; };
+           const directRead = receiver.snapshot(choose()).current();
+           const directWrite = receiverAlias.snapshot(choose()).increment(1);
+           return result === resultAlias && result !== receiver && result.current() === 3 &&
+             directRead === 2 && directWrite === 3 && calls === 2;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn snapshot(&self, use_local: bool) -> Rc<RefCell<Counter>>');
+    expect(output).toContain(
+      'let result: Rc<RefCell<Counter>> = Rc::new(RefCell::new(Counter::new(self.value, self.label.clone())));',
+    );
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&result);');
+    expect(output).toContain('let final_alias: Rc<RefCell<Counter>> = Rc::clone(&alias);');
+    expect(output).toContain(
+      'return if use_local { Rc::clone(&final_alias) } else { make_counter(self.value, self.label.clone()) };',
+    );
+    expect(output).toContain('let result: Rc<RefCell<Counter>> = receiver_alias.borrow().snapshot(true);');
+    expect(output).toContain('let result_alias: Rc<RefCell<Counter>> = Rc::clone(&result);');
+    expect(output.match(/receiver\.borrow\(\)\.snapshot\(choose\(\)\)\.borrow\(\)\.current\(\)/gu)).toHaveLength(1);
+    expect(
+      output.match(/receiver_alias\.borrow\(\)\.snapshot\(choose\(\)\)\.borrow_mut\(\)\.increment\(1\.0\)/gu),
+    ).toHaveLength(1);
+    expect(output.match(/Rc::ptr_eq\(identity_left(?:_\d+)?, identity_right(?:_\d+)?\)/gu)).toHaveLength(2);
+  });
+
+  it('refuses borrowed, forwarded, and inexact class method return roots', () => {
+    const cases = [
+      `class Counter { value = 0; copy(): Counter { return this; } }`,
+      `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh(); }
+       }`,
+      `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; }
+       class Factory { copy(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); } }`,
+      `class Counter { value = 0; async copy(): Promise<Counter> { return new Counter(); } }`,
+      `class Counter { value = 0; copy<T>(): Counter { return new Counter(); } }`,
+      `class Counter {
+         value = 0;
+         copy(flag: boolean): Counter { if (flag) return new Counter(); return new Counter(); }
+       }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; }
+       class Factory { copy(): Counter { return new Other(); } }`,
+    ];
+
+    for (const [index, declaration] of cases.entries()) {
+      const module = lower(
+        `class-method-return-refusal-${String(index)}.ts`,
+        `${declaration} export function run(): number { return 0; }`,
+      ).module;
+      expect(captureBackendEmissionFailure(() => emitIrModuleRust(module)).rule, `case ${String(index)}`).toBe(
+        index === 3
+          ? 'rust-reference-shared-class-use-unrepresented'
+          : index === 7
+            ? 'rust-async-method-owner-carrier-unrepresented'
+            : 'rust-reference-shared-class-return-unrepresented',
+      );
+    }
+  });
+
   it('stages direct optional class method field mutation without changing receiver mutability', () => {
     const output = emitIrModuleRust(
       lower(
@@ -12989,7 +13080,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output).toContain('.borrow().inspect(Some(Rc::clone(&other_alias)))');
   });
 
-  it('emits imported optional and required class method carriers without a public callable plan', () => {
+  it('emits imported optional, required, and returned class method carriers without a public callable plan', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/optional-class-method-provider.ts',
       `export class Counter {
@@ -13001,6 +13092,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          writeNull(other: Counter | null): void { if (other !== null) other.value += this.value; }
          inspectRequired(scale: number, other: Counter): number { return other.value * scale; }
          writeRequired(scale: number, other: Counter): void { other.value += this.value * scale; }
+         snapshot(): Counter { const result = new Counter(this.value); const alias = result; return alias; }
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13023,8 +13115,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
          relay(receiverAlias, otherAlias);
          relayNull(receiverAlias, nullable);
          relayRequired(receiverAlias, 2, otherAlias);
+         const returned = receiverAlias.snapshot(); const returnedAlias = returned;
+         returnedAlias.value += 1;
          return receiverAlias.inspect(otherAlias) + receiver.inspect() + receiver.inspectNull(null) +
-           receiverAlias.inspectRequired(3, otherAlias);
+           receiverAlias.inspectRequired(3, otherAlias) + returned.value;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -13071,6 +13165,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(providerOutput).toContain('fn write_null(&self, mut other: Option<Rc<RefCell<Counter>>>)');
     expect(providerOutput).toContain('fn inspect_required(&self, scale: f64, other: &Counter) -> f64');
     expect(providerOutput).toContain('fn write_required(&self, scale: f64, other: &mut Counter)');
+    expect(providerOutput).toContain('fn snapshot(&self) -> Rc<RefCell<Counter>>');
+    expect(providerOutput).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&result);');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow().value');
     expect(providerOutput).toContain('other.as_ref().unwrap().borrow_mut().value');
     expect(consumerOutput).toContain('fn relay(receiver: &Counter, other: Option<Rc<RefCell<Counter>>>)');
@@ -13086,6 +13182,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(consumerOutput).toContain('.borrow().inspect(None)');
     expect(consumerOutput).toContain('.borrow().inspect_null(None)');
     expect(consumerOutput).toContain('.borrow().inspect_required(3.0, &*other_alias.borrow())');
+    expect(consumerOutput).toMatch(
+      /let returned: Rc<RefCell<Counter(?:_\d+)?>> = receiver_alias\.borrow\(\)\.snapshot\(\)/u,
+    );
+    expect(consumerOutput).toMatch(/let returned_alias: Rc<RefCell<Counter(?:_\d+)?>> = Rc::clone\(&returned\)/u);
   });
 
   it('refuses inexact, overlapping, and mutating optional class method parameters', () => {
@@ -13298,6 +13398,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              other.value += 2;
              other.label += "#";
            }
+           snapshot(): Counter {
+             const result = new Counter(this.value, this.label);
+             const alias = result;
+             return alias;
+           }
          }
          class Snapshot {
            value: number;
@@ -13315,6 +13420,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            const omittedFunction = adjust();
            const explicitFunction = adjust(undefined);
            const forwarded = forward(receiverAlias);
+           const methodResult = receiver.snapshot(); const methodResultAlias = methodResult;
+           methodResultAlias.value += 1;
            const omittedSnapshot = new Snapshot();
            const explicitSnapshot = new Snapshot(undefined);
            const presentSnapshot = new Snapshot(receiverAlias);
@@ -13346,6 +13453,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              omittedSnapshot.value === 0 && explicitSnapshot.value === 0 && presentSnapshot.value === 3 &&
              omittedMethod === 3 && explicitMethod === 3 && distinctMethod === 7 &&
              receiver === receiverAlias && receiver.value === 3 && other.value === 7 &&
+             methodResult === methodResultAlias && methodResult !== receiver &&
+             methodResult.value === 4 && methodResult.label === "receiver" &&
              mutatedMethod === mutatedMethodAlias && mutatedMethod.value === 5 && mutatedMethod.label === "method!" &&
              nullableMethod === nullableMethodAlias && nullableMethod.value === 5 && nullableMethod.label === "nullable?" &&
              requiredMethod === requiredMethodAlias && requiredMethod.value === 8 && requiredMethod.label === "required#" &&

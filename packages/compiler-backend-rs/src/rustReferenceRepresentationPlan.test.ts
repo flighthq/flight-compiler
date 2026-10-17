@@ -1783,6 +1783,157 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('plans exact owned class method returns and activates local and imported result aliases', () => {
+    const local = lower(
+      'class-method-return.ts',
+      `function makeCounter(value: number, label: string): Counter { return new Counter(value, label); }
+       class Counter {
+         value: number;
+         label: string;
+         constructor(value: number, label: string) { this.value = value; this.label = label; }
+         snapshot(useLocal: boolean): Counter {
+           const result = new Counter(this.value, this.label);
+           const alias = result;
+           const finalAlias = alias;
+           return useLocal ? finalAlias : makeCounter(this.value, this.label);
+         }
+         current(): number { return this.value; }
+       }
+       export function run(): boolean {
+         const receiver = new Counter(2, "ready"); const receiverAlias = receiver;
+         const result = receiverAlias.snapshot(true); const resultAlias = result;
+         resultAlias.value += 1;
+         const direct = receiver.snapshot(false);
+         return result === resultAlias && result !== receiver && result.current() === 3 && direct.value === 2;
+       }`,
+    );
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/class-method-return-provider.ts',
+      `function makeCounter(value: number): Counter { return new Counter(value); }
+       export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         snapshot(useLocal: boolean): Counter {
+           const result = new Counter(this.value);
+           const alias = result;
+           return useLocal ? alias : makeCounter(this.value);
+         }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/class-method-return-consumer.ts',
+      `import { Counter } from './class-method-return-provider.js';
+       export function run(): number {
+         const receiver = new Counter(2); const receiverAlias = receiver;
+         const result = receiverAlias.snapshot(true); const resultAlias = result;
+         resultAlias.value += 1;
+         return result.value;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Class-method-return-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-return-consumer.ts',
+          },
+          specifier: './class-method-return-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/class-method-return-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const localPlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [local] }), local);
+    const importedPlan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution,
+      modules: [provider, consumer],
+    });
+
+    expect(localPlan.refusals).toEqual([]);
+    expect(localPlan.callables).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          binding: expect.objectContaining({ name: 'makeCounter' }),
+          returns: 'shared-ref-cell-class',
+        }),
+      ]),
+    );
+    expect(localPlan.sharedClassBindings.map(({ binding }) => binding.name)).toEqual(
+      expect.arrayContaining(['receiver', 'receiverAlias', 'result', 'alias', 'finalAlias', 'resultAlias', 'direct']),
+    );
+    expect(getModulePlan(importedPlan, provider).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).refusals).toEqual([]);
+    expect(getModulePlan(importedPlan, consumer).sharedClassBindings.map(({ binding }) => binding.name)).toEqual(
+      expect.arrayContaining(['receiver', 'receiverAlias', 'result', 'resultAlias']),
+    );
+  });
+
+  it('refuses borrowed, forwarded, and inexact class method return roots', () => {
+    const cases = [
+      `class Counter { value = 0; copy(): Counter { return this; } }`,
+      `class Counter { value = 0; copy(): Counter { const alias = this; return alias; } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter { return other; } }`,
+      `class Counter { value = 0; copy(other: Counter): Counter { const alias = other; return alias; } }`,
+      `class Counter {
+         value = 0;
+         fresh(): Counter { return new Counter(); }
+         copy(): Counter { return this.fresh(); }
+       }`,
+      `class Counter { value = 0; copy(flag: boolean): Counter | undefined { return flag ? new Counter() : undefined; } }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; }
+       class Factory { copy(flag: boolean): Counter | Other { return flag ? new Counter() : new Other(); } }`,
+      `class Counter { value = 0; async copy(): Promise<Counter> { return new Counter(); } }`,
+      `class Counter { value = 0; copy<T>(): Counter { return new Counter(); } }`,
+      `class Counter {
+         value = 0;
+         copy(flag: boolean): Counter { if (flag) return new Counter(); return new Counter(); }
+       }`,
+      `class Counter { value = 0; }
+       class Other { value = 1; }
+       class Factory { copy(): Counter { return new Other(); } }`,
+    ];
+
+    for (const [index, declaration] of cases.entries()) {
+      const module = lower(
+        `class-method-return-refusal-${String(index)}.ts`,
+        `${declaration} export function run(): number { return 0; }`,
+      );
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+        `case ${String(index)}`,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code:
+              index === 7
+                ? 'rust-async-method-owner-carrier-unrepresented'
+                : 'rust-reference-shared-class-return-unrepresented',
+          }),
+        ]),
+      );
+    }
+  });
+
   it('propagates optional class method argument mutation through local function wrappers', () => {
     const module = lower(
       'optional-class-method-mutation-propagation.ts',
