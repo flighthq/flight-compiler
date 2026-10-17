@@ -187,6 +187,8 @@ interface RustNamedTypeDeclarationLocation {
   readonly module: Readonly<IrModule>;
 }
 
+type RustNamedVariableDeclaration = Readonly<IrVariableDeclaration & Readonly<{ binding: IrBindingIdentity }>>;
+
 interface RustAsyncTryCompletionEvidence {
   readonly abruptStatements: readonly Readonly<IrStatement>[];
   readonly suspensionCount: number;
@@ -363,6 +365,12 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);
+  assertSparseArrayLiteralRepresentationRust(module);
+  assertModuleArrayValueRepresentationRust(
+    module,
+    replaceIrModuleBackendContext(sourceModules, module),
+    moduleResolution,
+  );
   const referenceModulePlan = referenceRepresentationPlan.modules.find((candidate) =>
     isRustCompilerModuleIdentityEqual(candidate.module, module),
   );
@@ -1076,7 +1084,18 @@ function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: E
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
   switch (expression.kind) {
     case 'array':
-      return `vec![${expression.elements.map((element) => (element ? emitOwnedOperandRust(element, context) : 'Default::default()')).join(', ')}]`;
+      return `vec![${expression.elements
+        .map((element) =>
+          element === undefined
+            ? emissionError(
+                context,
+                'sparse array literals require a hole-preserving Rust sequence carrier; dense Vec cannot distinguish an omitted element from a stored value',
+                'rust-sparse-array-literal-runtime-required',
+                'target-runtime',
+              )
+            : emitOwnedOperandRust(element, context),
+        )
+        .join(', ')}]`;
     case 'assignment': {
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
       if (typedArrayAssignment) return typedArrayAssignment;
@@ -6906,6 +6925,113 @@ function replaceIrModuleBackendContext(
   );
 }
 
+function assertSparseArrayLiteralRepresentationRust(module: Readonly<IrModule>): void {
+  let sparse = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'array' && expression.elements.some((element) => element === undefined)) sparse = true;
+    },
+  });
+  if (!sparse) return;
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    'sparse array literals require a hole-preserving Rust sequence carrier; dense Vec cannot distinguish an omitted element from a stored value',
+    'rust-sparse-array-literal-runtime-required',
+    { classification: 'target-runtime' },
+  );
+}
+
+function assertModuleArrayValueRepresentationRust(
+  module: Readonly<IrModule>,
+  sourceModules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): void {
+  const declaration = module.declarations.find(
+    (candidate): candidate is RustNamedVariableDeclaration =>
+      candidate.kind === 'variable' && 'binding' in candidate && isModuleArrayValueDeclarationRust(candidate),
+  );
+  if (declaration) {
+    throw createBackendEmissionFailure(
+      'rust',
+      module,
+      `module array value ${declaration.binding.name} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
+      'rust-module-array-value-unrepresented',
+    );
+  }
+
+  for (const imported of module.imports) {
+    for (const binding of imported.bindings) {
+      if (binding.typeOnly || binding.imported === '*' || binding.imported === 'default') continue;
+      const targetModule = resolveImportModuleFromGraphRust(
+        imported.specifier,
+        binding.imported,
+        moduleResolution,
+        sourceModules,
+        module,
+      );
+      const provider = targetModule
+        ? getExportedVariableDeclarationRust(targetModule, binding.imported, moduleResolution, sourceModules, new Set())
+        : undefined;
+      if (!provider || !isModuleArrayValueDeclarationRust(provider)) continue;
+      throw createBackendEmissionFailure(
+        'rust',
+        module,
+        `imported module array value ${binding.imported} requires runtime initialization and synchronized shared ownership; Rust const/static Vec storage is not represented`,
+        'rust-module-array-value-unrepresented',
+      );
+    }
+  }
+}
+
+function getExportedVariableDeclarationRust(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  sourceModules: readonly Readonly<IrModule>[],
+  seen: ReadonlySet<string>,
+): RustNamedVariableDeclaration | undefined {
+  const key = `${module.packageName}\u0000${module.source}\u0000${exportedName}`;
+  if (seen.has(key)) return undefined;
+  const nextSeen = new Set(seen).add(key);
+  const direct = module.declarations.find(
+    (candidate): candidate is RustNamedVariableDeclaration =>
+      candidate.kind === 'variable' &&
+      'binding' in candidate &&
+      candidate.exported &&
+      candidate.binding.name === exportedName,
+  );
+  if (direct) return direct;
+  const local = module.exports.find(
+    (candidate) => candidate.kind === 'local' && !candidate.typeOnly && candidate.exported === exportedName,
+  );
+  if (local?.kind === 'local') {
+    const localDeclaration = module.declarations.find(
+      (candidate): candidate is RustNamedVariableDeclaration =>
+        candidate.kind === 'variable' && 'binding' in candidate && candidate.binding.id === local.binding.id,
+    );
+    if (localDeclaration) return localDeclaration;
+  }
+  const reexport = module.exports.find(
+    (candidate) => candidate.kind === 'reexport' && !candidate.typeOnly && candidate.exported === exportedName,
+  );
+  if (reexport?.kind !== 'reexport') return undefined;
+  const targetModule = resolveImportModuleFromGraphRust(
+    reexport.specifier,
+    reexport.imported,
+    moduleResolution,
+    sourceModules,
+    module,
+  );
+  return targetModule
+    ? getExportedVariableDeclarationRust(targetModule, reexport.imported, moduleResolution, sourceModules, nextSeen)
+    : undefined;
+}
+
+function isModuleArrayValueDeclarationRust(declaration: Readonly<IrVariableDeclaration>): boolean {
+  return declaration.type?.kind === 'array' || declaration.initializer?.kind === 'array';
+}
+
 function assertRuntimeExternalSymbolBindingsRust(
   module: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions>,
@@ -7155,22 +7281,18 @@ interface RustArrayOperationRefusal {
     | 'rust-array-reverse-identity-carrier-unrepresented'
     | 'rust-array-reverse-invocation-unrepresented'
     | 'rust-array-reverse-result-carrier-unrepresented'
-    | 'rust-array-reverse-sparse-unrepresented'
     | 'rust-array-splice-element-carrier-unrepresented'
     | 'rust-array-splice-index-domain-unrepresented'
     | 'rust-array-splice-invocation-unrepresented'
     | 'rust-array-splice-result-carrier-unrepresented'
-    | 'rust-array-splice-sparse-unrepresented'
     | 'rust-array-slice-element-carrier-unrepresented'
     | 'rust-array-slice-index-domain-unrepresented'
     | 'rust-array-slice-invocation-unrepresented'
-    | 'rust-array-slice-result-carrier-unrepresented'
-    | 'rust-array-slice-sparse-unrepresented';
+    | 'rust-array-slice-result-carrier-unrepresented';
 }
 
 function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: EmitContext): void {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
-  const variableInitializers = new Map<string, Readonly<IrExpression>>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
   const growthCalls: Array<
@@ -7229,7 +7351,6 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
     },
     variable(variable) {
       if (variable.initializer) {
-        if ('binding' in variable) variableInitializers.set(variable.binding.id, variable.initializer);
         uses.set(variable.initializer, {
           bindingId: 'binding' in variable ? variable.binding.id : undefined,
           kind: 'variable',
@@ -7325,15 +7446,6 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       continue;
     }
 
-    if (isRustSparseArrayValueRust(expression.callee.object, variableInitializers, new Set())) {
-      refusals.push({
-        member: 'reverse',
-        message: 'array.reverse cannot preserve sparse array holes in the dense Rust Vec carrier',
-        rule: 'rust-array-reverse-sparse-unrepresented',
-      });
-      continue;
-    }
-
     const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
     const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
     if (receiver?.kind !== 'array' || !isRustArrayReverseElementCarrierRust(receiver.element, context)) {
@@ -7411,15 +7523,6 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       continue;
     }
 
-    if (isRustSparseArrayValueRust(expression.callee.object, variableInitializers, new Set())) {
-      refusals.push({
-        member: 'slice',
-        message: 'array.slice cannot preserve sparse array holes in the dense Rust Vec carrier',
-        rule: 'rust-array-slice-sparse-unrepresented',
-      });
-      continue;
-    }
-
     const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
     const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
     if (receiver?.kind !== 'array' || !isRustArraySliceElementCarrierRust(receiver.element, context)) {
@@ -7479,18 +7582,6 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
       continue;
     }
 
-    if (
-      isRustSparseArrayValueRust(expression.callee.object, variableInitializers, new Set()) ||
-      expression.arguments.slice(2).some((item) => isRustSparseArrayValueRust(item, variableInitializers, new Set()))
-    ) {
-      refusals.push({
-        member: 'splice',
-        message: 'array.splice cannot preserve sparse array holes in the dense Rust Vec carrier',
-        rule: 'rust-array-splice-sparse-unrepresented',
-      });
-      continue;
-    }
-
     const receiverType = inferIrExpressionTypeRust(expression.callee.object, context);
     const receiver = receiverType ? resolveIrTypeAliasValueRust(receiverType, context, new Set()) : undefined;
     if (
@@ -7527,25 +7618,6 @@ function assertArrayOperationSemanticsRust(module: Readonly<IrModule>, context: 
 
 function isRustStableArrayOperationReceiverRust(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding';
-}
-
-function isRustSparseArrayValueRust(
-  expression: Readonly<IrExpression>,
-  variableInitializers: ReadonlyMap<string, Readonly<IrExpression>>,
-  seenBindings: Set<string>,
-): boolean {
-  if (expression.kind === 'array') {
-    return expression.elements.some(
-      (element) =>
-        element === undefined || isRustSparseArrayValueRust(element, variableInitializers, new Set(seenBindings)),
-    );
-  }
-  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
-  const bindingId = expression.reference.binding.id;
-  if (seenBindings.has(bindingId)) return false;
-  seenBindings.add(bindingId);
-  const initializer = variableInitializers.get(bindingId);
-  return initializer ? isRustSparseArrayValueRust(initializer, variableInitializers, seenBindings) : false;
 }
 
 function inferRustArrayGrowthArgumentTypeRust(
@@ -8449,7 +8521,23 @@ function resolveImportModuleRust(
   context: EmitContext,
   importer: Readonly<IrModule> = context.module,
 ): Readonly<IrModule> | undefined {
-  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  return resolveImportModuleFromGraphRust(
+    specifier,
+    importedName,
+    context.moduleResolution,
+    context.sourceModules,
+    importer,
+  );
+}
+
+function resolveImportModuleFromGraphRust(
+  specifier: string,
+  importedName: string | undefined,
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  sourceModules: readonly Readonly<IrModule>[],
+  importer: Readonly<IrModule>,
+): Readonly<IrModule> | undefined {
+  const matching = moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
   const exact = matching.filter((edge) => edge.importer && isRustCompilerModuleIdentityEqual(edge.importer, importer));
   const scoped = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
   const targets = scoped.filter(
@@ -8457,7 +8545,7 @@ function resolveImportModuleRust(
       edge.importedNames === undefined || (importedName !== undefined && edge.importedNames.includes(importedName)),
   );
   const resolved = targets.flatMap((edge) =>
-    context.sourceModules.filter(
+    sourceModules.filter(
       (module) =>
         module.packageName === edge.target.packageName &&
         path.posix.normalize(module.source) === path.posix.normalize(edge.target.source),
@@ -8467,19 +8555,21 @@ function resolveImportModuleRust(
     ...new Map(resolved.map((module) => [`${module.packageName}\0${module.source}\0${module.name}`, module])).values(),
   ];
   if (unique.length === 1) return unique[0];
-  return specifier.startsWith('.') ? resolveRelativeImportModuleRust(specifier, context, importer) : undefined;
+  return specifier.startsWith('.')
+    ? resolveRelativeImportModuleFromGraphRust(specifier, sourceModules, importer)
+    : undefined;
 }
 
-function resolveRelativeImportModuleRust(
+function resolveRelativeImportModuleFromGraphRust(
   specifier: string,
-  context: EmitContext,
+  sourceModules: readonly Readonly<IrModule>[],
   importer: Readonly<IrModule>,
 ): Readonly<IrModule> | undefined {
   const source = path.posix.normalize(
     path.posix.join(path.posix.dirname(importer.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
   );
   const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
-  return context.sourceModules.find(
+  return sourceModules.find(
     (module) => module.packageName === importer.packageName && candidates.has(path.posix.normalize(module.source)),
   );
 }

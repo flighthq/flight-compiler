@@ -646,6 +646,45 @@ describe('createRustCompilerBackend', () => {
     expect(consumerContents).not.toContain('append(values.clone())');
   });
 
+  it('stably refuses an imported module array value through a provider re-export', () => {
+    const provider = lower(
+      'provider.ts',
+      `const values: number[] = [1];
+       export { values };`,
+    ).module;
+    const facade = lower('facade.ts', `export { values } from './provider.js';`).module;
+    const consumer = lower(
+      'consumer.ts',
+      `import { values } from './facade.js';
+       export function read(): number { return values.length; }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: facade.name, packageName: facade.packageName, source: facade.source },
+          specifier: './provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './facade.js',
+          target: { packageName: facade.packageName, source: facade.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, facade, provider],
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(consumer));
+    expect(failure.rule).toBe('rust-module-array-value-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('imported module array value values');
+  });
+
   it.skipIf(!rustcAvailable)('emits the cross-module mutable Vec ABI accepted by rustc', () => {
     const provider = lower('provider.ts', 'export function append(values: number[]): void { values.push(2); }').module;
     const consumer = lower(
@@ -2972,9 +3011,35 @@ describe('emitIrModuleRust', () => {
     expect(failure.rule).toBe('rust-async-try-completion-unrepresented');
   });
 
-  it('emits array literals as vec! with optional holes as Default::default', () => {
-    const output = emitIrModuleRust(lower('array-lit.ts', 'export const items: number[] = [1, 2, 3];').module).contents;
-    expect(output).toContain('vec![');
+  it('emits dense local array literals as Vec values accepted by rustc', () => {
+    const output = emitIrModuleRust(
+      lower('array-lit.ts', 'export function items(): number[] { return [1, 2, 3]; }').module,
+    ).contents;
+    expect(output).toContain('return vec![1.0, 2.0, 3.0];');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(items(), vec![1.0, 2.0, 3.0]);');
+  });
+
+  it.each([
+    {
+      name: 'an exported const binding',
+      source: 'export const values: number[] = [1, 2, 3];',
+    },
+    {
+      name: 'a private const binding mutated through its referent',
+      source:
+        'const values: number[] = [1]; export function append(): number { values.push(2); return values.length; }',
+    },
+    {
+      name: 'a mutable exported binding',
+      source: 'export let values: number[] = [1, 2, 3];',
+    },
+  ])('stably refuses module array storage for $name', ({ source }) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('module-array-value.ts', source).module),
+    );
+    expect(failure.rule).toBe('rust-module-array-value-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('Rust const/static Vec storage is not represented');
   });
 
   it('emits string append as push_str and string-plus-string as format!', () => {
@@ -6214,21 +6279,38 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('f64');
   });
 
-  it('emits array with sparse element as Default::default()', () => {
-    const module = structuredClone(lower('sparse.ts', 'export function arr(): number[] { return [1, 2]; }').module);
-    const fn = module.declarations.find((d) => d.kind === 'function');
-    if (fn && fn.kind === 'function') {
-      const ret = fn.body.find((s) => s.kind === 'return') as IrStatement & { kind: 'return' };
-      if (ret?.expression?.kind === 'array') {
-        (ret.expression as unknown as { elements: unknown[] }).elements = [
-          ret.expression.elements[0],
-          undefined,
-          ret.expression.elements[1],
-        ];
-      }
-    }
-    const output = emitIrModuleRust(module).contents;
-    expect(output).toContain('Default::default()');
+  it.each([
+    {
+      context: 'an indexed read',
+      source: 'export function read(): number { const values = [1, , 3]; return values[1] ?? 0; }',
+    },
+    {
+      context: 'a mutation receiver',
+      source: 'export function mutate(): number { const values = [1, , 3]; values.push(4); return values.length; }',
+    },
+    {
+      context: 'a search receiver',
+      source: 'export function search(): boolean { const values = [1, , 3]; return values.includes(3); }',
+    },
+    {
+      context: 'an iterator receiver',
+      source: 'export function iterate(): number[] { const values = [1, , 3]; return values.map((value) => value); }',
+    },
+    {
+      context: 'a direct return',
+      source: 'export function returned(): number[] { return [1, , 3]; }',
+    },
+    {
+      context: 'local storage',
+      source: 'export function stored(): number { const values: number[] = [1, , 3]; return values.length; }',
+    },
+  ])('stably refuses a sparse array literal used as $context', ({ source }) => {
+    const result = lower('sparse-array-literal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-sparse-array-literal-runtime-required');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('dense Vec cannot distinguish an omitted element');
   });
 
   it('emits return with narrowed-present identifier as unwrap', () => {
@@ -14358,7 +14440,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       source: 'export function flip(values: any[]): void { values.reverse(); }',
     },
     {
-      rule: 'rust-array-reverse-sparse-unrepresented',
+      rule: 'rust-sparse-array-literal-runtime-required',
       source: 'export function flip(): void { const values = [1, , 3]; values.reverse(); }',
     },
     {
@@ -14508,7 +14590,7 @@ describe('emitIrModuleRust array element access with coalescing', () => {
       source: 'export function take(values: any[]): any[] { return values.slice(0); }',
     },
     {
-      rule: 'rust-array-slice-sparse-unrepresented',
+      rule: 'rust-sparse-array-literal-runtime-required',
       source: 'export function take(): number[] { const values = [1, , 3]; return values.slice(0); }',
     },
   ])('stably refuses unsupported slice semantics with $rule', ({ rule, source }) => {
@@ -14819,12 +14901,12 @@ describe('emitIrModuleRust array element access with coalescing', () => {
         'export function insert(values: number[], more: number[]): number[] { return values.splice(0, 0, ...more); }',
     },
     {
-      rule: 'rust-array-splice-sparse-unrepresented',
+      rule: 'rust-sparse-array-literal-runtime-required',
       source:
         'export function cut(): number[] { const values = [1, , 3]; const alias = values; return alias.splice(0); }',
     },
     {
-      rule: 'rust-array-splice-sparse-unrepresented',
+      rule: 'rust-sparse-array-literal-runtime-required',
       source: 'export function insert(rows: number[][]): number[][] { return rows.splice(0, 0, [1, , 3]); }',
     },
   ])('stably refuses unsupported splice semantics with $rule', ({ rule, source }) => {
