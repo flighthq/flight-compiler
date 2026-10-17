@@ -53,6 +53,7 @@ import type {
   CompilerAsyncStateMachineAnalysis,
   CompilerBackend,
   CompilerBackendPackageGraphFinalization,
+  CompilerClosureEvidence,
   CompilerIrTraversalPath,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
@@ -263,6 +264,10 @@ interface EmitContext {
   borrowedClassParameterIds: ReadonlySet<string>;
   borrowedParameterRepresentations: ReadonlyMap<string, ReadonlyMap<number, CompilerRustReferenceRepresentation>>;
   callableObjectRecords: Map<string, RustCallableObjectRecord>;
+  closureEvidenceByExpression: ReadonlyMap<
+    Readonly<Extract<IrExpression, { kind: 'function' }>>,
+    Readonly<CompilerClosureEvidence>
+  >;
   deferredBindingIds: ReadonlySet<string>;
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
@@ -436,6 +441,17 @@ function emitIrModuleRustWithContext(
     throw error;
   }
   const closureEvidence = analyzeIrModuleClosureEvidence(module);
+  const closureEvidenceByExpression = new Map<
+    Readonly<Extract<IrExpression, { kind: 'function' }>>,
+    Readonly<CompilerClosureEvidence>
+  >();
+  for (const evidence of closureEvidence.closures) {
+    if (evidence.origin.kind !== 'functionExpression') continue;
+    const candidate = getIrModuleTraversalPathValue(module, evidence.path);
+    if (typeof candidate === 'object' && candidate !== null && 'kind' in candidate && candidate.kind === 'function') {
+      closureEvidenceByExpression.set(candidate as Readonly<Extract<IrExpression, { kind: 'function' }>>, evidence);
+    }
+  }
   const ownershipEvidence = analyzeIrModuleOwnershipEvidenceRust(module);
   const bindingTypes = collectIrModuleBindingTypesRust(module);
   const sharedArrayBindingIds = new Set(
@@ -546,6 +562,7 @@ function emitIrModuleRustWithContext(
     borrowedClassParameterIds,
     borrowedParameterRepresentations,
     callableObjectRecords: new Map(),
+    closureEvidenceByExpression,
     deferredBindingIds: new Set(
       ownershipEvidence.bindings.flatMap((evidence) =>
         evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
@@ -1475,12 +1492,23 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'call':
       if (isIrNativeAsyncFunctionCallRust(expression, context) && context.allowedNativeFutureCall !== expression) {
+        if (expression.callee.kind === 'function' && expression.callee.async && context.insideProtectedTry) {
+          emissionRuleError(
+            context,
+            'an immediately invoked native async closure inside a protected region requires general completion lowering',
+            'rust-async-try-completion-unrepresented',
+          );
+        }
         emissionError(
           context,
           'a native Rust future cannot enter a FlightTask carrier without the runtime ABI/2 task adapter',
           'rust-native-future-task-adapter-unavailable',
           'target-runtime',
         );
+      }
+      {
+        const immediateAsyncClosure = emitImmediateAsyncClosureCallRust(expression, context);
+        if (immediateAsyncClosure) return immediateAsyncClosure;
       }
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
       if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
@@ -2358,10 +2386,260 @@ function isIrNativeAsyncFunctionCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): boolean {
+  if (expression.callee.kind === 'function') return expression.callee.async;
   return (
     expression.callee.kind === 'identifier' &&
     getIrReferencedFunctionRust(expression.callee.reference, context)?.async === true
   );
+}
+
+function isIrImmediateAsyncClosureSendTypeRust(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'array':
+      return isIrImmediateAsyncClosureSendTypeRust(type.element);
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'undefined':
+      return true;
+    case 'named':
+      return (
+        type.reference.kind === 'ambient' &&
+        type.reference.name === 'Promise' &&
+        type.typeArguments.length === 1 &&
+        isIrImmediateAsyncClosureSendTypeRust(type.typeArguments[0]!)
+      );
+    case 'primitive':
+      return type.name === 'boolean' || type.name === 'number' || type.name === 'string' || type.name === 'void';
+    case 'tuple':
+      return type.elements.every((element) => isIrImmediateAsyncClosureSendTypeRust(element.type));
+    case 'union':
+      return type.types.every(isIrImmediateAsyncClosureSendTypeRust);
+    default:
+      return false;
+  }
+}
+
+function getIrImmediateAsyncClosureDirectAwaitsRust(statement: Readonly<IrStatement>): ReadonlySet<IrExpression> {
+  if (statement.kind === 'expression') {
+    if (statement.expression.kind === 'await') return new Set([statement.expression]);
+    if (statement.expression.kind === 'assignment' && statement.expression.right.kind === 'await') {
+      return new Set([statement.expression.right]);
+    }
+  }
+  if (statement.kind === 'variable') {
+    return new Set(
+      statement.declarations.flatMap((variable) =>
+        variable.initializer?.kind === 'await' ? [variable.initializer] : [],
+      ),
+    );
+  }
+  if (statement.kind === 'return' && statement.expression?.kind === 'await') {
+    return new Set([statement.expression]);
+  }
+  return new Set();
+}
+
+function assertIrImmediateAsyncClosureRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> {
+  const closure = expression.callee;
+  if (closure.kind !== 'function' || !closure.async) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires one directly invoked async function expression',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  const evidence = context.closureEvidenceByExpression.get(closure);
+  if (!evidence) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires exact closure evidence',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  if (evidence.captures.length > 0) {
+    emissionRuleError(
+      context,
+      `immediately invoked async closure captures ${evidence.captures.map((capture) => capture.binding.name).join(', ')} across a native future boundary whose ownership and Send behavior are not proven`,
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  if (
+    evidence.escape !== 'knownNonEscaping' ||
+    evidence.valueUses.length !== 1 ||
+    evidence.valueUses[0]?.kind !== 'directInvocation'
+  ) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires one direct invocation with no stored, passed, returned, or escaping closure value',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  if (evidence.selfReferences.length > 0 || evidence.thisUses.length > 0) {
+    emissionRuleError(
+      context,
+      'native async closure lowering cannot preserve self or this across the immediate future boundary',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  if (
+    expression.optional ||
+    expression.typeArguments.length > 0 ||
+    closure.typeParameters.length > 0 ||
+    closure.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+    expression.arguments.length !== closure.parameters.length
+  ) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires one fixed, non-generic argument for every required parameter',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  const argumentBindingIds = expression.arguments.map((argument) =>
+    argument.kind === 'identifier' && argument.reference.kind === 'binding' ? argument.reference.binding.id : undefined,
+  );
+  const hasUnprovenMutableArgument = closure.parameters.some((parameter, position) => {
+    if (!context.referentMutatedParameterIds.has(parameter.binding.id)) return false;
+    const bindingId = argumentBindingIds[position];
+    return (
+      bindingId === undefined ||
+      argumentBindingIds.filter((candidate) => candidate === bindingId).length !== 1 ||
+      context.sharedArrayBindingIds.has(bindingId) ||
+      context.sharedClassBindingIds.has(bindingId) ||
+      context.sharedMapBindingIds.has(bindingId) ||
+      context.sharedSetBindingIds.has(bindingId)
+    );
+  });
+  if (hasUnprovenMutableArgument) {
+    emissionRuleError(
+      context,
+      'native async closure mutable arguments require one unique direct binding with a proven exclusive suspension lifetime',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  const awaitedType = getIrTaskAwaitedTypeRust(closure.returns, context);
+  if (
+    !isIrImmediateAsyncClosureSendTypeRust(awaitedType) ||
+    closure.parameters.some((parameter) => !isIrImmediateAsyncClosureSendTypeRust(parameter.type))
+  ) {
+    emissionRuleError(
+      context,
+      'native async closure input or result ownership is not proven safe across a Rust suspension and Send boundary',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  const bodyStatements: readonly Readonly<IrStatement>[] = closure.expression
+    ? [{ expression: closure.expression, kind: 'return' }]
+    : closure.body;
+  if (
+    !bodyStatements.every(
+      (statement, index) =>
+        statement.kind === 'expression' ||
+        statement.kind === 'variable' ||
+        (statement.kind === 'return' && index === bodyStatements.length - 1),
+    )
+  ) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires a straight-line body with at most one final return',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  let nestedFunction = false;
+  let nestedSuspension = false;
+  for (const statement of bodyStatements) {
+    const directAwaits = getIrImmediateAsyncClosureDirectAwaitsRust(statement);
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(candidate) {
+        if (candidate.kind === 'function') {
+          nestedFunction = true;
+          return false;
+        }
+        if (candidate.kind === 'await' && !directAwaits.has(candidate)) nestedSuspension = true;
+        return undefined;
+      },
+    });
+  }
+  if (nestedFunction || nestedSuspension) {
+    emissionRuleError(
+      context,
+      'native async closure lowering requires only direct straight-line awaits and no nested closure',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  if (
+    evidence.suspensions.length > 0 &&
+    bodyStatements.some(
+      (statement) =>
+        statement.kind === 'variable' &&
+        statement.declarations.some((variable) => {
+          if (!('binding' in variable)) return true;
+          const type = variable.type ?? context.bindingTypes.get(variable.binding.id);
+          return !type || !isIrImmediateAsyncClosureSendTypeRust(type);
+        }),
+    )
+  ) {
+    emissionRuleError(
+      context,
+      'native async closure local ownership across suspension is not proven Send-safe',
+      'rust-async-closure-immediate-unrepresented',
+    );
+  }
+  return awaitedType;
+}
+
+function emitImmediateAsyncClosureCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.callee.kind !== 'function' || !expression.callee.async) return undefined;
+  const awaitedType = assertIrImmediateAsyncClosureRust(expression, context);
+  const closure = expression.callee;
+  const closureContext: EmitContext = {
+    ...context,
+    activeTypeParameters: [],
+    allowedNativeFutureCall: undefined,
+    enclosingReturnType: awaitedType,
+    insideProtectedTry: false,
+    nativeAsyncFunction: true,
+    returnsAbsent: hasIrTypeAbsentMember(awaitedType),
+    returnsSharedClass: false,
+  };
+  const argumentNames = expression.arguments.map(() => getGeneratedTargetNameRust('async_argument', context));
+  const argumentBindings = expression.arguments.map((argument, index) => {
+    const parameter = closure.parameters[index]!;
+    const lendsToParameter = context.referentMutatedParameterIds.has(parameter.binding.id);
+    const reborrowsOuterParameter =
+      lendsToParameter &&
+      argument.kind === 'identifier' &&
+      argument.reference.kind === 'binding' &&
+      context.referentMutatedParameterIds.has(argument.reference.binding.id);
+    const emitted = reborrowsOuterParameter
+      ? `&mut *${emitIdentifierReferenceRust(argument.reference, context)}`
+      : lendsToParameter
+        ? emitLentOperandRust(argument, context)
+        : emitOwnedOperandRust(argument, context);
+    return `let ${argumentNames[index]!} = ${emitted};`;
+  });
+  const parameterBindings = closure.parameters.map(
+    (parameter, index) => `let ${emitParameter(parameter, closureContext)} = ${argumentNames[index]!};`,
+  );
+  const body = closure.expression
+    ? emitStatement({ expression: closure.expression, kind: 'return' }, closureContext)
+    : emitStatements(closure.body, closureContext);
+  return [
+    '{',
+    ...indentSourceLines([
+      ...argumentBindings,
+      'async move {',
+      ...indentSourceLines([...parameterBindings, ...body]),
+      '}',
+    ]),
+    '}',
+  ].join('\n');
 }
 
 function canIrExpressionDenoteTaskRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {

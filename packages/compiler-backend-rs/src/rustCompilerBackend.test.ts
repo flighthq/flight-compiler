@@ -2432,6 +2432,151 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.column).toBe(1);
   });
 
+  it('emits a noncapturing immediately awaited or directly adopted async closure as a native future', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'immediate-async-closure.ts',
+        `export async function explicit(value: number): Promise<number> {
+           return await (async (input: number): Promise<number> => input + 1)(value);
+         }
+         export async function adopted(value: number): Promise<number> {
+           return (async (input: number): Promise<number> => { return input + 2; })(value);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/async move \{/g)).toHaveLength(2);
+    expect(output.match(/let async_argument\d* = value;/g)).toHaveLength(2);
+    expect(output.match(/let input: f64 = async_argument\d*;/g)).toHaveLength(2);
+    expect(output).toContain('return (input + 1.0);');
+    expect(output).toContain('return (input + 2.0);');
+    expect(output.match(/\.await;/g)).toHaveLength(2);
+    expect(output).not.toContain('FlightTask::ready(input');
+  });
+
+  it.skipIf(!rustcAvailable)(
+    'runs immediate async closure arguments and bodies once for explicit await and direct return adoption',
+    () => {
+      const output = emitIrModuleRust(
+        lower(
+          'immediate-async-closure-runtime.ts',
+          `function observe(task: Promise<number>, marker: number, log: number[]): Promise<number> {
+             log.push(marker);
+             return task;
+           }
+           export async function explicit(task: Promise<number>, log: number[]): Promise<number> {
+             const value = await (async (inner: Promise<number>, innerLog: number[]): Promise<number> => {
+               innerLog.push(2);
+               return await inner;
+             })(observe(task, 1, log), log);
+             log.push(3);
+             return value;
+           }
+           export async function adopted(task: Promise<number>, log: number[]): Promise<number> {
+             return (async (inner: Promise<number>, innerLog: number[]): Promise<number> => {
+               innerLog.push(2);
+               return inner;
+             })(observe(task, 1, log), log);
+           }`,
+        ).module,
+      ).contents;
+
+      expect(() =>
+        runRustSourceAgainstRuntime(
+          output,
+          `let mut explicit_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(explicit(flight_runtime::FlightTask::ready(4.0), &mut explicit_log)), 4.0);
+           assert_eq!(explicit_log, vec![1.0, 2.0, 3.0]);
+           let mut adopted_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(adopted(flight_runtime::FlightTask::ready(5.0), &mut adopted_log)), 5.0);
+           assert_eq!(adopted_log, vec![1.0, 2.0]);`,
+        ),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    [
+      'a captured binding',
+      'export async function broken(task: Promise<number>): Promise<number> { return await (async (): Promise<number> => await task)(); }',
+      'rust-async-closure-immediate-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a stored closure',
+      'export async function broken(value: number): Promise<number> { const work = async (input: number): Promise<number> => input; return await work(value); }',
+      'rust-async-closure-lowering-required',
+      'compiler-restriction',
+    ],
+    [
+      'a passed closure',
+      'function ignore(work: (value: number) => Promise<number>): number { return 0; } export function broken(): number { return ignore(async (value: number): Promise<number> => value); }',
+      'rust-async-closure-lowering-required',
+      'compiler-restriction',
+    ],
+    [
+      'a returned source task closure boundary',
+      'export function broken(): () => Promise<number> { return async (): Promise<number> => 1; }',
+      'rust-async-closure-lowering-required',
+      'compiler-restriction',
+    ],
+    [
+      'multiple invocation of one closure',
+      'export async function broken(value: number): Promise<number> { const work = async (input: number): Promise<number> => input; const first = await work(value); return await work(first); }',
+      'rust-async-closure-lowering-required',
+      'compiler-restriction',
+    ],
+    [
+      'an escaping native future',
+      'export async function broken(value: number): Promise<number> { const pending: Promise<number> = (async (input: number): Promise<number> => input)(value); return pending; }',
+      'rust-native-future-task-adapter-unavailable',
+      'target-runtime',
+    ],
+    [
+      'a protected immediate future',
+      'export async function broken(value: number): Promise<number> { let result = 0; try { result = await (async (input: number): Promise<number> => input)(value); } catch { result = 1; } return result; }',
+      'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an async method context',
+      'export class Worker { async run(value: number): Promise<number> { return await (async (input: number): Promise<number> => input)(value); } }',
+      'rust-async-task-carrier-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an unproven shared-owner parameter',
+      'class Box { value: number = 1; } export async function broken(box: Box): Promise<number> { return await (async (input: Box): Promise<number> => input.value)(box); }',
+      'rust-async-closure-immediate-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'aliased mutable arguments across suspension',
+      'export async function broken(log: number[]): Promise<number> { return await (async (first: number[], second: number[]): Promise<number> => { first.push(1); second.push(2); return 0; })(log, log); }',
+      'rust-async-closure-immediate-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'nested control flow',
+      'export async function broken(task: Promise<number>, enabled: boolean): Promise<number> { return await (async (inner: Promise<number>, useIt: boolean): Promise<number> => { if (useIt) return await inner; return 0; })(task, enabled); }',
+      'rust-async-closure-immediate-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'a conditional suspension',
+      'export async function broken(first: Promise<number>, second: Promise<number>, chooseFirst: boolean): Promise<number> { return await (async (left: Promise<number>, right: Promise<number>, choose: boolean): Promise<number> => choose ? await left : await right)(first, second, chooseFirst); }',
+      'rust-async-closure-immediate-unrepresented',
+      'compiler-restriction',
+    ],
+  ])('stably refuses immediate async closure lowering with %s', (_name, source, rule, classification) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('immediate-async-closure-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe(classification);
+  });
+
   it('stably identifies async iteration as a compiler lowering gap', () => {
     const module = lower(
       'async-iteration-rule.ts',
