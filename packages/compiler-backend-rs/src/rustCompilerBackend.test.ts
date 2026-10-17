@@ -17592,3 +17592,62 @@ describe('emitIrModuleRust nullish assignment refusal', () => {
     expect(castFailure.rule).not.toBe('rust-nullish-assignment-target-unsupported');
   });
 });
+
+describe('emitIrModuleRust class and interface refusal diagnostics', () => {
+  const ruleOf = (source: string) => {
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(lower('class-rule.ts', source).module));
+    return failure;
+  };
+
+  it('names grouped rules for the reachable class families and keeps message, origin, and classification', () => {
+    const initialization = ruleOf('export class C { x = 1; constructor(x: number) { this.x = x; } }');
+    expect(initialization.rule).toBe('rust-class-initialization-unsupported');
+    expect(initialization.message).toContain('constructor requires Rust initialization lowering');
+    expect(initialization.line).toBe(1);
+    expect(initialization.column).toBe(1);
+    expect(initialization.classification).toBe('compiler-restriction');
+
+    const staticField = ruleOf('export class C { static y = some(); } function some(): number { return 1; }');
+    expect(staticField.rule).toBe('rust-class-static-field-initializer-unsupported');
+    expect(staticField.message).toContain('static fields require a constant initializer');
+
+    const abstractState = ruleOf('export abstract class A { x = 1; }');
+    expect(abstractState.rule).toBe('rust-abstract-class-trait-unsupported');
+    expect(abstractState.message).toContain('carries state a Rust trait cannot hold');
+
+    const superValue = ruleOf('class A {} export class B extends A { m(): unknown { return super; } }');
+    expect(superValue.rule).toBe('rust-class-inheritance-unsupported');
+    expect(superValue.message).toContain('super requires Rust inheritance lowering');
+  });
+
+  it('carries the grouped rules at every defensive site', () => {
+    const source = readFileSync(fileURLToPath(new URL('./rustCompilerBackend.ts', import.meta.url)), 'utf8');
+    const count = (needle: string): number => source.split(needle).length - 1;
+
+    // Sites that share the same missing evidence share a rule; each count pins the exact producer set.
+    expect(count("'rust-class-initialization-unsupported'")).toBe(4);
+    expect(count("'rust-class-static-field-initializer-unsupported'")).toBe(1);
+    expect(count("'rust-abstract-class-trait-unsupported'")).toBe(2);
+    expect(count("'rust-class-inheritance-unsupported'")).toBe(2);
+    expect(count("'rust-class-implements-unsupported'")).toBe(1);
+    expect(count("'rust-interface-inheritance-unsupported'")).toBe(1);
+    expect(count("'rust-constructor-value-unsupported'")).toBe(2);
+  });
+
+  it('leaves supported class construction, fields, methods, parameters and returns free of these rules', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-supported.ts',
+        `export class Point { x = 0; y = 0; scale(by: number): number { return this.x * by; } }
+         export function unit(by: number): number { return new Point().scale(by); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct Point');
+    expect(output).not.toContain('requires Rust initialization lowering');
+    expect(output).not.toContain('static fields require a constant initializer');
+    expect(output).not.toContain('Rust trait cannot hold');
+    expect(output).not.toContain('Rust inheritance lowering');
+    expect(output).not.toContain('no Rust trait');
+  });
+});

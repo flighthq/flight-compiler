@@ -670,7 +670,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const abstractBase = getIrClassStatelessAbstractBaseRust(declaration, context);
   const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(declaration, context) : undefined;
   if (declaration.extends && !abstractBase && !concreteBase) {
-    emissionError(context, `class ${declaration.binding.name} inheritance requires Rust ownership lowering`);
+    emissionError(
+      context,
+      `class ${declaration.binding.name} inheritance requires Rust ownership lowering`,
+      'rust-class-inheritance-unsupported',
+    );
   }
   // An abstract class declares behaviour and holds no state, which is what a Rust trait is. A method
   // it implements becomes the trait's default body, so a subclass inherits it by implementing nothing.
@@ -678,7 +682,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const inheritedTraits = abstractBase ? [getBindingTargetNameRust(abstractBase.binding, context)] : [];
   const implementedTraits = declaration.implements.map((reference) => {
     if (reference.kind !== 'named' || reference.reference.kind !== 'binding') {
-      return emissionError(context, `class ${declaration.binding.name} implements a type with no Rust trait`);
+      return emissionError(
+        context,
+        `class ${declaration.binding.name} implements a type with no Rust trait`,
+        'rust-class-implements-unsupported',
+      );
     }
     const target = context.module.declarations.find(
       (candidate) =>
@@ -708,27 +716,43 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     !compositionInit &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
-    emissionError(context, `class ${declaration.binding.name} constructor requires Rust initialization lowering`);
+    emissionError(
+      context,
+      `class ${declaration.binding.name} constructor requires Rust initialization lowering`,
+      'rust-class-initialization-unsupported',
+    );
   }
   // A static field is one value shared by the type, which Rust spells as an associated constant —
   // but only where the source's initializer is a constant. Anything computed needs a place to run,
   // and an associated constant has none.
   const staticFields = declaration.fields.filter((field) => field.static);
   if (staticFields.some((field) => field.initializer?.kind !== 'literal')) {
-    emissionError(context, `class ${declaration.binding.name} static fields require a constant initializer`);
+    emissionError(
+      context,
+      `class ${declaration.binding.name} static fields require a constant initializer`,
+      'rust-class-static-field-initializer-unsupported',
+    );
   }
   const constructed =
     !declaration.classConstructor ||
     (declaration.classConstructor.parameters.length === 0 && declaration.classConstructor.body.length === 0);
   const instanceFields = declaration.fields.filter((field) => !field.static);
   if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields && !compositionInit) {
-    emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
+    emissionError(
+      context,
+      `class ${declaration.binding.name} field initializers require constructor lowering`,
+      'rust-class-initialization-unsupported',
+    );
   }
   if (
     instanceFields.some((field) => field.initializer) &&
     instanceFields.some((field) => !field.initializer && !field.declare)
   ) {
-    emissionError(context, `class ${declaration.binding.name} partially initializes its fields`);
+    emissionError(
+      context,
+      `class ${declaration.binding.name} partially initializes its fields`,
+      'rust-class-initialization-unsupported',
+    );
   }
   const structVisibility =
     declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
@@ -2502,7 +2526,11 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
 
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
-    emissionError(context, `interface ${declaration.binding.name} inheritance requires record flattening`);
+    emissionError(
+      context,
+      `interface ${declaration.binding.name} inheritance requires record flattening`,
+      'rust-interface-inheritance-unsupported',
+    );
   // A shape a class implements is a contract on behaviour, which Rust spells as a trait. A shape
   // nothing implements is data, which Rust spells as a struct — and emitting the second as the first
   // would make an ordinary object type unconstructible.
@@ -2563,8 +2591,10 @@ function hasIrModuleClassImplementingRust(
 }
 
 function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
-  if (reference.kind === 'super') emissionError(context, 'super cannot be used as a Rust constructor value');
-  if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
+  if (reference.kind === 'super')
+    emissionError(context, 'super cannot be used as a Rust constructor value', 'rust-constructor-value-unsupported');
+  if (reference.kind === 'this')
+    emissionError(context, 'this cannot be used as a Rust constructor', 'rust-constructor-value-unsupported');
   if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
   const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value', context.options.hostBindings);
   if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
@@ -2616,11 +2646,16 @@ function assertIrConstructorInvocationAbiRust(
       }
     }
   }
-  emissionError(context, 'class constructor calls require Rust initialization lowering');
+  emissionError(
+    context,
+    'class constructor calls require Rust initialization lowering',
+    'rust-class-initialization-unsupported',
+  );
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
-  if (reference.kind === 'super') emissionError(context, 'super requires Rust inheritance lowering');
+  if (reference.kind === 'super')
+    emissionError(context, 'super requires Rust inheritance lowering', 'rust-class-inheritance-unsupported');
   if (reference.kind === 'this') return 'self';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
@@ -8547,10 +8582,18 @@ function getIrClassStatelessAbstractBaseRust(
 
 function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
   if (declaration.fields.some((field) => !field.abstract)) {
-    emissionError(context, `abstract class ${declaration.binding.name} carries state a Rust trait cannot hold`);
+    emissionError(
+      context,
+      `abstract class ${declaration.binding.name} carries state a Rust trait cannot hold`,
+      'rust-abstract-class-trait-unsupported',
+    );
   }
   if (declaration.classConstructor && declaration.classConstructor.body.length > 0) {
-    emissionError(context, `abstract class ${declaration.binding.name} constructor has no Rust trait equivalent`);
+    emissionError(
+      context,
+      `abstract class ${declaration.binding.name} constructor has no Rust trait equivalent`,
+      'rust-abstract-class-trait-unsupported',
+    );
   }
   const abstractFields = declaration.fields.filter((field) => field.abstract);
   const fieldNames = new Set(abstractFields.map((field) => field.name));
