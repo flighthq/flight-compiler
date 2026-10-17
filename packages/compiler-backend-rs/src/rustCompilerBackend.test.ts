@@ -17,8 +17,10 @@ import type {
   CompilerModuleResolutionPlan,
   EmittedFile,
   IrFunctionDeclaration,
+  IrIdentifierReference,
   IrModule,
   IrStatement,
+  IrType,
 } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 import { createCompilerRustSourceTreePlan, isCompilerRustSourceTreePlanningFailure } from './rustSourceTreePlan.js';
@@ -32616,6 +32618,98 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(output).not.toContain('AnonymousUnion');
   });
 
+  it('extracts one exact present record arm through ordinary identifier positions', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-extraction.ts',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; label: string }
+       type Choice = Alpha | Beta | null | undefined;
+       interface Box { value: Alpha }
+       function consume(_value: Alpha): number { return 1; }
+       export function extract(choice: Choice, box: Box): Alpha {
+         if (choice?.kind === 'alpha') {
+           let local: Alpha = choice;
+           local = choice;
+           consume(choice);
+           box.value = choice;
+           return choice;
+         }
+         return { kind: 'alpha', value: 0 };
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const extraction = 'match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }';
+    expect(output).toContain('if matches!(&choice, Choice::Alpha(_)) {');
+    expect(output).toContain(`let mut local: Alpha = ${extraction};`);
+    expect(output).toContain(`local = ${extraction}`);
+    expect(output).toContain(`consume(${extraction})`);
+    expect(output).toContain(`box_.value = ${extraction}`);
+    expect(output).toContain(`return ${extraction};`);
+    expect(output.match(/Choice::Alpha\(value\) => value\.clone\(\)/gu)).toHaveLength(5);
+  });
+
+  it('keeps the owner carrier raw in narrowed Choice contexts and absence comparisons', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-narrowed-raw.ts',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; label: string }
+       type Choice = Alpha | Beta | null | undefined;
+       interface Box { choice: Choice }
+       function consume(_choice: Choice): number { return 1; }
+       export function keep(choice: Choice, box: Box): Choice {
+         if (choice?.kind === 'alpha') {
+           let local: Choice = choice;
+           local = choice;
+           box.choice = choice;
+           consume(choice);
+           const isNull = choice === null;
+           const isUndefined = choice === undefined;
+           return choice;
+         }
+         return choice;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let mut local: Choice = choice.clone();');
+    expect(output).toContain('local = choice.clone()');
+    expect(output).toContain('box_.choice = choice.clone()');
+    expect(output).toContain('consume(choice.clone())');
+    expect(output).toContain('matches!(&choice, Choice::Null)');
+    expect(output).toContain('matches!(&choice, Choice::Undefined)');
+    expect(output).toContain('return choice.clone();');
+    expect(output).not.toContain('Choice::Alpha(value) => value.clone()');
+  });
+
+  it('uses planned collision variants for member tests and extraction', () => {
+    const result = lower(
+      'dual-sentinel-nominal-union-extraction-collision.ts',
+      `interface A_B { kind: 'first'; left: number }
+       interface AB { kind: 'second'; right: number }
+       interface Null { kind: 'null-record'; nullable: boolean }
+       interface Undefined { kind: 'undefined-record'; optional: boolean }
+       type Choice = A_B | AB | Null | Undefined | null | undefined;
+       export function second(choice: Choice): AB {
+         if (choice?.kind === 'second') return choice;
+         return { kind: 'second', right: 0 };
+       }
+       export function nullRecord(choice: Choice): Null {
+         if (choice?.kind === 'null-record') return choice;
+         return { kind: 'null-record', nullable: false };
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('matches!(&choice, Choice::AB2(_))');
+    expect(output).toContain('Choice::AB2(value) => value.clone()');
+    expect(output).toContain('matches!(&choice, Choice::Null2(_))');
+    expect(output).toContain('Choice::Null2(value) => value.clone()');
+  });
+
   it('reserves both semantic sentinel names before allocating colliding record arms', () => {
     const result = lower(
       'dual-sentinel-nominal-union-collision.ts',
@@ -32677,8 +32771,8 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
   it('qualifies the canonical dual-sentinel owner through imports and a type reexport', () => {
     const recordsSource = ts.createSourceFile(
       '/flight/packages/math/src/dual-records.ts',
-      `export interface Alpha { value: number }
-       export type Beta = { label: string };
+      `export interface Alpha { kind: 'alpha'; value: number }
+       export type Beta = { kind: 'beta'; label: string };
        export type Choice = Alpha | Beta | null | undefined;
        export function consume(_choice: Choice): number { return 1; }`,
       ts.ScriptTarget.Latest,
@@ -32698,7 +32792,12 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
        export function passed(alpha: Alpha): number { return consume(alpha); }
        export function absentNull(): Choice { return null; }
        export function absentUndefined(): Choice { return undefined; }
-       export function preserved(choice: Choice): Choice { return choice; }`,
+       export function preserved(choice: Choice): Choice { return choice; }
+       export function extracted(choice: Choice): Alpha {
+         if (choice?.kind !== 'alpha') return { kind: 'alpha', value: 0 };
+         return choice;
+       }
+       export function isNotAlpha(choice: Choice): boolean { return choice?.kind !== 'alpha'; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -32763,7 +32862,134 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(consumerOutput).toContain('return Choice::Null;');
     expect(consumerOutput).toContain('return Choice::Undefined;');
     expect(consumerOutput).toContain('return choice;');
+    expect(consumerOutput).toContain('!matches!(&choice, Choice::Alpha(_))');
+    expect(consumerOutput).toContain(
+      'match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }',
+    );
     expect(consumerOutput).not.toContain('AnonymousUnion');
+  });
+
+  it('refuses incomplete or non-exact arm evidence with one stable extraction rule', () => {
+    const source = `interface Alpha { kind: 'alpha'; value: number }
+interface Beta { kind: 'beta'; label: string }
+interface Gamma { kind: 'gamma'; count: number }
+type Choice = Alpha | Beta | null | undefined;
+export function extracted(choice: Choice): Alpha {
+  if (choice?.kind === 'alpha') return choice;
+  return { kind: 'alpha', value: 0 };
+}`;
+    const narrowedReturn = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'extracted',
+      );
+      const guard = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const returned = guard?.kind === 'if' ? guard.consequent : undefined;
+      const statement = returned?.kind === 'block' ? returned.statements[0] : returned;
+      if (statement?.kind !== 'return' || statement.expression?.kind !== 'identifier') {
+        throw new Error('expected a narrowed identifier return');
+      }
+      return statement.expression;
+    };
+    const expectRefusal = (mutate: (module: IrModule) => void) => {
+      const module = structuredClone(lower('dual-sentinel-nominal-union-extraction-refusal.ts', source).module);
+      mutate(module);
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+        'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
+      );
+    };
+
+    expectRefusal((module) => {
+      const expression = narrowedReturn(module) as { narrowedMember?: string; narrowedType?: IrType };
+      delete expression.narrowedMember;
+      delete expression.narrowedType;
+    });
+    expectRefusal((module) => {
+      const expression = narrowedReturn(module) as {
+        narrowedMember?: string;
+        narrowedType?: IrType;
+        presence?: 'narrowedPresent';
+      };
+      delete expression.narrowedType;
+      delete expression.presence;
+    });
+    expectRefusal((module) => {
+      (narrowedReturn(module) as { narrowedType?: IrType }).narrowedType = { kind: 'object', properties: [] };
+    });
+    expectRefusal((module) => {
+      const expression = narrowedReturn(module) as { narrowedType?: IrType; presence?: 'narrowedPresent' };
+      const alpha = expression.narrowedType;
+      if (!alpha) throw new Error('expected narrowed Alpha type');
+      expression.narrowedType = {
+        kind: 'union',
+        types: [alpha, { kind: 'undefined' }],
+      };
+      delete expression.presence;
+    });
+    expectRefusal((module) => {
+      const gamma = module.declarations.find(
+        (candidate) => candidate.kind === 'interface' && candidate.binding.name === 'Gamma',
+      );
+      if (gamma?.kind !== 'interface') throw new Error('expected Gamma interface');
+      (narrowedReturn(module) as { narrowedType?: IrType }).narrowedType = {
+        kind: 'named',
+        reference: { binding: gamma.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      };
+    });
+    expectRefusal((module) => {
+      const expression = narrowedReturn(module) as { reference: IrIdentifierReference };
+      expression.reference = { kind: 'ambient', name: 'mystery' };
+    });
+    expectRefusal((module) => {
+      const choice = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Choice',
+      );
+      if (choice?.kind !== 'typeAlias' || choice.type.kind !== 'union') throw new Error('expected Choice union');
+      const alpha = choice.type.types.find(
+        (member) =>
+          member.kind === 'named' && member.reference.kind === 'binding' && member.reference.binding.name === 'Alpha',
+      );
+      if (!alpha) throw new Error('expected Alpha union member');
+      (choice.type.types as unknown as IrType[]).splice(1, 0, structuredClone(alpha));
+    });
+  });
+
+  it.each([
+    [
+      'a presence-only multi-arm read',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; value: number }
+       type Choice = Alpha | Beta | null | undefined;
+       export function read(choice: Choice): number { if (choice != null) return choice.value; return 0; }`,
+    ],
+    [
+      'an identity-bearing payload clone',
+      `interface Alpha { kind: 'alpha'; values: number[] }
+       interface Beta { kind: 'beta'; label: string }
+       type Choice = Alpha | Beta | null | undefined;
+       export function extracted(choice: Choice): Alpha {
+         if (choice?.kind === 'alpha') return choice;
+         return { kind: 'alpha', values: [] };
+       }`,
+    ],
+    [
+      'a reference-planned binding',
+      `interface Alpha { kind: 'alpha'; value: number }
+       interface Beta { kind: 'beta'; label: string }
+       type Choice = Alpha | Beta | null | undefined;
+       export function extracted(choice: Choice): Alpha {
+         const replace = () => { choice = null; };
+         if (choice?.kind === 'alpha') return choice;
+         replace();
+         return { kind: 'alpha', value: 0 };
+       }`,
+    ],
+  ])('refuses %s with the stable nominal-arm rule', (_name, source) => {
+    const result = lower('dual-sentinel-nominal-union-extraction-refusal.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
+    );
   });
 
   it.each([

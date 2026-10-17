@@ -118,6 +118,7 @@ import type {
   IrTypeBindingIdentity,
   IrTypeReference,
   IrTypeParameter,
+  IrUnionMemberTestEvidence,
   IrUnaryOperatorSemantics,
   IrVariable,
   IrVariableDeclaration,
@@ -2143,6 +2144,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // what makes equivalent.
       return emitAwaitExpressionRust(expression.expression, context);
     case 'binary': {
+      if (expression.semantics.unionMemberTest) {
+        const nominalTest = emitRustDualSentinelNominalUnionMemberTestRust(
+          expression.semantics.unionMemberTest,
+          context,
+        );
+        if (nominalTest) return nominalTest;
+      }
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
         // A single absent member uses `Option`. When both source sentinels are possible the binding
@@ -2158,7 +2166,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const patterns = strict
             ? [`${union.name}::${evidence.literal === 'null' ? union.nullVariantName : union.undefinedVariantName}`]
             : [`${union.name}::${union.nullVariantName}`, `${union.name}::${union.undefinedVariantName}`];
-          const test = `matches!(&${emitExpression(operand, context)}, ${patterns.join(' | ')})`;
+          const emittedOperand = emitRustDualSentinelRawCarrierRust(operand, context) ?? emitExpression(operand, context);
+          const test = `matches!(&${emittedOperand}, ${patterns.join(' | ')})`;
           return expression.operator === '!=' || expression.operator === '!==' ? `!${test}` : test;
         }
         const operand = getIrSharedClassSentinelExpressionRust(expression.left) ? expression.right : expression.left;
@@ -2597,6 +2606,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'function':
       return emitFunctionExpressionRust(expression, context);
     case 'identifier': {
+      const nominalExtraction = emitRustDualSentinelNominalArmExtractionRust(expression, context);
+      if (nominalExtraction) return nominalExtraction;
       if (expression.reference.kind === 'binding') {
         const moduleState = context.moduleStateBindings.get(expression.reference.binding.id);
         if (moduleState) return `${moduleState.readName}()`;
@@ -7687,7 +7698,14 @@ function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>
 // use, so the last consumption clones as well: correct, at the cost of one copy the source did not
 // need, and a binding consumed once is left to move.
 function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
-  const source = emitExpression(expression, context);
+  const nominalExtraction =
+    expression.kind === 'identifier'
+      ? emitRustDualSentinelNominalArmExtractionRust(expression, context)
+      : undefined;
+  const source = nominalExtraction ?? emitExpression(expression, context);
+  // The arm projection already borrows the carrier and clones the selected payload. Treating the
+  // source binding as moved would clone that new owned payload a second time.
+  if (nominalExtraction) return source;
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
@@ -8757,7 +8775,9 @@ function emitExactNominalGeneralUnionConstructionRust(
       expression.kind === 'identifier' ||
       expression.kind === 'property')
   ) {
-    return emitOwnedOperandRust(expression, context);
+    return expression.kind === 'identifier'
+      ? emitRustDualSentinelRawOwnedBindingRust(expression, context)
+      : emitOwnedOperandRust(expression, context);
   }
 
   const sentinel = getIrSharedClassSentinelExpressionRust(expression);
@@ -8897,14 +8917,17 @@ function isIrExpressionReferencePlannedRust(expression: Readonly<IrExpression>, 
           expression.object.reference.kind === 'binding'
         ? expression.object.reference.binding.id
         : undefined;
-  return Boolean(
-    bindingId &&
-    (context.cellWrappedBindingIds.has(bindingId) ||
-      context.refCellWrappedBindingIds.has(bindingId) ||
-      context.sharedArrayBindingIds.has(bindingId) ||
-      context.sharedClassBindingRepresentations.has(bindingId) ||
-      context.sharedMapBindingIds.has(bindingId) ||
-      context.sharedSetBindingIds.has(bindingId)),
+  return bindingId !== undefined && isRustBindingReferencePlannedRust(bindingId, context);
+}
+
+function isRustBindingReferencePlannedRust(bindingId: string, context: EmitContext): boolean {
+  return (
+    context.cellWrappedBindingIds.has(bindingId) ||
+    context.refCellWrappedBindingIds.has(bindingId) ||
+    context.sharedArrayBindingIds.has(bindingId) ||
+    context.sharedClassBindingRepresentations.has(bindingId) ||
+    context.sharedMapBindingIds.has(bindingId) ||
+    context.sharedSetBindingIds.has(bindingId)
   );
 }
 
@@ -9251,6 +9274,213 @@ function getIrExpressionDualSentinelCarrierRust(
   }
   const anonymous = resolveDualSentinelUnionEnumRust(type, context);
   return anonymous ? { name: anonymous.name, nullVariantName: 'Null', undefinedVariantName: 'Undefined' } : undefined;
+}
+
+function emitRustDualSentinelRawCarrierRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const declaredType = context.bindingTypes.get(expression.reference.binding.id);
+  if (!declaredType || !createRustDualSentinelNominalEnumPlanRust(declaredType, context)) return undefined;
+  const bindingId = expression.reference.binding.id;
+  const moduleState = context.moduleStateBindings.get(bindingId);
+  if (moduleState) return `${moduleState.readName}()`;
+  const target = emitIdentifierReferenceRust(expression.reference, context);
+  if (context.cellWrappedBindingIds.has(bindingId)) return `${target}.get()`;
+  if (context.refCellWrappedBindingIds.has(bindingId)) return `${target}.borrow().clone()`;
+  if (
+    context.sharedArrayBindingIds.has(bindingId) ||
+    context.sharedClassBindingIds.has(bindingId) ||
+    context.sharedMapBindingIds.has(bindingId) ||
+    context.sharedSetBindingIds.has(bindingId)
+  ) {
+    return `${target}.borrow().clone()`;
+  }
+  return target;
+}
+
+function emitRustDualSentinelRawOwnedBindingRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string {
+  if (expression.reference.kind !== 'binding') return emitExpression(expression, context);
+  const source = emitRustDualSentinelRawCarrierRust(expression, context);
+  if (!source) return emitExpression(expression, context);
+  const direct = emitIdentifierReferenceRust(expression.reference, context);
+  if (source !== direct) return source;
+  if (!context.movedBindingIds.has(expression.reference.binding.id)) return source;
+  if (context.deepCloneUnsafeBindingIds.has(expression.reference.binding.id)) {
+    emissionError(
+      context,
+      `binding ${expression.reference.binding.name} requires a deep Rust clone that would split source shared identity`,
+      'rust-shared-identity-deep-clone-unrepresented',
+    );
+  }
+  return `${source}.clone()`;
+}
+
+function emitRustDualSentinelNominalArmExtractionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  const hasNarrowingEvidence =
+    expression.presence === 'narrowedPresent' ||
+    expression.narrowedType !== undefined ||
+    expression.narrowedMember !== undefined;
+  if (expression.reference.kind !== 'binding') {
+    if (hasNarrowingEvidence) refuseRustDualSentinelNominalArmExtractionRust(context);
+    return undefined;
+  }
+  const bindingId = expression.reference.binding.id;
+  const declaredType = context.bindingTypes.get(bindingId);
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    representation.sentinels.kind !== 'distinct' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
+  if (!hasNarrowingEvidence) return undefined;
+  const plan = createRustDualSentinelNominalEnumPlanRust(declaredType, context);
+  if (
+    !plan ||
+    expression.presence !== 'narrowedPresent' ||
+    !expression.narrowedType ||
+    context.moduleStateBindings.has(bindingId) ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    context.deepCloneUnsafeBindingIds.has(bindingId)
+  ) {
+    refuseRustDualSentinelNominalArmExtractionRust(context);
+  }
+  const narrowedIdentity = getIrExactNominalRecordIdentityRust(expression.narrowedType, context);
+  const matches = narrowedIdentity
+    ? plan.valueVariants.filter(
+        (variant) =>
+          getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === narrowedIdentity.key,
+      )
+    : [];
+  if (
+    !narrowedIdentity ||
+    matches.length !== 1 ||
+    !isIrDualSentinelNominalArmCloneSafeRust(expression.narrowedType, context, new Set())
+  ) {
+    refuseRustDualSentinelNominalArmExtractionRust(context);
+  }
+  const target = emitIdentifierReferenceRust(expression.reference, context);
+  const owner = emitType(plan.owner, context);
+  return `match &${target} { ${owner}::${matches[0]!.name}(value) => value.clone(), _ => unreachable!() }`;
+}
+
+function emitRustDualSentinelNominalUnionMemberTestRust(
+  evidence: Readonly<IrUnionMemberTestEvidence>,
+  context: EmitContext,
+): string | undefined {
+  const declaredType = context.bindingTypes.get(evidence.binding.id);
+  if (!declaredType) return undefined;
+  const representation = createRustUnionRepresentationPlanForTypeRust(declaredType, context);
+  if (
+    representation.kind !== 'nominalEnum' ||
+    representation.sentinels.kind !== 'distinct' ||
+    !hasIrTypeContextualGeneralUnionCandidateRust(declaredType, representation, context)
+  ) {
+    return undefined;
+  }
+  const plan = createRustDualSentinelNominalEnumPlanRust(declaredType, context);
+  if (
+    !plan ||
+    context.moduleStateBindings.has(evidence.binding.id) ||
+    isRustBindingReferencePlannedRust(evidence.binding.id, context)
+  ) {
+    refuseRustDualSentinelNominalArmExtractionRust(context);
+  }
+  const variantName =
+    evidence.member.kind === 'null'
+      ? plan.nullVariantName
+      : evidence.member.kind === 'undefined'
+        ? plan.undefinedVariantName
+        : (() => {
+            const memberIdentity = getIrExactNominalRecordIdentityRust(evidence.member, context);
+            const matches = memberIdentity
+              ? plan.valueVariants.filter(
+                  (variant) =>
+                    getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key ===
+                    memberIdentity.key,
+                )
+              : [];
+            if (matches.length !== 1) refuseRustDualSentinelNominalArmExtractionRust(context);
+            return matches[0]!.name;
+          })();
+  const owner = emitType(plan.owner, context);
+  const payload = evidence.member.kind === 'null' || evidence.member.kind === 'undefined' ? '' : '(_)';
+  const test = `matches!(&${getBindingTargetNameRust(evidence.binding, context)}, ${owner}::${variantName}${payload})`;
+  return evidence.whenResult ? test : `!${test}`;
+}
+
+function isIrDualSentinelNominalArmCloneSafeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): boolean {
+  switch (type.kind) {
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'undefined':
+      return true;
+    case 'tuple':
+      return type.elements.every((element) =>
+        isIrDualSentinelNominalArmCloneSafeRust(element.type, context, resolving),
+      );
+    case 'union':
+      return type.types.every((member) => isIrDualSentinelNominalArmCloneSafeRust(member, context, resolving));
+    case 'named': {
+      const identity = getIrExactNominalRecordIdentityRust(type, context);
+      if (identity) {
+        if (resolving.has(identity.key)) return false;
+        const declaration = identity.location.declaration;
+        const properties =
+          declaration.kind === 'interface'
+            ? declaration.properties
+            : declaration.kind === 'typeAlias' && declaration.type.kind === 'object'
+              ? declaration.type.properties
+              : undefined;
+        return Boolean(
+          properties?.every((property) =>
+            isIrDualSentinelNominalArmCloneSafeRust(property.type, context, new Set(resolving).add(identity.key)),
+          ),
+        );
+      }
+      const alias = getIrNamedTypeIdentityRust(type, context);
+      if (!alias || alias.location.declaration.kind !== 'typeAlias' || resolving.has(alias.key)) return false;
+      return isIrDualSentinelNominalArmCloneSafeRust(
+        alias.location.declaration.type,
+        context,
+        new Set(resolving).add(alias.key),
+      );
+    }
+    case 'array':
+    case 'conditionalFacet':
+    case 'function':
+    case 'indexedAccess':
+    case 'intersection':
+    case 'keyof':
+    case 'object':
+    case 'typeOf':
+    case 'unknown':
+      return false;
+  }
+}
+
+function refuseRustDualSentinelNominalArmExtractionRust(context: EmitContext): never {
+  emissionRuleError(
+    context,
+    'dual-sentinel nominal arm extraction requires one stable direct binding, present evidence, one exact non-generic named record arm, and value-safe clone ownership',
+    'rust-dual-sentinel-nominal-arm-extraction-unrepresented',
+  );
 }
 
 function emitDualSentinelUnionConstructionRust(
