@@ -25108,6 +25108,58 @@ describe('emitIrModuleRust static Array.isArray', () => {
     expect(output).not.toContain('let array_is_array_value = &box_alias.borrow().clone();');
   });
 
+  it.skipIf(!rustcAvailable)(
+    'runs the static Array.isArray checkpoint across exact domains, effects, and reusable identities',
+    () => {
+      const result = lower(
+        'array-is-array-checkpoint.ts',
+        `class Counter { value: number; constructor(value: number) { this.value = value; } }
+         function record(log: number[]): number[] { log.push(1); return [7]; }
+         export function arrayDomain(): boolean {
+           const values = [1];
+           const answer = Array.isArray(values);
+           values.push(2);
+           return answer && values.length === 2;
+         }
+         export function tupleDomain(): boolean {
+           const value: [number, string] = [3, "ready"];
+           const answer = Array.isArray(value);
+           return answer && value[0] === 3 && value[1] === "ready";
+         }
+         export function falseDomains(): boolean {
+           const primitive = Array.isArray("value");
+           const exactClass = Array.isArray(new Counter(1));
+           return !primitive && !exactClass;
+         }
+         export function effectDomain(): boolean {
+           const log: number[] = [];
+           const answer = Array.isArray(record(log));
+           return answer && log.length === 1;
+         }
+         export function sharedDomains(): boolean {
+           const values = [1];
+           const valuesAlias = values;
+           const arrayAnswer = Array.isArray(valuesAlias);
+           values.push(2);
+           const counter = new Counter(1);
+           const counterAlias = counter;
+           const classAnswer = Array.isArray(counterAlias);
+           counter.value = 2;
+           return arrayAnswer && !classAnswer && valuesAlias.length === 2 && counterAlias.value === 2;
+         }`,
+      );
+
+      expect(result.diagnostics).toEqual([]);
+      const output = emitIrModuleRust(result.module).contents;
+      expect(() =>
+        runRustSource(
+          output,
+          'assert!(array_domain()); assert!(tuple_domain()); assert!(false_domains()); assert!(effect_domain()); assert!(shared_domains());',
+        ),
+      ).not.toThrow();
+    },
+  );
+
   it('does not intercept local, imported, or neighbouring runtime-external static spellings', () => {
     const localOutput = emitIrModuleRust(
       lower(
