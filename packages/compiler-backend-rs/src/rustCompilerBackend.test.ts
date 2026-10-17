@@ -26854,6 +26854,204 @@ describe('emitIrModuleRust dense literal array construction', () => {
   });
 });
 
+describe('emitIrModuleRust closed Object.keys enumeration', () => {
+  it('evaluates literal values once in member order and returns keys in syntactic order', () => {
+    const result = lower(
+      'object-keys-effects.ts',
+      `function record(value: number): number { return value; }
+       export function keys(): string[] { return Object.keys({ beta: record(2), alpha: record(1) }); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('vec!["beta".to_owned(), "alpha".to_owned()]');
+    const beta = output.indexOf('record(2.0)');
+    const alpha = output.indexOf('record(1.0)');
+    expect(beta).toBeGreaterThan(-1);
+    expect(alpha).toBeGreaterThan(beta);
+    expect(output.match(/let _ = record\(/gu)).toHaveLength(2);
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('enumerates an empty literal as an empty Vec', () => {
+    const output = emitIrModuleRust(
+      lower('object-keys-empty.ts', 'export function keys(): string[] { return Object.keys({}); }').module,
+    ).contents;
+    expect(output).toContain('Vec::<String>::new()');
+  });
+
+  it.each([
+    ['a computed key', 'export function keys(value: number): string[] { return Object.keys({ [value]: 1 }); }'],
+    ['a spread member', 'export function keys(other: { a: number }): string[] { return Object.keys({ ...other }); }'],
+    ['a getter member', 'export function keys(): string[] { return Object.keys({ get a(): number { return 1; } }); }'],
+    ['a duplicate key', 'export function keys(): string[] { return Object.keys({ a: 1, a: 2 }); }'],
+    ['an array-index-like key', 'export function keys(): string[] { return Object.keys({ "1": 1 }); }'],
+    ['a __proto__ member', 'export function keys(): string[] { return Object.keys({ __proto__: null }); }'],
+  ])('refuses %s with the literal-shape rule', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('object-keys-shape.ts', source).module))).toBe(
+      'rust-object-enumeration-literal-shape-unrepresented',
+    );
+  });
+
+  it.each([
+    ['zero arguments', 'export function keys(): string[] { return Object.keys(); }'],
+    ['an optional call', 'export function keys(): string[] { return Object.keys?.({ a: 1 }) ?? []; }'],
+    ['a spread argument', 'export function keys(values: object[]): string[] { return Object.keys(...values); }'],
+  ])('refuses %s with the invocation rule', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('object-keys-invocation.ts', source).module))).toBe(
+      'rust-object-enumeration-invocation-unrepresented',
+    );
+  });
+
+  it.each([
+    ['an identifier argument', 'export function keys(value: { a: number }): string[] { return Object.keys(value); }'],
+    ['a cast argument', 'export function keys(): string[] { return Object.keys(({ a: 1 }) as object); }'],
+    [
+      'a call-result argument',
+      'function make(): { a: number } { return { a: 1 }; } export function keys(): string[] { return Object.keys(make()); }',
+    ],
+  ])('refuses %s with the argument rule', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('object-keys-argument.ts', source).module))).toBe(
+      'rust-object-enumeration-argument-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a bare Object value',
+      'export function value(): unknown { return Object; }',
+      'rust-object-reflection-unrepresented',
+    ],
+    [
+      'Object.assign',
+      'export function assign(base: { a: number }, extra: { b: number }): { a: number; b: number } { return Object.assign(base, extra); }',
+      'rust-object-reflection-unrepresented',
+    ],
+    [
+      'Object.is',
+      'export function same(left: number, right: number): boolean { return Object.is(left, right); }',
+      'rust-object-reflection-unrepresented',
+    ],
+    [
+      'Object.entries',
+      'export function entries(): [string, unknown][] { return Object.entries({ a: 1 }); }',
+      'rust-object-enumeration-member-unrepresented',
+    ],
+    [
+      'Object.values',
+      'export function values(): unknown[] { return Object.values({ a: 1 }); }',
+      'rust-object-enumeration-member-unrepresented',
+    ],
+  ])('refuses %s with %s', (_name, source, rule) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('object-surface.ts', source).module))).toBe(rule);
+  });
+
+  it('refuses a non-string result carrier in mutated IR', () => {
+    const result = lower('object-keys-result.ts', 'export function keys(): string[] { return Object.keys({ a: 1 }); }');
+    const declaration = result.module.declarations.find((candidate) => candidate.kind === 'function');
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((item) => item.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected the Object.keys return');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      kind: 'array',
+      element: { kind: 'primitive', name: 'number' },
+      readonly: false,
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-object-enumeration-result-carrier-unrepresented',
+    );
+  });
+
+  it('enumerates a local literal in a module that imports an unrelated interface', () => {
+    const api = lower('object-keys-api.ts', 'export interface Config { enabled: boolean }').module;
+    const consumer = lower(
+      'object-keys-consumer.ts',
+      `import { Config } from './object-keys-api.js';
+       export function keys(): string[] { return Object.keys({ beta: 2, alpha: 1 }); }
+       export function refused(config: Config): string[] { return Object.keys(config); }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(consumer),
+            specifier: './object-keys-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, consumer],
+      options: {},
+    });
+
+    expect(getEmissionRule(() => session.emitModule(consumer))).toBe('rust-object-enumeration-argument-unrepresented');
+
+    const literalOnly = lower(
+      'object-keys-consumer-literal.ts',
+      `import { Config } from './object-keys-api.js';
+       export function keys(): string[] { return Object.keys({ beta: 2, alpha: 1 }); }`,
+    ).module;
+    const literalSession = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: getRustTestModuleIdentity(literalOnly),
+            specifier: './object-keys-api.js',
+            target: getRustTestModuleIdentity(api),
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [api, literalOnly],
+      options: {},
+    });
+    expect(literalSession.emitModule(literalOnly)[0]!.contents).toContain(
+      'vec!["beta".to_owned(), "alpha".to_owned()]',
+    );
+  });
+
+  it('salvages a supported sibling beside an unsupported Object.keys declaration', () => {
+    const module = lower(
+      'object-keys-salvage.ts',
+      `export function good(): string[] { return Object.keys({ a: 1 }); }
+       export function bad(value: { a: number }): string[] { return Object.keys(value); }`,
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({ modules: [module], options: {} });
+    session.finalizePackageGraph!({
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-object-enumeration-argument-unrepresented',
+          message: 'unsupported Object.keys argument',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: 'unsupported Object.keys argument' });
+    if (!placeholder) throw new Error('expected a partial file');
+
+    expect(placeholder.contents).toContain('// PARTIAL:');
+    expect(placeholder.contents).toContain('vec!["a".to_owned()]');
+    expect(placeholder.contents).toContain('pub fn good');
+    expect(placeholder.contents).toContain('// NOT GENERATED: function bad -- source line 2');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles a proved Object.keys enumeration', () => {
+    const output = emitIrModuleRust(
+      lower('object-keys-native.ts', 'export function keys(): string[] { return Object.keys({ beta: 2, alpha: 1 }); }')
+        .module,
+    ).contents;
+    runRustSource(output, 'assert_eq!(keys(), vec!["beta".to_owned(), "alpha".to_owned()]);');
+  });
+});
+
 describe('emitIrModuleRust explicit reexport grounding', () => {
   function createResolutionSession(
     modules: readonly Readonly<IrModule>[],

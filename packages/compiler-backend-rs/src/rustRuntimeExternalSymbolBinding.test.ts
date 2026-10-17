@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(50);
+    expect(plan.bindings).toHaveLength(51);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -55,7 +55,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(50);
+    expect(second.bindings).toHaveLength(51);
   });
 
   it('adds versioned downstream host bindings without treating them as runtime capabilities', () => {
@@ -212,7 +212,7 @@ describe('createCompilerRustRuntimeExternalSymbolBindingPlan', () => {
   it('keeps downstream host ownership and nullability outside the compiler-owned symbol plan', () => {
     const plan = createCompilerRustRuntimeExternalSymbolBindingPlan();
 
-    expect(plan.bindings).toHaveLength(50);
+    expect(plan.bindings).toHaveLength(51);
     expect(
       plan.bindings.some((binding) => Object.hasOwn(binding, 'ownership') || Object.hasOwn(binding, 'nullability')),
     ).toBe(false);
@@ -232,7 +232,7 @@ describe('createCompilerRustRuntimeExternalSymbolBindingPlan', () => {
 
     (first.bindings as unknown[]).pop();
     (firstPromise.members as unknown[]).pop();
-    expect(second.bindings).toHaveLength(50);
+    expect(second.bindings).toHaveLength(51);
     expect(secondPromise?.members).toEqual([{ sourceMember: 'resolve', targetName: 'FlightTask::ready' }]);
   });
 });

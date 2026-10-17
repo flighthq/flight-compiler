@@ -271,6 +271,10 @@ const rustRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Array', space: 'type', targetName: 'Vec' },
   { kind: 'native', sourceName: 'Array', space: 'value', targetName: 'Vec' },
   { kind: 'native', sourceName: 'ArrayLike', space: 'type', targetName: 'Vec' },
+  // Object is claimed only for the guarded direct-literal Object.keys enumeration. The target
+  // spelling is never emitted: the identifier guard refuses every other ambient Object use, and the
+  // enumeration emitter consumes the call before its callee reference is emitted.
+  { kind: 'native', sourceName: 'Object', space: 'value', targetName: 'Object' },
   {
     capability: 'array-buffer',
     kind: 'runtime',

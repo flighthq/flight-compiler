@@ -2064,6 +2064,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (isRustCallableOverloadCallRust(expression, context)) {
         return emitRustCallableOverloadCallRust(expression, context);
       }
+      if (isRustObjectEnumerationCallRust(expression)) {
+        return emitRustObjectEnumerationCallRust(expression, context);
+      }
       if (isIrNativeAsyncFunctionCallRust(expression, context) && context.allowedNativeFutureCall !== expression) {
         if (expression.callee.kind === 'function' && expression.callee.async && context.insideProtectedTry) {
           emissionRuleError(
@@ -4766,6 +4769,13 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Rust Option-aware lowering');
     }
+    if (reference.name === 'Object') {
+      emissionRuleError(
+        context,
+        'ambient Object is claimed only for closed direct-literal Object.keys enumeration; other reflection needs a runtime named-properties view',
+        'rust-object-reflection-unrepresented',
+      );
+    }
     const targetName = getCompilerRuntimeExternalSymbolTargetRust(
       reference.name,
       'value',
@@ -6755,6 +6765,151 @@ function getOrCreateCallableObjectRecordRust(
 interface RustCallableOverloadRecord {
   readonly fields: readonly Readonly<{ parameters: readonly string[]; returns: string }>[];
   readonly name: string;
+}
+
+const rustObjectEnumerationMembers: ReadonlySet<string> = new Set(['entries', 'keys', 'values']);
+
+// A structural diagnostic may point at a member or a nested literal inside the argument rather than
+// the argument node itself. Any prefix that resolves to the exempt argument means the diagnostic is
+// inside a literal whose Object call owns the refusal.
+function isRustAmbientObjectArgumentPathRust(
+  module: Readonly<IrModule>,
+  expressions: ReadonlySet<Readonly<IrExpression>>,
+  path: readonly (number | string)[],
+): boolean {
+  for (let length = path.length; length >= 0; length -= 1) {
+    const value = getIrModuleTraversalPathValue(module, path.slice(0, length));
+    if (typeof value === 'object' && value !== null && expressions.has(value as Readonly<IrExpression>)) return true;
+  }
+  return false;
+}
+
+function collectRustAmbientObjectArgumentExpressionsRust(
+  module: Readonly<IrModule>,
+): ReadonlySet<Readonly<IrExpression>> {
+  const expressions = new Set<Readonly<IrExpression>>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind !== 'call' ||
+        expression.callee.kind !== 'property' ||
+        expression.callee.object.kind !== 'identifier' ||
+        expression.callee.object.reference.kind !== 'ambient' ||
+        expression.callee.object.reference.name !== 'Object'
+      ) {
+        return;
+      }
+      for (const argument of expression.arguments) {
+        if (argument.kind === 'object') expressions.add(argument);
+      }
+    },
+  });
+  return expressions;
+}
+
+function isRustObjectEnumerationCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> &
+  Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }> {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'ambient' &&
+    expression.callee.object.reference.name === 'Object' &&
+    rustObjectEnumerationMembers.has(expression.callee.name)
+  );
+}
+
+// Object.keys over a direct object literal is the whole represented surface: the literal's own
+// syntactic order is the JavaScript insertion order, every property value is still evaluated exactly
+// once, and the keys the runtime would return are known to the compiler. Every other Object use needs
+// a runtime named-properties view and refuses deterministically.
+function emitRustObjectEnumerationCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>> &
+    Readonly<{ callee: Extract<IrExpression, { kind: 'property' }> }>,
+  context: EmitContext,
+): string {
+  const member = expression.callee.name;
+  if (member !== 'keys') {
+    return emissionRuleError(
+      context,
+      `Object.${member} over a closed object requires an exact erased result carrier this compiler does not represent; only Object.keys is supported`,
+      'rust-object-enumeration-member-unrepresented',
+    );
+  }
+  const signature = expression.semantics.signature;
+  if (
+    expression.optional ||
+    expression.callee.optional ||
+    expression.semantics.optionalChain !== undefined ||
+    expression.callee.optionalChain !== undefined ||
+    expression.semantics.defaultParameters !== undefined ||
+    expression.semantics.optionalParameters !== undefined ||
+    signature === undefined ||
+    signature.providedArgumentCount === 'dynamic' ||
+    signature.providedArgumentCount !== 1 ||
+    expression.arguments.length !== 1 ||
+    expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    emissionRuleError(
+      context,
+      'Object.keys requires one direct object literal argument with fixed arity',
+      'rust-object-enumeration-invocation-unrepresented',
+    );
+  }
+  const argument = expression.arguments[0]!;
+  if (argument.kind !== 'object') {
+    return emissionRuleError(
+      context,
+      'Object.keys over a non-literal value needs runtime property reflection; pass a direct object literal or use a closed key plan',
+      'rust-object-enumeration-argument-unrepresented',
+    );
+  }
+  const result = resolveIrTypeAliasValueRust(expression.semantics.resultType, context, new Set());
+  if (
+    result.kind !== 'array' ||
+    getRustDensePrimitiveArrayCarrierDomainRust(result.element, context) !== 'string' ||
+    emitType(result.element, context) !== 'String'
+  ) {
+    emissionRuleError(
+      context,
+      'Object.keys requires the exact mutable Rust Vec<String> result carrier',
+      'rust-object-enumeration-result-carrier-unrepresented',
+    );
+  }
+  const seen = new Set<string>();
+  const names: string[] = [];
+  const evaluations: string[] = [];
+  for (const candidate of argument.members) {
+    if (candidate.kind !== 'property') {
+      emissionRuleError(
+        context,
+        'Object.keys over an object literal requires plain named properties; computed, symbol, spread, and getter members have no static key order',
+        'rust-object-enumeration-literal-shape-unrepresented',
+      );
+    }
+    const name = candidate.name;
+    if (name === '__proto__' || isRustJavaScriptArrayIndexKey(name) || seen.has(name)) {
+      emissionRuleError(
+        context,
+        `Object.keys over an object literal cannot represent member ${name}: it is a prototype setter, an array-index-like key that JavaScript reorders, or a duplicate key`,
+        'rust-object-enumeration-literal-shape-unrepresented',
+      );
+    }
+    seen.add(name);
+    names.push(name);
+    evaluations.push(`let _ = ${emitOwnedOperandRust(candidate.value, context)};`);
+  }
+  const keys =
+    names.length === 0
+      ? 'Vec::<String>::new()'
+      : `vec![${names.map((name) => `${JSON.stringify(name)}.to_owned()`).join(', ')}]`;
+  return evaluations.length === 0 ? keys : `{ ${evaluations.join(' ')} ${keys} }`;
+}
+
+function isRustJavaScriptArrayIndexKey(name: string): boolean {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(name)) return false;
+  return Number(name) < 0xffff_ffff;
 }
 
 function isRustCallableFunctionTypeRust(
@@ -12917,11 +13072,18 @@ function assertStructuralObjectCompatibilityRust(
   modules: readonly Readonly<IrModule>[],
   resolution: Readonly<CompilerModuleResolutionPlan> | undefined,
 ): void {
+  // An object literal passed straight to an ambient Object method has no contextual structural target
+  // and is refused by the Object rules that own that call. The structural gate would otherwise report
+  // the open target first and hide the more specific refusal; nothing is accepted here that the
+  // Object surface does not either enumerate (Object.keys) or refuse.
+  const objectArgumentExpressions = collectRustAmbientObjectArgumentExpressionsRust(module);
   const diagnostics = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
     module,
     modules,
     resolution,
-  ).diagnostics;
+  ).diagnostics.filter(
+    (candidate) => !isRustAmbientObjectArgumentPathRust(module, objectArgumentExpressions, candidate.path),
+  );
   const diagnostic =
     diagnostics.find((candidate) => candidate.disposition !== 'indeterminate') ??
     diagnostics.find((candidate) => candidate.code !== 'unresolved-named-construction-target');

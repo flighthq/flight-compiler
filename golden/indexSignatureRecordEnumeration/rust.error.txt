@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/indexSignatureRecordEnumeration.ts: runtime external symbol binding plan is incomplete (missing: Object[value])
+rust emission failed for @flighthq/golden/packages/golden/src/indexSignatureRecordEnumeration.ts: Object.keys over a non-literal value needs runtime property reflection; pass a direct object literal or use a closed key plan
