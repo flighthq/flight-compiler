@@ -284,11 +284,18 @@ interface RustAsyncTryProtectedTaskReturnStep {
   readonly statement: Readonly<Extract<IrStatement, { kind: 'return' }>>;
 }
 
-interface RustAsyncTryFinallyCompletionPlan {
+interface RustAsyncTryLocalCompletionPlan {
   readonly catchPlan?: RustAsyncTryCatchCompletionPlan | undefined;
-  readonly finalizerPlan: RustAsyncTryFinalizerCompletionPlan;
   readonly protectedTaskReturn?: RustAsyncTryProtectedTaskReturnStep | undefined;
   readonly tryStatements: readonly Readonly<IrStatement>[];
+}
+
+interface RustAsyncTryBoundAwaitCatchCompletionPlan extends RustAsyncTryLocalCompletionPlan {
+  readonly catchPlan: Extract<RustAsyncTryCatchCompletionPlan, Readonly<{ kind: 'await' }>>;
+}
+
+interface RustAsyncTryFinallyCompletionPlan extends RustAsyncTryLocalCompletionPlan {
+  readonly finalizerPlan: RustAsyncTryFinalizerCompletionPlan;
 }
 
 interface RustAsyncTryProtectedTaskCatchPlan {
@@ -7912,7 +7919,7 @@ function getAsyncTryCatchCompletionPlanRust(
   ) {
     emissionRuleError(
       context,
-      'async try/finally awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
+      'async protected awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
       'rust-async-try-completion-unrepresented',
     );
   }
@@ -7924,6 +7931,53 @@ function getAsyncTryCatchCompletionPlanRust(
     preStatements: statements.slice(0, selected.index),
     ...(rethrowBinding ? { rethrowBinding } : {}),
     step: selected.step,
+  };
+}
+
+function getAsyncTryBoundAwaitCatchCompletionPlanRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): RustAsyncTryBoundAwaitCatchCompletionPlan | undefined {
+  const catchClause = statement.catchClause;
+  if (!catchClause?.binding || statement.finallyBody) return undefined;
+
+  const catchEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(catchClause.body);
+  if (catchEvidence.suspensionCount === 0) return undefined;
+
+  const tryStatements = getIrDirectStatementsRust(statement.tryBody);
+  const protectedTaskReturn = getIrAsyncTryProtectedTaskReturnStepRust(statement.tryBody, context);
+  const tryTail = tryStatements.at(-1);
+  const returnAwait = tryTail ? getIrAsyncTryDirectAwaitStepRust(tryTail) : undefined;
+  if (!protectedTaskReturn && returnAwait?.kind !== 'return') return undefined;
+
+  const catchPlan = getAsyncTryCatchCompletionPlanRust(catchClause, catchEvidence, context);
+  const tryEvidence = collectIrStatementAsyncTryCompletionEvidenceRust(statement.tryBody);
+  const expectedTrySuspensions = protectedTaskReturn ? 0 : 1;
+  if (
+    (statement.tryBody.kind === 'block' && statement.tryBody.label) ||
+    tryEvidence.suspensionCount !== expectedTrySuspensions ||
+    !tryStatements
+      .slice(0, -1)
+      .every((candidate) => candidate.kind === 'expression' || candidate.kind === 'variable') ||
+    tryEvidence.abruptStatements.some((candidate) => candidate !== tryTail)
+  ) {
+    emissionRuleError(
+      context,
+      'async try/catch awaited bound handler requires one flat protected terminal FlightTask return or return-await and no other protected suspension or abrupt completion',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  if (catchPlan.kind !== 'await' || !catchPlan.binding) {
+    emissionRuleError(
+      context,
+      'async try/catch awaited bound handler requires one used immutable direct String binding and exactly one direct catch await',
+      'rust-async-try-completion-unrepresented',
+    );
+  }
+  return {
+    catchPlan,
+    ...(protectedTaskReturn ? { protectedTaskReturn } : {}),
+    tryStatements,
   };
 }
 
@@ -8405,8 +8459,8 @@ function emitAsyncTryProtectedTaskCatchRust(
   ];
 }
 
-function emitAsyncTryFinallyTryCompletionRust(
-  plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
+function emitAsyncTryLocalTryCompletionRust(
+  plan: Readonly<RustAsyncTryLocalCompletionPlan>,
   label: string,
   context: EmitContext,
 ): string[] {
@@ -8495,7 +8549,7 @@ function emitAsyncTryFinallyTryCompletionRust(
   return lines;
 }
 
-function emitAsyncTryFinallyCatchCompletionRust(
+function emitAsyncTryCatchCompletionRust(
   statements: readonly Readonly<IrStatement>[],
   rethrowBinding: Readonly<IrBindingIdentity> | undefined,
   context: EmitContext,
@@ -8532,7 +8586,7 @@ function emitAsyncTryFinallyCatchCompletionRust(
   return [...lines, `Ok(Some(${value}))`];
 }
 
-function emitAsyncTryFinallyAwaitCatchCompletionRust(
+function emitAsyncTryAwaitCatchCompletionRust(
   plan: Readonly<Extract<RustAsyncTryCatchCompletionPlan, { kind: 'await' }>>,
   context: EmitContext,
 ): string[] {
@@ -8551,7 +8605,7 @@ function emitAsyncTryFinallyAwaitCatchCompletionRust(
           `Ok(${step.kind === 'expression' ? '_' : value}) => {`,
           ...indentSourceLines([
             ...emitAsyncTrySettledStepRust(step, handlerContext, value),
-            ...emitAsyncTryFinallyCatchCompletionRust(plan.postStatements, plan.rethrowBinding, handlerContext),
+            ...emitAsyncTryCatchCompletionRust(plan.postStatements, plan.rethrowBinding, handlerContext),
           ]),
           '}',
         ];
@@ -8590,17 +8644,17 @@ function emitAsyncTryAwaitedFinalizerCompletionRust(
   ];
 }
 
-function emitAsyncTryFinallyCompletionRust(
+function emitAsyncTryLocalCompletionRust(
   statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
-  plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
+  plan: Readonly<RustAsyncTryLocalCompletionPlan>,
   context: EmitContext,
-): string[] {
+): Readonly<{ completion: string; lines: string[]; returnType: string }> {
   const returnType = emitAsyncTryCompletionReturnTypeRust(context);
   const pending = getGeneratedTargetNameRust('try_completion_result', context);
   const label = getGeneratedTargetNameRust('try_completion', context);
   const lines = [
     `let ${pending}: Result<Option<${returnType}>, String> = '${label}: {`,
-    ...indentSourceLines(emitAsyncTryFinallyTryCompletionRust(plan, label, context)),
+    ...indentSourceLines(emitAsyncTryLocalTryCompletionRust(plan, label, context)),
     '};',
   ];
   let completion = pending;
@@ -8612,8 +8666,8 @@ function emitAsyncTryFinallyCompletionRust(
       : '_';
     const catchCompletion =
       plan.catchPlan.kind === 'await'
-        ? emitAsyncTryFinallyAwaitCatchCompletionRust(plan.catchPlan, context)
-        : emitAsyncTryFinallyCatchCompletionRust(plan.catchPlan.statements, plan.catchPlan.rethrowBinding, context);
+        ? emitAsyncTryAwaitCatchCompletionRust(plan.catchPlan, context)
+        : emitAsyncTryCatchCompletionRust(plan.catchPlan.statements, plan.catchPlan.rethrowBinding, context);
     lines.push(
       `let ${completion}: Result<Option<${returnType}>, String> = match ${pending} {`,
       ...indentSourceLines([
@@ -8625,17 +8679,14 @@ function emitAsyncTryFinallyCompletionRust(
       '};',
     );
   }
-  if (plan.finalizerPlan.kind === 'await') {
-    const pendingCompletion = completion;
-    completion = getGeneratedTargetNameRust('finally_completion_value', context);
-    lines.push(
-      `let ${completion}: Result<Option<${returnType}>, String> = {`,
-      ...indentSourceLines(emitAsyncTryAwaitedFinalizerCompletionRust(plan.finalizerPlan, pendingCompletion, context)),
-      '};',
-    );
-  } else {
-    lines.push(...emitStatements(plan.finalizerPlan.statements, context));
-  }
+  return { completion, lines, returnType };
+}
+
+function emitAsyncTryCompletionDispatchRust(
+  plan: Readonly<RustAsyncTryLocalCompletionPlan>,
+  completion: string,
+  context: EmitContext,
+): string[] {
   const value = getGeneratedTargetNameRust('try_return_value', context);
   const tryCanCompleteNormally =
     plan.tryStatements.at(-1)?.kind !== 'return' && plan.tryStatements.at(-1)?.kind !== 'throw';
@@ -8646,29 +8697,47 @@ function emitAsyncTryFinallyCompletionRust(
         plan.catchPlan.postStatements.at(-1)?.kind !== 'return' &&
         plan.catchPlan.postStatements.at(-1)?.kind !== 'throw'
     : false;
-  if (plan.catchPlan) {
-    const error = getGeneratedTargetNameRust('try_error', context);
+  const error = getGeneratedTargetNameRust('try_error', context);
+  return [
+    `match ${completion} {`,
+    ...indentSourceLines([
+      `Ok(Some(${value})) => return ${value},`,
+      `Ok(None) => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
+      `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
+    ]),
+    '}',
+  ];
+}
+
+function emitAsyncTryBoundAwaitCatchCompletionRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  plan: Readonly<RustAsyncTryBoundAwaitCatchCompletionPlan>,
+  context: EmitContext,
+): string[] {
+  const emitted = emitAsyncTryLocalCompletionRust(statement, plan, context);
+  return [...emitted.lines, ...emitAsyncTryCompletionDispatchRust(plan, emitted.completion, context)];
+}
+
+function emitAsyncTryFinallyCompletionRust(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  plan: Readonly<RustAsyncTryFinallyCompletionPlan>,
+  context: EmitContext,
+): string[] {
+  const emitted = emitAsyncTryLocalCompletionRust(statement, plan, context);
+  const lines = emitted.lines;
+  let completion = emitted.completion;
+  if (plan.finalizerPlan.kind === 'await') {
+    const pendingCompletion = completion;
+    completion = getGeneratedTargetNameRust('finally_completion_value', context);
     lines.push(
-      `match ${completion} {`,
-      ...indentSourceLines([
-        `Ok(Some(${value})) => return ${value},`,
-        `Ok(None) => ${tryCanCompleteNormally || catchCanCompleteNormally ? '{}' : 'unreachable!()'},`,
-        `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
-      ]),
-      '}',
+      `let ${completion}: Result<Option<${emitted.returnType}>, String> = {`,
+      ...indentSourceLines(emitAsyncTryAwaitedFinalizerCompletionRust(plan.finalizerPlan, pendingCompletion, context)),
+      '};',
     );
   } else {
-    const error = getGeneratedTargetNameRust('try_error', context);
-    lines.push(
-      `match ${completion} {`,
-      ...indentSourceLines([
-        `Ok(Some(${value})) => return ${value},`,
-        `Ok(None) => ${tryCanCompleteNormally ? '{}' : 'unreachable!()'},`,
-        `Err(${error}) => panic!("unhandled task rejection: {}", ${error}),`,
-      ]),
-      '}',
-    );
+    lines.push(...emitStatements(plan.finalizerPlan.statements, context));
   }
+  lines.push(...emitAsyncTryCompletionDispatchRust(plan, completion, context));
   return lines;
 }
 
@@ -8719,6 +8788,11 @@ function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>,
   if (finallyCompletion) {
     assertIrAsyncTaskCatchBindingUsesRust(statement, context);
     return emitAsyncTryFinallyCompletionRust(statement, finallyCompletion, context);
+  }
+  const boundAwaitCatchCompletion = getAsyncTryBoundAwaitCatchCompletionPlanRust(statement, context);
+  if (boundAwaitCatchCompletion) {
+    assertIrAsyncTaskCatchBindingUsesRust(statement, context);
+    return emitAsyncTryBoundAwaitCatchCompletionRust(statement, boundAwaitCatchCompletion, context);
   }
   const protectedTaskCatch = getAsyncTryProtectedTaskCatchPlanRust(statement, context);
   if (protectedTaskCatch) {

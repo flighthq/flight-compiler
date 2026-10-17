@@ -3948,44 +3948,70 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(finalizerSettlement).toBeGreaterThan(catchSettlement);
   });
 
+  it('composes a no-finally bound one-await catch after either terminal task return', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-bound-catch-await-no-finally.ts',
+        'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } function observe(error: string, task: Promise<void>): Promise<void> { error; return task; } function record(error: string): void { error; } export async function returned(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { record(error); const value: number = await recover(error, recovery); record(error); return value + 1; } } export async function rethrown(primary: Promise<number>, observer: Promise<void>): Promise<number> { try { return primary; } catch (error) { record(error); await observe(error, observer); record(error); throw error; } } export async function normal(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return primary; } catch (error) { await recover(error, recovery); } return 9; }',
+      ).module,
+    ).contents;
+
+    expect(output.match(/Result<Option<f64>, String>/g)).toHaveLength(6);
+    expect(output.match(/\.settle\(\)/g)).toHaveLength(6);
+    expect(output).toContain('recover(error.clone()');
+    expect(output).toContain('observe(error.clone()');
+    expect(output.match(/record\(error\.clone\(\)\)/g)).toHaveLength(4);
+    expect(output).toContain('Ok(None) => {}');
+    expect(output).toContain('Err(error)');
+    expect(output).not.toContain('Err(error.clone())');
+  });
+
   it.each([
     [
+      'a missing catch binding',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch { return await recovery; } }',
+    ],
+    [
       'an unused binding',
-      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recovery; } finally {} }',
+      'export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recovery; } }',
     ],
     [
       'binding mutation',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { error = "replacement"; return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { error = "replacement"; return await recover(error, recovery); } }',
     ],
     [
       'a binding alias',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const alias = error; alias; return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const alias = error; alias; return await recover(error, recovery); } }',
     ],
     [
       'a binding capture',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const read = (): string => error; read(); return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const read = (): string => error; read(); return await recover(error, recovery); } }',
     ],
     [
       'binding storage',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const stored = [error]; stored; return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const stored = [error]; stored; return await recover(error, recovery); } }',
     ],
     [
       'binding destructuring',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const { length: alias } = error; alias; return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { const { length: alias } = error; alias; return await recover(error, recovery); } }',
     ],
     [
       'multiple awaits',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return await recovery; } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return await recovery; } }',
     ],
     [
       'a nested await',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean): Promise<number> { try { return await primary; } catch (error) { if (enabled) await recover(error, recovery); return 0; } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, enabled: boolean): Promise<number> { try { return await primary; } catch (error) { if (enabled) await recover(error, recovery); return 0; } }',
     ],
     [
       'an arbitrary throw',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); throw "replacement"; } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); throw "replacement"; } }',
     ],
-  ])('stably refuses bound one-await catch with %s', (_name, source) => {
+    [
+      'a nonterminal protected await',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { const value = await primary; return value; } catch (error) { return await recover(error, recovery); } }',
+    ],
+  ])('stably refuses no-finally one-await catch with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(lower('try-bound-catch-await-refusal.ts', source).module),
     );
@@ -3997,11 +4023,11 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it.each([
     [
       'Error member semantics',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return error.message.length; } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return error.message.length; } }',
     ],
     [
       'Error identity semantics',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return error === "no" ? 0 : 1; } finally {} }',
+      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { await recover(error, recovery); return error === "no" ? 0 : 1; } }',
     ],
   ])('keeps bound one-await catch %s on the String rejection boundary', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
@@ -4014,27 +4040,27 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it.each([
     [
-      'without finally',
-      'function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recover(error, recovery); } }',
-      'rust-async-try-completion-unrepresented',
-      'compiler-restriction',
-    ],
-    [
       'a native future',
-      'async function recover(error: string): Promise<number> { error; return 1; } export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recover(error); } finally {} }',
+      'async function recover(error: string): Promise<number> { error; return 1; } export async function attempt(primary: Promise<number>): Promise<number> { try { return await primary; } catch (error) { return await recover(error); } }',
       'rust-native-future-task-adapter-unavailable',
       'target-runtime',
     ],
     [
       'a bare task return',
-      'function record(error: string): void { error; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { record(error); return recovery; } finally {} }',
+      'function record(error: string): void { error; } export async function attempt(primary: Promise<number>, recovery: Promise<number>): Promise<number> { try { return await primary; } catch (error) { record(error); return recovery; } }',
       'rust-async-task-adoption-protected-unrepresented',
       'compiler-restriction',
     ],
     [
       'a fulfilled carrier mismatch',
-      'function recover(error: string, task: Promise<string>): Promise<string> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<string>): Promise<number> { try { return await primary; } catch (error) { return await recover(error, recovery); } finally {} }',
+      'function recover(error: string, task: Promise<string>): Promise<string> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<string>): Promise<number> { try { return await primary; } catch (error) { return await recover(error, recovery); } }',
       'rust-async-try-completion-unrepresented',
+      'compiler-restriction',
+    ],
+    [
+      'an indirect assignment place',
+      'interface Box { value: number; } function recover(error: string, task: Promise<number>): Promise<number> { error; return task; } export async function attempt(primary: Promise<number>, recovery: Promise<number>, box: Box): Promise<number> { try { return await primary; } catch (error) { box.value = await recover(error, recovery); return box.value; } }',
+      'rust-async-protected-assignment-place-unrepresented',
       'compiler-restriction',
     ],
   ])('preserves bound one-await catch refusal for %s', (_name, source, rule, classification) => {
@@ -4079,7 +4105,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }).toEqual({
       classification: 'compiler-restriction',
       message:
-        'rust emission failed for @flighthq/math/packages/math/src/try-bindingless-catch-await-refusal.ts: async try/finally awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
+        'rust emission failed for @flighthq/math/packages/math/src/try-bindingless-catch-await-refusal.ts: async protected awaited catch requires one flat handler with exactly one direct await, only Normal/Return or exact unchanged rethrow completion, and either no binding or one used immutable direct String binding',
       rule: 'rust-async-try-completion-unrepresented',
     });
   });
@@ -4342,7 +4368,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   });
 
   it.skipIf(!rustcAvailable)(
-    'runs the combined async checkpoint across native future, catches, finalizer, and rethrow',
+    'runs the combined async checkpoint across native future, catches, no-finally composition, finalizer, and rethrow',
     () => {
       const output = emitIrModuleRust(
         lower(
@@ -4375,6 +4401,14 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
              try { mark("rethrow-try", log); return await primary; }
              catch (error) { mark("rethrow-catch", log); await observeError(error, observer, log); mark("rethrow-after", log); throw error; }
              finally { mark("rethrow-finally-before", log); await observedVoid(cleanup, "rethrow-cleanup", log); mark("rethrow-finally-after", log); }
+           }
+           export async function noFinalBound(primary: Promise<number>, recovery: Promise<number>, log: string[]): Promise<number> {
+             try { mark("no-final-bound-try", log); return await primary; }
+             catch (error) { mark("no-final-bound-catch", log); const value = await recover(error, recovery, log); mark("no-final-bound-after", log); return value + 1; }
+           }
+           export async function noFinalRethrown(primary: Promise<number>, observer: Promise<void>, log: string[]): Promise<number> {
+             try { mark("no-final-rethrow-try", log); return primary; }
+             catch (error) { mark("no-final-rethrow-catch", log); await observeError(error, observer, log); mark("no-final-rethrow-after", log); throw error; }
            }`,
         ).module,
       ).contents;
@@ -4411,7 +4445,25 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(rethrow_log, vec!["rethrow-try".to_owned(), "rethrow-catch".to_owned(), "terminal".to_owned(), "rethrow-after".to_owned(), "rethrow-finally-before".to_owned(), "rethrow-cleanup".to_owned(), "rethrow-finally-after".to_owned()]);
            let rethrow_payload = rethrow.expect_err("terminal catch-binding rethrow must survive fulfilled cleanup");
            let rethrow_message = rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| rethrow_payload.downcast_ref::<&str>().copied());
-           assert_eq!(rethrow_message, Some("unhandled task rejection: terminal"));`,
+           assert_eq!(rethrow_message, Some("unhandled task rejection: terminal"));
+           let mut no_final_ready_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(no_final_bound(flight_runtime::FlightTask::ready(4.0), flight_runtime::FlightTask::ready(6.0), &mut no_final_ready_log)), 4.0);
+           assert_eq!(no_final_ready_log, vec!["no-final-bound-try".to_owned()]);
+           let mut no_final_caught_log = Vec::new();
+           assert_eq!(flight_runtime::block_on(no_final_bound(flight_runtime::FlightTask::<f64>::reject("no-final-original"), flight_runtime::FlightTask::ready(6.0), &mut no_final_caught_log)), 7.0);
+           assert_eq!(no_final_caught_log, vec!["no-final-bound-try".to_owned(), "no-final-bound-catch".to_owned(), "no-final-original".to_owned(), "no-final-bound-after".to_owned()]);
+           let mut no_final_override_log = Vec::new();
+           let no_final_override = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_bound(flight_runtime::FlightTask::<f64>::reject("no-final-original"), flight_runtime::FlightTask::<f64>::reject("no-final-replacement"), &mut no_final_override_log))));
+           assert_eq!(no_final_override_log, vec!["no-final-bound-try".to_owned(), "no-final-bound-catch".to_owned(), "no-final-original".to_owned()]);
+           let no_final_override_payload = no_final_override.expect_err("catch rejection must replace the original rejection");
+           let no_final_override_message = no_final_override_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_override_payload.downcast_ref::<&str>().copied());
+           assert_eq!(no_final_override_message, Some("unhandled task rejection: no-final-replacement"));
+           let mut no_final_rethrow_log = Vec::new();
+           let no_final_rethrow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flight_runtime::block_on(no_final_rethrown(flight_runtime::FlightTask::<f64>::reject("no-final-terminal"), flight_runtime::FlightTask::ready(()), &mut no_final_rethrow_log))));
+           assert_eq!(no_final_rethrow_log, vec!["no-final-rethrow-try".to_owned(), "no-final-rethrow-catch".to_owned(), "no-final-terminal".to_owned(), "no-final-rethrow-after".to_owned()]);
+           let no_final_rethrow_payload = no_final_rethrow.expect_err("terminal catch-binding rethrow must preserve the original rejection");
+           let no_final_rethrow_message = no_final_rethrow_payload.downcast_ref::<String>().map(String::as_str).or_else(|| no_final_rethrow_payload.downcast_ref::<&str>().copied());
+           assert_eq!(no_final_rethrow_message, Some("unhandled task rejection: no-final-terminal"));`,
         ),
       ).not.toThrow();
     },
