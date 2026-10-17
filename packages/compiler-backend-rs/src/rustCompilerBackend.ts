@@ -50,6 +50,7 @@ import type {
   CompilerIrTraversalPath,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
+  CompilerRuntimeExternalConstructorInvocation,
   CompilerRustReferenceRepresentationPlan,
   EmittedFile,
   RustCompilerBackendOptions,
@@ -4710,7 +4711,7 @@ function assertRuntimeExternalSymbolBindingsRust(
 
 function assertRuntimeExternalConstructorAbiRust(module: Readonly<IrModule>): void {
   const completeness = analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
-    collectIrModulesRuntimeExternalConstructorInvocations([module]),
+    collectIrModuleRuntimeExternalConstructorInvocationsRust(module),
     createCompilerRuntimeExternalConstructorAbiPlanRust(),
   );
   if (completeness.kind === 'complete') return;
@@ -4734,6 +4735,53 @@ function assertRuntimeExternalConstructorAbiRust(module: Readonly<IrModule>): vo
   );
 }
 
+function collectIrModuleRuntimeExternalConstructorInvocationsRust(
+  module: Readonly<IrModule>,
+): readonly CompilerRuntimeExternalConstructorInvocation[] {
+  const emittedErrorConstructors = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path) {
+      if (
+        expression.kind !== 'new' ||
+        expression.callee.kind !== 'identifier' ||
+        expression.callee.reference.kind !== 'ambient' ||
+        !rustPanicErrorConstructorNames.has(expression.callee.reference.name)
+      ) {
+        return;
+      }
+      const providedArgumentCount = expression.arguments.some((argument) => argument.kind === 'spread')
+        ? ('dynamic' as const)
+        : expression.arguments.length;
+      const parent = path.length > 0 ? getIrModuleTraversalPathValue(module, path.slice(0, -1)) : undefined;
+      if (
+        expression.arguments.length === 1 &&
+        expression.arguments[0]?.kind !== 'spread' &&
+        typeof parent === 'object' &&
+        parent !== null &&
+        'kind' in parent &&
+        parent.kind === 'throw' &&
+        'expression' in parent &&
+        parent.expression === expression
+      ) {
+        return;
+      }
+      emittedErrorConstructors.add(
+        serializeRuntimeExternalConstructorInvocationRust(expression.callee.reference.name, providedArgumentCount),
+      );
+    },
+  });
+  return collectIrModulesRuntimeExternalConstructorInvocations([module]).filter(
+    (invocation) =>
+      !rustPanicErrorConstructorNames.has(invocation.externalSymbol.sourceName) ||
+      emittedErrorConstructors.has(
+        serializeRuntimeExternalConstructorInvocationRust(
+          invocation.externalSymbol.sourceName,
+          invocation.providedArgumentCount,
+        ),
+      ),
+  );
+}
+
 function formatRuntimeExternalConstructorInvocation(
   invocation: Readonly<{
     externalSymbol: { sourceName: string; space: string };
@@ -4745,6 +4793,13 @@ function formatRuntimeExternalConstructorInvocation(
 
 function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: string; space: string }>): string {
   return `${identity.sourceName}[${identity.space}]`;
+}
+
+function serializeRuntimeExternalConstructorInvocationRust(
+  sourceName: string,
+  providedArgumentCount: number | 'dynamic',
+): string {
+  return JSON.stringify([sourceName.normalize('NFC'), providedArgumentCount]);
 }
 
 function isAmbientIdentifier(expression: Readonly<IrExpression>): boolean {
@@ -5867,6 +5922,8 @@ const rustTypedArrayConstructorNames = new Set([
   'Uint16Array',
   'Uint32Array',
 ]);
+
+const rustPanicErrorConstructorNames: ReadonlySet<string> = new Set(['Error', 'RangeError', 'TypeError']);
 
 const rustTypedArrayReceiverNames = new Set<IrIndexedReceiver>([
   'float32Array',

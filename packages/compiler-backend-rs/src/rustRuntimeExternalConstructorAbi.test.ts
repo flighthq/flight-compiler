@@ -153,11 +153,30 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     expect(output).toContain('return std::collections::HashSet::new();');
   });
 
+  it('keeps direct typed error throws on the panic path without advertising constructors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        `export function failError(message: string): never { throw new Error(message); }
+         export function failRange(message: string): never { throw new RangeError(message); }
+         export function failType(message: string): never { throw new TypeError(message); }`,
+      ),
+    ).contents;
+
+    expect(output.split('panic!("{}", message);')).toHaveLength(4);
+    expect(output).not.toContain('Error::new');
+  });
+
   it.each([
     ['Date without arguments', 'export function create(): Date { return new Date(); }', 'Date[value](0)'],
     ['Date with a timestamp', 'export function create(): Date { return new Date(0); }', 'Date[value](1)'],
     ['Date thrown as a value', 'export function fail(): never { throw new Date(0); }', 'Date[value](1)'],
     ['Error as a value', 'export function create(): Error { return new Error("message"); }', 'Error[value](1)'],
+    [
+      'Error as a value beside a direct throw',
+      `export function fail(message: string): never { throw new Error(message); }
+       export function create(message: string): Error { return new Error(message); }`,
+      'Error[value](1)',
+    ],
     [
       'RangeError as a value',
       'export function create(): RangeError { return new RangeError("message"); }',
