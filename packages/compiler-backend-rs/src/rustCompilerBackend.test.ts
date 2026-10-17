@@ -9065,6 +9065,127 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(constructor_order(), 1232.0);')).not.toThrow();
   });
 
+  it('borrows one exact constructor owner while projecting number and string fields', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-constructor-owner.ts',
+        `class Owner {
+           value: number; label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
+         }
+         class Snapshot {
+           before: number; value: number; label: string; after: number;
+           constructor(before: number, owner: Owner, after: number) {
+             this.before = before; this.value = owner.value; this.label = owner.label; this.after = after;
+           }
+         }
+         export function constructorOwner(): number {
+           let state = 0;
+           const next = (value: number): number => { state = state * 10 + value; return value; };
+           const owner = new Owner(4, "ready"); const ownerAlias = owner;
+           const snapshot = new Snapshot(next(1), ownerAlias, next(2));
+           return state * 1000 + snapshot.before * 100 + snapshot.value * 10 + snapshot.after +
+             (snapshot.label === "ready" ? owner.value : 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('fn new(before: f64, owner: &Owner, after: f64) -> Self');
+    expect(output).toContain('value: owner.value,');
+    expect(output).toContain('label: owner.label.clone(),');
+    expect(output.match(/Snapshot::new\(next\(1\.0\), &\*owner_alias\.borrow\(\), next\(2\.0\)\)/gu)).toHaveLength(1);
+    expect(output.indexOf('next(1.0)')).toBeLessThan(output.indexOf('owner_alias.borrow()'));
+    expect(output.indexOf('owner_alias.borrow()')).toBeLessThan(output.indexOf('next(2.0)'));
+    expect(output).toContain('owner.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(constructor_owner(), 12146.0);')).not.toThrow();
+    }
+  });
+
+  it('borrows temporary and returned constructor owners exactly once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-constructor-temporary-owner.ts',
+        `class Owner { value: number; constructor(value: number) { this.value = value; } }
+         class Snapshot { value: number; constructor(owner: Owner) { this.value = owner.value; } }
+         function makeOwner(value: number): Owner { return new Owner(value); }
+         export function temporaryOwner(): number { return new Snapshot(new Owner(3)).value; }
+         export function returnedOwner(): number { return new Snapshot(makeOwner(4)).value; }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/Snapshot::new\(&Owner::new\(3\.0\)\)/gu)).toHaveLength(1);
+    expect(output.match(/Snapshot::new\(&\*make_owner\(4\.0\)\.borrow\(\)\)/gu)).toHaveLength(1);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(output, 'assert_eq!(temporary_owner(), 3.0); assert_eq!(returned_owner(), 4.0);'),
+      ).not.toThrow();
+    }
+  });
+
+  it('emits the exact borrowed constructor ABI across modules', () => {
+    const provider = lower(
+      'constructor-owner-provider.ts',
+      `export class Owner {
+         value: number; label: string;
+         constructor(value: number, label: string) { this.value = value; this.label = label; }
+       }
+       export class Snapshot {
+         value: number; label: string;
+         constructor(owner: Owner) { this.value = owner.value; this.label = owner.label; }
+       }
+       export function makeOwner(): Owner { return new Owner(5, "provider"); }`,
+    ).module;
+    const consumer = lower(
+      'constructor-owner-consumer.ts',
+      `import { Owner, Snapshot, makeOwner } from './constructor-owner-provider.js';
+       export function importedConstructorOwner(): number {
+         const owner: Owner = makeOwner(); const ownerAlias: Owner = owner;
+         const snapshot: Snapshot = new Snapshot(ownerAlias);
+         owner.value;
+         return snapshot.value;
+       }
+       export function importedReturnedConstructorOwner(): number {
+         return new Snapshot(makeOwner()).value;
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './constructor-owner-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('pub fn new(owner: &Owner) -> Self');
+    expect(providerOutput).toContain('label: owner.label.clone(),');
+    expect(output.match(/Snapshot::new\(&\*owner_alias\.borrow\(\)\)/gu)).toHaveLength(1);
+    expect(output.match(/Snapshot::new\(&\*make_owner\(\)\.borrow\(\)\)/gu)).toHaveLength(1);
+    expect(output).toContain('owner.borrow().value');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair(
+          'constructor_owner_provider',
+          providerOutput,
+          'constructor_owner_consumer',
+          output,
+          `assert_eq!(constructor_owner_consumer::imported_constructor_owner(), 5.0);
+           assert_eq!(constructor_owner_consumer::imported_returned_constructor_owner(), 5.0);`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it('constructs an imported shared class from exact primitive arguments', () => {
     const provider = lower(
       'pair-provider.ts',

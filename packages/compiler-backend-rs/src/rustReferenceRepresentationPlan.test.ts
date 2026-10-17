@@ -763,6 +763,120 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
   });
 
+  it('plans exact readonly class constructor projections locally and across modules', () => {
+    const local = lower(
+      'class-constructor-owner.ts',
+      `class Owner { value: number; label: string; constructor(value: number, label: string) { this.value = value; this.label = label; } }
+       class Snapshot {
+         value: number; label: string; order: number;
+         constructor(order: number, owner: Owner) { this.order = order; this.value = owner.value; this.label = owner.label; }
+       }
+       export function run(): number {
+         const owner = new Owner(1, "ready"); const ownerAlias = owner;
+         const value = new Snapshot(2, ownerAlias); const alias = value;
+         alias.value = 3; return owner.value + value.value;
+       }`,
+    );
+    const provider = lower(
+      'constructor-owner-provider.ts',
+      `export class Owner { value: number; label: string; constructor(value: number, label: string) { this.value = value; this.label = label; } }
+       export class Snapshot {
+         value: number; label: string;
+         constructor(owner: Owner) { this.value = owner.value; this.label = owner.label; }
+       }`,
+    );
+    const consumer = lower(
+      'constructor-owner-consumer.ts',
+      `import { Owner, Snapshot } from './constructor-owner-provider.js';
+       export function run(): number {
+         const owner: Owner = new Owner(1, "ready"); const ownerAlias: Owner = owner;
+         const value: Snapshot = new Snapshot(ownerAlias); const alias: Snapshot = value;
+         alias.value = 3; return owner.value + value.value;
+       }`,
+    );
+    const localPlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [local] }), local);
+    const crossModulePlan = createCompilerRustReferenceRepresentationPlan({
+      moduleResolution: resolve('./constructor-owner-provider.js', provider, consumer),
+      modules: [provider, consumer],
+    });
+
+    expect(localPlan.refusals).toEqual([]);
+    expect(getModulePlan(crossModulePlan, provider).refusals).toEqual([]);
+    expect(getModulePlan(crossModulePlan, consumer).refusals).toEqual([]);
+  });
+
+  it('refuses class constructor owners outside readonly nonescaping primitive projection', () => {
+    const cases = [
+      `class Owner { value = 1; } class Snapshot { owner: Owner; constructor(owner: Owner) { this.owner = owner; } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: Owner) { owner.value = 2; this.value = owner.value; } }`,
+      `class Owner { value = 1; } class Snapshot { same: boolean; constructor(owner: Owner) { this.same = owner === owner; } }`,
+      `class Owner { value = 1; current(): number { return this.value; } } class Snapshot { value: number; constructor(owner: Owner) { const read = owner.current; this.value = read(); } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: Owner) { const read = (): number => owner.value; this.value = read(); } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner?: Owner) { this.value = owner!.value; } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: Owner = new Owner()) { this.value = owner.value; } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(...owners: Owner[]) { this.value = owners[0]!.value; } }`,
+      `class Owner { value = 1; } class Snapshot<T> { value: number; constructor(owner: Owner) { this.value = owner.value; } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: Owner | undefined) { this.value = owner!.value; } }`,
+      `class Owner { value = 1; } class Snapshot { value: number; constructor(owner: any) { this.value = owner.value; } }`,
+      `class Base { value = 1; } class Owner extends Base {} class Snapshot { value: number; constructor(owner: Owner) { this.value = owner.value; } }`,
+      `class Owner { stored = 1; get value(): number { return this.stored; } } class Snapshot { value: number; constructor(owner: Owner) { this.value = owner.value; } }`,
+      `class Child { value = 1; } class Owner { child = new Child(); } class Snapshot { child: Child; constructor(owner: Owner) { this.child = owner.child; } }`,
+    ];
+
+    for (const [index, declarations] of cases.entries()) {
+      const module = lower(
+        `class-constructor-owner-refusal-${String(index)}.ts`,
+        `${declarations}
+         export function run(): number {
+           const owner = new Owner(); const ownerAlias = owner;
+           const value = new Snapshot(ownerAlias as never); const alias = value;
+           return alias === value ? 1 : 0;
+         }`,
+      );
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).not.toEqual([]);
+    }
+  });
+
+  it('refuses wrong, overlapping, and suspended constructor owners', () => {
+    const wrongOwner = lower(
+      'class-constructor-wrong-owner.ts',
+      `class Owner { value = 1; } class Other { value = 2; }
+       class Snapshot { value: number; constructor(owner: Owner) { this.value = owner.value; } }
+       export function run(): number { const other = new Other(); const value = new Snapshot(other as never); const alias = value; alias.value = 3; return value.value; }`,
+    );
+    const overlap = lower(
+      'class-constructor-owner-overlap.ts',
+      `class Owner { value = 1; label = "ready"; }
+       class Snapshot { value: number; label: string; constructor(left: Owner, right: Owner) { this.value = left.value; this.label = right.label; } }
+       export function run(): number { const owner = new Owner(); const ownerAlias = owner; const value = new Snapshot(owner, ownerAlias); return value.value; }`,
+    );
+    const suspension = lower(
+      'class-constructor-owner-suspension.ts',
+      `class Owner { value = 1; }
+       class Snapshot { value: number; constructor(owner: Owner) { this.value = owner.value; } }
+       async function makeOwner(): Promise<Owner> { return new Owner(); }
+       export async function run(): Promise<number> { const value = new Snapshot(await makeOwner()); const alias = value; return alias.value; }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [wrongOwner] }), wrongOwner).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-construction-unrepresented' }),
+      ]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [overlap] }), overlap).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [suspension] }), suspension).refusals,
+    ).not.toEqual([]);
+  });
+
   it('elects the class carrier when readonly aliases remain live through fields and methods', () => {
     const module = lower(
       'readonly-alias-class.ts',
