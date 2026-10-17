@@ -4751,7 +4751,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           'rust-binding-pattern-lowering-required',
         );
       if (!statement.keyPlan) {
-        emissionError(context, 'object key iteration requires closed key evidence');
+        emissionError(
+          context,
+          'object key iteration requires closed key evidence',
+          'rust-object-key-iteration-unproven',
+        );
       }
       if (statement.keyPlan.evaluation === 'preserve') {
         emissionError(context, 'effectful object key iteration requires Rust structural-object evaluation lowering');

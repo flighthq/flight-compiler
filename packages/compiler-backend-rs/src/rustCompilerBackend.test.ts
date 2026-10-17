@@ -16137,9 +16137,57 @@ describe('emitIrModuleRust binding-pattern lowering refusals', () => {
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
 
-    expect(failure.rule).toBeUndefined();
+    expect(failure.rule).toBe('rust-object-key-iteration-unproven');
+    expect(failure.rule).not.toBe('rust-binding-pattern-lowering-required');
     expect(failure.message).toContain('object key iteration requires closed key evidence');
     expect(failure.classification).toBe('compiler-restriction');
     expect(failure.message).not.toContain('binding patterns require destructuring lowering');
+  });
+});
+
+describe('emitIrModuleRust object key iteration refusal', () => {
+  it('names the unproven closed-key rule for an open record and keeps the message and origin', () => {
+    const module = lower(
+      'object-key-origin.ts',
+      'export function f(x: Record<string, number>): number { let s = 0; for (const key in x) { s += 1; } return s; }',
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-object-key-iteration-unproven');
+    expect(failure.message).toContain('object key iteration requires closed key evidence');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('emits a closed-shape iteration without the refusal', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'object-key-closed.ts',
+        'export function f(x: { a: number; b: number }): number { let s = 0; for (const key in x) { s += 1; } return s; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn f(');
+    expect(output).not.toContain('object key iteration requires closed key evidence');
+  });
+
+  it('does not bleed into the neighbouring binding-pattern or computed-access families', () => {
+    const open = lower(
+      'object-key-bleed.ts',
+      'export function f(x: Record<string, number>): number { let s = 0; for (const key in x) { s += 1; } return s; }',
+    ).module;
+    const openFailure = captureBackendEmissionFailure(() => emitIrModuleRust(open));
+    expect(openFailure.rule).not.toBe('rust-binding-pattern-lowering-required');
+    expect(openFailure.rule).not.toBe('rust-computed-object-access-unsupported');
+    expect(openFailure.message).not.toContain('binding patterns require destructuring lowering');
+
+    const indexed = lower(
+      'object-key-computed.ts',
+      'interface Fields { [name: string]: number } export function f(fields: Fields, key: string): number | undefined { return fields[key]; }',
+    ).module;
+    const indexedFailure = captureBackendEmissionFailure(() => emitIrModuleRust(indexed));
+    expect(indexedFailure.rule).toBe('rust-computed-object-access-unsupported');
+    expect(indexedFailure.rule).not.toBe('rust-object-key-iteration-unproven');
   });
 });
