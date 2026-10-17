@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/unionArrayElementRead.ts: optional element receiver requires one concrete Rust Option payload
+rust emission failed for @flighthq/golden/packages/golden/src/unionArrayElementRead.ts: union-array element projection refuses identity-valued or otherwise non-value-safe elements

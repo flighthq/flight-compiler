@@ -12635,6 +12635,152 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     }
   });
 
+  it('projects each exact array-union alternative through one bounds-safe result owner', () => {
+    const result = lower(
+      'union-array-element-read.ts',
+      `export function readOptional(
+         values: number[] | string[] | undefined,
+         index: number,
+       ): number | string | undefined {
+         return values?.[index];
+       }
+       export function readPlain(values: number[] | string[], index: number): number | string {
+         return values[index];
+       }
+       type Values = number[] | string[];
+       type Scalar = number | string;
+       export function readNamed(values: Values | undefined, index: number): Scalar | undefined {
+         return values?.[index];
+       }
+       export function readNamedPlain(values: Values, index: number): Scalar {
+         return values[index];
+       }
+       export function readCounted(
+         values: number[] | string[] | undefined,
+         next: () => number,
+       ): number | string | undefined {
+         return values?.[next()];
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('AnonymousUnion::Array(union_array_values)');
+    expect(output).toContain('AnonymousUnion::Array2(union_array_values)');
+    expect(output).toContain('.cloned().map(|union_array_element| F64OrStr::F64(union_array_element))');
+    expect(output).toContain('.cloned().map(|union_array_element| F64OrStr::Str(union_array_element))');
+    expect(output).toContain('match union_array_receiver.as_ref()');
+    expect(output).toContain('Values::Array(');
+    expect(output).toContain('Scalar::F64(');
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        `match read_optional(Some(AnonymousUnion::Array(vec![7.0])), 0.0) {
+           Some(F64OrStr::F64(value)) => assert_eq!(value, 7.0),
+           _ => panic!("wrong numeric array alternative"),
+         }
+         match read_optional(Some(AnonymousUnion::Array2(vec!["value".to_owned()])), 0.0) {
+           Some(F64OrStr::Str(value)) => assert_eq!(value, "value"),
+           _ => panic!("wrong string array alternative"),
+         }
+         assert!(read_optional(None, 0.0).is_none());
+         assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), -1.0).is_none());
+         assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), 0.5).is_none());
+         assert!(read_optional(Some(AnonymousUnion::Array(vec![7.0])), 9.0).is_none());
+         match read_plain(AnonymousUnion::Array2(vec!["plain".to_owned()]), 0.0) {
+           F64OrStr::Str(value) => assert_eq!(value, "plain"),
+           _ => panic!("wrong plain array alternative"),
+         }
+         match read_named(Some(Values::Array2(vec!["named".to_owned()])), 0.0) {
+           Some(Scalar::String(value)) => assert_eq!(value, "named"),
+           _ => panic!("wrong named array alternative"),
+         }
+         match read_named_plain(Values::Array(vec![13.0]), 0.0) {
+           Scalar::F64(value) => assert_eq!(value, 13.0),
+           _ => panic!("wrong named plain array alternative"),
+         }
+         let absent_evaluations = Rc::new(std::cell::Cell::new(0));
+         let absent_observer = Rc::clone(&absent_evaluations);
+         let absent_next: Rc<dyn Fn() -> f64> = Rc::new(move || {
+           absent_observer.set(absent_observer.get() + 1);
+           0.0
+         });
+         assert!(read_counted(None, absent_next).is_none());
+         assert_eq!(absent_evaluations.get(), 0);
+         let present_evaluations = Rc::new(std::cell::Cell::new(0));
+         let present_observer = Rc::clone(&present_evaluations);
+         let present_next: Rc<dyn Fn() -> f64> = Rc::new(move || {
+           present_observer.set(present_observer.get() + 1);
+           0.0
+         });
+         match read_counted(Some(AnonymousUnion::Array(vec![11.0])), present_next) {
+           Some(F64OrStr::F64(value)) => assert_eq!(value, 11.0),
+           _ => panic!("wrong counted array alternative"),
+         }
+         assert_eq!(present_evaluations.get(), 1);`,
+      );
+    }
+  });
+
+  it.each([
+    {
+      rule: 'rust-union-array-element-read-identity-unrepresented',
+      source: `interface Point { x: number; }
+               export function read(values: Point[] | number[] | undefined, index: number): Point | number | undefined {
+                 return values?.[index];
+               }`,
+    },
+    {
+      rule: 'rust-union-array-element-read-context-unrepresented',
+      source: `export function read(values: number[] | string[] | undefined, index: number): number | string | undefined {
+                 const value = values?.[index];
+                 return value;
+               }`,
+    },
+    {
+      rule: 'rust-union-array-element-read-result-unrepresented',
+      source: `export function read(
+                 values: number[] | string[] | undefined,
+                 index: number,
+               ): number | string | boolean | undefined {
+                 return values?.[index];
+               }`,
+    },
+    {
+      rule: 'rust-union-array-element-read-dual-sentinel-unrepresented',
+      source: `export function read(
+                 values: number[] | string[] | null | undefined,
+                 index: number,
+               ): number | string | undefined {
+                 return values?.[index];
+               }`,
+    },
+    {
+      rule: 'rust-union-array-element-read-evidence-unrepresented',
+      source: `export function read(
+                 values: number[] | string[] | undefined,
+                 index: number | string,
+               ): number | string | undefined {
+                 return values?.[index];
+               }`,
+    },
+    {
+      rule: 'rust-union-array-element-read-receiver-unrepresented',
+      source: `interface Fields { [index: number]: boolean; }
+               export function read(
+                 values: number[] | string[] | Fields | undefined,
+                 index: number,
+               ): number | string | boolean | undefined {
+                 return values?.[index];
+               }`,
+    },
+  ])('stably refuses unsupported union-array projection with $rule', ({ rule, source }) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('union-array-refused.ts', source).module),
+    );
+    expect(failure.rule).toBe(rule);
+  });
+
   it('returns an empty-safe Option from shift and preserves shift coalescing', () => {
     const result = lower(
       'array-shift-bounds.ts',

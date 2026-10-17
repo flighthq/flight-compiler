@@ -159,6 +159,28 @@ interface RustUnionMemberRecord {
   readonly targetName: string;
 }
 
+interface RustUnionArrayElementReceiverVariant {
+  readonly element: IrType;
+  readonly name: string;
+}
+
+interface RustUnionArrayElementReceiverPlan {
+  readonly absence: boolean;
+  readonly owner: string;
+  readonly variants: readonly RustUnionArrayElementReceiverVariant[];
+}
+
+interface RustUnionArrayElementResultVariant {
+  readonly name: string;
+  readonly owner: string;
+  readonly sourceAlternatives: readonly IrType[];
+}
+
+interface RustUnionArrayElementResultPlan {
+  readonly absence: boolean;
+  readonly variants: readonly RustUnionArrayElementResultVariant[];
+}
+
 interface RustNamedTypeDeclarationLocation {
   readonly declaration: Readonly<IrInterfaceDeclaration | IrTypeAliasDeclaration>;
   readonly module: Readonly<IrModule>;
@@ -1501,7 +1523,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'conditional':
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
-    case 'element':
+    case 'element': {
+      const receiverType =
+        expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding'
+          ? context.bindingTypes.get(expression.object.reference.binding.id)
+          : undefined;
+      if (receiverType && hasIrUnionArrayElementReadCandidateRust(receiverType, context)) {
+        emissionRuleError(
+          context,
+          'union-array element projection is restricted to a direct return with its declared result carrier',
+          'rust-union-array-element-read-context-unrepresented',
+        );
+      }
       if (expression.optional) return emitOptionalElementExpressionRust(expression, context);
       {
         const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
@@ -1537,6 +1570,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // A written index is already a whole number; sending it through the neutral numeric type and
       // back is noise the source never asked for.
       return `${emitSharedReferenceReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
+    }
     case 'function':
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
@@ -3021,6 +3055,344 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
   return source;
 }
 
+function emitReturnedUnionArrayElementReadRust(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'element' ||
+    expression.object.kind !== 'identifier' ||
+    expression.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const receiverType = context.bindingTypes.get(expression.object.reference.binding.id);
+  if (!receiverType || !hasIrUnionArrayElementReadCandidateRust(receiverType, context)) return undefined;
+  if (
+    normalizeCompilerStructuralValueCanonical(receiverType) !==
+    normalizeCompilerStructuralValueCanonical(expression.semantics.optionalChain?.receiverType ?? receiverType)
+  ) {
+    emissionRuleError(
+      context,
+      'a union-array element read requires exact receiver type evidence at the direct return',
+      'rust-union-array-element-read-evidence-unrepresented',
+    );
+  }
+  const indexType = inferIrExpressionTypeRust(expression.index, context);
+  const resolvedIndex = indexType ? resolveIrTypeAliasValueRust(indexType, context, new Set()) : undefined;
+  if (expression.semantics.key !== 'number' || resolvedIndex?.kind !== 'primitive' || resolvedIndex.name !== 'number') {
+    emissionRuleError(
+      context,
+      'a union-array element read requires one proven numeric index expression',
+      'rust-union-array-element-read-evidence-unrepresented',
+    );
+  }
+
+  const receiver = createRustUnionArrayElementReceiverPlanRust(receiverType, context);
+  if (receiver.absence !== expression.optional) {
+    emissionRuleError(
+      context,
+      'a union-array element read requires optional syntax exactly when its represented receiver admits absence',
+      'rust-union-array-element-read-evidence-unrepresented',
+    );
+  }
+  const result = createRustUnionArrayElementResultPlanRust(targetType, context);
+  if (receiver.absence && !result.absence) {
+    emissionRuleError(
+      context,
+      'an optional union-array element read requires a declared undefined result alternative',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+
+  const matched = receiver.variants.map((variant) => {
+    const matches = result.variants.filter((candidate) =>
+      candidate.sourceAlternatives.some((alternative) =>
+        areIrContextualCallableParameterAlternativesExactRust(variant.element, alternative, context),
+      ),
+    );
+    if (matches.length !== 1) {
+      emissionRuleError(
+        context,
+        'each union-array element alternative must have exactly one represented result variant',
+        'rust-union-array-element-read-result-unrepresented',
+      );
+    }
+    return { receiver: variant, result: matches[0]! };
+  });
+  if (
+    new Set(matched.map(({ result: variant }) => `${variant.owner}::${variant.name}`)).size !== result.variants.length
+  ) {
+    emissionRuleError(
+      context,
+      'the declared union-array element result must contain exactly the receiver element alternatives',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+
+  const receiverName = getGeneratedTargetNameRust('union_array_receiver', context);
+  const valueName = getGeneratedTargetNameRust('union_array_value', context);
+  const indexName = getGeneratedTargetNameRust('union_array_index', context);
+  const carrierName = getGeneratedTargetNameRust('union_array_values', context);
+  const elementName = getGeneratedTargetNameRust('union_array_element', context);
+  const arms = matched.map(
+    ({ receiver: variant, result: resultVariant }) =>
+      `${receiver.owner}::${variant.name}(${carrierName}) => ${carrierName}.get(${indexName} as usize).cloned().map(|${elementName}| ${resultVariant.owner}::${resultVariant.name}(${elementName})),`,
+  );
+  const guarded = `if ${indexName}.is_finite() && ${indexName} >= 0.0 && ${indexName}.fract() == 0.0 && ${indexName} < 4294967295.0 { match ${valueName} { ${arms.join(' ')} } } else { None }`;
+  const index = emitExpression(expression.index, context);
+  const projected = receiver.absence
+    ? `match ${receiverName}.as_ref() { Some(${valueName}) => { let ${indexName}: f64 = ${index}; ${guarded} } None => None, }`
+    : `{ let ${valueName} = ${receiverName}; let ${indexName}: f64 = ${index}; ${guarded} }`;
+  const read = `{ let ${receiverName} = &${emitExpression(expression.object, context)}; ${projected} }`;
+  return result.absence ? read : `${read}.expect("union-array index is outside represented bounds")`;
+}
+
+function hasIrUnionArrayElementReadCandidateRust(type: Readonly<IrType>, context: EmitContext): boolean {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'union') return false;
+  const countArrays = (candidate: Readonly<IrType>): number => {
+    const alternative = resolveIrTypeAliasValueRust(candidate, context, new Set());
+    return alternative.kind === 'union'
+      ? alternative.types.reduce((count, member) => count + countArrays(member), 0)
+      : alternative.kind === 'array'
+        ? 1
+        : 0;
+  };
+  return countArrays(resolved) >= 2;
+}
+
+function createRustUnionArrayElementReceiverPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustUnionArrayElementReceiverPlan {
+  const named = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (named.kind === 'nominalEnum' && named.sentinels.kind === 'none') {
+    const variants = named.valueVariants.map((variant) => {
+      if (variant.resolvedType.kind !== 'array') {
+        emissionRuleError(
+          context,
+          'every represented union-array receiver alternative must be an ordinary array',
+          'rust-union-array-element-read-receiver-unrepresented',
+        );
+      }
+      assertRustUnionArrayElementValueRust(variant.resolvedType.element, context);
+      return { element: variant.resolvedType.element, name: variant.name };
+    });
+    if (variants.length < 2 || named.owner.typeArguments.length > 0) {
+      emissionRuleError(
+        context,
+        'a union-array receiver requires one monomorphic enum owner with at least two array alternatives',
+        'rust-union-array-element-read-receiver-unrepresented',
+      );
+    }
+    return { absence: false, owner: emitType(named.owner, context), variants };
+  }
+  if (named.kind === 'nominalEnum' && named.sentinels.kind === 'distinct') {
+    emissionRuleError(
+      context,
+      'a union-array receiver with both null and undefined has no single Rust absence channel',
+      'rust-union-array-element-read-dual-sentinel-unrepresented',
+    );
+  }
+
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'union' || resolved.types.some((member) => member.kind === 'union')) {
+    emissionRuleError(
+      context,
+      'a union-array receiver requires one exact represented union owner',
+      'rust-union-array-element-read-receiver-unrepresented',
+    );
+  }
+  const hasNull = resolved.types.some((member) => member.kind === 'null');
+  const hasUndefined = resolved.types.some((member) => member.kind === 'undefined');
+  if (hasNull && hasUndefined) {
+    emissionRuleError(
+      context,
+      'a union-array receiver with both null and undefined has no single Rust absence channel',
+      'rust-union-array-element-read-dual-sentinel-unrepresented',
+    );
+  }
+  const concrete = resolved.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (concrete.length === 1) {
+    const inner = createRustUnionRepresentationPlanForTypeRust(concrete[0]!, context);
+    if (inner.kind === 'nominalEnum' && inner.sentinels.kind === 'none') {
+      const variants = inner.valueVariants.map((variant) => {
+        if (variant.resolvedType.kind !== 'array') {
+          emissionRuleError(
+            context,
+            'every represented union-array receiver alternative must be an ordinary array',
+            'rust-union-array-element-read-receiver-unrepresented',
+          );
+        }
+        assertRustUnionArrayElementValueRust(variant.resolvedType.element, context);
+        return { element: variant.resolvedType.element, name: variant.name };
+      });
+      if (variants.length >= 2 && inner.owner.typeArguments.length === 0) {
+        return { absence: hasNull || hasUndefined, owner: emitType(inner.owner, context), variants };
+      }
+    }
+  }
+  const represented = concrete.filter((member) => member.kind !== 'never');
+  const arrays = represented.map((member) => resolveIrTypeAliasValueRust(member, context, new Set()));
+  if (arrays.length < 2 || arrays.some((member) => member.kind !== 'array')) {
+    emissionRuleError(
+      context,
+      'every represented union-array receiver alternative must be an ordinary array',
+      'rust-union-array-element-read-receiver-unrepresented',
+    );
+  }
+  const union = getOrCreateAnonymousUnionEnumRust(concrete, context);
+  if (union.variants.length !== arrays.length || union.variants.some((variant) => variant.kind !== 'tuple')) {
+    emissionRuleError(
+      context,
+      'a union-array receiver requires tuple variants under one canonical Rust owner',
+      'rust-union-array-element-read-receiver-unrepresented',
+    );
+  }
+  const variants = arrays.map((array, index) => {
+    if (array.kind !== 'array') {
+      emissionRuleError(
+        context,
+        'every represented union-array receiver alternative must be an ordinary array',
+        'rust-union-array-element-read-receiver-unrepresented',
+      );
+    }
+    assertRustUnionArrayElementValueRust(array.element, context);
+    return { element: array.element, name: union.variants[index]!.name };
+  });
+  return { absence: hasNull || hasUndefined, owner: union.name, variants };
+}
+
+function createRustUnionArrayElementResultPlanRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustUnionArrayElementResultPlan {
+  const named = createRustUnionRepresentationPlanForTypeRust(type, context);
+  if (named.kind === 'nominalEnum' && named.sentinels.kind === 'none') {
+    if (named.owner.typeArguments.length > 0) {
+      emissionRuleError(
+        context,
+        'a union-array element result requires one monomorphic canonical owner',
+        'rust-union-array-element-read-result-unrepresented',
+      );
+    }
+    return {
+      absence: false,
+      variants: named.valueVariants.map((variant) => ({
+        name: variant.name,
+        owner: emitType(named.owner, context),
+        sourceAlternatives: variant.sourceAlternatives,
+      })),
+    };
+  }
+  if (named.kind === 'nominalEnum' && named.sentinels.kind === 'distinct') {
+    emissionRuleError(
+      context,
+      'a union-array element result with both null and undefined has no unambiguous absence construction',
+      'rust-union-array-element-read-dual-sentinel-unrepresented',
+    );
+  }
+
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (resolved.kind !== 'union' || resolved.types.some((member) => member.kind === 'union')) {
+    emissionRuleError(
+      context,
+      'a union-array element result requires one exact represented union owner',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+  const hasNull = resolved.types.some((member) => member.kind === 'null');
+  const hasUndefined = resolved.types.some((member) => member.kind === 'undefined');
+  if (hasNull && hasUndefined) {
+    emissionRuleError(
+      context,
+      'a union-array element result with both null and undefined has no unambiguous absence construction',
+      'rust-union-array-element-read-dual-sentinel-unrepresented',
+    );
+  }
+  if (hasNull || (!hasUndefined && (hasIrTypeNullMemberRust(type) || hasIrTypeUndefinedMemberRust(type)))) {
+    emissionRuleError(
+      context,
+      'a union-array element result must use undefined as its single represented absence',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+  const concrete = resolved.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (concrete.length === 1) {
+    const inner = createRustUnionRepresentationPlanForTypeRust(concrete[0]!, context);
+    if (inner.kind === 'nominalEnum' && inner.sentinels.kind === 'none' && inner.owner.typeArguments.length === 0) {
+      return {
+        absence: hasUndefined,
+        variants: inner.valueVariants.map((variant) => ({
+          name: variant.name,
+          owner: emitType(inner.owner, context),
+          sourceAlternatives: variant.sourceAlternatives,
+        })),
+      };
+    }
+  }
+  const represented = concrete.filter((member) => member.kind !== 'never');
+  if (represented.length < 2) {
+    emissionRuleError(
+      context,
+      'a union-array element result requires at least two exact represented value alternatives',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+  const primitive = getOrCreatePrimitiveUnionEnumRust(concrete, context);
+  if (primitive) {
+    const variants = represented.map((alternative) => {
+      const resolvedAlternative = resolveIrTypeAliasValueRust(alternative, context, new Set());
+      const variant =
+        resolvedAlternative.kind === 'primitive'
+          ? primitive.variants.find((candidate) => candidate.primitiveKind === resolvedAlternative.name)
+          : undefined;
+      if (!variant) {
+        emissionRuleError(
+          context,
+          'a union-array element result alternative has no exact primitive enum variant',
+          'rust-union-array-element-read-result-unrepresented',
+        );
+      }
+      return { name: variant.variantName, owner: primitive.name, sourceAlternatives: [alternative] };
+    });
+    return { absence: hasUndefined, variants };
+  }
+  const union = getOrCreateAnonymousUnionEnumRust(concrete, context);
+  if (union.variants.length !== represented.length || union.variants.some((variant) => variant.kind !== 'tuple')) {
+    emissionRuleError(
+      context,
+      'a union-array element result requires tuple variants under one canonical Rust owner',
+      'rust-union-array-element-read-result-unrepresented',
+    );
+  }
+  return {
+    absence: hasUndefined,
+    variants: represented.map((alternative, index) => ({
+      name: union.variants[index]!.name,
+      owner: union.name,
+      sourceAlternatives: [alternative],
+    })),
+  };
+}
+
+function assertRustUnionArrayElementValueRust(type: Readonly<IrType>, context: EmitContext): void {
+  const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
+  if (
+    resolved.kind === 'primitive' &&
+    (resolved.name === 'boolean' || resolved.name === 'number' || resolved.name === 'string')
+  ) {
+    return;
+  }
+  emissionRuleError(
+    context,
+    'union-array element projection refuses identity-valued or otherwise non-value-safe elements',
+    'rust-union-array-element-read-identity-unrepresented',
+  );
+}
+
 function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   const returnedUnion = getIrExpressionTaggedUnionRust(expression, context);
   const declaredReturn = context.enclosingReturnType;
@@ -3054,14 +3426,7 @@ function emitContextualCallableUnionConstructionRust(
   targetType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
-  const plan = createRustUnionRepresentationPlan(targetType, {
-    resolveAliasTarget(type) {
-      return resolveIrTypeAliasTargetRust(type, context);
-    },
-    resolveVariantName(type) {
-      return getGeneralUnionVariantNameRust(type, context);
-    },
-  });
+  const plan = createRustUnionRepresentationPlanForTypeRust(targetType, context);
   if (plan.kind === 'refused' || plan.sentinels.kind !== 'none') return undefined;
   const ownerLocation =
     plan.owner.reference.kind === 'binding' && plan.owner.reference.binding.space === 'type'
@@ -3130,14 +3495,7 @@ function emitContextualCallableParameterConstructionRust(
   }
   if (source.optional) return undefined;
 
-  const named = createRustUnionRepresentationPlan(source.type, {
-    resolveAliasTarget(type) {
-      return resolveIrTypeAliasTargetRust(type, context);
-    },
-    resolveVariantName(type) {
-      return getGeneralUnionVariantNameRust(type, context);
-    },
-  });
+  const named = createRustUnionRepresentationPlanForTypeRust(source.type, context);
   if (named.kind === 'nominalEnum') {
     if (named.sentinels.kind !== 'none') return undefined;
     const matches = named.valueVariants.filter((candidate) =>
@@ -3201,6 +3559,17 @@ function areIrContextualCallableParameterAlternativesExactRust(
   return (
     normalizeCompilerStructuralValueCanonical(resolvedLeft) === normalizeCompilerStructuralValueCanonical(resolvedRight)
   );
+}
+
+function createRustUnionRepresentationPlanForTypeRust(type: Readonly<IrType>, context: EmitContext) {
+  return createRustUnionRepresentationPlan(type, {
+    resolveAliasTarget(reference) {
+      return resolveIrTypeAliasTargetRust(reference, context);
+    },
+    resolveVariantName(alternative) {
+      return getGeneralUnionVariantNameRust(alternative, context);
+    },
+  });
 }
 
 function isIrContextualCallableParameterErasedRust(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -4231,6 +4600,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
       if (statement.expression && context.enclosingReturnType) {
+        const unionArrayElementRead = emitReturnedUnionArrayElementReadRust(
+          statement.expression,
+          context.enclosingReturnType,
+          context,
+        );
+        if (unionArrayElementRead) return [`return ${unionArrayElementRead};`];
         const dualSentinelUnion = resolveDualSentinelUnionEnumRust(context.enclosingReturnType, context);
         if (dualSentinelUnion) {
           const wrapped = emitDualSentinelUnionConstructionRust(statement.expression, dualSentinelUnion, context);
@@ -5600,7 +5975,7 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
       elementPlaces.add(expression);
       continue;
     }
-    if (hasMultipleOrdinaryArrayReceiverAlternativesRust(expression, bindingTypes)) continue;
+    if (hasMultipleOrdinaryArrayReceiverAlternativesRust(expression, bindingTypes, module)) continue;
     if (expression.semantics.key !== 'number') {
       refusals.push({
         member: 'index',
@@ -5689,10 +6064,32 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
 function hasMultipleOrdinaryArrayReceiverAlternativesRust(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  module: Readonly<IrModule>,
 ): boolean {
   if (expression.object.kind !== 'identifier' || expression.object.reference.kind !== 'binding') return false;
   const type = bindingTypes.get(expression.object.reference.binding.id);
-  return type?.kind === 'union' && type.types.filter((member) => member.kind === 'array').length > 1;
+  const countArrays = (candidate: Readonly<IrType>, resolving: ReadonlySet<string>): number => {
+    if (candidate.kind === 'union') {
+      return candidate.types.reduce((count, member) => count + countArrays(member, resolving), 0);
+    }
+    if (candidate.kind === 'array') return 1;
+    if (
+      candidate.kind !== 'named' ||
+      candidate.reference.kind !== 'binding' ||
+      candidate.reference.path.length > 0 ||
+      candidate.reference.binding.space !== 'type' ||
+      candidate.typeArguments.length > 0 ||
+      resolving.has(candidate.reference.binding.id)
+    ) {
+      return 0;
+    }
+    const bindingId = candidate.reference.binding.id;
+    const declaration = module.declarations.find(
+      (item) => item.kind === 'typeAlias' && item.binding.id === bindingId && item.typeParameters.length === 0,
+    );
+    return declaration?.kind === 'typeAlias' ? countArrays(declaration.type, new Set(resolving).add(bindingId)) : 0;
+  };
+  return type !== undefined && countArrays(type, new Set()) > 1;
 }
 
 function isRustTraversalPathPrefix(prefix: CompilerIrTraversalPath, path_: CompilerIrTraversalPath): boolean {
