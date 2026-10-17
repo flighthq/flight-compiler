@@ -21,5 +21,5 @@ pub fn read_nested(values: AnonymousObjectRecord) -> Option<f64> {
 }
 
 pub fn write(values: &mut AnonymousObjectRecord) -> () {
-  values.value = 1.0;
+  values.value = Some(1.0);
 }

@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/unguardedVariantMemberRefused.ts: union Atlas alternatives store member frames at different Rust types, so no single accessor can return it. Narrow the union to one alternative where the member is read, or read a member the alternatives store at one type

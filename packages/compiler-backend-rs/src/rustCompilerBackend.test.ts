@@ -13974,3 +13974,63 @@ describe('emitIrModuleRust bitwise not operator', () => {
     expect(output).toContain('as f64');
   });
 });
+
+describe('emitIrModuleRust F0 containment witnesses', () => {
+  it('refuses a presence test over a type parameter, which has no Rust absence storage', () => {
+    const module = lower(
+      'constrained-presence.ts',
+      'export function isAbsent<T extends string | undefined>(text: T): boolean { return text === undefined; }',
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-constrained-parameter-presence-unsupported');
+  });
+
+  it('refuses a shared union accessor whose alternatives store the member at different Rust types', () => {
+    const module = lower(
+      'variant-member.ts',
+      `interface AsepriteFrame { x: number; y: number }
+       interface PackerFrame { filename: string }
+       interface AsepriteAtlas { frames: AsepriteFrame[]; meta: { app: string } }
+       interface PackerAtlas { frames: PackerFrame[]; meta: { size: number } }
+       type Atlas = AsepriteAtlas | PackerAtlas;
+       export function frameCount(atlas: Atlas): number { return atlas.frames.length; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-member-type-mismatch');
+  });
+
+  it('refuses indexed access on a union receiver, which needs a per-alternative projection', () => {
+    const module = lower(
+      'union-index.ts',
+      `interface Counts { [index: number]: number }
+       interface Fields { [name: string]: string }
+       export function read(value: Counts | Fields, key: string): number | string | undefined { return value[key]; }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-union-indexed-access-unsupported');
+  });
+
+  it('refuses an argument that is not an alternative of the union parameter it fills', () => {
+    const module = lower(
+      'union-argument.ts',
+      `interface Alpha { a: number; extra: number }
+       interface Beta { b: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: Partial<Alpha>): number { return take(value); }`,
+    ).module;
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-contextual-union-conversion-unsupported');
+  });
+
+  it('writes a present value into an optional member as the Option it is', () => {
+    const module = lower(
+      'partial-write.ts',
+      `interface Info { readonly value: number }
+       export function write(values: Partial<Info>): void { values.value = 1; }`,
+    ).module;
+    const output = emitIrModuleRust(module).contents;
+
+    expect(output).toContain('values.value = Some(1.0);');
+    expect(output).not.toContain('values.value = 1.0;');
+  });
+});

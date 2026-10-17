@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { normalizeCompilerStructuralValueCanonical } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
@@ -1098,6 +1099,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           }
         }
       }
+      if (expression.operator === '=' && expression.left.kind === 'property' && !expression.left.optional) {
+        const targetType = expression.left.type ?? inferIrExpressionTypeRust(expression.left, context);
+        if (
+          targetType &&
+          hasIrTypeUndefinedMemberRust(targetType) &&
+          !hasIrTypeNullMemberRust(targetType) &&
+          !hasIrTypeUndefinedMemberRust(
+            inferIrExpressionTypeRust(expression.right, context) ?? { kind: 'primitive', name: 'void' },
+          )
+        ) {
+          return `${emitExpression(expression.left, context)} = Some(${emitOwnedOperandRust(expression.right, context)})`;
+        }
+      }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
@@ -1135,6 +1149,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             ? expression.right
             : expression.left;
         const negated = expression.operator === '!=' || expression.operator === '!==';
+        // A type parameter is emitted as the type argument itself, so there is no Option to ask and
+        // folding the test would answer for one instantiation of a constraint that admits another.
+        if (isIrTypeParameterRust(inferIrExpressionTypeRust(operand, context))) {
+          emissionRuleError(
+            context,
+            'a presence test against a type parameter has no Rust absence storage: the parameter is emitted as the type argument itself, so the test has no channel to ask. Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before testing it',
+            'rust-constrained-parameter-presence-unsupported',
+          );
+        }
         return `${emitExpression(operand, context)}.${negated ? 'is_some' : 'is_none'}()`;
       }
       if (expression.operator === '??') {
@@ -1447,6 +1470,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         assertOneIrTypedArrayReceiverRust(expression.semantics.receivers, context);
         return `${emitExpression(expression.object, context)}.get_index(${emitNumericEnumOperandRust(expression.index, context)})`;
       }
+      assertRustElementReceiverIsNotUnionRust(expression, context);
       // A written index is already a whole number; sending it through the neutral numeric type and
       // back is noise the source never asked for.
       return `${emitSharedArrayReceiverRust(expression.object, false, context)}[${emitIndexOperandRust(expression.index, context)}]`;
@@ -2288,6 +2312,7 @@ function emitCallArgumentsRust(
   ) {
     emissionError(context, 'extra JavaScript call arguments require target-neutral erasure lowering');
   }
+  assertRustCallArgumentsMatchUnionParametersRust(expression, context);
   const borrowed = getIrCallBorrowedPositionsRust(expression, context);
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
@@ -2401,6 +2426,7 @@ function emitRequiredElementExpressionRust(
     const index = getElementAccessTupleIndexRust(expression, context);
     return `${emitExpression(expression.object, context)}.${String(index)}`;
   }
+  assertRustElementReceiverIsNotUnionRust(expression, context);
   return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
 }
 
@@ -2748,6 +2774,18 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
 }
 
 function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const returnedUnion = getIrExpressionTaggedUnionRust(expression, context);
+  const declaredReturn = context.enclosingReturnType;
+  if (returnedUnion !== undefined && declaredReturn?.kind === 'named' && declaredReturn.reference.kind === 'binding') {
+    const declaredName = getBindingTargetNameRust(declaredReturn.reference.binding, context);
+    if (declaredName !== returnedUnion) {
+      emissionRuleError(
+        context,
+        `returning ${returnedUnion} where ${declaredName} is declared needs an alternative-by-alternative remap, which this emission does not invent. Return the declared union type from where the value is produced, or convert it explicitly in source`,
+        'rust-union-remap-unsupported',
+      );
+    }
+  }
   const source = emitExpression(expression, context);
   if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
     return `${source}.clone()`;
@@ -5610,6 +5648,65 @@ function getIrExpressionClassAccessorRust(
   );
 }
 
+function assertRustElementReceiverIsNotUnionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): void {
+  if (
+    getIrExpressionTaggedUnionRust(expression.object, context) !== undefined ||
+    inferIrExpressionTypeRust(expression.object, context)?.kind === 'union'
+  ) {
+    emissionRuleError(
+      context,
+      'indexed access on a union receiver needs a per-alternative projection: one key expression reaches every carrier, and the alternatives do not share an indexed shape. Read through one declared carrier, or narrow the alternatives to that shape',
+      'rust-union-indexed-access-unsupported',
+    );
+  }
+}
+
+function isIrTypeParameterRust(type: Readonly<IrType> | undefined): boolean {
+  return (
+    type !== undefined &&
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.binding.kind === 'typeParameter'
+  );
+}
+
+// An argument that fills a union parameter has to *be* one of its alternatives (or a union itself).
+// A structural value that matches none of them is the source language asking for a conversion this
+// emission does not invent.
+function assertRustCallArgumentsMatchUnionParametersRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): void {
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return;
+  const calleeId = expression.callee.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.id === calleeId,
+  );
+  if (declaration?.kind !== 'function') return;
+  expression.arguments.forEach((argument, index) => {
+    const parameter = declaration.parameters[index];
+    if (!parameter || parameter.rest || parameter.type.kind !== 'union') return;
+    if (getIrExpressionTaggedUnionRust(argument, context) !== undefined) return;
+    const argumentType = inferIrExpressionTypeRust(argument, context);
+    if (!argumentType) return;
+    if (argumentType.kind === 'union') return;
+    const canonicalArgument = normalizeCompilerStructuralValueCanonical(argumentType);
+    if (
+      parameter.type.types.some((member) => normalizeCompilerStructuralValueCanonical(member) === canonicalArgument)
+    ) {
+      return;
+    }
+    emissionRuleError(
+      context,
+      `argument ${String(index)} is not an alternative of the union parameter it fills, so passing it needs a conversion this emission does not invent. Pass one of the declared alternatives, or declare the parameter over the value's own type`,
+      'rust-contextual-union-conversion-unsupported',
+    );
+  });
+}
+
 function getIrExpressionTaggedUnionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   return context.taggedUnionBindingNames.get(expression.reference.binding.id);
@@ -5823,6 +5920,29 @@ function emitTaggedUnionRust(
   const shared = members[0]!.properties.filter((property) =>
     members.every((member) => member.properties.some((candidate) => candidate.name === property.name)),
   );
+  for (const property of shared) {
+    // The comparison asks what each alternative's member renders as; it must not register records of
+    // its own while asking, so it renders against a scratch context and leaves the module untouched.
+    const scratch: EmitContext = {
+      ...context,
+      anonymousObjectRecords: new Map(),
+      anonymousUnionEnums: new Map(),
+      callableObjectRecords: new Map(),
+      generatedNames: new Set(context.generatedNames),
+      objectRestRecords: new Map(),
+      runtimeTypeNames: new Set(),
+    };
+    const memberTypes = members.map((member) =>
+      emitType(member.properties.find((candidate) => candidate.name === property.name)!.type, scratch),
+    );
+    if (new Set(memberTypes).size > 1) {
+      emissionRuleError(
+        context,
+        `union ${targetName} alternatives store member ${property.name} at different Rust types, so no single accessor can return it. Narrow the union to one alternative where the member is read, or read a member the alternatives store at one type`,
+        'rust-union-member-type-mismatch',
+      );
+    }
+  }
   for (const property of shared) {
     lines.push(
       `  ${visibility}fn ${safeRustValueName(property.name)}(&self) -> ${emitType(property.type, context)} {`,

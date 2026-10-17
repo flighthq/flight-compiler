@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/unionCarrierKeyDomainRefused.ts: indexed access on a union receiver needs a per-alternative projection: one key expression reaches every carrier, and the alternatives do not share an indexed shape. Read through one declared carrier, or narrow the alternatives to that shape

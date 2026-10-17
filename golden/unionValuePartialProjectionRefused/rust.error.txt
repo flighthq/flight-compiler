@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/unionValuePartialProjectionRefused.ts: argument 0 is not an alternative of the union parameter it fills, so passing it needs a conversion this emission does not invent. Pass one of the declared alternatives, or declare the parameter over the value's own type
