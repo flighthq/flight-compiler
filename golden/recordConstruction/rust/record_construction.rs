@@ -8,11 +8,11 @@ pub struct Entry {
 }
 
 pub fn appended(entries: Vec<Entry>, key: String, value: f64) -> Vec<Entry> {
-  let mut next: Vec<Entry> = entries.clone();
+  let mut next: Vec<Entry> = { let array_slice_values = &entries; (*array_slice_values).clone() };
   { let array_push_argument0 = Entry { key: key, value: value, }; next.push(array_push_argument0); next.len() as f64 };
   return next;
 }
 
 pub fn tail_size(entries: Vec<Entry>, index: f64) -> f64 {
-  return entries[index as usize..].to_vec().len() as f64;
+  return { let array_slice_start_2: f64 = index; let array_slice_values_2 = &entries; let array_slice_length_2 = array_slice_values_2.len(); let array_slice_normalized_start_2 = if array_slice_start_2.is_nan() { 0.0 } else { array_slice_start_2.trunc() }; let array_slice_start_index_2: usize = if array_slice_normalized_start_2 < 0.0 { array_slice_length_2 - ((-array_slice_normalized_start_2).min(array_slice_length_2 as f64) as usize) } else { array_slice_normalized_start_2.min(array_slice_length_2 as f64) as usize }; let array_slice_normalized_end_2 = array_slice_length_2 as f64; let array_slice_end_index_2: usize = if array_slice_normalized_end_2 < 0.0 { array_slice_length_2 - ((-array_slice_normalized_end_2).min(array_slice_length_2 as f64) as usize) } else { array_slice_normalized_end_2.min(array_slice_length_2 as f64) as usize }; array_slice_values_2[array_slice_start_index_2..array_slice_end_index_2.max(array_slice_start_index_2)].to_vec() }.len() as f64;
 }

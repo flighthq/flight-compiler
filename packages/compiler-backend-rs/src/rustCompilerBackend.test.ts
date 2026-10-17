@@ -3723,7 +3723,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(
       lower('arr-slice-start.ts', 'export function tail(items: number[]): number[] { return items.slice(1); }').module,
     ).contents;
-    expect(output).toContain('..].to_vec()');
+    expect(output).toContain('.max(array_slice_start_index)].to_vec()');
   });
 
   it('emits array concat as extend', () => {
@@ -11995,7 +11995,7 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('as usize..');
+    expect(output).toContain('array_slice_end_index.max(array_slice_start_index)');
     expect(output).toContain('.to_vec()');
   });
 
@@ -13613,6 +13613,152 @@ describe('emitIrModuleRust array element access with coalescing', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('preserves zero-, one-, and two-argument slice bounds, source state, and evaluation order', () => {
+    const result = lower(
+      'array-slice-exact.ts',
+      `function record(log: number[], value: number): number { log.push(value); return value; }
+       export function copy(items: readonly number[]): number[] { return items.slice(); }
+       export function tail(items: readonly number[], start: number): number[] { return items.slice(start); }
+       export function range(items: readonly number[], start: number, end: number): number[] {
+         return items.slice(start, end);
+       }
+       export function tracked(items: readonly number[], log: number[]): number[] {
+         return items.slice(record(log, -3.8), record(log, -1.2));
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('(*array_slice_values).clone()');
+    expect(output).toContain('array_slice_start_2.is_nan()');
+    expect(output).toContain('array_slice_start_2.trunc()');
+    expect(output).toContain('array_slice_end_3.is_nan()');
+    expect(output).toContain('array_slice_end_3.trunc()');
+    const trackedStart = output.indexOf('let array_slice_start_4: f64 = record(');
+    const trackedEnd = output.indexOf('let array_slice_end_4: f64 = record(');
+    const trackedReceiver = output.indexOf('let array_slice_values_4 = &items;');
+    expect(trackedStart).toBeGreaterThan(-1);
+    expect(trackedEnd).toBeGreaterThan(trackedStart);
+    expect(trackedReceiver).toBeGreaterThan(trackedEnd);
+    if (rustcAvailable) {
+      runRustSource(
+        output,
+        [
+          'let source = vec![1.0, 2.0, 3.0, 4.0];',
+          'assert_eq!(copy(source.clone()), source);',
+          'assert_eq!(tail(source.clone(), -2.8), vec![3.0, 4.0]);',
+          'assert_eq!(tail(source.clone(), 1.9), vec![2.0, 3.0, 4.0]);',
+          'assert_eq!(tail(source.clone(), f64::NAN), source);',
+          'assert_eq!(tail(source.clone(), f64::INFINITY), Vec::<f64>::new());',
+          'assert_eq!(tail(source.clone(), f64::NEG_INFINITY), source);',
+          'assert_eq!(tail(source.clone(), 99.0), Vec::<f64>::new());',
+          'assert_eq!(range(source.clone(), -3.8, -1.2), vec![2.0, 3.0]);',
+          'assert_eq!(range(source.clone(), 1.9, 3.8), vec![2.0, 3.0]);',
+          'assert_eq!(range(source.clone(), 3.0, 1.0), Vec::<f64>::new());',
+          'assert_eq!(range(source.clone(), 0.0, f64::NAN), Vec::<f64>::new());',
+          'assert_eq!(range(source.clone(), f64::NEG_INFINITY, f64::INFINITY), source);',
+          'let mut log = vec![];',
+          'assert_eq!(tracked(source.clone(), &mut log), vec![2.0, 3.0]);',
+          'assert_eq!(log, vec![-3.8, -1.2]);',
+          'assert_eq!(source, vec![1.0, 2.0, 3.0, 4.0]);',
+        ].join(' '),
+      );
+    }
+  });
+
+  it('preserves slice source state through a shared alias and keeps the returned Vec independent', () => {
+    const result = lower(
+      'shared-array-slice-exact.ts',
+      `export function sharedSlice(): number {
+         const values = [1, 2, 3, 4];
+         const alias = values;
+         const copied = alias.slice(-3.8, -1.2);
+         copied.push(9);
+         values.push(5);
+         return (copied[0] ?? 0) * 10000 + (copied[1] ?? 0) * 1000 + copied.length * 100 + alias.length;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let array_slice_values = alias.borrow()');
+    expect(output).toContain('values.borrow_mut().push');
+    expect(output).toContain('alias.borrow().len() as f64');
+    if (rustcAvailable) runRustSource(output, 'assert_eq!(shared_slice(), 23305.0);');
+  });
+
+  it.each([
+    {
+      rule: 'rust-array-slice-invocation-unrepresented',
+      source:
+        'export function take(values: number[], range: [number, number]): number[] { return values.slice(...range); }',
+    },
+    {
+      rule: 'rust-array-slice-invocation-unrepresented',
+      source: 'export function take(values: number[]): number[] | undefined { return values.slice?.(0); }',
+    },
+    {
+      rule: 'rust-array-slice-index-domain-unrepresented',
+      source: 'export function take(values: number[], start: any): number[] { return values.slice(start); }',
+    },
+    {
+      rule: 'rust-array-slice-element-carrier-unrepresented',
+      source: 'export function take(values: (number | string)[]): (number | string)[] { return values.slice(0); }',
+    },
+    {
+      rule: 'rust-array-slice-element-carrier-unrepresented',
+      source: 'export function take(values: any[]): any[] { return values.slice(0); }',
+    },
+    {
+      rule: 'rust-array-slice-sparse-unrepresented',
+      source: 'export function take(): number[] { const values = [1, , 3]; return values.slice(0); }',
+    },
+  ])('stably refuses unsupported slice semantics with $rule', ({ rule, source }) => {
+    const result = lower('array-slice-refused.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe(rule);
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('stably refuses a slice result without the receiver element carrier', () => {
+    const result = lower(
+      'array-slice-result-carrier.ts',
+      'export function take(values: number[]): number[] { return values.slice(0); }',
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'take',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('expected returned array.slice call');
+    }
+    (returned.expression.semantics as { resultType: unknown }).resultType = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    };
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(result.module));
+    expect(failure.rule).toBe('rust-array-slice-result-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
+  it('uses the shared-array borrow-conflict plan for slice bounds that read an alias', () => {
+    const result = lower(
+      'array-slice-borrow-conflict.ts',
+      `export function conflict(): number[] {
+         const values = [1, 2, 3];
+         const alias = values;
+         const result = alias.slice(values.length);
+         values.push(4);
+         return result;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe('rust-reference-shared-array-borrow-conflict');
+  });
+
   it('preserves two-argument splice deletion, normalization, return order, and evaluation order', () => {
     const result = lower(
       'array-splice.ts',
@@ -15090,7 +15236,7 @@ describe('emitIrModuleRust array method bindings', () => {
     const output = emitIrModuleRust(
       lower('array-slice.ts', `export function tail(items: number[]): number[] { return items.slice(1); }`).module,
     ).contents;
-    expect(output).toContain('as usize..].to_vec()');
+    expect(output).toContain('array_slice_end_index.max(array_slice_start_index)].to_vec()');
   });
 
   it('emits array.slice with two bounds', () => {
@@ -15098,7 +15244,7 @@ describe('emitIrModuleRust array method bindings', () => {
       lower('array-slice-range.ts', `export function middle(items: number[]): number[] { return items.slice(1, 3); }`)
         .module,
     ).contents;
-    expect(output).toContain('as usize..3');
+    expect(output).toContain('array_slice_end.trunc()');
     expect(output).toContain('.to_vec()');
   });
 

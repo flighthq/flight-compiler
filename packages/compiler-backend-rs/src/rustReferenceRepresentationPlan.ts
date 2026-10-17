@@ -1271,7 +1271,7 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
   if (
     call.callee.kind !== 'property' ||
     call.callee.member?.receiver !== 'array' ||
-    !RUST_SHARED_ARRAY_MUTATING_METHODS.has(call.callee.member.name) ||
+    !RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS.has(call.callee.member.name) ||
     call.callee.object.kind !== 'identifier' ||
     call.callee.object.reference.kind !== 'binding'
   ) {
@@ -1286,7 +1286,9 @@ function addRustSharedArrayMemberBorrowConflictRefusal(
     refusals,
     'rust-reference-shared-array-borrow-conflict',
     `${moduleKey(module.module)}:${receiverId}:${JSON.stringify(path_)}`,
-    `shared array mutation ${call.callee.member.name} reads the same alias group while its mutable borrow is active`,
+    RUST_SHARED_ARRAY_MUTATING_METHODS.has(call.callee.member.name)
+      ? `shared array mutation ${call.callee.member.name} reads the same alias group while its mutable borrow is active`
+      : `shared array method ${call.callee.member.name} reads the same alias group across its receiver borrow`,
   );
 }
 
@@ -3522,6 +3524,11 @@ const RUST_SHARED_ARRAY_MUTATING_METHODS: ReadonlySet<string> = new Set([
   'shift',
   'splice',
   'unshift',
+]);
+
+const RUST_SHARED_ARRAY_BORROW_CONFLICT_METHODS: ReadonlySet<string> = new Set([
+  ...RUST_SHARED_ARRAY_MUTATING_METHODS,
+  'slice',
 ]);
 
 const RUST_SHARED_ARRAY_METHODS: ReadonlySet<string> = new Set([

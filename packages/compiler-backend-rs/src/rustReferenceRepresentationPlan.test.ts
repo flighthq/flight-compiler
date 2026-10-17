@@ -159,6 +159,23 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
   });
 
+  it('refuses a shared-array slice bound that reads the receiver alias group', () => {
+    const module = lower(
+      'alias-slice-conflict.ts',
+      `export function aliasSliceConflict(): number[] {
+         const values = [1, 2, 3];
+         const alias = values;
+         const result = alias.slice(values.length);
+         values.push(4);
+         return result;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+    ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-array-borrow-conflict' })]);
+  });
+
   it('refuses shared-array suspension and escaping closure capture', () => {
     const suspended = lower(
       'alias-suspended.ts',
