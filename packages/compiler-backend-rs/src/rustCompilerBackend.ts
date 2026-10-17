@@ -1320,6 +1320,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'call':
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
       if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
+      {
+        const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
+        if (sharedClassMethod) return sharedClassMethod;
+      }
       // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
       // one. The separator is the only argument, so the borrow is decided here rather than by a
       // general rule about where an owned string may stand.
@@ -4068,13 +4072,22 @@ function getIrSharedClassFieldRust(
   name: string,
   context: EmitContext,
 ): Readonly<IrClassField> | undefined {
+  return getIrSharedClassDeclarationRust(binding, context)?.fields.find(
+    (field) => !field.static && field.name === name,
+  );
+}
+
+function getIrSharedClassDeclarationRust(
+  binding: Readonly<IrBindingIdentity>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
   const type = context.bindingTypes.get(binding.id);
   if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
   const typeBindingId = type.reference.binding.id;
   const local = context.module.declarations.find(
     (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBindingId,
   );
-  if (local?.kind === 'class') return local.fields.find((field) => !field.static && field.name === name);
+  if (local?.kind === 'class') return local;
   const imported = context.module.imports
     .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
     .find(({ candidate }) => candidate.binding.id === typeBindingId);
@@ -4084,9 +4097,33 @@ function getIrSharedClassFieldRust(
     (candidate) =>
       candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.candidate.imported,
   );
-  return declaration?.kind === 'class'
-    ? declaration.fields.find((field) => !field.static && field.name === name)
-    : undefined;
+  return declaration?.kind === 'class' ? declaration : undefined;
+}
+
+function emitSharedClassMethodCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.optional ||
+    expression.typeArguments.length > 0 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    expression.callee.structuralAccess
+  ) {
+    return undefined;
+  }
+  const callee = expression.callee;
+  const binding = getRustSharedClassBindingRust(callee.object, context);
+  if (!binding) return undefined;
+  const declaration = getIrSharedClassDeclarationRust(binding, context);
+  const methods = declaration?.methods.filter((method) => !method.static && method.name === callee.name);
+  const method = methods?.length === 1 ? methods[0] : undefined;
+  if (!declaration || !method) return undefined;
+  const target = getIrClassMethodTargetNameRust(method);
+  const mutable = getIrClassMutatingMethodNamesRust(declaration).has(target);
+  const receiver = getBindingTargetNameRust(binding, context);
+  return `${receiver}.${mutable ? 'borrow_mut' : 'borrow'}().${target}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 }
 
 function getRustSharedHashCollectionBindingRust(

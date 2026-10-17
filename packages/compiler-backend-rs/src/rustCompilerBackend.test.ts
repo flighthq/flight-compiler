@@ -7969,6 +7969,33 @@ describe('emitIrModuleRust', () => {
     if (rustcAvailable) expect(() => runRustSource(output, 'assert_eq!(alias_counter(), 2.0);')).not.toThrow();
   });
 
+  it('borrows a shared class once for mutating and readonly instance methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-class-method.ts',
+        `class Counter {
+           value = 0;
+           increment(amount: number): number { this.value += amount; return this.value; }
+           current(): number { return this.value; }
+         }
+         export function aliasCounterMethods(): number {
+           const values = new Counter();
+           const alias = values;
+           const result = alias.increment(2);
+           return result * 100 + values.current() * 10 + alias.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let alias: Rc<RefCell<Counter>> = Rc::clone(&values);');
+    expect(output.match(/alias\.borrow_mut\(\)\.increment\(2\.0\)/gu)).toHaveLength(1);
+    expect(output.match(/values\.borrow\(\)\.current\(\)/gu)).toHaveLength(1);
+    expect(output).toContain('alias.borrow().value');
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert_eq!(alias_counter_methods(), 222.0);')).not.toThrow();
+    }
+  });
+
   it('constructs a shared class from two primitive arguments before alias mutation', () => {
     const output = emitIrModuleRust(
       lower(
@@ -8067,6 +8094,52 @@ describe('emitIrModuleRust', () => {
     if (rustcAvailable) {
       expect(() =>
         compileRustModulePair('pair_provider', providerOutput, 'alias_pair_constructor', output),
+      ).not.toThrow();
+    }
+  });
+
+  it('calls an imported exact class method through one shared receiver borrow', () => {
+    const provider = lower(
+      'method-counter-provider.ts',
+      `export class Counter {
+         value = 0;
+         increment(amount: number): number { this.value += amount; return this.value; }
+         current(): number { return this.value; }
+       }`,
+    ).module;
+    const consumer = lower(
+      'alias-counter-method.ts',
+      `import { Counter } from './method-counter-provider.js';
+       export function importedCounterMethod(): number {
+         const values: Counter = new Counter();
+         const alias: Counter = values;
+         alias.increment(3);
+         return values.current();
+       }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './method-counter-provider.js',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const output = session.emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('alias.borrow_mut().increment(3.0);');
+    expect(output).toContain('values.borrow().current()');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('method_counter_provider', providerOutput, 'alias_counter_method', output),
       ).not.toThrow();
     }
   });
@@ -8183,6 +8256,34 @@ describe('emitIrModuleRust', () => {
     expect(captureBackendEmissionFailure(() => emitIrModuleRust(observed)).rule).toBe(
       'rust-reference-shared-class-mutator-result-unrepresented',
     );
+  });
+
+  it('keeps unsupported and overlapping shared-class method calls as stable refusals', () => {
+    const unsupported = lower(
+      'shared-class-method-unsupported.ts',
+      `class Counter { value = 0; async current(): Promise<number> { return this.value; } }
+       export function run(): number {
+         const values = new Counter(); const alias = values;
+         alias.value = 1;
+         return values.value;
+       }`,
+    ).module;
+    const overlapping = lower(
+      'shared-class-method-overlap.ts',
+      `class Counter { value = 0; increment(amount: number): number { this.value += amount; return this.value; } }
+       export function run(): number {
+         const values = new Counter(); const alias = values;
+         alias.increment(values.value);
+         return values.value;
+       }`,
+    ).module;
+
+    const unsupportedFailure = captureBackendEmissionFailure(() => emitIrModuleRust(unsupported));
+    const overlapFailure = captureBackendEmissionFailure(() => emitIrModuleRust(overlapping));
+    expect(unsupportedFailure.rule).toBe('rust-reference-shared-class-member-unrepresented');
+    expect(unsupportedFailure.classification).toBe('compiler-restriction');
+    expect(overlapFailure.rule).toBe('rust-reference-shared-class-borrow-conflict');
+    expect(overlapFailure.classification).toBe('compiler-restriction');
   });
 
   it('preserves shared mutable Map identity with a local Rc RefCell HashMap carrier', () => {

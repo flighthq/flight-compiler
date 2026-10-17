@@ -266,6 +266,27 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
   });
 
+  it('elects one class carrier for exact synchronous primitive instance methods', () => {
+    const module = lower(
+      'alias-class-method.ts',
+      `class Counter {
+         value = 0;
+         increment(amount: number): number { this.value += amount; return this.value; }
+         current(): number { return this.value; }
+       }
+       export function run(): number {
+         const values = new Counter();
+         const alias = values;
+         alias.increment(2);
+         return values.current();
+       }`,
+    );
+    const modulePlan = getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module);
+
+    expect(modulePlan.refusals).toEqual([]);
+    expect(modulePlan.sharedClassBindings.map(({ binding }) => binding.name).sort()).toEqual(['alias', 'values']);
+  });
+
   it('refuses overlapping shared-class field borrows and observed assignment results', () => {
     const conflict = lower(
       'alias-class-conflict.ts',
@@ -295,16 +316,8 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     ).toEqual([expect.objectContaining({ code: 'rust-reference-shared-class-mutator-result-unrepresented' })]);
   });
 
-  it('refuses class methods, identity-valued fields, generics, and unsupported construction', () => {
+  it('refuses class accessors, identity-valued fields, generics, and unsupported construction', () => {
     const cases = [
-      [
-        lower(
-          'alias-class-method.ts',
-          `class Counter { value = 0; increment(): void { this.value = 1; } }
-           export function run(): number { const values = new Counter(); const alias = values; alias.value = 2; return values.value; }`,
-        ),
-        'rust-reference-shared-class-member-unrepresented',
-      ],
       [
         lower(
           'alias-class-accessor.ts',
@@ -352,6 +365,129 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
       ).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
     }
+  });
+
+  it('keeps unsupported class method boundaries as stable focused refusals', () => {
+    const methodCases = [
+      `class Counter { value = 0; async read(): Promise<number> { return this.value; } }`,
+      `class Counter { value = 0; read<T>(input: T): number { return this.value; } }`,
+      `class Counter { value = 0; read(input: number): number; read(input: number): number { return this.value; } }`,
+      `class Counter { value = 0; merge(other: Counter): number { return this.value; } }`,
+      `class Counter { value = 0; values(): number[] { return [this.value]; } }`,
+      `class Counter { value = 0; leak(): number { consume(this); return this.value; } } function consume(value: Counter): void { value.value = 1; }`,
+      `class Counter { value = 0; callback(): number { const read = (): number => this.value; return read(); } }`,
+    ];
+
+    for (const [index, declaration] of methodCases.entries()) {
+      const module = lower(
+        `alias-class-method-refusal-${String(index)}.ts`,
+        `${declaration}
+         export function run(): number {
+           const values = new Counter();
+           const alias = values;
+           alias.value = 2;
+           return values.value;
+         }`,
+      );
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
+      );
+    }
+  });
+
+  it('refuses dynamic, optional, and overlapping shared-class method calls', () => {
+    const dynamic = lower(
+      'alias-class-dynamic-method.ts',
+      `class Counter { value = 0; increment(amount: number): number { this.value += amount; return this.value; } }
+       export function run(): number {
+         const values = new Counter(); const alias = values;
+         const increment = alias.increment;
+         increment(1);
+         return values.value;
+       }`,
+    );
+    const optional = lower(
+      'alias-class-optional-method.ts',
+      `class Counter { value = 0; increment(amount: number): number { this.value += amount; return this.value; } }
+       export function run(): number {
+         const values = new Counter(); const alias = values;
+         alias.increment?.(1);
+         return values.value;
+       }`,
+    );
+    const overlapping = lower(
+      'alias-class-overlapping-method.ts',
+      `class Counter { value = 0; increment(amount: number): number { this.value += amount; return this.value; } }
+       export function run(): number {
+         const values = new Counter(); const alias = values;
+         alias.increment(values.value);
+         return values.value;
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [dynamic] }), dynamic).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-use-unrepresented' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [optional] }), optional).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-use-unrepresented' })]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [overlapping] }), overlapping).refusals,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-borrow-conflict' })]),
+    );
+  });
+
+  it('retains callback-escape and suspension refusals for shared-class methods', () => {
+    const callbackEscape = lower(
+      'alias-class-method-callback.ts',
+      `class Counter {
+         value = 0;
+         increment(): void { this.value += 1; }
+         current(): number { return this.value; }
+       }
+       export function run(): () => number {
+         const values = new Counter(); const alias = values;
+         alias.increment();
+         return (): number => values.current();
+       }`,
+    );
+    const suspension = lower(
+      'alias-class-method-suspension.ts',
+      `class Counter {
+         value = 0;
+         increment(): void { this.value += 1; }
+         current(): number { return this.value; }
+       }
+       export async function run(): Promise<number> {
+         const values = new Counter(); const alias = values;
+         alias.increment();
+         await Promise.resolve(0);
+         return values.current();
+       }`,
+    );
+
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [callbackEscape] }), callbackEscape)
+        .refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-closure-escape-unrepresented' }),
+      ]),
+    );
+    expect(
+      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [suspension] }), suspension).refusals,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-suspension-unrepresented' }),
+      ]),
+    );
   });
 
   it('refuses inexact primitive constructor invocation and constructor escape shapes', () => {

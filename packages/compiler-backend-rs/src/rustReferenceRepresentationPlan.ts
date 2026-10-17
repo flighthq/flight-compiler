@@ -20,6 +20,7 @@ import type {
   IrBindingIdentity,
   IrClassDeclaration,
   IrClassField,
+  IrClassMethod,
   IrExpression,
   IrFunctionDeclaration,
   IrImportBinding,
@@ -133,6 +134,7 @@ export function createCompilerRustReferenceRepresentationPlan(
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'map');
   activateRustSharedHashCollectionUnsupportedUses(modules, input.moduleResolution, 'set');
   activateRustSharedClassUnsupportedUses(modules, input.moduleResolution);
+  activateRustSharedClassMethodMutations(modules, input.moduleResolution);
   activateRustSharedArrayCallMutations(modules, input.moduleResolution);
   activateRustSharedClassCallMutations(modules, input.moduleResolution);
   activateRustSharedHashCollectionCallMutations(modules, input.moduleResolution, 'map');
@@ -998,6 +1000,19 @@ function activateRustSharedClassUnsupportedUses(
   }
 }
 
+function activateRustSharedClassMethodMutations(
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): void {
+  for (const module of modules) {
+    for (const { call } of module.calls) {
+      const method = getRustSimpleClassMethodCall(call, module, modules, moduleResolution);
+      if (!method?.mutating) continue;
+      activateRustSharedClassGroupsUsedInExpression(module, method.receiver);
+    }
+  }
+}
+
 function activateRustSharedClassGroupsUsedInExpression(
   module: RustReferenceModuleRecord,
   expression: Readonly<IrExpression>,
@@ -1448,6 +1463,10 @@ function addRustSharedClassRefusals(
       if (expression.kind === 'assignment') {
         addRustSharedClassFieldBorrowConflictRefusal(module, expression, path_, refusals);
         addRustSharedClassMutatorResultRefusal(module, expression, path_, refusals);
+        return;
+      }
+      if (expression.kind === 'call') {
+        addRustSharedClassMethodBorrowConflictRefusal(module, modules, moduleResolution, expression, path_, refusals);
       }
     },
   });
@@ -1471,12 +1490,12 @@ function addRustSimpleClassDeclarationRefusals(
       `class ${declaration.binding.name} requires generic, abstract, or inheritance semantics outside the simple-class carrier`,
     );
   }
-  if (declaration.methods.length > 0) {
+  if (declaration.methods.some((method) => !isRustSimpleClassMethodSupported(method, declaration))) {
     addRustReferenceRefusal(
       refusals,
       'rust-reference-shared-class-member-unrepresented',
       subject,
-      `class ${declaration.binding.name} declares methods or accessors outside the direct-field carrier`,
+      `class ${declaration.binding.name} declares a member outside the synchronous primitive instance-method carrier`,
     );
   }
   if (declaration.fields.length === 0 || declaration.fields.some((field) => !isRustSimpleClassField(field))) {
@@ -1517,7 +1536,13 @@ function isRustSharedClassIdentifierUseRepresented(
   }
   if (final === 'object' && isIrExpressionValue(parent) && parent.kind === 'property') {
     if (parent.optional || parent.structuralAccess) return false;
-    return getRustReferenceClassField(expression, parent.name, module, modules, moduleResolution) !== undefined;
+    if (getRustReferenceClassField(expression, parent.name, module, modules, moduleResolution)) return true;
+    const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
+    return (
+      isCallExpression(call) &&
+      call.callee === parent &&
+      getRustSimpleClassMethodCall(call, module, modules, moduleResolution) !== undefined
+    );
   }
   if (path_.at(-2) === 'arguments' && typeof path_.at(-1) === 'number') {
     const call = getIrModuleTraversalPathValue(module.module, path_.slice(0, -2));
@@ -1612,6 +1637,35 @@ function addRustSharedClassCallBorrowConflictRefusal(
     'rust-reference-shared-class-borrow-conflict',
     `${moduleKey(module.module)}:${call.callee.kind}:${call.callee.kind === 'identifier' && call.callee.reference.kind === 'binding' ? call.callee.reference.binding.id : 'call'}:${String(borrowedPosition)}`,
     `call argument ${String(borrowedPosition)} mutably borrows a shared class while another argument reads the same alias group`,
+  );
+}
+
+function addRustSharedClassMethodBorrowConflictRefusal(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  call: IrCallExpression,
+  path_: CompilerIrTraversalPath,
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  const method = getRustSimpleClassMethodCall(call, module, modules, moduleResolution);
+  const receiver = method?.receiver;
+  if (
+    !receiver ||
+    receiver.reference.kind !== 'binding' ||
+    !module.sharedClasses.bindingIds.has(receiver.reference.binding.id)
+  ) {
+    return;
+  }
+  const group = module.sharedClasses.groupByBindingId.get(receiver.reference.binding.id);
+  if (!group || !call.arguments.some((argument) => expressionUsesRustSharedClassGroup(argument, group, module))) {
+    return;
+  }
+  addRustReferenceRefusal(
+    refusals,
+    'rust-reference-shared-class-borrow-conflict',
+    `${moduleKey(module.module)}:${receiver.reference.binding.id}:${JSON.stringify(path_)}`,
+    `class method ${method.method.name} borrows a shared receiver while an argument reads the same alias group`,
   );
 }
 
@@ -2329,6 +2383,72 @@ function getRustReferenceClassField(
   return location?.declaration.fields.find((field) => !field.static && field.name === name);
 }
 
+function getRustSimpleClassMethod(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  name: string,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): Readonly<{ declaration: Readonly<IrClassDeclaration>; method: Readonly<IrClassMethod> }> | undefined {
+  if (expression.reference.kind !== 'binding') return undefined;
+  const location = getRustReferenceClassDeclaration(
+    module.bindingTypes.get(expression.reference.binding.id),
+    module,
+    modules,
+    moduleResolution,
+  );
+  if (!location || !isRustSimpleClassDeclarationSupported(location.declaration)) return undefined;
+  const methods = location.declaration.methods.filter((method) => !method.static && method.name === name);
+  const method = methods.length === 1 ? methods[0] : undefined;
+  return method ? { declaration: location.declaration, method } : undefined;
+}
+
+function getRustSimpleClassMethodCall(
+  call: IrCallExpression,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+):
+  | Readonly<{
+      declaration: Readonly<IrClassDeclaration>;
+      method: Readonly<IrClassMethod>;
+      mutating: boolean;
+      receiver: Readonly<Extract<IrExpression, { kind: 'identifier' }>>;
+    }>
+  | undefined {
+  if (
+    !isRustSimpleClassDirectMethodInvocation(call) ||
+    call.callee.kind !== 'property' ||
+    call.callee.optional ||
+    call.callee.structuralAccess ||
+    call.callee.object.kind !== 'identifier'
+  ) {
+    return undefined;
+  }
+  const receiver = call.callee.object;
+  const location = getRustSimpleClassMethod(receiver, call.callee.name, module, modules, moduleResolution);
+  if (!location || call.arguments.length !== location.method.parameters.length) {
+    return undefined;
+  }
+  return {
+    ...location,
+    mutating: getRustSimpleClassMutatingMethodNames(location.declaration).has(location.method.name),
+    receiver,
+  };
+}
+
+function isRustSimpleClassDirectMethodInvocation(call: IrCallExpression): boolean {
+  return (
+    !call.optional &&
+    call.typeArguments.length === 0 &&
+    call.semantics.defaultParameters === undefined &&
+    call.semantics.optionalParameters === undefined &&
+    call.semantics.overloadImplementation === undefined &&
+    call.semantics.signature?.providedArgumentCount !== 'dynamic' &&
+    call.semantics.signature?.restParameter === undefined
+  );
+}
+
 function isRustSharedClassTypeSupported(
   type: Readonly<IrType> | undefined,
   module: RustReferenceModuleRecord,
@@ -2346,11 +2466,164 @@ function isRustSimpleClassDeclarationSupported(declaration: Readonly<IrClassDecl
     declaration.extends === undefined &&
     declaration.implements.length === 0 &&
     declaration.typeParameters.length === 0 &&
-    declaration.methods.length === 0 &&
+    declaration.methods.every((method) => isRustSimpleClassMethodSupported(method, declaration)) &&
     declaration.fields.length > 0 &&
     declaration.fields.every(isRustSimpleClassField) &&
     isRustSimpleClassConstructionSupported(declaration)
   );
+}
+
+function isRustSimpleClassMethodSupported(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  if (
+    method.abstract ||
+    method.accessor !== undefined ||
+    method.async ||
+    method.branded ||
+    method.overloads.length > 0 ||
+    method.static ||
+    method.typeParameters.length > 0 ||
+    method.parameters.some(
+      (parameter) =>
+        parameter.initializer !== undefined ||
+        parameter.optional ||
+        parameter.rest ||
+        !isRustSimpleClassPrimitiveType(parameter.type),
+    ) ||
+    !isRustSimpleClassMethodResultType(method.returns)
+  ) {
+    return false;
+  }
+  return isRustSimpleClassMethodBodySupported(method, declaration);
+}
+
+function isRustSimpleClassMethodResultType(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'primitive' &&
+    (type.name === 'boolean' || type.name === 'number' || type.name === 'string' || type.name === 'void')
+  );
+}
+
+function isRustSimpleClassMethodBodySupported(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  const fieldNames = new Set(declaration.fields.filter((field) => !field.static).map((field) => field.name));
+  const methodNames = new Set(
+    declaration.methods.filter((candidate) => !candidate.static).map((candidate) => candidate.name),
+  );
+  const allowedThisReferences = new WeakSet<object>();
+  const thisReferences: object[] = [];
+  let supported = true;
+  for (const statement of method.body) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (expression.kind === 'await') {
+          supported = false;
+          return false;
+        }
+        if (expression.kind === 'function') {
+          if (hasIrExpressionThisReferenceInPlan(expression)) supported = false;
+          return false;
+        }
+        if (
+          expression.kind === 'call' &&
+          isRustSimpleClassDirectMethodInvocation(expression) &&
+          expression.callee.kind === 'property' &&
+          !expression.callee.optional &&
+          !expression.callee.structuralAccess &&
+          expression.callee.object.kind === 'identifier' &&
+          expression.callee.object.reference.kind === 'this' &&
+          methodNames.has(expression.callee.name)
+        ) {
+          allowedThisReferences.add(expression.callee.object);
+        }
+        if (
+          expression.kind === 'property' &&
+          !expression.optional &&
+          !expression.structuralAccess &&
+          expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'this' &&
+          fieldNames.has(expression.name)
+        ) {
+          allowedThisReferences.add(expression.object);
+        }
+        if (expression.kind === 'identifier' && expression.reference.kind === 'this') {
+          thisReferences.push(expression);
+        }
+        return undefined;
+      },
+    });
+  }
+  return supported && thisReferences.every((reference) => allowedThisReferences.has(reference));
+}
+
+function getRustSimpleClassMutatingMethodNames(declaration: Readonly<IrClassDeclaration>): ReadonlySet<string> {
+  const mutating = new Set(
+    declaration.methods.filter((method) => hasRustSimpleClassMethodThisMutation(method)).map((method) => method.name),
+  );
+  const calls = new Map(
+    declaration.methods.map((method) => [method.name, getRustSimpleClassSelfCallNames(method)] as const),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const method of declaration.methods) {
+      if (mutating.has(method.name)) continue;
+      if ((calls.get(method.name) ?? []).some((name) => mutating.has(name))) {
+        mutating.add(method.name);
+        changed = true;
+      }
+    }
+  }
+  return mutating;
+}
+
+function getRustSimpleClassSelfCallNames(method: Readonly<IrClassMethod>): readonly string[] {
+  const names: string[] = [];
+  for (const statement of method.body) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (
+          expression.kind === 'call' &&
+          expression.callee.kind === 'property' &&
+          expression.callee.object.kind === 'identifier' &&
+          expression.callee.object.reference.kind === 'this'
+        ) {
+          names.push(expression.callee.name);
+        }
+        return undefined;
+      },
+    });
+  }
+  return names;
+}
+
+function hasRustSimpleClassMethodThisMutation(method: Readonly<IrClassMethod>): boolean {
+  let mutating = false;
+  const reachesThis = (expression: Readonly<IrExpression>): boolean => {
+    if (expression.kind === 'identifier') return expression.reference.kind === 'this';
+    if (expression.kind === 'property' || expression.kind === 'element') return reachesThis(expression.object);
+    return false;
+  };
+  for (const statement of method.body) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        const target =
+          expression.kind === 'assignment'
+            ? expression.left
+            : expression.kind === 'unary'
+              ? expression.operand
+              : undefined;
+        if (!target || !reachesThis(target)) return undefined;
+        mutating = true;
+        return false;
+      },
+    });
+  }
+  return mutating;
 }
 
 function isRustSimpleClassField(field: Readonly<IrClassField>): boolean {
