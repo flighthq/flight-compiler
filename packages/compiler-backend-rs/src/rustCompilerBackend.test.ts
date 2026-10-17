@@ -9158,18 +9158,21 @@ describe('emitIrModuleRust', () => {
         'nested-return-carriers.ts',
         `class Counter {
            value: number;
-           constructor(value: number) { this.value = value; }
+           label: string;
+           constructor(value: number, label: string) { this.value = value; this.label = label; }
          }
          function makeCounter(): Counter {
            const numeric = (): number => { return 7; };
            const textual = (): string => { return "ready"; };
            const logical = (): boolean => { return true; };
-           textual();
            logical();
-           return new Counter(numeric());
+           return new Counter(numeric(), textual());
          }
          export function nestedReturnCarriers(): number {
            return makeCounter().value;
+         }
+         export function nestedReturnLabel(): string {
+           return makeCounter().label;
          }`,
       ).module,
     ).contents;
@@ -9181,8 +9184,15 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('return Rc::new(RefCell::new(7.0));');
     expect(output).not.toContain('return Rc::new(RefCell::new("ready".to_owned()));');
     expect(output).not.toContain('return Rc::new(RefCell::new(true));');
+    expect(output).toContain('return make_counter().borrow().value;');
+    expect(output).toContain('return make_counter().borrow().label.clone();');
     if (rustcAvailable) {
-      expect(() => runRustSource(output, 'assert_eq!(nested_return_carriers(), 7.0);')).not.toThrow();
+      expect(() =>
+        runRustSource(
+          output,
+          'assert_eq!(nested_return_carriers(), 7.0); assert_eq!(nested_return_label(), "ready".to_owned());',
+        ),
+      ).not.toThrow();
     }
   });
 
@@ -10344,12 +10354,25 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(
       lower(
         'mut-param.ts',
-        `export function increment(arr: number[]): void {
-          arr.push(1);
-        }`,
+        `export interface Cell { value: number; }
+         export function set(cell: Cell, value: number): void { cell.value = value; }
+         export function setTwice(cell: Cell): void {
+           set(cell, 1);
+           set(cell, 2);
+         }`,
       ).module,
     ).contents;
-    expect(output).toContain('&mut');
+
+    expect(output).toContain('pub fn set(cell: &mut Cell, value: f64)');
+    expect(output).toContain('pub fn set_twice(cell: &mut Cell)');
+    expect(output).toContain('set(cell, 1.0);');
+    expect(output).toContain('set(cell, 2.0);');
+    expect(output).not.toContain('set(cell.clone()');
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(output, 'let mut cell = Cell { value: 0.0 }; set_twice(&mut cell); assert_eq!(cell.value, 2.0);'),
+      ).not.toThrow();
+    }
   });
 
   it('emits Readonly<T> unwrap for named type argument', () => {

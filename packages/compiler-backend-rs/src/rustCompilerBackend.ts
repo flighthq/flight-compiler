@@ -2132,11 +2132,18 @@ function emitSharedClassFieldRust(
   context: EmitContext,
 ): string | undefined {
   const binding = getRustSharedClassBindingRust(expression.object, context);
-  if (!binding) return undefined;
-  const field = getIrSharedClassFieldRust(binding, expression.name, context);
+  const returned = isIrSharedClassReturnCallRust(expression.object, context);
+  if (!binding && !returned) return undefined;
+  const declaration = binding
+    ? getIrSharedClassDeclarationRust(binding, context)
+    : getIrSharedClassDeclarationForTypeRust(inferIrExpressionTypeRust(expression.object, context), context);
+  const field = declaration?.fields.find((candidate) => !candidate.static && candidate.name === expression.name);
   if (!field) return undefined;
   const owned = isIrTypeCopyValueRust(field.type) ? '' : '.clone()';
-  return `${getBindingTargetNameRust(binding, context)}.borrow().${safeRustValueName(expression.name)}${owned}`;
+  const receiver = binding
+    ? getBindingTargetNameRust(binding, context)
+    : normalizeSourceTextGrouping(emitExpression(expression.object, context));
+  return `${receiver}.borrow().${safeRustValueName(expression.name)}${owned}`;
 }
 
 function hasOnlyIrTypedArrayReceiversRust(receivers: readonly IrIndexedReceiver[]): boolean {
@@ -2816,7 +2823,7 @@ function emitCallArgumentsRust(
       const representation = borrowed.get(index);
       return representation === 'borrowed-class'
         ? emitBorrowedClassOperandRust(argument, context)
-        : representation
+        : representation || isIrLocalCallReferentMutatedParameterRust(expression, index, context)
           ? emitLentOperandRust(argument, context)
           : emitOwnedOperandRust(argument, context);
     });
@@ -2856,6 +2863,20 @@ function emitCallArgumentsRust(
     }
     return wrapped.has(index) ? `Some(${emitted})` : emitted;
   });
+}
+
+function isIrLocalCallReferentMutatedParameterRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  position: number,
+  context: EmitContext,
+): boolean {
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return false;
+  const calleeBindingId = expression.callee.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.id === calleeBindingId,
+  );
+  const parameter = declaration?.kind === 'function' ? declaration.parameters[position] : undefined;
+  return parameter !== undefined && context.referentMutatedParameterIds.has(parameter.binding.id);
 }
 
 function emitOptionalCallExpressionRust(
@@ -4768,6 +4789,13 @@ function getIrSharedClassDeclarationRust(
   context: EmitContext,
 ): Readonly<IrClassDeclaration> | undefined {
   const type = context.bindingTypes.get(binding.id);
+  return getIrSharedClassDeclarationForTypeRust(type, context);
+}
+
+function getIrSharedClassDeclarationForTypeRust(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
   if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
   const typeBindingId = type.reference.binding.id;
   const local = context.module.declarations.find(
