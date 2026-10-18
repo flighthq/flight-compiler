@@ -175,7 +175,7 @@ function assertRustPublicBindingExecutionRust(
   }
   const projectionProblems = [
     ...[...outsideCrates].sort(compareTextCodeUnits).map((packageName) => `crate ${packageName}`),
-    ...[...outsideModules].sort(compareTextCodeUnits).map((module) => `module ${module.replaceAll('\u0000', '/')}`),
+    ...[...outsideModules].sort(compareTextCodeUnits).map((module) => `module ${module.replaceAll('\0', '/')}`),
     ...(execution.error.targetName === 'FlightModuleEvaluationError' &&
     execution.error.result === 'Result<(), FlightModuleEvaluationError>' &&
     execution.error.crateName === (input.runtimeCrate ?? 'flight_runtime')
@@ -247,7 +247,7 @@ function assertRustPublicBindingAccessStatesRust(
 }
 
 function getRustPublicBindingCrateKey(crate: Readonly<CompilerRustPublicCrateIdentity>): string {
-  return `${crate.cargoName}\u0000${crate.packageName}\u0000${crate.rustName}`;
+  return `${crate.cargoName}\0${crate.packageName}\0${crate.rustName}`;
 }
 
 export function isCompilerRustPublicBindingPlanningFailure(
