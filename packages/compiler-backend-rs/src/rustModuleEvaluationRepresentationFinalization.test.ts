@@ -26,6 +26,47 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     expect(repeat.moduleFileReplacements?.[0]?.file.contents).toBe(first.moduleFileReplacements?.[0]?.file.contents);
   });
 
+  it('injects authoritative module lifecycles and root group hooks with the selected runtime crate', () => {
+    const root = lower('index.ts', 'export const root = 1;');
+    const nested = lower('item.ts', 'export const item = 2;');
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies: [],
+      entries: [identity(nested), identity(root)],
+      modules: [nested, root],
+    });
+    const session = createSession([root, nested], moduleEvaluation, 'selected_runtime');
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createFacade([nested, root]),
+      moduleEvaluation,
+      moduleFiles: [root, nested].map((module) => ({
+        file: session.emitModule(module)[0]!,
+        module: identity(module),
+      })),
+    };
+
+    const first = session.finalizePackageGraph!(finalization);
+    const repeat = session.finalizePackageGraph!(finalization);
+    const rootContents = first.moduleFileReplacements?.find(({ file }) => file.path === 'lib.rs')?.file.contents ?? '';
+    const nestedContents =
+      first.moduleFileReplacements?.find(({ file }) => file.path === 'item.rs')?.file.contents ?? '';
+
+    expect(repeat).toEqual(first);
+    expect(rootContents.indexOf('pub mod item;')).toBeLessThan(
+      rootContents.indexOf('enum __FlightModuleEvaluationState'),
+    );
+    expect(countText(rootContents, 'enum __FlightModuleEvaluationState')).toBe(1);
+    expect(countText(nestedContents, 'enum __FlightModuleEvaluationState')).toBe(1);
+    expect(countText(rootContents, 'pub(crate) fn __flight_instantiate_once()')).toBe(1);
+    expect(countText(nestedContents, 'pub(crate) fn __flight_instantiate_once()')).toBe(1);
+    expect(countText(rootContents, 'pub fn __flight_instantiate_group_')).toBe(2);
+    expect(countText(rootContents, 'pub fn __flight_evaluate_group_')).toBe(2);
+    expect(rootContents).toContain('selected_runtime::FlightModuleEvaluationError');
+    expect(nestedContents).toContain('selected_runtime::FlightModuleEvaluationError');
+    expect(rootContents).toContain(
+      'let result: std::result::Result<(), selected_runtime::FlightModuleEvaluationError> = Ok(());',
+    );
+  });
+
   it('retains scoped output when an authoritative evaluation module has no file', () => {
     const entry = lower('entry.ts', 'export const value = 1;');
     const retained = lower('retained.ts', 'export const other = 2;');
@@ -44,6 +85,7 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     const result = session.finalizePackageGraph!(finalization);
 
     expect(result.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(['retained.rs']);
+    expect(collectFinalizedSource(result)).not.toContain('__flight_');
   });
 
   it('keeps placeholder declaration salvage output unchanged', () => {
@@ -52,10 +94,15 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     }
     export function keep(value: number): number { return value + 1; }`;
     const module = lower('salvage.ts', source);
-    const session = createSession([module], emptyModuleEvaluation);
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies: [],
+      entries: [identity(module)],
+      modules: [module],
+    });
+    const session = createSession([module], moduleEvaluation);
     session.finalizePackageGraph!({
       facade: createFacade([module]),
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleFiles: [],
       placeholderModules: [module],
       refusals: [
@@ -74,6 +121,7 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     expect(placeholder?.contents).toContain('// PARTIAL:');
     expect(placeholder?.contents).toContain('pub fn keep');
     expect(placeholder?.contents).toContain('// NOT GENERATED: function broken -- source line 1');
+    expect(placeholder?.contents).not.toContain('__flight_');
   });
 
   it('wraps changed repeat provenance and preserves the first successful cache', () => {
@@ -145,6 +193,33 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
       kind: 'rust-module-evaluation-representation-planning',
     });
   });
+
+  it('wraps execution planning failures with their exact cause', () => {
+    const module = lower('reserved.ts', 'export function __flight_user(): number { return 1; }');
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies: [],
+      entries: [identity(module)],
+      modules: [module],
+    });
+    const session = createSession([module], moduleEvaluation);
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createFacade([module]),
+      moduleEvaluation,
+      moduleFiles: [{ file: session.emitModule(module)[0]!, module: identity(module) }],
+    };
+
+    const failure = captureFinalization(() => session.finalizePackageGraph!(finalization));
+
+    expect(failure).toMatchObject({
+      backend: 'rust',
+      code: 'rust-module-evaluation-execution-reserved-name-collision',
+      kind: 'compiler-backend-finalization',
+    });
+    expect(failure.cause).toMatchObject({
+      code: 'rust-module-evaluation-execution-reserved-name-collision',
+      kind: 'rust-module-evaluation-execution-planning',
+    });
+  });
 });
 
 function captureFinalization(run: () => unknown): Readonly<{
@@ -200,8 +275,26 @@ function createFinalization(
 function createSession(
   modules: readonly Readonly<IrModule>[],
   moduleEvaluation: Readonly<ReturnType<typeof createCompilerModuleEvaluationPlan>>,
+  runtimeCrate?: string,
 ): CompilerBackendEmissionSession {
-  return createRustCompilerBackend().createEmissionSession!({ moduleEvaluation, modules, options: {} });
+  return createRustCompilerBackend().createEmissionSession!({
+    moduleEvaluation,
+    modules,
+    options: runtimeCrate === undefined ? {} : { runtimeCrate },
+  });
+}
+
+function collectFinalizedSource(
+  result: Readonly<ReturnType<NonNullable<CompilerBackendEmissionSession['finalizePackageGraph']>>>,
+): string {
+  return [
+    ...(result.moduleFileReplacements ?? []).map(({ file }) => file.contents),
+    ...result.packageFiles.map(({ file }) => file.contents),
+  ].join('\n');
+}
+
+function countText(source: string, needle: string): number {
+  return source.split(needle).length - 1;
 }
 
 function identity(module: Readonly<IrModule>): CompilerModuleIdentity {

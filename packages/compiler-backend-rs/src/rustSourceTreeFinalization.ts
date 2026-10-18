@@ -7,6 +7,7 @@ import type {
   CompilerBackendPackageGraphFinalizationResult,
   CompilerBackendPublicBindingRefusal,
   CompilerModuleIdentity,
+  CompilerRustModuleEvaluationEmissionFragment,
   CompilerRustSourceTreeFilePlan,
   CompilerRustSourceTreeUnavailableModule,
   CompilerRustSourceTreeFinalizationFailure,
@@ -42,7 +43,7 @@ export function createCompilerRustSourceTreeFinalization(
     ...(placeholderModules.length === 0 ? {} : { placeholderModules }),
     ...(unavailableModules.length === 0 ? {} : { unavailableModules }),
   });
-  request.observePlan?.(plan);
+  const emissionSources = createCompilerRustSourceTreeEmissionSources(plan, request.finalizePlan?.(plan) ?? []);
   const sourceFiles = createCompilerRustSourceTreeFinalizationSourceFiles(plan, retainedFilesByModule, retainedModules);
   const moduleFileReplacements = sourceFiles
     .map(({ module, retainedFile, sourceFile }): CompilerBackendModuleFileReplacement => {
@@ -61,7 +62,7 @@ export function createCompilerRustSourceTreeFinalization(
       };
       const file = emitEmittedFileSourceFragmentRust(
         request.reemitModule(Object.freeze(reemission)),
-        sourceFile.sourceFragment,
+        composeCompilerRustSourceTreeFragments(sourceFile.sourceFragment, emissionSources.get(sourceFile.filePath)),
       );
       if (file.path !== sourceFile.filePath) {
         throw createCompilerRustSourceTreeFinalizationFailure(
@@ -82,7 +83,10 @@ export function createCompilerRustSourceTreeFinalization(
       if (file.ownership.kind !== 'skeleton') return [];
       return [
         {
-          file: normalizeEmittedFile({ contents: file.sourceFragment, path: file.filePath }),
+          file: normalizeEmittedFile({
+            contents: composeCompilerRustSourceTreeFragments(file.sourceFragment, emissionSources.get(file.filePath)),
+            path: file.filePath,
+          }),
           owner: { kind: 'package', packageName: file.packageName },
           provenance: file.ownership.provenance
             .map(cloneCompilerRustSourceTreeModuleIdentity)
@@ -189,6 +193,74 @@ function compareCompilerRustSourceTreeModules(
     compareTextCodeUnits(left.source, right.source) ||
     compareTextCodeUnits(left.name, right.name)
   );
+}
+
+function composeCompilerRustSourceTreeFragments(declarations: string, emission: string | undefined): string {
+  if (emission === undefined || emission.length === 0) return declarations;
+  if (declarations.length === 0) return emission;
+  return `${declarations}\n${emission}`;
+}
+
+function createCompilerRustSourceTreeEmissionSources(
+  plan: Readonly<CompilerRustSourceTreePlan>,
+  fragments: readonly Readonly<CompilerRustModuleEvaluationEmissionFragment>[],
+): ReadonlyMap<string, string> {
+  const sources = new Map<string, string>();
+  for (const fragment of fragments) {
+    const file = resolveCompilerRustSourceTreeEmissionFile(plan, fragment);
+    if (sources.has(file.filePath)) {
+      throw createCompilerRustSourceTreeFinalizationFailure(
+        'rust-source-tree-finalization-emission-target-duplicate',
+        [file.filePath, formatCompilerRustSourceTreeEmissionLocator(fragment)],
+        `Rust module-evaluation emission has more than one fragment for ${file.filePath}`,
+      );
+    }
+    sources.set(file.filePath, fragment.source);
+  }
+  return sources;
+}
+
+function resolveCompilerRustSourceTreeEmissionFile(
+  plan: Readonly<CompilerRustSourceTreePlan>,
+  fragment: Readonly<CompilerRustModuleEvaluationEmissionFragment>,
+): Readonly<CompilerRustSourceTreeFilePlan> {
+  const locator = fragment.locator;
+  const candidates = plan.files.filter(
+    (file) =>
+      file.packageName === locator.packageName &&
+      isCompilerRustSourceTreeModulePathEqual(file.modulePath, locator.modulePath),
+  );
+  if (candidates.length === 0) {
+    throw createCompilerRustSourceTreeFinalizationFailure(
+      'rust-source-tree-finalization-emission-target-missing',
+      [formatCompilerRustSourceTreeEmissionLocator(fragment)],
+      `Rust module-evaluation emission target ${formatCompilerRustSourceTreeEmissionLocator(fragment)} is absent from the canonical source tree`,
+    );
+  }
+  if (candidates.length > 1) {
+    throw createCompilerRustSourceTreeFinalizationFailure(
+      'rust-source-tree-finalization-emission-target-duplicate',
+      [formatCompilerRustSourceTreeEmissionLocator(fragment), ...candidates.map(({ filePath }) => filePath)],
+      `Rust module-evaluation emission target ${formatCompilerRustSourceTreeEmissionLocator(fragment)} resolves to ${String(candidates.length)} canonical files`,
+    );
+  }
+  const file = candidates[0]!;
+  if (locator.filePath !== undefined && locator.filePath !== file.filePath) {
+    throw createCompilerRustSourceTreeFinalizationFailure(
+      'rust-source-tree-finalization-emission-target-path-mismatch',
+      [formatCompilerRustSourceTreeEmissionLocator(fragment), locator.filePath, file.filePath],
+      `Rust module-evaluation emission target ${formatCompilerRustSourceTreeEmissionLocator(fragment)} names ${locator.filePath} instead of canonical path ${file.filePath}`,
+    );
+  }
+  const requiredOwnership = locator.kind === 'module' || locator.filePath !== undefined ? 'source' : 'skeleton';
+  if (file.ownership.kind !== requiredOwnership) {
+    throw createCompilerRustSourceTreeFinalizationFailure(
+      'rust-source-tree-finalization-emission-target-ownership-mismatch',
+      [formatCompilerRustSourceTreeEmissionLocator(fragment), file.filePath, file.ownership.kind],
+      `Rust module-evaluation emission target ${formatCompilerRustSourceTreeEmissionLocator(fragment)} requires ${requiredOwnership} ownership at ${file.filePath}, but found ${file.ownership.kind}`,
+    );
+  }
+  return file;
 }
 
 function createCompilerRustRetainedFilesByModule(
@@ -364,6 +436,13 @@ function formatCompilerRustSourceTreeModule(module: Readonly<CompilerModuleIdent
   return `${module.packageName}/${module.source}#${module.name}`;
 }
 
+function formatCompilerRustSourceTreeEmissionLocator(
+  fragment: Readonly<CompilerRustModuleEvaluationEmissionFragment>,
+): string {
+  const locator = fragment.locator;
+  return `${locator.packageName}:${locator.modulePath.length === 0 ? '<root>' : locator.modulePath.join('::')}`;
+}
+
 function freezeCompilerRustSourceTreeFinalizationValue<Value>(value: Value): Value {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -374,6 +453,10 @@ function freezeCompilerRustSourceTreeFinalizationValue<Value>(value: Value): Val
 
 function getCompilerRustSourceTreeModuleKey(module: Readonly<CompilerModuleIdentity>): string {
   return JSON.stringify([module.packageName, module.source, module.name]);
+}
+
+function isCompilerRustSourceTreeModulePathEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
 }
 
 function isCompilerRustCrateInnerAttribute(line: string): boolean {
@@ -399,6 +482,10 @@ function splitCompilerRustSourceTreeLines(value: string): string[] {
 const compilerRustSourceTreeFinalizationFailureCodes: ReadonlySet<CompilerRustSourceTreeFinalizationFailureCode> =
   new Set([
     'rust-source-tree-finalization-duplicate-retained-module',
+    'rust-source-tree-finalization-emission-target-duplicate',
+    'rust-source-tree-finalization-emission-target-missing',
+    'rust-source-tree-finalization-emission-target-ownership-mismatch',
+    'rust-source-tree-finalization-emission-target-path-mismatch',
     'rust-source-tree-finalization-invalid-fragment-placement',
     'rust-source-tree-finalization-missing-retained-module',
     'rust-source-tree-finalization-module-file-mismatch',

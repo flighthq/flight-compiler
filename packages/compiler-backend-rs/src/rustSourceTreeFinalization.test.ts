@@ -9,6 +9,7 @@ import type {
   CompilerModuleFacadePlan,
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
+  CompilerRustModuleEvaluationEmissionFragment,
   CompilerRustSourceTreeFinalizationFailureCode,
   CompilerRustSourceTreeModuleReemissionRequest,
   CompilerRustSourceTreePlan,
@@ -21,6 +22,10 @@ import {
 } from './rustSourceTreeFinalization.js';
 
 const emptyModuleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
+const emptyModuleResolution: CompilerModuleResolutionPlan = {
+  edges: [],
+  schema: 'flight-compiler-module-resolution/1',
+};
 
 describe('createCompilerRustSourceTreeFinalization', () => {
   it('re-emits exact source owners and creates deterministic skeletons from one canonical plan', () => {
@@ -178,6 +183,161 @@ describe('createCompilerRustSourceTreeFinalization', () => {
         }),
       'rust-source-tree-finalization-module-file-mismatch',
     );
+  });
+
+  it('routes root and nested emission fragments after declarations and crate attributes exactly once', () => {
+    const root = lower('@scope/math', 'index.ts', 'export const root = 1;');
+    const nested = lower('@scope/math', 'feature/item.ts', 'export const item = 2;');
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createFacade([root, nested]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [retained(root, 'legacy-root.rs'), retained(nested, 'legacy-item.rs')],
+    };
+    const fragments = [
+      createRootEmissionFragment(
+        '@scope/math',
+        'use flight_runtime::FlightModuleEvaluationError;\npub fn __flight_instantiate_group_0() {}\npub fn __flight_evaluate_group_0() {}',
+        'lib.rs',
+      ),
+      createModuleEmissionFragment(
+        '@scope/math',
+        ['feature', 'item'],
+        'feature/item.rs',
+        'enum __FlightModuleEvaluationState { Uninstantiated }\npub(crate) fn __flight_instantiate_once() {}\npub(crate) fn __flight_evaluate_once() {}',
+      ),
+    ];
+
+    const first = finalize(finalization, [nested, root], emptyModuleResolution, undefined, () => fragments);
+    const repeat = finalize(
+      { ...finalization, moduleFiles: [...finalization.moduleFiles].reverse() },
+      [root, nested],
+      emptyModuleResolution,
+      undefined,
+      () => [...fragments].reverse(),
+    );
+
+    expect(repeat.result).toEqual(first.result);
+    const rootContents = first.result.moduleFileReplacements?.find((replacement) => replacement.file.path === 'lib.rs')
+      ?.file.contents;
+    const nestedContents = first.result.moduleFileReplacements?.find(
+      (replacement) => replacement.file.path === 'feature/item.rs',
+    )?.file.contents;
+    expect(rootContents).toContain(
+      '#![forbid(unsafe_code)]\npub mod feature;\nuse flight_runtime::FlightModuleEvaluationError;\n',
+    );
+    expect(countText(rootContents ?? '', 'pub mod feature;')).toBe(1);
+    expect(countText(rootContents ?? '', 'use flight_runtime::FlightModuleEvaluationError;')).toBe(1);
+    expect(countText(rootContents ?? '', 'pub fn __flight_instantiate_group_0()')).toBe(1);
+    expect(countText(rootContents ?? '', 'pub fn __flight_evaluate_group_0()')).toBe(1);
+    expect(nestedContents).toContain(
+      '#![forbid(unsafe_code)]\nenum __FlightModuleEvaluationState { Uninstantiated }\n',
+    );
+    expect(countText(nestedContents ?? '', 'enum __FlightModuleEvaluationState')).toBe(1);
+    expect(countText(nestedContents ?? '', 'pub(crate) fn __flight_instantiate_once()')).toBe(1);
+    expect(countText(nestedContents ?? '', 'pub(crate) fn __flight_evaluate_once()')).toBe(1);
+    expect(first.result.packageFiles).toContainEqual({
+      file: { contents: 'pub mod item;\n', path: 'feature/mod.rs' },
+      owner: { kind: 'package', packageName: '@scope/math' },
+      provenance: [identity(nested)],
+    });
+  });
+
+  it('routes a fileless crate-root fragment to the unique skeleton after its declarations', () => {
+    const alpha = lower('@scope/math', 'alpha.ts', 'export const alpha = 1;');
+    const beta = lower('@scope/math', 'beta.ts', 'export const beta = 2;');
+    const outcome = finalize(
+      {
+        facade: createFacade([alpha, beta]),
+        moduleEvaluation: emptyModuleEvaluation,
+        moduleFiles: [retained(beta, 'old-beta.rs'), retained(alpha, 'old-alpha.rs')],
+      },
+      [beta, alpha],
+      emptyModuleResolution,
+      undefined,
+      () => [
+        createRootEmissionFragment(
+          '@scope/math',
+          'pub fn __flight_instantiate_group_0() {}\npub fn __flight_instantiate_group_1() {}',
+        ),
+      ],
+    );
+
+    expect(outcome.result.packageFiles).toContainEqual({
+      file: {
+        contents:
+          'pub mod alpha;\n' +
+          'pub mod beta;\n' +
+          'pub fn __flight_instantiate_group_0() {}\n' +
+          'pub fn __flight_instantiate_group_1() {}\n',
+        path: 'lib.rs',
+      },
+      owner: { kind: 'package', packageName: '@scope/math' },
+      provenance: [identity(alpha), identity(beta)],
+    });
+  });
+
+  it('rejects missing, duplicate, path-mismatched, and wrongly owned emission targets', () => {
+    const root = lower('@scope/math', 'index.ts', 'export const root = 1;');
+    const nested = lower('@scope/math', 'feature/item.ts', 'export const item = 2;');
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createFacade([root, nested]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [retained(root, 'old-root.rs'), retained(nested, 'old-item.rs')],
+    };
+    const cases: readonly Readonly<{
+      code: CompilerRustSourceTreeFinalizationFailureCode;
+      fragments: readonly Readonly<CompilerRustModuleEvaluationEmissionFragment>[];
+    }>[] = [
+      {
+        code: 'rust-source-tree-finalization-emission-target-missing',
+        fragments: [createModuleEmissionFragment('@scope/math', ['absent'], 'absent.rs', 'fn absent() {}')],
+      },
+      {
+        code: 'rust-source-tree-finalization-emission-target-duplicate',
+        fragments: [
+          createRootEmissionFragment('@scope/math', 'fn first() {}', 'lib.rs'),
+          createRootEmissionFragment('@scope/math', 'fn second() {}', 'lib.rs'),
+        ],
+      },
+      {
+        code: 'rust-source-tree-finalization-emission-target-path-mismatch',
+        fragments: [createModuleEmissionFragment('@scope/math', ['feature', 'item'], 'wrong.rs', 'fn wrong() {}')],
+      },
+      {
+        code: 'rust-source-tree-finalization-emission-target-ownership-mismatch',
+        fragments: [createModuleEmissionFragment('@scope/math', ['feature'], 'feature/mod.rs', 'fn skeleton() {}')],
+      },
+    ];
+
+    for (const { code, fragments } of cases) {
+      expectFinalizationFailure(
+        () => finalize(finalization, [root, nested], emptyModuleResolution, undefined, () => fragments),
+        code,
+      );
+    }
+  });
+
+  it('rejects lifecycle emission for a placeholder root without changing placeholder behavior', () => {
+    const root = lower('@scope/math', 'index.ts', 'export const root = 1;');
+    const finalization: CompilerBackendPackageGraphFinalization = {
+      facade: createFacade([root]),
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleFiles: [],
+      placeholderModules: [root],
+      refusals: [{ code: 'rust-placeholder-test', message: 'root refused', module: identity(root) }],
+    };
+
+    expectFinalizationFailure(
+      () =>
+        finalize(finalization, [root], emptyModuleResolution, undefined, () => [
+          createRootEmissionFragment('@scope/math', 'fn forbidden() {}', 'lib.rs'),
+        ]),
+      'rust-source-tree-finalization-emission-target-ownership-mismatch',
+    );
+    const unchanged = finalize(finalization, [root], emptyModuleResolution);
+    expect(unchanged.result.moduleFileReplacements).toEqual([]);
+    expect(unchanged.result.packageFiles).toEqual([]);
+    expect(unchanged.calls).toEqual([]);
   });
 });
 
@@ -395,6 +555,52 @@ function createFacade(modules: readonly Readonly<IrModule>[]): CompilerModuleFac
   };
 }
 
+function createModuleEmissionFragment(
+  packageName: string,
+  modulePath: readonly [string, ...string[]],
+  filePath: string,
+  source: string,
+): CompilerRustModuleEvaluationEmissionFragment {
+  return {
+    locator: {
+      crate: createRustCrateIdentity(packageName),
+      filePath,
+      kind: 'module',
+      modulePath,
+      packageName,
+    },
+    source,
+    symbols: [],
+  };
+}
+
+function createRootEmissionFragment(
+  packageName: string,
+  source: string,
+  filePath?: string,
+): CompilerRustModuleEvaluationEmissionFragment {
+  return {
+    locator: {
+      crate: createRustCrateIdentity(packageName),
+      ...(filePath === undefined ? {} : { filePath }),
+      kind: 'crate-root',
+      modulePath: [],
+      packageName,
+    },
+    source,
+    symbols: [],
+  };
+}
+
+function createRustCrateIdentity(packageName: string) {
+  const cargoName = packageName.replace('@', '').replace('/', '-');
+  return { cargoName, packageName, rustName: cargoName.replaceAll('-', '_') };
+}
+
+function countText(source: string, needle: string): number {
+  return source.split(needle).length - 1;
+}
+
 function expectFinalizationFailure(
   operation: () => unknown,
   code: CompilerRustSourceTreeFinalizationFailureCode,
@@ -415,6 +621,9 @@ function finalize(
   semanticModules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan>,
   observePlan?: (plan: Readonly<CompilerRustSourceTreePlan>) => void,
+  finalizePlan?: (
+    plan: Readonly<CompilerRustSourceTreePlan>,
+  ) => readonly Readonly<CompilerRustModuleEvaluationEmissionFragment>[] | undefined,
 ) {
   const calls: Array<{
     module: string;
@@ -426,7 +635,14 @@ function finalize(
   const result = createCompilerRustSourceTreeFinalization({
     finalization,
     moduleResolution,
-    ...(observePlan === undefined ? {} : { observePlan }),
+    ...(observePlan === undefined && finalizePlan === undefined
+      ? {}
+      : {
+          finalizePlan(plan: Readonly<CompilerRustSourceTreePlan>) {
+            observePlan?.(plan);
+            return finalizePlan?.(plan);
+          },
+        }),
     reemitModule(request) {
       if (receivedPlan === undefined) receivedPlan = request.plan;
       else expect(request.plan).toBe(receivedPlan);

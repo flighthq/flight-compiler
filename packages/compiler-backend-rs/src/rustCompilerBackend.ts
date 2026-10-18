@@ -73,6 +73,8 @@ import type {
   CompilerRustModuleConstantModulePlan,
   CompilerRustModuleConstantPlan,
   CompilerRustModuleConstantRefusal,
+  CompilerRustModuleEvaluationEmissionPlanningFailure,
+  CompilerRustModuleEvaluationExecutionPlanningFailure,
   CompilerRustModuleEvaluationRepresentationPlanningFailure,
   CompilerRustModuleStateBindingPlan,
   CompilerRustModuleStatePlan,
@@ -139,6 +141,14 @@ import {
 // collision-suffixed cannot be allocated differently by the plan than by the emitted source.
 const { safeRustTypeName, safeRustValueName, snakeCase } = createRustBindingNameRules();
 import { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
+import {
+  createCompilerRustModuleEvaluationEmissionPlan,
+  isCompilerRustModuleEvaluationEmissionPlanningFailure,
+} from './rustModuleEvaluationEmissionPlan.js';
+import {
+  createCompilerRustModuleEvaluationExecutionPlan,
+  isCompilerRustModuleEvaluationExecutionPlanningFailure,
+} from './rustModuleEvaluationExecutionPlan.js';
 import { createCompilerRustModuleEvaluationRepresentationFinalizationState } from './rustModuleEvaluationRepresentationFinalization.js';
 import { isCompilerRustModuleEvaluationRepresentationPlanningFailure } from './rustModuleEvaluationRepresentationPlan.js';
 import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
@@ -679,6 +689,8 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
       let moduleEvaluationRepresentationFinalizationState:
         | ReturnType<typeof createCompilerRustModuleEvaluationRepresentationFinalizationState>
         | undefined;
+      let moduleEvaluationExecutionPlan: ReturnType<typeof createCompilerRustModuleEvaluationExecutionPlan> | undefined;
+      let moduleEvaluationEmissionPlan: ReturnType<typeof createCompilerRustModuleEvaluationEmissionPlan> | undefined;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -745,9 +757,15 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
             let pendingModuleEvaluationRepresentationFinalizationState:
               | ReturnType<typeof createCompilerRustModuleEvaluationRepresentationFinalizationState>
               | undefined;
+            let pendingModuleEvaluationExecutionPlan:
+              | ReturnType<typeof createCompilerRustModuleEvaluationExecutionPlan>
+              | undefined;
+            let pendingModuleEvaluationEmissionPlan:
+              | ReturnType<typeof createCompilerRustModuleEvaluationEmissionPlan>
+              | undefined;
             const result = createCompilerRustSourceTreeFinalization({
               finalization,
-              observePlan(plan) {
+              finalizePlan(plan) {
                 pendingModuleEvaluationRepresentationFinalizationState =
                   createCompilerRustModuleEvaluationRepresentationFinalizationState(
                     moduleEvaluationRepresentationFinalizationState,
@@ -760,6 +778,23 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                       statePlan: moduleStatePlan,
                     },
                   );
+                pendingModuleEvaluationExecutionPlan = selectRustModuleEvaluationSessionPlan(
+                  moduleEvaluationExecutionPlan,
+                  createCompilerRustModuleEvaluationExecutionPlan({
+                    moduleEvaluation: finalization.moduleEvaluation,
+                    representation: pendingModuleEvaluationRepresentationFinalizationState.projection,
+                    ...(options.runtimeCrate === undefined ? {} : { runtimeCrate: options.runtimeCrate }),
+                  }),
+                  'execution',
+                );
+                pendingModuleEvaluationEmissionPlan =
+                  pendingModuleEvaluationExecutionPlan.availability.outcome === 'available'
+                    ? selectRustModuleEvaluationSessionPlan(
+                        moduleEvaluationEmissionPlan,
+                        createCompilerRustModuleEvaluationEmissionPlan(pendingModuleEvaluationExecutionPlan),
+                        'emission',
+                      )
+                    : undefined;
                 const keys = new Set(
                   (finalization.placeholderModules ?? []).map((module) => getRustPlaceholderModuleKey(module)),
                 );
@@ -783,6 +818,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
                     ];
                   }),
                 );
+                return pendingModuleEvaluationEmissionPlan?.fragments;
               },
               ...(moduleResolution ? { moduleResolution } : {}),
               reemitModule: ({ module, references, sourceFile }) =>
@@ -803,13 +839,16 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
             });
             if (
               pendingPlaceholderFiles === undefined ||
-              pendingModuleEvaluationRepresentationFinalizationState === undefined
+              pendingModuleEvaluationRepresentationFinalizationState === undefined ||
+              pendingModuleEvaluationExecutionPlan === undefined
             ) {
               throw new Error('Rust source-tree finalization did not expose its canonical plan');
             }
             placeholderFiles = pendingPlaceholderFiles;
             suppressedPlaceholderKeys = pendingSuppressedPlaceholderKeys;
             moduleEvaluationRepresentationFinalizationState = pendingModuleEvaluationRepresentationFinalizationState;
+            moduleEvaluationExecutionPlan = pendingModuleEvaluationExecutionPlan;
+            moduleEvaluationEmissionPlan = pendingModuleEvaluationEmissionPlan;
             return result;
           } catch (error) {
             // These failure kinds belong to the run and a caller may branch on them. Anything else -- a
@@ -817,6 +856,8 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
             if (
               isCompilerRustSourceTreePlanningFailure(error) ||
               isCompilerRustSourceTreeFinalizationFailure(error) ||
+              isCompilerRustModuleEvaluationEmissionPlanningFailure(error) ||
+              isCompilerRustModuleEvaluationExecutionPlanningFailure(error) ||
               isCompilerRustModuleEvaluationRepresentationPlanningFailure(error)
             ) {
               throw createRustBackendFinalizationFailure(error);
@@ -23446,6 +23487,8 @@ function wrapRustPlaceholderCommentLine(line: string): string[] {
 
 function createRustBackendFinalizationFailure(
   failure: Readonly<
+    | CompilerRustModuleEvaluationEmissionPlanningFailure
+    | CompilerRustModuleEvaluationExecutionPlanningFailure
     | CompilerRustModuleEvaluationRepresentationPlanningFailure
     | CompilerRustSourceTreePlanningFailure
     | CompilerRustSourceTreeFinalizationFailure
@@ -23459,6 +23502,18 @@ function createRustBackendFinalizationFailure(
   });
   result.name = 'CompilerBackendFinalizationError';
   return result;
+}
+
+function selectRustModuleEvaluationSessionPlan<Value>(
+  cached: Readonly<Value> | undefined,
+  planned: Readonly<Value>,
+  kind: 'emission' | 'execution',
+): Readonly<Value> {
+  if (cached === undefined) return planned;
+  if (normalizeCompilerStructuralValueCanonical(cached) !== normalizeCompilerStructuralValueCanonical(planned)) {
+    throw new Error(`Rust module-evaluation ${kind} planning changed within one emission session`);
+  }
+  return cached;
 }
 
 function assertRustModuleEvaluationFinalization(

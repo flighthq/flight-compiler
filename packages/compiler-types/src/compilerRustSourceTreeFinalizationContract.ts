@@ -5,6 +5,7 @@ import type {
 } from './compilerBackendContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
+import type { CompilerRustModuleEvaluationEmissionFragment } from './compilerRustModuleEvaluationEmissionContract.js';
 import type {
   CompilerRustSourceTreeFilePlan,
   CompilerRustSourceTreePlan,
@@ -13,13 +14,12 @@ import type {
 
 export interface CompilerRustSourceTreeFinalizationRequest {
   readonly finalization: CompilerBackendPackageGraphFinalization;
-  readonly moduleResolution?: CompilerModuleResolutionPlan | undefined;
   /**
-   * Receives the one canonical plan before any module is re-emitted. A session uses it to cache the
-   * exact planned path of every module that will receive a refusal placeholder, so the placeholder file
-   * and the source tree cannot disagree about where a module lives.
+   * Finalizes target evidence against the one canonical source-tree plan and returns independently
+   * addressable source fragments for exact placement. Declaration source remains owned by each file plan.
    */
-  readonly observePlan?: ((plan: Readonly<CompilerRustSourceTreePlan>) => void) | undefined;
+  readonly finalizePlan?: CompilerRustSourceTreePlanFinalizer | undefined;
+  readonly moduleResolution?: CompilerModuleResolutionPlan | undefined;
   readonly reemitModule: CompilerRustSourceTreeModuleReemitter;
   /** Semantic lookup for the session; only exact identities retained by `finalization.moduleFiles` are selected. */
   readonly semanticModules: readonly IrModule[];
@@ -27,6 +27,10 @@ export interface CompilerRustSourceTreeFinalizationRequest {
 
 export type CompilerRustSourceTreeFinalizationFailureCode =
   | 'rust-source-tree-finalization-duplicate-retained-module'
+  | 'rust-source-tree-finalization-emission-target-duplicate'
+  | 'rust-source-tree-finalization-emission-target-missing'
+  | 'rust-source-tree-finalization-emission-target-ownership-mismatch'
+  | 'rust-source-tree-finalization-emission-target-path-mismatch'
   | 'rust-source-tree-finalization-invalid-fragment-placement'
   | 'rust-source-tree-finalization-missing-retained-module'
   | 'rust-source-tree-finalization-module-file-mismatch'
@@ -49,3 +53,7 @@ export interface CompilerRustSourceTreeModuleReemissionRequest {
 export type CompilerRustSourceTreeModuleReemitter = (
   request: Readonly<CompilerRustSourceTreeModuleReemissionRequest>,
 ) => EmittedFile;
+
+export type CompilerRustSourceTreePlanFinalizer = (
+  plan: Readonly<CompilerRustSourceTreePlan>,
+) => readonly Readonly<CompilerRustModuleEvaluationEmissionFragment>[] | undefined;
