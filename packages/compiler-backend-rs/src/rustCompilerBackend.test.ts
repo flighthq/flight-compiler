@@ -31340,7 +31340,10 @@ describe('emitIrModuleRust guarded indexed writes', () => {
       ).module,
     ).contents;
 
-    runRustSource(output, 'assert_eq!(add(vec![1.0, 2.0], 10.0), 7.0); assert_eq!(bump(vec![4.0]), 4.0);');
+    runRustSource(
+      output,
+      'let mut add_values = vec![1.0, 2.0]; assert_eq!(add(&mut add_values, 10.0), 7.0); let mut bump_values = vec![4.0]; assert_eq!(bump(&mut bump_values), 4.0);',
+    );
   });
 });
 
@@ -31642,7 +31645,7 @@ describe('emitIrModuleRust monotone while-loop array reads', () => {
 
     runRustSource(
       output,
-      'assert_eq!(sumUntil(vec![1.0, 2.0, 3.0], 10.0), 6.0); assert_eq!(sum(vec![1.0, 2.0, 3.0]), 6.0);',
+      'assert_eq!(sum_until(vec![1.0, 2.0, 3.0], 10.0), 6.0); assert_eq!(sum(vec![1.0, 2.0, 3.0]), 6.0);',
     );
   });
 });
@@ -32134,9 +32137,9 @@ describe('emitIrModuleRust optional-chained array element receivers', () => {
       ).module,
     ).contents;
 
-    runRustSource(
+    runRustSourceAgainstRuntime(
       output,
-      'assert_eq!(firstKey(vec![]), "none".to_owned()); assert_eq!(firstKey(vec![Entry { key: "a".to_owned() }]), "a".to_owned()); assert_eq!(text(vec![2.0]), Some("2".to_owned()));',
+      'assert_eq!(first_key(vec![]), "none".to_owned()); assert_eq!(first_key(vec![Entry { key: "a".to_owned() }]), "a".to_owned()); assert_eq!(text(vec![2.0]), Some("2".to_owned()));',
     );
   });
 });
@@ -32392,10 +32395,7 @@ export function wrong(point: Point): RuntimeAlias { return point as RuntimeAlias
       ).module,
     ).contents;
 
-    runRustSource(
-      output,
-      'assert_eq!(narrow(AnonymousUnion::Runtime(Runtime { kind: "x".to_owned() })).kind, "x".to_owned());',
-    );
+    runRustSource(output, 'assert_eq!(narrow(Slot::Runtime(Runtime { kind: "x".to_owned() })).kind, "x".to_owned());');
   });
 });
 
