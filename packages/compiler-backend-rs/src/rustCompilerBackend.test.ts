@@ -41870,7 +41870,9 @@ describe('emitIrModuleRust exact Map key domain', () => {
 
   it('rejects path-qualified, unresolved, ambiguous, cyclic, and over-depth key aliases', () => {
     const createModule = () =>
-      structuredClone(lower('map-key-proof.ts', 'type Key = string; export type Bad = Map<Key, string>;').module);
+      structuredClone(
+        lower('map-key-proof.ts', 'type Key = string | undefined; export type Bad = Map<Key, string>;').module,
+      );
     const getKey = (module: IrModule) => {
       const declaration = module.declarations.find(
         (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Bad',
@@ -41925,7 +41927,7 @@ describe('emitIrModuleRust exact Map key domain', () => {
     expect(getEmissionRule(() => session.emitModule(ambiguous))).toBe(expectedRule);
 
     const aliases = Array.from({ length: 10 }, (_, index) =>
-      index === 0 ? 'type Key0 = string;' : `type Key${String(index)} = Key${String(index - 1)};`,
+      index === 0 ? 'type Key0 = string | undefined;' : `type Key${String(index)} = Key${String(index - 1)};`,
     ).join('\n');
     const overDepth = lower('map-key-depth.ts', `${aliases}\nexport type Bad = Map<Key9, string>;`).module;
     expect(getEmissionRule(() => emitIrModuleRust(overDepth))).toBe(expectedRule);
@@ -42343,30 +42345,113 @@ describe('emitIrModuleRust exact Map application union construction', () => {
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 
-  it('constructs one exact Map arm for boolean keys and keeps optional-key arms refused', () => {
+  it('constructs exact Map arms for boolean and single-sentinel scalar keys', () => {
     const result = lower(
       'map-application-boolean-key.ts',
       `interface Point { value: number }
+       type TextKey = string | undefined;
+       type FlagKey = boolean | null;
        type MapSlot = Map<boolean, Point> | boolean;
+       type OptionalSlot = Map<TextKey, Point> | boolean;
+       type ReadonlySlot = ReadonlyMap<FlagKey, Point> | string;
        export function returned(values: Map<boolean, Point>): MapSlot { return values; }
        export function initialized(values: Map<boolean, Point>): number {
          const slot: MapSlot = values;
          return 0;
-       }`,
+       }
+       export function optional(values: Map<string | undefined, Point>): OptionalSlot { return values; }
+       export function normalized(values: ReadonlyMap<TextKey, Point>): OptionalSlot { return values; }
+       export function readonly(values: Map<boolean | null, Point>): ReadonlySlot { return values; }`,
     );
     expect(result.diagnostics).toEqual([]);
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('Map(std::collections::HashMap<bool, Point>)');
     expect(output).toContain('return MapSlot::Map(values);');
     expect(output).toContain('let slot: MapSlot = MapSlot::Map(values);');
+    expect(output).toContain('Map(std::collections::HashMap<TextKey, Point>)');
+    expect(output.match(/return OptionalSlot::Map\(values\);/gu)).toHaveLength(2);
+    expect(output).toContain('ReadonlyMap(std::collections::HashMap<FlagKey, Point>)');
+    expect(output).toContain('return ReadonlySlot::ReadonlyMap(values);');
+  });
 
-    const optional = lower(
-      'map-application-optional-key.ts',
+  it('keeps null-key and undefined-key Map arms distinct despite their shared Option carrier', () => {
+    const result = lower(
+      'map-application-sentinel-identity.ts',
       `interface Point { value: number }
-       type MapSlot = Map<string | undefined, Point> | boolean;
-       export function wrong(values: Map<string | undefined, Point>): MapSlot { return values; }`,
-    ).module;
-    expect(getEmissionRule(() => emitIrModuleRust(optional))).toBe(
+       type Slot = Map<string | null, Point> | Map<string | undefined, Point> | boolean;
+       export function fromNull(values: Map<string | null, Point>): Slot { return values; }
+       export function fromUndefined(values: Map<string | undefined, Point>): Slot { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/std::collections::HashMap<Option<String>, Point>/gu)).toHaveLength(4);
+    expect(output).toContain('Map(std::collections::HashMap<Option<String>, Point>)');
+    expect(output).toContain('Map2(std::collections::HashMap<Option<String>, Point>)');
+    expect(output).toContain('return Slot::Map(values);');
+    expect(output).toContain('return Slot::Map2(values);');
+  });
+
+  it.skipIf(!rustcAvailable)('runs distinct null-key and undefined-key Map union-arm round trips', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-application-sentinel-round-trip.ts',
+        `interface Point { value: number }
+         type NullEntries = Map<string | null, Point>;
+         type UndefinedEntries = Map<string | undefined, Point>;
+         type Slot = NullEntries | UndefinedEntries | boolean;
+         export function fromNull(values: Map<string | null, Point>): Slot { return values; }
+         export function fromUndefined(values: Map<string | undefined, Point>): Slot { return values; }`,
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSource(
+        output,
+        `let mut null_entries = std::collections::HashMap::new();
+         null_entries.insert(None, Point { value: 1.0 });
+         null_entries.insert(Some("null".to_owned()), Point { value: 2.0 });
+         match from_null(null_entries) {
+           Slot::NullEntries(values) => {
+             assert_eq!(values.get(&None).unwrap().value, 1.0);
+             assert_eq!(values.get(&Some("null".to_owned())).unwrap().value, 2.0);
+           }
+           _ => panic!("null-key Map selected the wrong union arm"),
+         }
+         let mut undefined_entries = std::collections::HashMap::new();
+         undefined_entries.insert(None, Point { value: 3.0 });
+         undefined_entries.insert(Some("undefined".to_owned()), Point { value: 4.0 });
+         match from_undefined(undefined_entries) {
+           Slot::UndefinedEntries(values) => {
+             assert_eq!(values.get(&None).unwrap().value, 3.0);
+             assert_eq!(values.get(&Some("undefined".to_owned())).unwrap().value, 4.0);
+           }
+           _ => panic!("undefined-key Map selected the wrong union arm"),
+         }`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'the wrong absence sentinel',
+      `type Slot = Map<string | null, Point> | boolean;
+       export function wrong(values: Map<string | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'the wrong optional scalar',
+      `type Slot = Map<string | undefined, Point> | boolean;
+       export function wrong(values: Map<boolean | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'an optional value',
+      `type Slot = Map<string, Point | undefined> | boolean;
+       export function wrong(values: Map<string, Point | undefined>): Slot { return values; }`,
+    ],
+  ])('refuses %s as an exact optional-key Map identity match', (_name, body) => {
+    const source = `interface Point { value: number }
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-optional-identity-refusal.ts', source).module))).toBe(
       'rust-contextual-general-union-construction-unrepresented',
     );
   });
@@ -42396,26 +42481,27 @@ describe('emitIrModuleRust exact Map application union construction', () => {
     expect(output).toContain('return NumberSlot::Map(values);');
   });
 
-  it('preserves Map identity through an imported value alias and a type reexport', () => {
+  it('preserves Map identity through imported key and value aliases plus a type reexport', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/map-provider.ts',
       `export interface Point { value: number }
        export type PointAlias = Point;
-       export type Slot = Map<string, PointAlias> | boolean;`,
+       export type OptionalKey = string | undefined;
+       export type Slot = Map<OptionalKey, PointAlias> | boolean;`,
       ts.ScriptTarget.Latest,
       true,
     );
     const facadeSource = ts.createSourceFile(
       '/flight/packages/math/src/map-facade.ts',
-      `export type { Point, PointAlias, Slot } from './map-provider.js';`,
+      `export type { OptionalKey, Point, PointAlias, Slot } from './map-provider.js';`,
       ts.ScriptTarget.Latest,
       true,
     );
     const consumerSource = ts.createSourceFile(
       '/flight/packages/math/src/map-consumer.ts',
-      `import type { Point, PointAlias, Slot } from './map-facade.js';
-       export function returned(values: Map<string, Point>): Slot { return values; }
-       export function narrowed(values: Map<string, PointAlias>): Slot { return values; }`,
+      `import type { OptionalKey, Point, PointAlias, Slot } from './map-facade.js';
+       export function returned(values: Map<string | undefined, Point>): Slot { return values; }
+       export function narrowed(values: ReadonlyMap<OptionalKey, PointAlias>): Slot { return values; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -42473,6 +42559,37 @@ describe('emitIrModuleRust exact Map application union construction', () => {
       'a literal key',
       `type Slot = Map<'a', Point> | boolean;
        export function wrong(values: Map<'a', Point>): Slot { return values; }`,
+    ],
+    [
+      'a numeric optional key',
+      `type Slot = Map<number | undefined, Point> | boolean;
+       export function wrong(values: Map<number | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'a mixed optional key',
+      `type Slot = Map<string | boolean | undefined, Point> | boolean;
+       export function wrong(values: Map<string | boolean | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'a dual-sentinel key',
+      `type Slot = Map<string | null | undefined, Point> | boolean;
+       export function wrong(values: Map<string | null | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'an absence-only key',
+      `type Slot = Map<undefined, Point> | boolean;
+       export function wrong(values: Map<undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'a structural optional key',
+      `type Slot = Map<{ value: string } | undefined, Point> | boolean;
+       export function wrong(values: Map<{ value: string } | undefined, Point>): Slot { return values; }`,
+    ],
+    [
+      'a parameterized optional-key alias',
+      `type Key<Value> = string | undefined;
+       type Slot = Map<Key<Point>, Point> | boolean;
+       export function wrong(values: Map<Key<Point>, Point>): Slot { return values; }`,
     ],
   ])('refuses %s before exact Map union construction', (_name, body) => {
     const source = `interface Point { value: number }
@@ -42610,8 +42727,8 @@ ${body}`;
   it.each([
     [
       'a shared aliased Map',
-      `type Slot = Map<string, Point> | boolean;
-       export function wrong(values: Map<string, Point>): Slot {
+      `type Slot = Map<string | undefined, Point> | boolean;
+       export function wrong(values: Map<string | undefined, Point>): Slot {
          const alias = values;
          alias.set('a', { value: 1 });
          return values;
@@ -42620,17 +42737,17 @@ ${body}`;
     ],
     [
       'a referent-mutated parameter',
-      `type Slot = Map<string, Point> | boolean;
-       export function wrong(values: Map<string, Point>): Slot {
-         values.set('a', { value: 1 });
+      `type Slot = Map<string | null, Point> | boolean;
+       export function wrong(values: Map<string | null, Point>): Slot {
+         values.set(null, { value: 1 });
          return values;
        }`,
       'rust-contextual-general-union-construction-unrepresented',
     ],
     [
       'a repeated-after-move binding',
-      `type Slot = Map<string, Point> | boolean;
-       export function wrong(values: Map<string, Point>): number {
+      `type Slot = Map<boolean | undefined, Point> | boolean;
+       export function wrong(values: Map<boolean | undefined, Point>): number {
          const slot: Slot = values;
          return values.size + (slot === slot ? 0 : 1);
        }`,
@@ -42638,8 +42755,8 @@ ${body}`;
     ],
     [
       'a closure-captured Map',
-      `type Slot = Map<string, Point> | boolean;
-       export function wrong(values: Map<string, Point>): Slot {
+      `type Slot = Map<boolean | null, Point> | boolean;
+       export function wrong(values: Map<boolean | null, Point>): Slot {
          const read = () => values.size;
          read();
          return values;
@@ -42648,8 +42765,8 @@ ${body}`;
     ],
     [
       'a module-state Map',
-      `type Slot = Map<string, Point> | boolean;
-       const registry: Map<string, Point> = new Map();
+      `type Slot = Map<string | undefined, Point> | boolean;
+       const registry: Map<string | undefined, Point> = new Map();
        export function wrong(): Slot { return registry; }`,
       'rust-module-constant-initializer-unsupported',
     ],
@@ -42665,8 +42782,9 @@ ${body}`;
         'map-duplicate-arm-refusal.ts',
         `interface Point { value: number }
          type PointAlias = Point;
-         type Slot = Map<string, PointAlias> | boolean;
-         export function wrong(values: Map<string, Point>): Slot { return values; }`,
+         type OptionalKey = string | undefined;
+         type Slot = Map<OptionalKey, PointAlias> | boolean;
+         export function wrong(values: Map<string | undefined, Point>): Slot { return values; }`,
       ).module,
     );
     const slot = module.declarations.find(

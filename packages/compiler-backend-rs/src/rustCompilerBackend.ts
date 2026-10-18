@@ -9852,13 +9852,17 @@ type RustExactGenericArgumentIdentity =
   | Readonly<{ application: RustExactGenericApplicationIdentity; kind: 'application' }>;
 
 interface RustExactMapApplicationIdentity {
-  readonly key: RustExactMapArgumentIdentity;
+  readonly key: RustExactMapKeyIdentity;
   readonly value: RustExactMapArgumentIdentity;
 }
 
 type RustExactMapArgumentIdentity =
   | Readonly<{ declarationKey: string; kind: 'declaration' }>
   | Readonly<{ kind: 'primitive'; name: 'boolean' | 'number' | 'string' }>;
+
+type RustExactMapKeyIdentity =
+  | Readonly<{ kind: 'optionalPrimitive'; absence: 'null' | 'undefined'; name: 'boolean' | 'string' }>
+  | Readonly<{ kind: 'primitive'; name: 'boolean' | 'string' }>;
 
 // Contextual unions get one construction boundary for returns, stores, calls, and assertions. A
 // single payload plus one sentinel is the Option carrier Rust already uses, and must be claimed
@@ -10773,10 +10777,9 @@ function hasRustExactZeroArgumentCallableUnionArmRust(
 
 // An ambient Map application is identified by its carrier family and by the declarations its concrete
 // key and value reach: Map and ReadonlyMap are two source views of the same keyed map, a closed alias
-// chain is observational, and Rust's own HashMap spelling is not consulted. Only a string or boolean
-// key and a primitive or non-generic record value are in this lane; everything else keeps the
-// established contextual refusal, including an optional key whose sentinel-aware identity is not
-// proven here.
+// chain is observational, and Rust's own HashMap spelling is not consulted. A key may also carry one
+// exact absence sentinel around string or boolean. Null and undefined both use Option in Rust, but
+// remain distinct source identities here so two same-carrier union arms cannot be confused.
 function getRustExactMapApplicationIdentityRust(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -10822,12 +10825,56 @@ function resolveRustExactMapApplicationIdentityRust(
   if ((type.reference.name !== 'Map' && type.reference.name !== 'ReadonlyMap') || type.typeArguments.length !== 2) {
     return undefined;
   }
-  const key = resolveRustExactMapArgumentIdentityRust(type.typeArguments[0]!, context, resolving, depth + 1);
+  const key = resolveRustExactMapKeyIdentityRust(type.typeArguments[0]!, context, resolving, depth + 1);
   const value = resolveRustExactMapArgumentIdentityRust(type.typeArguments[1]!, context, resolving, depth + 1);
-  if (!key || !value || key.kind !== 'primitive' || (key.name !== 'string' && key.name !== 'boolean')) {
+  if (!key || !value) return undefined;
+  return { key, value };
+}
+
+function resolveRustExactMapKeyIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactMapKeyIdentity | undefined {
+  if (depth > 8) return undefined;
+  if (type.kind === 'primitive') {
+    return type.name === 'boolean' || type.name === 'string' ? { kind: 'primitive', name: type.name } : undefined;
+  }
+  if (type.kind === 'union') {
+    const sentinels = type.types.filter(
+      (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+        member.kind === 'null' || member.kind === 'undefined',
+    );
+    const payloads = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (sentinels.length !== 1 || payloads.length !== 1) return undefined;
+    const payload = resolveRustExactMapArgumentIdentityRust(payloads[0]!, context, resolving, depth + 1);
+    return payload?.kind === 'primitive' && (payload.name === 'boolean' || payload.name === 'string')
+      ? { absence: sentinels[0]!.kind, kind: 'optionalPrimitive', name: payload.name }
+      : undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
     return undefined;
   }
-  return { key, value };
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  if (location.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return undefined;
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${location.declaration.binding.id}`;
+  if (resolving.has(declarationKey)) return undefined;
+  return resolveRustExactMapKeyIdentityRust(
+    location.declaration.type,
+    context,
+    new Set(resolving).add(declarationKey),
+    depth + 1,
+  );
 }
 
 function resolveRustExactMapArgumentIdentityRust(
@@ -10885,6 +10932,16 @@ function areRustExactMapArgumentIdentitiesEqualRust(
     : right.kind === 'declaration' && left.declarationKey === right.declarationKey;
 }
 
+function areRustExactMapKeyIdentitiesEqualRust(
+  left: Readonly<RustExactMapKeyIdentity>,
+  right: Readonly<RustExactMapKeyIdentity>,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind === 'primitive'
+    ? right.kind === 'primitive' && left.name === right.name
+    : right.kind === 'optionalPrimitive' && left.absence === right.absence && left.name === right.name;
+}
+
 function areRustExactMapApplicationIdentitiesEqualRust(
   left: Readonly<RustExactMapApplicationIdentity> | undefined,
   right: Readonly<RustExactMapApplicationIdentity> | undefined,
@@ -10892,7 +10949,7 @@ function areRustExactMapApplicationIdentitiesEqualRust(
   return (
     left !== undefined &&
     right !== undefined &&
-    areRustExactMapArgumentIdentitiesEqualRust(left.key, right.key) &&
+    areRustExactMapKeyIdentitiesEqualRust(left.key, right.key) &&
     areRustExactMapArgumentIdentitiesEqualRust(left.value, right.value)
   );
 }
