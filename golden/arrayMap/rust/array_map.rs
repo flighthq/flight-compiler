@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 pub fn doubles(values: Vec<f64>) -> Vec<f64> {
-  return { let array_map_receiver = &values; let mut array_map_callback = |v| v * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
+  return { let array_map_receiver = &values; let mut array_map_callback = |v: f64| v * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
 
 pub fn squares(values: Vec<f64>) -> Vec<f64> {
-  return { let array_map_receiver_2 = &values; let mut array_map_callback_2 = |v| v * v; let array_map_values_2 = array_map_receiver_2; let array_map_result_2 = array_map_values_2.iter().enumerate().map(|(array_map_index_2, array_map_element_2)| (array_map_callback_2)(array_map_element_2.clone())).collect::<Vec<_>>(); array_map_result_2 };
+  return { let array_map_receiver_2 = &values; let mut array_map_callback_2 = |v: f64| v * v; let array_map_values_2 = array_map_receiver_2; let array_map_result_2 = array_map_values_2.iter().enumerate().map(|(array_map_index_2, array_map_element_2)| (array_map_callback_2)(array_map_element_2.clone())).collect::<Vec<_>>(); array_map_result_2 };
 }
 
 pub fn negated(values: Vec<f64>) -> Vec<f64> {
-  return { let array_map_receiver_3 = &values; let mut array_map_callback_3 = |v| -v; let array_map_values_3 = array_map_receiver_3; let array_map_result_3 = array_map_values_3.iter().enumerate().map(|(array_map_index_3, array_map_element_3)| (array_map_callback_3)(array_map_element_3.clone())).collect::<Vec<_>>(); array_map_result_3 };
+  return { let array_map_receiver_3 = &values; let mut array_map_callback_3 = |v: f64| -v; let array_map_values_3 = array_map_receiver_3; let array_map_result_3 = array_map_values_3.iter().enumerate().map(|(array_map_index_3, array_map_element_3)| (array_map_callback_3)(array_map_element_3.clone())).collect::<Vec<_>>(); array_map_result_3 };
 }

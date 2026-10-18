@@ -6127,7 +6127,7 @@ function emitRustCodeUnitQueryCallRust(
   const indexName = getGeneratedTargetNameRust('code_unit_index', context);
   const positionName = getGeneratedTargetNameRust('code_unit_position', context);
   const unitName = getGeneratedTargetNameRust('code_unit', context);
-  return `{ let ${receiverName} = ${receiver}; let ${indexName} = ${index}; let ${positionName} = if ${indexName}.is_nan() { 0.0 } else { ${indexName}.trunc() }; if ${positionName} < 0.0 { f64::NAN } else { ${receiverName}.${targetName}().nth(${positionName} as usize).map(|${unitName}| ${unitName} as f64).unwrap_or(f64::NAN) } }`;
+  return `{ let ${receiverName} = &${receiver}; let ${indexName}: f64 = ${index}; let ${positionName} = if ${indexName}.is_nan() { 0.0 } else { ${indexName}.trunc() }; if ${positionName} < 0.0 { f64::NAN } else { ${receiverName}.${targetName}().nth(${positionName} as usize).map(|${unitName}| ${unitName} as f64).unwrap_or(f64::NAN) } }`;
 }
 
 function hasOnlyOrdinaryArrayReceiverRust(expression: Readonly<Extract<IrExpression, { kind: 'element' }>>): boolean {
@@ -6975,15 +6975,13 @@ function emitArrayTransformCallRust(
     ...(signature.parameters.length >= 1 ? [`${elementName}.clone()`] : []),
     ...(signature.parameters.length === 2 ? [`${indexName} as f64`] : []),
   ];
-  // flatMap's staged closure is bound before the iterator call that constrains it, so an inline
-  // callback body that only clones its parameter (a String identity flatten) leaves the parameter type
-  // unconstrained (E0282). Annotate the inline closure's parameters from the proven callback carriers,
-  // the same way the sort comparator is annotated. Referenced callbacks already carry their own types.
+  // The staged closure is bound before the iterator call that constrains it, so an inline callback
+  // body may need its exact parameter types for Rust method/operator resolution. Annotate every inline
+  // transform closure from the proven callback carriers. Referenced callbacks already carry their own
+  // types and remain borrowed through the separate path.
   const callbackInitializer =
     callback.kind === 'function'
-      ? `let mut ${callbackName} = ${
-          member === 'flatMap' ? emitFunctionExpressionRust(callback, context, true) : emitExpression(callback, context)
-        };`
+      ? `let mut ${callbackName} = ${emitFunctionExpressionRust(callback, context, true)};`
       : `let ${callbackName} = &${emitExpression(callback, context)};`;
   const transformed =
     member === 'map'

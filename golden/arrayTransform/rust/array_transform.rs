@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub fn double_all(values: Vec<f64>) -> Vec<f64> {
-  return { let array_map_receiver = &values; let mut array_map_callback = |v| v * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
+  return { let array_map_receiver = &values; let mut array_map_callback = |v: f64| v * 2.0; let array_map_values = array_map_receiver; let array_map_result = array_map_values.iter().enumerate().map(|(array_map_index, array_map_element)| (array_map_callback)(array_map_element.clone())).collect::<Vec<_>>(); array_map_result };
 }
 
 pub fn filter_positive(values: Vec<f64>) -> Vec<f64> {

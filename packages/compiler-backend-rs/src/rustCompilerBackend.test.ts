@@ -2740,7 +2740,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       ).module,
     ).contents;
 
-    expect(output).toMatch(/\{ let code_unit_receiver(?:_\d+)? = text;/u);
+    expect(output).toMatch(/\{ let code_unit_receiver(?:_\d+)? = &text;/u);
+    expect(output).toMatch(/let code_unit_index(?:_\d+)?: f64 = 0\.0;/u);
     expect(output).toMatch(
       /code_unit_index(?:_\d+)?\.is_nan\(\) \{ 0\.0 \} else \{ code_unit_index(?:_\d+)?\.trunc\(\) \}/u,
     );
@@ -2780,13 +2781,18 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
         `export function first(text: string): number { return text.charCodeAt(0); }
          export function astralHigh(text: string): number { return text.charCodeAt(1); }
          export function astralLow(text: string): number { return text.charCodeAt(2); }
-         export function at(text: string, index: number): number { return text.charCodeAt(index); }`,
+         export function at(text: string, index: number): number { return text.charCodeAt(index); }
+         export function total(text: string): number {
+           let sum = 0;
+           for (let i = 0; i < text.length; i = i + 1) { sum = sum + text.charCodeAt(i); }
+           return sum;
+         }`,
       ).module,
     ).contents;
 
     runRustSource(
       output,
-      'assert_eq!(first("A".to_owned()), 65.0); assert_eq!(astral_high("😀".to_owned()), 55357.0); assert_eq!(astral_low("😀".to_owned()), 56832.0); assert!(at("".to_owned(), 0.0).is_nan()); assert!(at("abc".to_owned(), -1.0).is_nan()); assert!(at("abc".to_owned(), 3.0).is_nan()); assert!(at("abc".to_owned(), f64::INFINITY).is_nan()); assert_eq!(at("abc".to_owned(), 1.9), 98.0); assert_eq!(at("abc".to_owned(), -0.5), 97.0); assert_eq!(at("abc".to_owned(), f64::NAN), 97.0);',
+      'assert_eq!(first("A".to_owned()), 65.0); assert_eq!(astral_high("A😀".to_owned()), 55357.0); assert_eq!(astral_low("A😀".to_owned()), 56832.0); assert!(at("".to_owned(), 0.0).is_nan()); assert!(at("abc".to_owned(), -1.0).is_nan()); assert!(at("abc".to_owned(), 3.0).is_nan()); assert!(at("abc".to_owned(), f64::INFINITY).is_nan()); assert_eq!(at("abc".to_owned(), 1.9), 98.0); assert_eq!(at("abc".to_owned(), -0.5), 97.0); assert_eq!(at("abc".to_owned(), f64::NAN), 97.0); assert_eq!(total("A😀".to_owned()), 112254.0);',
     );
   });
 
@@ -33693,7 +33699,36 @@ describe('emitIrModuleRust array map and forEach', () => {
     expect(output).toContain('(array_map_callback)(array_map_element.clone(), array_map_index as f64)');
     expect(output).toContain('.collect::<Vec<_>>()');
     expect(output).toContain('let _ = (array_for_each_callback)(');
+    expect(output).toContain('|value: f64, index: f64|');
+    expect(output).toContain('|value: String|');
     expect(output).not.toContain('into_iter().map');
+  });
+
+  it.skipIf(!rustcAvailable)('runs typed inline arrayMap and nestedClosure callback shapes', () => {
+    const result = lower(
+      'array-map-nested-closure-native.ts',
+      `export function doubles(values: number[]): number[] {
+         return values.map((value: number): number => value * 2);
+       }
+       export function squares(values: number[]): number[] {
+         return values.map((value: number): number => value * value);
+       }
+       export function negated(values: number[]): number[] {
+         return values.map((value: number): number => -value);
+       }
+       export function filterAndMap(items: number[], threshold: number): string[] {
+         return items.filter((item: number): boolean => item > threshold).map((item: number): string => item.toString());
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('|value: f64| value * 2.0');
+    expect(output).toContain('|item: f64| item.to_string()');
+    runRustSource(
+      output,
+      'assert_eq!(doubles(vec![1.0, 2.0, 3.0]), vec![2.0, 4.0, 6.0]); assert_eq!(squares(vec![-2.0, 3.0]), vec![4.0, 9.0]); assert_eq!(negated(vec![1.0, -2.0]), vec![-1.0, 2.0]); assert_eq!(filter_and_map(vec![1.0, 5.0, 3.0, 8.0], 3.0), vec!["5".to_owned(), "8".to_owned()]);',
+    );
   });
 
   it('stages the receiver, then the callback, then the borrow', () => {
