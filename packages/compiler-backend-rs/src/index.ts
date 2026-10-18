@@ -3,6 +3,10 @@ export { createRustCompilerPublicBindingBackend as createRustCompilerBackend } f
 export { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 export { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
 export {
+  createCompilerRustModuleEvaluationEmissionPlan,
+  isCompilerRustModuleEvaluationEmissionPlanningFailure,
+} from './rustModuleEvaluationEmissionPlan.js';
+export {
   createCompilerRustModuleEvaluationExecutionPlan,
   isCompilerRustModuleEvaluationExecutionPlanningFailure,
 } from './rustModuleEvaluationExecutionPlan.js';
