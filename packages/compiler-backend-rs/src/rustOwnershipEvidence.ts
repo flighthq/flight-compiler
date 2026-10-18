@@ -166,6 +166,7 @@ export function collectIrModuleMovedBindingIdsRust(module: Readonly<IrModule>): 
 // this closes over the module's calls rather than reading one function at a time.
 export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
   const evidence = analyzeIrModuleOwnershipEvidenceRust(module);
+  const declarationById = new Map(evidence.bindings.map((binding) => [binding.binding.id, binding.declaration]));
   const mutated = new Set(
     evidence.bindings.flatMap((binding) =>
       binding.declaration === 'parameter' &&
@@ -191,8 +192,13 @@ export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<
           const parameter = callee.parameters[index];
           if (!parameter || !mutated.has(parameter.binding.id)) return;
           if (argument.kind !== 'identifier' || argument.reference.kind !== 'binding') return;
-          if (mutated.has(argument.reference.binding.id)) return;
-          mutated.add(argument.reference.binding.id);
+          const argumentId = argument.reference.binding.id;
+          // This set decides which bindings are already `&mut` parameters. An owned local handed to
+          // a mutating function still needs its own explicit `&mut` at that call site, so only a
+          // parameter is elected here.
+          if (declarationById.get(argumentId) !== 'parameter') return;
+          if (mutated.has(argumentId)) return;
+          mutated.add(argumentId);
           changed = true;
         });
       }

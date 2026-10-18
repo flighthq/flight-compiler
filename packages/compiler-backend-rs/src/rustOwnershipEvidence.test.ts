@@ -251,6 +251,18 @@ describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
     expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['cell']);
   });
 
+  it('does not elect an owned local handed to a mutating function', () => {
+    const module = lower(`
+      export function addS(values: Set<string>, value: string): void { values.add(value); }
+      export function relay(): number {
+        const local = new Set<string>();
+        addS(local, "a");
+        return local.size;
+      }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['values']);
+  });
+
   it('leaves a parameter only read alone, however many times it is read', () => {
     const module = lower(`
       export function span(cell: { value: number }): number { return cell.value + cell.value; }

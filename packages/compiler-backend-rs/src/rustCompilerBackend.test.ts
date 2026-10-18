@@ -1167,6 +1167,69 @@ export function keep(value: number): number { return value + 1; }`;
     expect(consumerContents).not.toContain('append(values.clone())');
   });
 
+  const sameModuleMutationSource = `interface Cell { value: number }
+       function addTo(values: Set<string>, value: string): void { values.add(value); }
+       function putIn(entries: Map<string, number>, key: string, value: number): void { entries.set(key, value); }
+       function pushTo(values: number[], value: number): void { values.push(value); }
+       function bump(cell: Cell, next: number): void { cell.value = next; }
+       function wrapAdd(values: Set<string>, value: string): void { addTo(values, value); }
+       export function relaySet(): number {
+         const values = new Set<string>();
+         addTo(values, 'a');
+         return values.size;
+       }
+       export function relayMap(): number {
+         const entries = new Map<string, number>();
+         putIn(entries, 'a', 1);
+         return entries.size;
+       }
+       export function relayArray(): number {
+         const values: number[] = [];
+         pushTo(values, 1);
+         return values.length;
+       }
+       export function relayCell(): number {
+         const cell: Cell = { value: 0 };
+         bump(cell, 1);
+         return cell.value;
+       }
+       export function relayParameter(values: Set<string>, value: string): number {
+         addTo(values, value);
+         return values.size;
+       }
+       export function relayWrapper(values: Set<string>, value: string): number {
+         wrapAdd(values, value);
+         return values.size;
+       }`;
+
+  it('lends owned local arguments to same-module mutating functions', () => {
+    const output = emitIrModuleRust(lower('same-module-mutation-lending.ts', sameModuleMutationSource).module).contents;
+
+    expect(output).toContain('let mut values: std::collections::HashSet<String> = std::collections::HashSet::new();');
+    expect(output).toContain('add_to(&mut values, "a".to_owned());');
+    expect(output).toContain(
+      'let mut entries: std::collections::HashMap<String, f64> = std::collections::HashMap::new();',
+    );
+    expect(output).toContain('put_in(&mut entries, "a".to_owned(), 1.0);');
+    expect(output).toContain('let mut values: Vec<f64> = vec![];');
+    expect(output).toContain('push_to(&mut values, 1.0);');
+    expect(output).toContain('bump(&mut cell, 1.0);');
+    expect(output).toContain('add_to(values, value);');
+    expect(output).toContain('fn wrap_add(values: &mut std::collections::HashSet<String>');
+    expect(output).toContain('wrap_add(values, value);');
+  });
+
+  it.skipIf(!rustcAvailable)('runs same-module mutating calls through owned local collections', () => {
+    const output = emitIrModuleRust(lower('same-module-mutation-witness.ts', sameModuleMutationSource).module).contents;
+
+    expect(() =>
+      runRustSource(
+        output,
+        'assert_eq!(relay_set(), 1.0); assert_eq!(relay_map(), 1.0); assert_eq!(relay_array(), 1.0); assert_eq!(relay_cell(), 1.0);',
+      ),
+    ).not.toThrow();
+  });
+
   it('stably refuses an imported module array value through a provider re-export', () => {
     const provider = lower(
       'provider.ts',
