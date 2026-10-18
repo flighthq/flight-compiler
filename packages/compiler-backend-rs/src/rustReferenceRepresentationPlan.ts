@@ -4998,14 +4998,14 @@ function addRustSharedHashCollectionRefusals(
         subject,
         `shared ${collectionName} binding ${evidence.binding.name} must retain its exact ambient ${collectionName} type in the focused Rust carrier plan`,
       );
-    } else if (arguments_[0]?.kind !== 'primitive' || arguments_[0].name !== 'string') {
+    } else if (!isRustSharedHashCollectionDomainSupported(arguments_[0], kind)) {
       addRustReferenceRefusal(
         refusals,
         kind === 'map'
           ? 'rust-reference-shared-map-key-unrepresented'
           : 'rust-reference-shared-set-element-unrepresented',
         subject,
-        `shared ${collectionName} binding ${evidence.binding.name} requires an exact string ${kind === 'map' ? 'key' : 'element'}; SameValueZero and object identity are not represented by the focused Rust carrier`,
+        `shared ${collectionName} binding ${evidence.binding.name} requires ${kind === 'map' ? 'an exact string key' : 'an exact string or boolean element'}; other SameValueZero and object identity domains are not represented by the focused Rust carrier`,
       );
     }
     if (kind === 'map' && arguments_?.[1] && !isRustSharedMapPrimitiveValueType(arguments_[1])) {
@@ -8975,8 +8975,15 @@ function isRustSharedHashCollectionTypeSupported(
   kind: RustSharedHashCollectionKind,
 ): boolean {
   const arguments_ = getRustAmbientHashCollectionTypeArguments(type, kind);
-  if (arguments_?.[0]?.kind !== 'primitive' || arguments_[0].name !== 'string') return false;
+  if (!arguments_ || !isRustSharedHashCollectionDomainSupported(arguments_[0], kind)) return false;
   return kind === 'set' || (arguments_[1] !== undefined && isRustSharedMapPrimitiveValueType(arguments_[1]));
+}
+
+function isRustSharedHashCollectionDomainSupported(
+  type: Readonly<IrType> | undefined,
+  kind: RustSharedHashCollectionKind,
+): boolean {
+  return type?.kind === 'primitive' && (type.name === 'string' || (kind === 'set' && type.name === 'boolean'));
 }
 
 function isRustSharedMapPrimitiveValueType(type: Readonly<IrType>): boolean {

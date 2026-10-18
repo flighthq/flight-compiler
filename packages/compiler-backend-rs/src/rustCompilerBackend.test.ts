@@ -17987,6 +17987,31 @@ export function broken(value: unknown): { value: number } { return value as { va
     expect(() => runRustSource(output, 'assert_eq!(alias_set(), 1.0);')).not.toThrow();
   });
 
+  it.skipIf(!rustcAvailable)('runs a shared boolean Set through one Rc RefCell HashSet carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'alias-boolean-set.ts',
+        `export function aliasBooleanSet(flag: boolean): boolean {
+           const values = new Set<boolean>();
+           const alias = values;
+           alias.add(flag);
+           const present = values.has(flag) && values.size === 1;
+           values.delete(flag);
+           return present && !alias.has(flag) && alias.size === 0;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Rc<RefCell<std::collections::HashSet<bool>>>');
+    expect(output).toContain('alias.borrow_mut().insert(flag);');
+    expect(output).toContain('values.borrow().contains(&flag)');
+    expect(output).toContain('values.borrow_mut().remove(&flag);');
+    expect(output).toContain('alias.borrow().len() as f64');
+    expect(() =>
+      runRustSource(output, 'assert!(alias_boolean_set(true)); assert!(alias_boolean_set(false));'),
+    ).not.toThrow();
+  });
+
   it('scopes shared Set has, delete, and clear borrows to each operation', () => {
     const output = emitIrModuleRust(
       lower(
@@ -40974,11 +40999,12 @@ describe('emitIrModuleRust exact Set element domain', () => {
     ['closed number alias', 'type Value0 = number; type Value1 = Value0; export type Bad = Set<Value1>;'],
     ['numeric literal', 'export type Bad = Set<1>;'],
     ['string literal', "export type Bad = Set<'a'>;"],
+    ['boolean literal', 'export type Bad = Set<true>;'],
     ['mixed union', 'export type Bad = Set<string | number>;'],
+    ['mixed boolean union', 'export type Bad = Set<boolean | string>;'],
     ['literal union', "export type Bad = Set<'a' | 'b'>;"],
     ['unknown', 'export type Bad = Set<unknown>;'],
     ['any', 'export type Bad = Set<any>;'],
-    ['boolean', 'export type Bad = Set<boolean>;'],
     ['bigint', 'export type Bad = Set<bigint>;'],
     ['symbol', 'export type Bad = Set<symbol>;'],
     ['object', 'export type Bad = Set<object>;'],
@@ -40986,7 +41012,9 @@ describe('emitIrModuleRust exact Set element domain', () => {
     ['nested Map', 'export type Bad = Set<Map<number, string>>;'],
     ['type parameter', 'export type Bad<Value> = Set<Value>;'],
     ['string-constrained type parameter', 'export type Bad<Value extends string> = Set<Value>;'],
+    ['boolean-constrained type parameter', 'export type Bad<Value extends boolean> = Set<Value>;'],
     ['parameterized string alias', 'type Value<Unused> = string; export type Bad = Set<Value<number>>;'],
+    ['parameterized boolean alias', 'type Value<Unused> = boolean; export type Bad = Set<Value<number>>;'],
     [
       'generic Set alias instantiated with string',
       'type GenericSet<Value> = Set<Value>; export type Bad = GenericSet<string>;',
@@ -41024,6 +41052,7 @@ describe('emitIrModuleRust exact Set element domain', () => {
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/set-element-provider.ts',
       `export type Text = string;
+       export type Flag = boolean;
        export type Numeric = number;
        export type BadSet = Set<Numeric>;
        export type GenericSet<Value> = Set<Value>;`,
@@ -41032,15 +41061,17 @@ describe('emitIrModuleRust exact Set element domain', () => {
     );
     const facadeSource = ts.createSourceFile(
       '/flight/packages/math/src/set-element-facade.ts',
-      `export type { Text, BadSet, GenericSet } from './set-element-provider.js';`,
+      `export type { Text, Flag, BadSet, GenericSet } from './set-element-provider.js';`,
       ts.ScriptTarget.Latest,
       true,
     );
     const goodSource = ts.createSourceFile(
       '/flight/packages/math/src/set-element-good.ts',
-      `import type { Text } from './set-element-facade.js';
+      `import type { Flag, Text } from './set-element-facade.js';
        export type TextSet = Set<Text>;
-       export function keep(values: ReadonlySet<Text>): ReadonlySet<Text> { return values; }`,
+       export type FlagSet = Set<Flag>;
+       export function keep(values: ReadonlySet<Text>): ReadonlySet<Text> { return values; }
+       export function keepFlags(values: ReadonlySet<Flag>): ReadonlySet<Flag> { return values; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -41107,6 +41138,7 @@ describe('emitIrModuleRust exact Set element domain', () => {
 
     const goodOutput = emitRustModuleInGraph([good, facade, provider], good, [...moduleResolution.edges]);
     expect(goodOutput).toContain('std::collections::HashSet<Text>');
+    expect(goodOutput).toContain('std::collections::HashSet<Flag>');
     expect(
       getEmissionRule(() => emitRustModuleInGraph([badAlias, facade, provider], badAlias, [...moduleResolution.edges])),
     ).toBe(expectedRule);
@@ -41117,23 +41149,58 @@ describe('emitIrModuleRust exact Set element domain', () => {
     ).toBe(expectedRule);
   });
 
-  it('preserves direct, readonly, and closed-alias string element carriers', () => {
+  it('preserves direct, readonly, and closed-alias string and boolean element carriers', () => {
     const result = lower(
       'set-element-controls.ts',
       `type Text0 = string;
        type Text1 = Text0;
+       type Flag0 = boolean;
+       type Flag1 = Flag0;
        export type Mutable = Set<Text1>;
        export type Frozen = ReadonlySet<string>;
-       export function keep(values: Set<string>): ReadonlySet<string> { return values; }`,
+       export type MutableFlags = Set<Flag1>;
+       export type FrozenFlags = ReadonlySet<boolean>;
+       export function keep(values: Set<string>): ReadonlySet<string> { return values; }
+       export function keepFlags(values: Set<boolean>): ReadonlySet<boolean> { return values; }`,
     );
     expect(result.diagnostics).toEqual([]);
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('pub type Mutable = std::collections::HashSet<Text1>;');
     expect(output).toContain('pub type Frozen = std::collections::HashSet<String>;');
+    expect(output).toContain('pub type MutableFlags = std::collections::HashSet<Flag1>;');
+    expect(output).toContain('pub type FrozenFlags = std::collections::HashSet<bool>;');
     expect(output).toContain(
       'pub fn keep(values: std::collections::HashSet<String>) -> std::collections::HashSet<String>',
     );
+    expect(output).toContain(
+      'pub fn keep_flags(values: std::collections::HashSet<bool>) -> std::collections::HashSet<bool>',
+    );
     if (rustcAvailable) compileRustSourceAgainstRuntime(output);
+  });
+
+  it.skipIf(!rustcAvailable)('runs boolean add, has, delete, and size for both values', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'boolean-set-round-trip.ts',
+        `export function booleanSetRoundTrip(flag: boolean): boolean {
+           const values = new Set<boolean>();
+           values.add(flag);
+           values.add(flag);
+           const present = values.has(flag) && values.size === 1;
+           values.delete(flag);
+           return present && !values.has(flag) && values.size === 0;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('std::collections::HashSet<bool>');
+    expect(output).toContain('.insert(flag);');
+    expect(output).toContain('.contains(&flag)');
+    expect(output).toContain('.remove(&flag);');
+    expect(output).toContain('.len() as f64');
+    expect(() =>
+      runRustSource(output, 'assert!(boolean_set_round_trip(true)); assert!(boolean_set_round_trip(false));'),
+    ).not.toThrow();
   });
 
   it('owns a stable target-runtime diagnostic at the containing declaration', () => {
@@ -41150,7 +41217,7 @@ export function bad(values: Set<number>): number { return values.size; }`,
     expect(first.line).toBe(2);
     expect(first.column).toBe(1);
     expect(first.message).toContain(
-      'Rust Set and ReadonlySet require string elements or closed aliases to string; SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
+      'Rust Set and ReadonlySet require string or boolean elements, or closed aliases to string or boolean; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
     );
     expect(second).toMatchObject({
       classification: first.classification,

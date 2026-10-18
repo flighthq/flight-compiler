@@ -3806,8 +3806,9 @@ function isIrTypeSupportedSharedHashCollectionRust(
     return false;
   }
   const element = type.typeArguments[0];
-  if (element?.kind !== 'primitive' || element.name !== 'string') return false;
-  if (kind === 'set') return true;
+  if (element?.kind !== 'primitive') return false;
+  if (kind === 'set') return element.name === 'boolean' || element.name === 'string';
+  if (element.name !== 'string') return false;
   const value = type.typeArguments[1];
   return (
     value?.kind === 'primitive' && (value.name === 'boolean' || value.name === 'number' || value.name === 'string')
@@ -15546,8 +15547,8 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
   return statements.flatMap((statement) => emitStatement(statement, context));
 }
 
-function assertRustHashCollectionStringDomainsRust(type: Readonly<IrType>, context: EmitContext): void {
-  assertRustHashCollectionStringDomainsInTypeRust(type, context, context.module, new Set(), 0);
+function assertRustHashCollectionDomainsRust(type: Readonly<IrType>, context: EmitContext): void {
+  assertRustHashCollectionDomainsInTypeRust(type, context, context.module, new Set(), 0);
 }
 
 // Rust's native HashMap and HashSet carriers require Eq + Hash. Validate the source collection while its
@@ -15558,7 +15559,7 @@ function assertRustHashCollectionStringDomainsRust(type: Readonly<IrType>, conte
 // keeps generic collection domains invalid even at apparently concrete uses, while value-generic
 // Map<string, V> remains representable. The walk is read-only and follows the same unique import/reexport
 // resolution as the rest of the backend.
-function assertRustHashCollectionStringDomainsInTypeRust(
+function assertRustHashCollectionDomainsInTypeRust(
   type: Readonly<IrType>,
   context: EmitContext,
   module: Readonly<IrModule>,
@@ -15567,18 +15568,18 @@ function assertRustHashCollectionStringDomainsInTypeRust(
 ): void {
   switch (type.kind) {
     case 'array':
-      assertRustHashCollectionStringDomainsInTypeRust(type.element, context, module, resolving, aliasDepth);
+      assertRustHashCollectionDomainsInTypeRust(type.element, context, module, resolving, aliasDepth);
       return;
     case 'function':
       type.parameters.forEach((parameter) =>
-        assertRustHashCollectionStringDomainsInTypeRust(parameter.type, context, module, resolving, aliasDepth),
+        assertRustHashCollectionDomainsInTypeRust(parameter.type, context, module, resolving, aliasDepth),
       );
-      assertRustHashCollectionStringDomainsInTypeRust(type.returns, context, module, resolving, aliasDepth);
+      assertRustHashCollectionDomainsInTypeRust(type.returns, context, module, resolving, aliasDepth);
       return;
     case 'intersection':
     case 'union':
       type.types.forEach((member) =>
-        assertRustHashCollectionStringDomainsInTypeRust(member, context, module, resolving, aliasDepth),
+        assertRustHashCollectionDomainsInTypeRust(member, context, module, resolving, aliasDepth),
       );
       return;
     case 'named': {
@@ -15586,7 +15587,7 @@ function assertRustHashCollectionStringDomainsInTypeRust(
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Map' || type.reference.name === 'ReadonlyMap') &&
         type.typeArguments.length === 2 &&
-        !isRustExactStringHashCollectionDomainRust(type.typeArguments[0]!, context, module, new Set(), 0)
+        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'mapKey', context, module, new Set(), 0)
       ) {
         emissionError(
           context,
@@ -15599,17 +15600,17 @@ function assertRustHashCollectionStringDomainsInTypeRust(
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Set' || type.reference.name === 'ReadonlySet') &&
         type.typeArguments.length === 1 &&
-        !isRustExactStringHashCollectionDomainRust(type.typeArguments[0]!, context, module, new Set(), 0)
+        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'setElement', context, module, new Set(), 0)
       ) {
         emissionError(
           context,
-          'Rust Set and ReadonlySet require string elements or closed aliases to string; SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
+          'Rust Set and ReadonlySet require string or boolean elements, or closed aliases to string or boolean; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
           'rust-set-element-domain-unrepresented',
           'target-runtime',
         );
       }
       type.typeArguments.forEach((argument) =>
-        assertRustHashCollectionStringDomainsInTypeRust(argument, context, module, resolving, aliasDepth),
+        assertRustHashCollectionDomainsInTypeRust(argument, context, module, resolving, aliasDepth),
       );
       if (
         type.reference.kind !== 'binding' ||
@@ -15626,7 +15627,7 @@ function assertRustHashCollectionStringDomainsInTypeRust(
       if (location.declaration.kind !== 'typeAlias') return;
       const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
       if (resolving.has(key)) return;
-      assertRustHashCollectionStringDomainsInTypeRust(
+      assertRustHashCollectionDomainsInTypeRust(
         location.declaration.type,
         context,
         location.module,
@@ -15637,12 +15638,12 @@ function assertRustHashCollectionStringDomainsInTypeRust(
     }
     case 'object':
       type.properties.forEach((property) =>
-        assertRustHashCollectionStringDomainsInTypeRust(property.type, context, module, resolving, aliasDepth),
+        assertRustHashCollectionDomainsInTypeRust(property.type, context, module, resolving, aliasDepth),
       );
       return;
     case 'tuple':
       type.elements.forEach((element) =>
-        assertRustHashCollectionStringDomainsInTypeRust(element.type, context, module, resolving, aliasDepth),
+        assertRustHashCollectionDomainsInTypeRust(element.type, context, module, resolving, aliasDepth),
       );
       return;
     case 'conditionalFacet':
@@ -15659,15 +15660,18 @@ function assertRustHashCollectionStringDomainsInTypeRust(
   }
 }
 
-function isRustExactStringHashCollectionDomainRust(
+function isRustExactHashCollectionDomainRust(
   type: Readonly<IrType>,
+  domain: 'mapKey' | 'setElement',
   context: EmitContext,
   module: Readonly<IrModule>,
   resolving: ReadonlySet<string>,
   depth: number,
 ): boolean {
   if (depth > 8) return false;
-  if (type.kind === 'primitive') return type.name === 'string';
+  if (type.kind === 'primitive') {
+    return type.name === 'string' || (domain === 'setElement' && type.name === 'boolean');
+  }
   if (
     type.kind !== 'named' ||
     type.reference.kind !== 'binding' ||
@@ -15684,8 +15688,9 @@ function isRustExactStringHashCollectionDomainRust(
   if (location.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return false;
   const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
   if (resolving.has(key)) return false;
-  return isRustExactStringHashCollectionDomainRust(
+  return isRustExactHashCollectionDomainRust(
     location.declaration.type,
+    domain,
     context,
     location.module,
     new Set(resolving).add(key),
@@ -15740,7 +15745,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'literal':
       return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'f64' : 'String';
     case 'named': {
-      assertRustHashCollectionStringDomainsRust(type, context);
+      assertRustHashCollectionDomainsRust(type, context);
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
       if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
         return emitType(type.typeArguments[0], context);

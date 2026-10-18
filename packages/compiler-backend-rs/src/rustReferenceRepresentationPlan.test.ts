@@ -4660,6 +4660,40 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
     );
   });
 
+  it('plans a shared boolean HashSet carrier and mutable cross-module borrow', () => {
+    const provider = lower(
+      'boolean-set-provider.ts',
+      'export function fill(values: Set<boolean>, flag: boolean): void { values.add(flag); }',
+    );
+    const consumer = lower(
+      'boolean-set-consumer.ts',
+      `import { fill } from './boolean-set-provider.js';
+       export function aliasBooleanSet(flag: boolean): boolean {
+         const values = new Set<boolean>();
+         const alias = values;
+         fill(alias, flag);
+         return values.has(flag);
+       }`,
+    );
+    const moduleResolution = resolve('./boolean-set-provider.js', provider, consumer);
+    const plan = createCompilerRustReferenceRepresentationPlan({ moduleResolution, modules: [provider, consumer] });
+
+    expect(getModulePlan(plan, provider).callables).toEqual([
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'fill' }),
+        parameters: [{ position: 0, representation: 'mutable-borrowed-hash-set' }],
+      }),
+    ]);
+    const consumerPlan = getModulePlan(plan, consumer);
+    expect(consumerPlan.refusals).toEqual([]);
+    expect(
+      consumerPlan.sharedSetBindings.map(({ binding, representation }) => [binding.name, representation]).sort(),
+    ).toEqual([
+      ['alias', 'shared-ref-cell-hash-set'],
+      ['values', 'shared-ref-cell-hash-set'],
+    ]);
+  });
+
   it('refuses observed Set mutator results and overlapping shared Set borrows', () => {
     const observed = lower(
       'set-result.ts',
@@ -4715,6 +4749,16 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
          return values.size;
        }`,
     );
+    const booleanNamedAlias = lower(
+      'boolean-set-named-alias.ts',
+      `type Values = Set<boolean>;
+       export function setNamedAlias(): number {
+         const values: Values = new Set<boolean>();
+         const alias = values;
+         alias.add(true);
+         return values.size;
+       }`,
+    );
     const numberElement = lower(
       'set-number.ts',
       `export function setNumber(): number {
@@ -4734,11 +4778,13 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
        }`,
     );
 
-    expect(
-      getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [namedAlias] }), namedAlias).refusals,
-    ).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-set-use-unrepresented' })]),
-    );
+    for (const module of [namedAlias, booleanNamedAlias]) {
+      expect(
+        getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-set-use-unrepresented' })]),
+      );
+    }
     for (const module of [numberElement, identityElement]) {
       expect(
         getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [module] }), module).refusals,

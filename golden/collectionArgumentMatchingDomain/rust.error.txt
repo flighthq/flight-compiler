@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/collectionArgumentMatchingDomain.ts: Rust Set and ReadonlySet require string elements or closed aliases to string; SameValueZero and reference-identity element domains cannot use the native HashSet carrier
+rust emission failed for @flighthq/golden/packages/golden/src/collectionArgumentMatchingDomain.ts: Rust Set and ReadonlySet require string or boolean elements, or closed aliases to string or boolean; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier
