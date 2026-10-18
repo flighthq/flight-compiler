@@ -64,6 +64,7 @@ export type * from './compilerRefusalClassificationContract.js';
 export type * from './compilerRuntimeContract.js';
 export type * from './compilerRuntimeTaskCapabilityContract.js';
 export type * from './compilerRustModuleConstantContract.js';
+export type * from './compilerRustModuleEvaluationExecutionContract.js';
 export type * from './compilerRustModuleEvaluationRepresentationContract.js';
 export type * from './compilerRustModuleStateContract.js';
 export type * from './compilerRustOwnershipContract.js';
