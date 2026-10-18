@@ -1,9 +1,6 @@
 import ts from 'typescript';
 
-import {
-  createCompilerModuleEvaluationPlan,
-  createCompilerModuleFacadePlan,
-} from '../../compiler-module/src/index.js';
+import { createCompilerModuleEvaluationPlan, createCompilerModuleFacadePlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendPackageGraphFinalization,

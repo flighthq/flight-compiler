@@ -193,6 +193,7 @@ function compileRustModulePair(
 function compileRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-source-tree-'));
   try {
+    const runtime = compileRustRuntimeFixture(directory);
     for (const file of files) {
       const target = path.join(directory, file.path);
       mkdirSync(path.dirname(target), { recursive: true });
@@ -206,6 +207,8 @@ function compileRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
         '2021',
         '--crate-type=lib',
         '--emit=metadata',
+        '--extern',
+        `flight_runtime=${runtime}`,
         '-o',
         path.join(directory, 'subject.rmeta'),
         crateRoot,
@@ -221,15 +224,18 @@ function compileRustSourceTree(files: readonly Readonly<EmittedFile>[]): void {
 function runRustSourceTree(files: readonly Readonly<EmittedFile>[], main: string): void {
   const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-source-tree-behavior-'));
   try {
+    const runtime = compileRustRuntimeFixture(directory);
     for (const file of files) {
       const target = path.join(directory, file.path);
       mkdirSync(path.dirname(target), { recursive: true });
       writeFileSync(target, file.path === 'lib.rs' ? `${file.contents}\nfn main() { ${main} }\n` : file.contents);
     }
     const executable = path.join(directory, 'subject');
-    const build = spawnSync('rustc', ['--edition', '2021', '-o', executable, path.join(directory, 'lib.rs')], {
-      encoding: 'utf8',
-    });
+    const build = spawnSync(
+      'rustc',
+      ['--edition', '2021', '--extern', `flight_runtime=${runtime}`, '-o', executable, path.join(directory, 'lib.rs')],
+      { encoding: 'utf8' },
+    );
     if (build.status !== 0) throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
     const run = spawnSync(executable, [], { encoding: 'utf8' });
     if (run.status !== 0) throw new Error(`${run.stdout ?? ''}${run.stderr ?? ''}`.trim());
@@ -313,6 +319,18 @@ function createRustSourceTreeFinalization(
 
 function getRustTestModuleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
   return { name: module.name, packageName: module.packageName, source: module.source };
+}
+
+function createRustSourceTreeModuleEvaluation(
+  modules: readonly Readonly<IrModule>[],
+  dependencies: readonly CompilerModuleLinkDependency[] = [],
+  entries: readonly Readonly<IrModule>[] = modules,
+) {
+  return createCompilerModuleEvaluationPlan({
+    dependencies,
+    entries: entries.map(getRustTestModuleIdentity),
+    modules,
+  });
 }
 
 describe('createRustCompilerBackend', () => {
@@ -877,24 +895,27 @@ export function keep(value: number): number { return value + 1; }`;
       "import { point } from './geometry/shapes/point.js'; export function measure(): number { return point; }",
     ).module;
     const point = lower('geometry/shapes/point.ts', 'export const point = 1;').module;
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(root),
+        specifier: './geometry/shapes/point.js',
+        target: getRustTestModuleIdentity(point),
+      },
+    ];
     const moduleResolution: CompilerModuleResolutionPlan = {
-      edges: [
-        {
-          importer: getRustTestModuleIdentity(root),
-          specifier: './geometry/shapes/point.js',
-          target: getRustTestModuleIdentity(point),
-        },
-      ],
+      edges: dependencies,
       schema: 'flight-compiler-module-resolution/1',
     };
+    const modules = [point, root];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution,
-      modules: [point, root],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, [root, point], [point, root]),
+      createRustSourceTreeFinalization(session, [root, point], [point, root], moduleEvaluation),
     );
     const files = [
       ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
@@ -916,8 +937,11 @@ export function keep(value: number): number { return value + 1; }`;
     const entryIdentity = getRustTestModuleIdentity(entry);
     const toolsIdentity = getRustTestModuleIdentity(tools);
     const specifier = './geometry/tools.js';
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      { importer: entryIdentity, specifier, target: toolsIdentity },
+    ];
     const moduleResolution: CompilerModuleResolutionPlan = {
-      edges: [{ importer: entryIdentity, specifier, target: toolsIdentity }],
+      edges: dependencies,
       schema: 'flight-compiler-module-resolution/1',
     };
     const facade: CompilerModuleFacadePlan = {
@@ -953,14 +977,16 @@ export function keep(value: number): number { return value + 1; }`;
         typeValueLanes: 'independent',
       },
     };
+    const modules = [tools, entry];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies, [entry]);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution,
-      modules: [tools, entry],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       facade,
       moduleFiles: [entry, tools].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -8535,24 +8561,27 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
       `import { GREETING } from './string-native-provider.js';
        export function greet(): string { return GREETING; }`,
     ).module;
+    const modules = [provider, consumer];
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './string-native-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution: {
-        edges: [
-          {
-            importer: getRustTestModuleIdentity(consumer),
-            specifier: './string-native-provider.js',
-            target: getRustTestModuleIdentity(provider),
-          },
-        ],
+        edges: dependencies,
         schema: 'flight-compiler-module-resolution/1',
       },
-      modules: [provider, consumer],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
       facade: createRustSourceTreeFacade([provider, consumer]),
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleFiles: [provider, consumer].map((module) => ({
         file: session.emitModule(module)[0]!,
         module: getRustTestModuleIdentity(module),
@@ -29897,23 +29926,26 @@ describe('emitIrModuleRust imported enum member reads', () => {
       `import { Color } from './enum-native-api.js';
        export function red(): Color { return Color.Red; }`,
     ).module;
+    const modules = [api, consumer];
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './enum-native-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+    ];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution: {
-        edges: [
-          {
-            importer: getRustTestModuleIdentity(consumer),
-            specifier: './enum-native-api.js',
-            target: getRustTestModuleIdentity(api),
-          },
-        ],
+        edges: dependencies,
         schema: 'flight-compiler-module-resolution/1',
       },
-      modules: [api, consumer],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       facade: createRustSourceTreeFacade([api, consumer]),
       moduleFiles: [api, consumer].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -30161,23 +30193,26 @@ describe('emitIrModuleRust imported numeric enum member assertions', () => {
       `import { Color } from './enum-assert-native-api.js';
        export function green(): number { return Color.Green as number; }`,
     ).module;
+    const modules = [api, consumer];
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './enum-assert-native-api.js',
+        target: getRustTestModuleIdentity(api),
+      },
+    ];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution: {
-        edges: [
-          {
-            importer: getRustTestModuleIdentity(consumer),
-            specifier: './enum-assert-native-api.js',
-            target: getRustTestModuleIdentity(api),
-          },
-        ],
+        edges: dependencies,
         schema: 'flight-compiler-module-resolution/1',
       },
-      modules: [api, consumer],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       facade: createRustSourceTreeFacade([api, consumer]),
       moduleFiles: [api, consumer].map((module) => ({
         file: session.emitModule(module)[0]!,
@@ -30398,23 +30433,26 @@ describe('emitIrModuleRust exact string enum assertions', () => {
        export function first(): string { return Label.A as string; }
        export function second(): string { return Label.B as string; }`,
       ).module;
+      const modules = [api, consumer];
+      const dependencies: readonly CompilerModuleLinkDependency[] = [
+        {
+          importer: getRustTestModuleIdentity(consumer),
+          specifier: './string-enum-native-api.js',
+          target: getRustTestModuleIdentity(api),
+        },
+      ];
+      const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
       const session = createRustCompilerBackend().createEmissionSession!({
-        moduleEvaluation: emptyModuleEvaluation,
+        moduleEvaluation,
         moduleResolution: {
-          edges: [
-            {
-              importer: getRustTestModuleIdentity(consumer),
-              specifier: './string-enum-native-api.js',
-              target: getRustTestModuleIdentity(api),
-            },
-          ],
+          edges: dependencies,
           schema: 'flight-compiler-module-resolution/1',
         },
-        modules: [api, consumer],
+        modules,
         options: {},
       });
       const finalized = session.finalizePackageGraph!({
-        moduleEvaluation: emptyModuleEvaluation,
+        moduleEvaluation,
         facade: createRustSourceTreeFacade([api, consumer]),
         moduleFiles: [api, consumer].map((module) => ({
           file: session.emitModule(module)[0]!,
@@ -32679,30 +32717,33 @@ describe('emitIrModuleRust star-barrel name resolution', () => {
       'consumer.ts',
       "import { limit, LIMIT } from './barrel.js';\nexport { limit, LIMIT };",
     ).module;
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './origin.js',
+        target: getRustTestModuleIdentity(origin),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        importedNames: ['limit', 'LIMIT'],
+        specifier: './barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      },
+    ];
     const moduleResolution: CompilerModuleResolutionPlan = {
-      edges: [
-        {
-          importer: getRustTestModuleIdentity(barrel),
-          specifier: './origin.js',
-          target: getRustTestModuleIdentity(origin),
-        },
-        {
-          importer: getRustTestModuleIdentity(consumer),
-          importedNames: ['limit', 'LIMIT'],
-          specifier: './barrel.js',
-          target: getRustTestModuleIdentity(barrel),
-        },
-      ],
+      edges: dependencies,
       schema: 'flight-compiler-module-resolution/1',
     };
+    const modules = [origin, barrel, consumer];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules, dependencies);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution,
-      modules: [origin, barrel, consumer],
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, [origin, barrel, consumer], [origin, barrel, consumer]),
+      createRustSourceTreeFinalization(session, modules, modules, moduleEvaluation),
     );
     const files = [
       ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
@@ -32839,13 +32880,15 @@ describe('createRustCompilerBackend provisional module paths', () => {
   it.skipIf(!rustcAvailable)('compiles the finalized root-and-nested-index tree', () => {
     const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
     const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
+    const modules = [rootIndex, nestedIndex];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
-      modules: [rootIndex, nestedIndex],
+      moduleEvaluation,
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, [rootIndex, nestedIndex], [rootIndex, nestedIndex]),
+      createRustSourceTreeFinalization(session, modules, modules, moduleEvaluation),
     );
     const files = [
       ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
@@ -32858,13 +32901,15 @@ describe('createRustCompilerBackend provisional module paths', () => {
   it.skipIf(!rustcAvailable)('compiles the finalized same-basename module tree', () => {
     const first = lower('a/util.ts', 'export const aValue = 1;').module;
     const second = lower('b/util.ts', 'export const bValue = 2;').module;
+    const modules = [first, second];
+    const moduleEvaluation = createRustSourceTreeModuleEvaluation(modules);
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
-      modules: [first, second],
+      moduleEvaluation,
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, [first, second], [first, second]),
+      createRustSourceTreeFinalization(session, modules, modules, moduleEvaluation),
     );
     const files = [
       ...(finalized.moduleFileReplacements ?? []).map(({ file }) => file),
