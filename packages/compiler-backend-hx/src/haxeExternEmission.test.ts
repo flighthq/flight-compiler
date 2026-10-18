@@ -8,6 +8,7 @@ import {
   validateCompilerEmittedSourceSyntax,
   validateCompilerTargetCompilationSmoke,
 } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerCppPublicBindingPlan,
@@ -28,6 +29,9 @@ import {
   emitIrModuleHaxeExtern,
   emitIrModuleHaxeExternWithContext,
 } from './haxeExternEmission.js';
+
+// Haxe sessions do not consume evaluation plans; these direct emitter fixtures use the canonical empty graph.
+const moduleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 describe('createHaxeExternEmissionIndex', () => {
   it('indexes package modules without mutating the source graph', () => {
@@ -881,6 +885,7 @@ describe('emitIrModuleHaxeExtern', () => {
     );
     const backend = createHaxeCompilerBackend();
     const session = backend.createEmissionSession!({
+      moduleEvaluation,
       modules: [vector, distance],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -924,6 +929,7 @@ describe('emitIrModuleHaxeExtern', () => {
       "export * from './public.js'; export * from './internal.js'; export { initialize } from './public.js';",
     );
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [internal, public_, contract],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -946,6 +952,7 @@ describe('emitIrModuleHaxeExtern', () => {
     const public_ = lower('@flighthq/geometry', 'public.ts', 'export function value(): number { return 1; }');
     const contract = lower('@flighthq/geometry', 'contract.ts', "export { value } from './public.js';");
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [internal, public_, contract],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -973,6 +980,7 @@ describe('emitIrModuleHaxeExtern', () => {
     );
     const backend = createHaxeCompilerBackend();
     const session = backend.createEmissionSession!({
+      moduleEvaluation,
       modules: [factory, aliases],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -995,6 +1003,7 @@ describe('emitIrModuleHaxeExtern', () => {
     const privateAlias = lower('@flighthq/types', 'Internal.ts', 'export type Internal = { hidden: boolean };');
     const contract = lower('@flighthq/types', 'contract.ts', "export * from './ColorTransformFunction.js';");
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [contract, privateAlias, publicAlias],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -1048,6 +1057,7 @@ describe('emitIrModuleHaxeExtern', () => {
       "export interface Viewport extends Pick<WebGL2RenderingContext, 'viewport'> {}",
     );
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [context, viewport],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -1137,6 +1147,7 @@ describe('emitIrModuleHaxeExtern', () => {
     );
     const contract = lower('@flighthq/swf', 'contract.ts', "export * from './swfFilter.js';");
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [contract, filter, reader],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -1328,6 +1339,7 @@ describe('emitIrModuleHaxeExtern', () => {
     );
     const contract = lower('@flighthq/types', 'contract.ts', "export { read } from './implementation.js';");
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [contract, implementation],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -1398,8 +1410,16 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       ],
     });
     const options = { dualBindingPlan: plan, emissionMode: 'extern' as const, rootPackage: 'flight' };
-    const first = createHaxeCompilerBackend().createEmissionSession!({ modules: [module], options });
-    const second = createHaxeCompilerBackend().createEmissionSession!({ modules: [module], options });
+    const first = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options,
+    });
+    const second = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      modules: [module],
+      options,
+    });
     const files = first.emitModule(module);
     const repeated = second.emitModule(module);
     const backing = findFile(files, 'flight/_js/Vector.hx');
@@ -1479,6 +1499,7 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       ],
     });
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [implementation, contract],
       options: { dualBindingPlan: plan, emissionMode: 'extern', rootPackage: 'flight' },
     });
@@ -1507,10 +1528,12 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       slots,
     });
     const jsFiles = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [module],
       options: { dualBindingPlan: jsOnly, emissionMode: 'extern', rootPackage: 'flight' },
     }).emitModule(module);
     const cppFiles = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [module],
       options: { dualBindingPlan: cppOnly, emissionMode: 'extern', rootPackage: 'flight' },
     }).emitModule(module);
@@ -1588,6 +1611,7 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       schema: 'flight-compiler-module-resolution/1',
     };
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: resolution,
       modules: [contract, consumer, model],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
@@ -1623,6 +1647,7 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       "export * from './barrel.js'; export * from './consumer.js';",
     );
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [contract, consumer, barrel, aliases],
       options: { emissionMode: 'extern', rootPackage: 'flight' },
     });

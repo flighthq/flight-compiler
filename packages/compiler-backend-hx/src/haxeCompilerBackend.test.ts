@@ -1,9 +1,13 @@
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
+
+// Haxe sessions do not consume evaluation plans; these direct emitter fixtures use the canonical empty graph.
+const moduleEvaluation = createCompilerModuleEvaluationPlan({ dependencies: [], entries: [], modules: [] });
 
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
@@ -164,6 +168,7 @@ describe('createHaxeCompilerBackend', () => {
       'type Scratch = { value: string }; export function second(value: Scratch): string { return value.value; }',
     ).module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       modules: [first, second],
       options: {},
     });
@@ -349,6 +354,7 @@ describe('createHaxeCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1' as const,
     };
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [consumer, contract, state],
       options: {},
@@ -410,6 +416,7 @@ describe('createHaxeCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1' as const,
     };
     const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [consumer, contract, holder, state],
       options: {},
@@ -470,6 +477,7 @@ describe('createHaxeCompilerBackend', () => {
     const contract = contractResult!.module;
     const consumer = consumerResult!.module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [consumer, contract, state],
       options: {},
@@ -530,6 +538,7 @@ describe('createHaxeCompilerBackend', () => {
     ];
     const [stateResult, contractResult, consumerResult] = lowerTypeScriptSources(inputs, moduleResolution);
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [consumerResult!.module, contractResult!.module, stateResult!.module],
       options: {},
@@ -585,6 +594,7 @@ describe('createHaxeCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1' as const,
     };
     const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [consumer, contract, base, detail],
       options: {},
@@ -597,6 +607,7 @@ describe('createHaxeCompilerBackend', () => {
     const target = lower('target.ts', 'export function value(): number { return 1; }').module;
     const barrel = lower('barrel.ts', "export * from './target';").module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -621,6 +632,7 @@ describe('createHaxeCompilerBackend', () => {
     ).module;
     const barrel = lower('barrel.ts', "export * from './target';").module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -643,6 +655,7 @@ describe('createHaxeCompilerBackend', () => {
     const valid = lower('valid.ts', "export * from './target';").module;
     const unavailable = lower('unavailable.ts', "export * from './missing';").module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -668,6 +681,7 @@ describe('createHaxeCompilerBackend', () => {
     const second = lower('second.ts', 'export const collision: number = 2;').module;
     const ambiguous = lower('ambiguous.ts', "export * from './first'; export * from './second';").module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -728,6 +742,7 @@ describe('createHaxeCompilerBackend', () => {
       "import type { First, Second, Hidden } from '@flighthq/types/contract'; export type { First, Second }; export function keep(value: Hidden): Hidden { return value; }",
     ).module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -796,6 +811,7 @@ describe('createHaxeCompilerBackend', () => {
       schema: 'flight-compiler-module-resolution/1' as const,
     };
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution,
       modules: [contract, consumer, bridge, callbacks],
       options: {},
@@ -821,6 +837,7 @@ describe('createHaxeCompilerBackend', () => {
       "import type { EntityRuntime } from '@flighthq/types/contract'; export interface WebExtension { runtime: EntityRuntime }",
     ).module;
     const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
       modules: [consumer, entity],
       options: {},
@@ -835,6 +852,7 @@ describe('createHaxeCompilerBackend', () => {
     const barrel = lower('barrel.ts', "export * from './helper';").module;
     const facade = lower('facade.ts', "export { helper } from './barrel';").module;
     const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
       moduleResolution: {
         edges: [
           {
@@ -8762,7 +8780,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
     expect(output).toContain('gl.viewport(Std.int(x), 0, Std.int(x), 1);');
@@ -8830,7 +8853,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[3]!)[0]!.contents;
 
     expect(output).toContain('state.gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
@@ -8871,7 +8899,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT');
@@ -8924,7 +8957,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
     expect(output).toContain('(cast "first" : Flavor)');
@@ -8964,7 +9002,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('typedef ValueLike = WithoutRuntime<Value>;');
@@ -9017,7 +9060,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
     expect(output).toContain('function(value:Item)');
@@ -9057,7 +9105,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('values: (cast [] : Array<Null<T>>)');
@@ -9103,7 +9156,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('final data:Null<SignalData<T>>');
@@ -9157,7 +9215,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
     expect(output).toContain('(target.color = (cast source.color : TargetColor))');
@@ -9224,7 +9287,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[3]!)[0]!.contents;
 
     expect(output).toContain('(target.color = (cast source.color : TargetColor))');
@@ -9363,7 +9431,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('flighthq.types.Types.Color');
@@ -9402,7 +9475,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
     expect(output).toContain('create((cast input : Options))');
@@ -12060,7 +12138,12 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       },
     ];
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
-    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleEvaluation,
+      moduleResolution,
+      modules,
+      options: {},
+    });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
     expect(output).toContain('measure((cast data : Spec))');
