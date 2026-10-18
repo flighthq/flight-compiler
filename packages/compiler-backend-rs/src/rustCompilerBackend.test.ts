@@ -38829,9 +38829,10 @@ describe('emitIrModuleRust exact alias-transparent record-array union constructi
        export function wrong(values: readonly [Point]): Slot { return values; }`,
     ],
     [
-      'a Map arm',
+      'an unmatched Map arm',
       `interface Point { value: number }
-       type Slot = readonly Point[] | Map<string, Point>;
+       interface Other { label: string }
+       type Slot = readonly Point[] | Map<string, Other>;
        export function wrong(values: Map<string, Point>): Slot { return values; }`,
     ],
     [
@@ -39336,9 +39337,10 @@ describe('emitIrModuleRust exact generic application union construction', () => 
        export function wrong(box: Box<Point> | number): Slot { return box; }`,
     ],
     [
-      'a Map arm',
+      'an unmatched Map arm',
       `interface Box<Value> { value: Value }
-       type Slot = Box<Point> | Map<string, Point>;
+       interface Other { label: string }
+       type Slot = Box<Point> | Map<string, Other>;
        export function wrong(box: Map<string, Point>): Slot { return box; }`,
     ],
   ])('keeps %s outside the exact generic-application lane', (_name, body) => {
@@ -40023,6 +40025,381 @@ export function wrong(handler: () => Result9): Slot { return handler; }`;
       reference: { binding: source.binding, kind: 'binding', path: [] },
       typeArguments: [],
     };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+});
+
+describe('emitIrModuleRust exact Map application union construction', () => {
+  it('constructs one exact Map arm in every contextual position through closed alias chains', () => {
+    const result = lower(
+      'map-application-contexts.ts',
+      `interface Point { value: number }
+       type PointAlias = Point;
+       type MapSlot = Map<string, PointAlias> | boolean;
+       interface Holder { slot: MapSlot }
+       class Sink { take(_slot: MapSlot): number { return 1; } }
+       function consume(_slot: MapSlot): number { return 1; }
+
+       export function returned(values: Map<string, Point>): MapSlot { return values; }
+       export function passed(values: Map<string, Point>): number { return consume(values); }
+       export function throughMethod(sink: Sink, values: Map<string, Point>): number { return sink.take(values); }
+       export function initialized(values: Map<string, Point>): number { const slot: MapSlot = values; return 0; }
+       export function assigned(initial: Map<string, Point>, values: Map<string, Point>): number {
+         let slot: MapSlot = initial;
+         slot = values;
+         return 0;
+       }
+       export function stored(holder: Holder, values: Map<string, Point>): number { holder.slot = values; return 1; }
+       export function asserted(values: Map<string, Point>): MapSlot { return values as MapSlot; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return MapSlot::Map(values);');
+    expect(output).toContain('consume(MapSlot::Map(values))');
+    expect(output).toContain('sink.take(MapSlot::Map(values))');
+    expect(output).toContain('let slot: MapSlot = MapSlot::Map(values);');
+    expect(output).toContain('let mut slot: MapSlot = MapSlot::Map(initial);');
+    expect(output).toContain('slot = MapSlot::Map(values)');
+    expect(output).toContain('holder.slot = MapSlot::Map(values)');
+    expect(output.match(/MapSlot::Map\(/gu)).toHaveLength(8);
+    expect(output).not.toContain('.clone()');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('matches Map and ReadonlyMap carriers and alias-normalized primitive or record values', () => {
+    const result = lower(
+      'map-application-values.ts',
+      `interface Point { value: number }
+       type PointAlias = Point;
+       type PointBack = PointAlias;
+       type Registry = Map<string, Point>;
+       type MapSlot = Map<string, PointAlias> | boolean;
+       type ReadonlySlot = ReadonlyMap<string, PointAlias> | boolean;
+       type NumberSlot = Map<string, number> | boolean;
+
+       export function fromRegistry(values: Registry): MapSlot { return values; }
+       export function fromPointBack(values: Map<string, PointBack>): MapSlot { return values; }
+       export function toReadonly(values: Map<string, Point>): ReadonlySlot { return values; }
+       export function fromReadonly(values: ReadonlyMap<string, Point>): MapSlot { return values; }
+       export function primitive(values: Map<string, number>): NumberSlot { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/MapSlot::Map\(/gu)).toHaveLength(3);
+    expect(output).toContain('return ReadonlySlot::ReadonlyMap(values);');
+    expect(output).toContain('return NumberSlot::Map(values);');
+  });
+
+  it('preserves Map identity through an imported value alias and a type reexport', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-provider.ts',
+      `export interface Point { value: number }
+       export type PointAlias = Point;
+       export type Slot = Map<string, PointAlias> | boolean;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-facade.ts',
+      `export type { Point, PointAlias, Slot } from './map-provider.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-consumer.ts',
+      `import type { Point, PointAlias, Slot } from './map-facade.js';
+       export function returned(values: Map<string, Point>): Slot { return values; }
+       export function narrowed(values: Map<string, PointAlias>): Slot { return values; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: 'Map-facade', packageName: '@flighthq/math', source: 'packages/math/src/map-facade.ts' },
+          specifier: './map-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/map-provider.ts' },
+        },
+        {
+          importer: {
+            name: 'Map-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/map-consumer.ts',
+          },
+          specifier: './map-facade.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/map-facade.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, facadeResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(facadeResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const facade = facadeResult!.module;
+    const consumer = consumerResult!.module;
+    const output = emitRustModuleInGraph([consumer, facade, provider], consumer, [...moduleResolution.edges]);
+
+    expect(output.match(/Slot::Map\(values\)/gu)).toHaveLength(2);
+    expect(output).not.toContain('AnonymousUnion');
+  });
+
+  it.each([
+    [
+      'a number key',
+      `type Slot = Map<number, Point> | boolean; export function wrong(values: Map<number, Point>): Slot { return values; }`,
+    ],
+    [
+      'a number-key alias',
+      `type Key = number;
+       type Slot = Map<Key, Point> | boolean;
+       export function wrong(values: Map<Key, Point>): Slot { return values; }`,
+    ],
+    [
+      'a literal key',
+      `type Slot = Map<'a', Point> | boolean;
+       export function wrong(values: Map<'a', Point>): Slot { return values; }`,
+    ],
+    [
+      'a union value',
+      `interface Circle { radius: number }
+       type Slot = Map<string, Point | Circle> | boolean;
+       export function wrong(values: Map<string, Point | Circle>): Slot { return values; }`,
+    ],
+    [
+      'a nested map value',
+      `type Slot = Map<string, Map<string, number>> | boolean;
+       export function wrong(values: Map<string, Map<string, number>>): Slot { return values; }`,
+    ],
+    [
+      'an array value',
+      `type Slot = Map<string, Point[]> | boolean;
+       export function wrong(values: Map<string, Point[]>): Slot { return values; }`,
+    ],
+    [
+      'a tuple value',
+      `type Slot = Map<string, [Point]> | boolean;
+       export function wrong(values: Map<string, [Point]>): Slot { return values; }`,
+    ],
+    [
+      'a function value',
+      `type Slot = Map<string, () => Point> | boolean;
+       export function wrong(values: Map<string, () => Point>): Slot { return values; }`,
+    ],
+    [
+      'a type-parameter value',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong<T extends Point>(values: Map<string, T>): Slot { return values; }`,
+    ],
+    [
+      'an unknown value',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, unknown>): Slot { return values; }`,
+    ],
+    [
+      'a different value declaration',
+      `interface Other { value: number }
+       type Slot = Map<string, Other> | boolean;
+       export function wrong(values: Map<string, Point>): Slot { return values; }`,
+    ],
+    [
+      'a derived value declaration',
+      `interface Derived extends Point { label: string }
+       type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Derived>): Slot { return values; }`,
+    ],
+    [
+      'a structural lookalike value',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, { value: number }>): Slot { return values; }`,
+    ],
+    [
+      'differing Map and ReadonlyMap values',
+      `interface Other { value: number }
+       type Slot = ReadonlyMap<string, Other> | boolean;
+       export function wrong(values: Map<string, Point>): Slot { return values; }`,
+    ],
+    [
+      'a parameterized alias value',
+      `type Wrapped<T> = Point;
+       type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Wrapped<Point>>): Slot { return values; }`,
+    ],
+    [
+      'a Set arm',
+      `type Slot = Map<string, Point> | Set<string>;
+       export function wrong(values: Set<string>): Slot { return values; }`,
+    ],
+    [
+      'an optional owner',
+      `type Slot = Map<string, Point> | boolean | undefined;
+       export function wrong(values: Map<string, Point>): Slot { return values; }`,
+    ],
+    [
+      'a generic owner',
+      `type Slot<T> = Map<string, T> | boolean;
+       export function wrong(values: Map<string, Point>): Slot<Point> { return values; }`,
+    ],
+    [
+      'an anonymous owner',
+      `export function wrong(values: Map<string, Point>): Map<string, Point> | boolean { return values; }`,
+    ],
+  ])('keeps %s outside the exact Map lane', (_name, body) => {
+    const source = `interface Point { value: number }
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-type-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a call',
+      `function make(values: Map<string, Point>): Map<string, Point> { return values; }
+       export function wrong(values: Map<string, Point>): Slot { return make(values); }`,
+    ],
+    [
+      'a property read',
+      `interface Holder { values: Map<string, Point> }
+       export function wrong(holder: Holder): Slot { return holder.values; }`,
+    ],
+    [
+      'a conditional',
+      `export function wrong(left: Map<string, Point>, right: Map<string, Point>, flag: boolean): Slot {
+         return flag ? left : right;
+       }`,
+    ],
+    [
+      'an assignment expression',
+      `export function wrong(values: Map<string, Point>, replacement: Map<string, Point>): Slot {
+         return (values = replacement);
+       }`,
+    ],
+  ])('rejects %s rather than evaluating it to select a Map arm', (_name, body) => {
+    const source = `interface Point { value: number }
+type Slot = Map<string, Point> | boolean;
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-operand-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a shared aliased Map',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Point>): Slot {
+         const alias = values;
+         alias.set('a', { value: 1 });
+         return values;
+       }`,
+      'rust-reference-shared-map-use-unrepresented',
+    ],
+    [
+      'a referent-mutated parameter',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Point>): Slot {
+         values.set('a', { value: 1 });
+         return values;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a repeated-after-move binding',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Point>): number {
+         const slot: Slot = values;
+         return values.size + (slot === slot ? 0 : 1);
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a closure-captured Map',
+      `type Slot = Map<string, Point> | boolean;
+       export function wrong(values: Map<string, Point>): Slot {
+         const read = () => values.size;
+         read();
+         return values;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a module-state Map',
+      `type Slot = Map<string, Point> | boolean;
+       const registry: Map<string, Point> = new Map();
+       export function wrong(): Slot { return registry; }`,
+      'rust-module-constant-initializer-unsupported',
+    ],
+  ])('rejects %s as a Map-arm source', (_name, body, rule) => {
+    const source = `interface Point { value: number }
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-source-refusal.ts', source).module))).toBe(rule);
+  });
+
+  it('requires one and only one exact Map-arm identity match', () => {
+    const module = structuredClone(
+      lower(
+        'map-duplicate-arm-refusal.ts',
+        `interface Point { value: number }
+         type PointAlias = Point;
+         type Slot = Map<string, PointAlias> | boolean;
+         export function wrong(values: Map<string, Point>): Slot { return values; }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const mapArm = slot.type.types.find((member) => member.kind === 'named' && member.reference.kind === 'ambient');
+    if (!mapArm) throw new Error('expected Map arm');
+    (slot.type.types as unknown as IrType[]).splice(1, 0, structuredClone(mapArm));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it('rejects cyclic and over-depth Map value alias chains deterministically', () => {
+    const source = `interface Point { value: number }
+type PointAlias = Point;
+type Source0 = Point;
+type Source1 = Source0;
+type Source2 = Source1;
+type Source3 = Source2;
+type Source4 = Source3;
+type Source5 = Source4;
+type Source6 = Source5;
+type Source7 = Source6;
+type Source8 = Source7;
+type Source9 = Source8;
+type Slot = Map<string, Point> | boolean;
+export function wrong(values: Map<string, Source9>): Slot { return values; }`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-depth-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+
+    const cyclic = structuredClone(
+      lower(
+        'map-cycle-refusal.ts',
+        `interface Point { value: number }
+         type Source0 = Source1;
+         type Source1 = Source0;
+         type Slot = Map<string, Point> | boolean;
+         export function wrong(values: Map<string, Source0>): Slot { return values; }`,
+      ).module,
+    );
     expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
       'rust-contextual-general-union-construction-unrepresented',
     );

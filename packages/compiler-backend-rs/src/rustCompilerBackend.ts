@@ -5869,6 +5869,7 @@ function emitCallArgumentsRust(
       if (
         methodUnionPlan.kind === 'nominalEnum' &&
         (hasRustExactGenericApplicationUnionArmRust(argument, methodUnionPlan, context) ||
+          hasRustExactMapApplicationUnionArmRust(argument, methodUnionPlan, context) ||
           hasRustExactZeroArgumentCallableUnionArmRust(
             argument.kind === 'spread' ? argument.expression : argument,
             methodUnionPlan,
@@ -9654,6 +9655,15 @@ type RustExactGenericArgumentIdentity =
   | Readonly<{ declarationKey: string; kind: 'declaration' }>
   | Readonly<{ application: RustExactGenericApplicationIdentity; kind: 'application' }>;
 
+interface RustExactMapApplicationIdentity {
+  readonly key: RustExactMapArgumentIdentity;
+  readonly value: RustExactMapArgumentIdentity;
+}
+
+type RustExactMapArgumentIdentity =
+  | Readonly<{ declarationKey: string; kind: 'declaration' }>
+  | Readonly<{ kind: 'primitive'; name: 'boolean' | 'number' | 'string' }>;
+
 // Contextual unions get one construction boundary for returns, stores, calls, and assertions. A
 // single payload plus one sentinel is the Option carrier Rust already uses, and must be claimed
 // before nominal-enum construction. Both paths require exact representation evidence; evaluating an
@@ -9732,6 +9742,7 @@ function emitExactContextualGeneralUnionConstructionRust(
         getRustExactAliasTransparentRecordArrayIdentityRust(variant.sourceAlternative, context) !== undefined,
     ) &&
     !hasRustExactGenericApplicationUnionArmRust(expression, plan, context) &&
+    !hasRustExactMapApplicationUnionArmRust(expression, plan, context) &&
     !callableCandidate
   ) {
     return undefined;
@@ -9785,6 +9796,9 @@ function emitExactContextualGeneralUnionConstructionRust(
 
   const genericApplication = emitExactGenericApplicationUnionConstructionRust(expression, plan, context);
   if (genericApplication) return genericApplication;
+
+  const mapApplication = emitExactMapApplicationUnionConstructionRust(expression, plan, context);
+  if (mapApplication) return mapApplication;
 
   const callable = emitExactAliasTransparentZeroArgumentCallableUnionConstructionRust(expression, plan, context);
   if (callable) return callable;
@@ -9931,6 +9945,48 @@ function emitExactGenericApplicationUnionConstructionRust(
   const matches = plan.valueVariants.filter((variant) =>
     areRustExactGenericApplicationIdentitiesEqualRust(
       getRustExactGenericApplicationIdentityRust(variant.sourceAlternative, context),
+      sourceIdentity,
+    ),
+  );
+  if (matches.length !== 1) refuseRustContextualGeneralUnionConstructionRust(context);
+  const operand = emitOwnedOperandRust(expression, context);
+  return `${emitType(plan.owner, context)}::${matches[0]!.name}(${operand})`;
+}
+
+// An owned Map binding selects a nominal union arm only when its carrier family and its key and value
+// declarations equal the arm's. The source is moved once; a clone would split the source language's
+// Map identity, so a binding the planner shares or that was already consumed refuses instead.
+function emitExactMapApplicationUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  if (expression.presence === 'narrowedPresent') return undefined;
+  const sourceType = context.bindingTypes.get(bindingId);
+  if (!sourceType || sourceType.kind === 'union') return undefined;
+  const sourceIdentity = getRustExactMapApplicationIdentityRust(sourceType, context);
+  if (!sourceIdentity) return undefined;
+  const ownerIdentity = getIrNamedTypeIdentityRust(plan.owner, context);
+  if (
+    context.activeTypeParameters.length > 0 ||
+    plan.sentinels.kind !== 'none' ||
+    plan.owner.typeArguments.length > 0 ||
+    ownerIdentity?.location.declaration.kind !== 'typeAlias' ||
+    ownerIdentity.location.declaration.typeParameters.length > 0 ||
+    ownerIdentity.location.declaration.type.kind !== 'union' ||
+    context.moduleStateBindings.has(bindingId) ||
+    context.referentMutatedParameterIds.has(bindingId) ||
+    context.movedBindingIds.has(bindingId) ||
+    isIrExpressionReferencePlannedRust(expression, context) ||
+    isIrExpressionClosureCapturedRust(expression, context)
+  ) {
+    refuseRustContextualGeneralUnionConstructionRust(context);
+  }
+  const matches = plan.valueVariants.filter((variant) =>
+    areRustExactMapApplicationIdentitiesEqualRust(
+      getRustExactMapApplicationIdentityRust(variant.sourceAlternative, context),
       sourceIdentity,
     ),
   );
@@ -10515,6 +10571,147 @@ function hasRustExactZeroArgumentCallableUnionArmRust(
         (variant) =>
           getRustExactAliasTransparentZeroArgumentCallableIdentityRust(variant.sourceAlternative, context)
             ?.returnDeclarationKey === sourceIdentity.returnDeclarationKey,
+      )
+    : false;
+}
+
+// An ambient Map application is identified by its carrier family and by the declarations its concrete
+// key and value reach: Map and ReadonlyMap are two source views of the same keyed map, a closed alias
+// chain is observational, and Rust's own HashMap spelling is not consulted. Only a string key and a
+// primitive or non-generic record value are in this lane; everything else keeps the established
+// contextual refusal.
+function getRustExactMapApplicationIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): RustExactMapApplicationIdentity | undefined {
+  return resolveRustExactMapApplicationIdentityRust(type, context, new Set(), 0);
+}
+
+function resolveRustExactMapApplicationIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactMapApplicationIdentity | undefined {
+  if (depth > 8) return undefined;
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    if (
+      type.reference.path.length > 0 ||
+      type.reference.binding.space !== 'type' ||
+      type.reference.binding.kind === 'typeParameter' ||
+      type.typeArguments.length > 0
+    ) {
+      return undefined;
+    }
+    const locations = getIrNamedTypeDeclarationLocationsRust(
+      type.reference.binding,
+      context,
+      context.module,
+      new Set(),
+    );
+    if (locations.length !== 1) return undefined;
+    const location = locations[0]!;
+    if (location.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return undefined;
+    const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${location.declaration.binding.id}`;
+    if (resolving.has(declarationKey)) return undefined;
+    return resolveRustExactMapApplicationIdentityRust(
+      location.declaration.type,
+      context,
+      new Set(resolving).add(declarationKey),
+      depth + 1,
+    );
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'ambient') return undefined;
+  if ((type.reference.name !== 'Map' && type.reference.name !== 'ReadonlyMap') || type.typeArguments.length !== 2) {
+    return undefined;
+  }
+  const key = resolveRustExactMapArgumentIdentityRust(type.typeArguments[0]!, context, resolving, depth + 1);
+  const value = resolveRustExactMapArgumentIdentityRust(type.typeArguments[1]!, context, resolving, depth + 1);
+  if (!key || !value || key.kind !== 'primitive' || key.name !== 'string') return undefined;
+  return { key, value };
+}
+
+function resolveRustExactMapArgumentIdentityRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): RustExactMapArgumentIdentity | undefined {
+  if (depth > 8) return undefined;
+  if (type.kind === 'primitive') {
+    return type.name === 'boolean' || type.name === 'number' || type.name === 'string'
+      ? { kind: 'primitive', name: type.name }
+      : undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, context.module, new Set());
+  if (locations.length !== 1) return undefined;
+  const location = locations[0]!;
+  const declaration = location.declaration;
+  const declarationKey = `${location.module.packageName}\0${path.posix.normalize(location.module.source)}\0${declaration.binding.id}`;
+  if (resolving.has(declarationKey)) return undefined;
+  if (declaration.kind === 'interface') {
+    return declaration.typeParameters.length === 0 &&
+      declaration.indexSignature === undefined &&
+      !declaration.properties.some((property) => property.type.kind === 'function')
+      ? { declarationKey, kind: 'declaration' }
+      : undefined;
+  }
+  if (declaration.typeParameters.length > 0) return undefined;
+  if (declaration.type.kind === 'object') return { declarationKey, kind: 'declaration' };
+  return resolveRustExactMapArgumentIdentityRust(
+    declaration.type,
+    context,
+    new Set(resolving).add(declarationKey),
+    depth + 1,
+  );
+}
+
+function areRustExactMapArgumentIdentitiesEqualRust(
+  left: Readonly<RustExactMapArgumentIdentity>,
+  right: Readonly<RustExactMapArgumentIdentity>,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind === 'primitive'
+    ? right.kind === 'primitive' && left.name === right.name
+    : right.kind === 'declaration' && left.declarationKey === right.declarationKey;
+}
+
+function areRustExactMapApplicationIdentitiesEqualRust(
+  left: Readonly<RustExactMapApplicationIdentity> | undefined,
+  right: Readonly<RustExactMapApplicationIdentity> | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    areRustExactMapArgumentIdentitiesEqualRust(left.key, right.key) &&
+    areRustExactMapArgumentIdentitiesEqualRust(left.value, right.value)
+  );
+}
+
+function hasRustExactMapApplicationUnionArmRust(
+  expression: Readonly<IrExpression>,
+  plan: Extract<ReturnType<typeof createRustUnionRepresentationPlanForTypeRust>, { kind: 'nominalEnum' }>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const sourceType = context.bindingTypes.get(expression.reference.binding.id);
+  const sourceIdentity = sourceType ? getRustExactMapApplicationIdentityRust(sourceType, context) : undefined;
+  return sourceIdentity !== undefined
+    ? plan.valueVariants.some((variant) =>
+        areRustExactMapApplicationIdentitiesEqualRust(
+          getRustExactMapApplicationIdentityRust(variant.sourceAlternative, context),
+          sourceIdentity,
+        ),
       )
     : false;
 }
