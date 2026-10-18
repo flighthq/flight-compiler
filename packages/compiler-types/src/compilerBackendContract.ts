@@ -72,15 +72,21 @@ export interface CompilerBackendPackageGraphFinalization {
   readonly placeholderModules?: readonly Readonly<IrModule>[] | undefined;
 }
 
+// A backend's finalized target initialization schedule. This is the neutral seam that carries a
+// target's own plan (today the Rust module-evaluation execution plan); adding a target extends the
+// union rather than naming a target-specific field on the generic backend contracts. The neutral
+// compiler report keeps its own `initialization` plan, which this does not replace.
+export type CompilerBackendTargetInitializationPlan = CompilerRustModuleEvaluationExecutionPlan;
+
 export interface CompilerBackendPackageGraphFinalizationResult {
   /** When present, this must replace every retained module identity and path exactly once. */
   readonly moduleFileReplacements?: readonly CompilerBackendModuleFileReplacement[] | undefined;
   /**
-   * The backend's finalized executable startup schedule, when one exists. Rust publishes it so the
-   * public-binding plan can carry the exact order; orchestration passes it back through the
+   * The backend's finalized executable startup schedule, when one exists. The backend publishes it so
+   * the public-binding plan can carry the exact order; orchestration passes it back through the
    * public-binding request rather than letting a second planner derive a competing one.
    */
-  readonly moduleEvaluationExecution?: CompilerRustModuleEvaluationExecutionPlan | undefined;
+  readonly targetInitialization?: CompilerBackendTargetInitializationPlan | undefined;
   readonly packageFiles: readonly CompilerBackendPackageFile[];
 }
 
@@ -119,7 +125,7 @@ export interface CompilerBackendPublicBindingRefusal {
 export interface CompilerBackendPublicBindingRequest<Options> extends BackendEmitContext<Options> {
   readonly facade: CompilerModuleFacadePlan;
   /** The backend's finalized executable startup schedule, when the run produced one. */
-  readonly moduleEvaluationExecution?: CompilerRustModuleEvaluationExecutionPlan | undefined;
+  readonly targetInitialization?: CompilerBackendTargetInitializationPlan | undefined;
   readonly refusals: readonly CompilerBackendPublicBindingRefusal[];
 }
 

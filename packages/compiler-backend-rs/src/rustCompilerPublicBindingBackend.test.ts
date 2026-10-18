@@ -102,7 +102,7 @@ describe('createRustCompilerPublicBindingBackend v3 forwarding', () => {
     const execution = executionPlan();
     const plan = backend.createPublicBindingPlan?.({
       facade: emptyFacade,
-      moduleEvaluationExecution: execution,
+      targetInitialization: execution,
       modules: [],
       options: {},
       refusals: [],
@@ -131,7 +131,7 @@ describe('createRustCompilerPublicBindingBackend v3 forwarding', () => {
     try {
       backend.createPublicBindingPlan?.({
         facade: emptyFacade,
-        moduleEvaluationExecution: executionPlan({ runtimeAbiSchema: 'flight-rust-runtime-abi/3' }),
+        targetInitialization: executionPlan({ runtimeAbiSchema: 'flight-rust-runtime-abi/3' }),
         modules: [],
         options: {},
         refusals: [],
@@ -149,7 +149,7 @@ describe('createRustCompilerPublicBindingBackend v3 forwarding', () => {
     expect(
       backend.createPublicBindingPlan?.({
         facade: emptyFacade,
-        moduleEvaluationExecution: executionPlan({ errorCrate: 'custom_runtime' }),
+        targetInitialization: executionPlan({ errorCrate: 'custom_runtime' }),
         modules: [],
         options: { runtimeCrate: 'custom_runtime' },
         refusals: [],
@@ -158,7 +158,7 @@ describe('createRustCompilerPublicBindingBackend v3 forwarding', () => {
     expect(() =>
       backend.createPublicBindingPlan?.({
         facade: emptyFacade,
-        moduleEvaluationExecution: executionPlan({ errorCrate: 'flight_runtime' }),
+        targetInitialization: executionPlan({ errorCrate: 'flight_runtime' }),
         modules: [],
         options: { runtimeCrate: 'custom_runtime' },
         refusals: [],
