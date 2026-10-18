@@ -5,6 +5,7 @@ import type { IrModule } from '../../compiler-types/src/index.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
   collectIrModuleMovedBindingIdsRust,
+  collectIrModuleReferentMutatedBindingIdsRust,
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
 
@@ -268,6 +269,40 @@ describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
       export function span(cell: { value: number }): number { return cell.value + cell.value; }
     `);
     expect(collectIrModuleReferentMutatedParameterIdsRust(module).size).toBe(0);
+  });
+});
+
+describe('collectIrModuleReferentMutatedBindingIdsRust', () => {
+  it('elects an owned local handed to a mutating function beside the callee parameter', () => {
+    const module = lower(`
+      export function addS(values: Set<string>, value: string): void { values.add(value); }
+      export function relay(): number {
+        const local = new Set<string>();
+        addS(local, "a");
+        return local.size;
+      }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedBindingIdsRust(module))).toEqual(['local', 'values']);
+  });
+
+  it('elects an owned record local mutated through a helper and keeps parameter propagation', () => {
+    const module = lower(`
+      export function bump(cell: { value: number }, next: number): void { cell.value = next; }
+      export function relay(): number {
+        const local: { value: number } = { value: 0 };
+        bump(local, 1);
+        return local.value;
+      }
+      export function twice(cell: { value: number }): void { bump(cell, 1); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedBindingIdsRust(module))).toEqual(['cell', 'cell', 'local']);
+  });
+
+  it('leaves read-only parameters and locals alone', () => {
+    const module = lower(`
+      export function read(cell: { value: number }): number { const local = cell.value; return local; }
+    `);
+    expect(collectIrModuleReferentMutatedBindingIdsRust(module).size).toBe(0);
   });
 });
 

@@ -163,16 +163,36 @@ export function collectIrModuleMovedBindingIdsRust(module: Readonly<IrModule>): 
 
 // Which parameters the caller sees mutated through. A parameter the body assigns into is one; so is a
 // parameter handed to a function that mutates through the position it was handed to, which is why
-// this closes over the module's calls rather than reading one function at a time.
+// this closes over the module's calls rather than reading one function at a time. The set decides
+// which bindings are already `&mut` parameters, so propagation elects only parameters; an owned local
+// is elected by the binding-level set below, which is what makes its declaration mutable.
 export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  return createIrModuleReferentMutatedBindingIdsRust(module).parameterIds;
+}
+
+// Which bindings a caller sees mutated through, for local binding mutability. It carries the same
+// direct evidence and fixes the same call graph, but every argument binding is elected, so an owned
+// local handed to a mutating function is declared mutable even though only a parameter is already
+// borrowed at a nested call site.
+export function collectIrModuleReferentMutatedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  return createIrModuleReferentMutatedBindingIdsRust(module).bindingIds;
+}
+
+function createIrModuleReferentMutatedBindingIdsRust(module: Readonly<IrModule>): Readonly<{
+  bindingIds: ReadonlySet<string>;
+  parameterIds: ReadonlySet<string>;
+}> {
   const evidence = analyzeIrModuleOwnershipEvidenceRust(module);
   const declarationById = new Map(evidence.bindings.map((binding) => [binding.binding.id, binding.declaration]));
-  const mutated = new Set(
+  const direct = new Set(
     evidence.bindings.flatMap((binding) =>
-      binding.declaration === 'parameter' &&
-      (binding.mutation === 'referentMutated' || binding.mutation === 'bindingAndReferent')
-        ? [binding.binding.id]
-        : [],
+      binding.mutation === 'referentMutated' || binding.mutation === 'bindingAndReferent' ? [binding.binding.id] : [],
+    ),
+  );
+  const bindingIds = new Set(direct);
+  const parameterIds = new Set(
+    evidence.bindings.flatMap((binding) =>
+      binding.declaration === 'parameter' && direct.has(binding.binding.id) ? [binding.binding.id] : [],
     ),
   );
   const functions = module.declarations.flatMap((declaration) =>
@@ -190,21 +210,22 @@ export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<
         if (!callee) continue;
         call.arguments.forEach((argument, index) => {
           const parameter = callee.parameters[index];
-          if (!parameter || !mutated.has(parameter.binding.id)) return;
+          if (!parameter || !bindingIds.has(parameter.binding.id)) return;
           if (argument.kind !== 'identifier' || argument.reference.kind !== 'binding') return;
           const argumentId = argument.reference.binding.id;
-          // This set decides which bindings are already `&mut` parameters. An owned local handed to
-          // a mutating function still needs its own explicit `&mut` at that call site, so only a
-          // parameter is elected here.
-          if (declarationById.get(argumentId) !== 'parameter') return;
-          if (mutated.has(argumentId)) return;
-          mutated.add(argumentId);
-          changed = true;
+          if (!bindingIds.has(argumentId)) {
+            bindingIds.add(argumentId);
+            changed = true;
+          }
+          if (declarationById.get(argumentId) === 'parameter' && !parameterIds.has(argumentId)) {
+            parameterIds.add(argumentId);
+            changed = true;
+          }
         });
       }
     }
   }
-  return mutated;
+  return { bindingIds, parameterIds };
 }
 
 function addIrBindingPatternRustOwnershipPlan(

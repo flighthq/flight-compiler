@@ -1214,6 +1214,7 @@ export function keep(value: number): number { return value + 1; }`;
     expect(output).toContain('let mut values: Vec<f64> = vec![];');
     expect(output).toContain('push_to(&mut values, 1.0);');
     expect(output).toContain('bump(&mut cell, 1.0);');
+    expect(output).toContain('let mut cell');
     expect(output).toContain('add_to(values, value);');
     expect(output).toContain('fn wrap_add(values: &mut std::collections::HashSet<String>');
     expect(output).toContain('wrap_add(values, value);');

@@ -155,6 +155,7 @@ import { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 import {
   analyzeIrModuleOwnershipEvidenceRust,
   collectIrModuleMovedBindingIdsRust,
+  collectIrModuleReferentMutatedBindingIdsRust,
   collectIrModuleReferentMutatedParameterIdsRust,
 } from './rustOwnershipEvidence.js';
 import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
@@ -1319,6 +1320,9 @@ function emitIrModuleRustWithContext(
           : [],
       ),
       ...plannedReferentMutatedBindingIds,
+      // Same-module calls close over the module's own graph, so this adds owned locals the reference
+      // plan does not see. They need `let mut` even though they lend explicitly at the call site.
+      ...collectIrModuleReferentMutatedBindingIdsRust(module),
     ]),
     referentMutatedParameterIds,
     retainedClassParameterRepresentations,
