@@ -2171,6 +2171,192 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('#[derive(Clone, Debug)]\npub struct Details');
   });
 
+  it('omits Debug from a record containing a directly imported callable-state class', () => {
+    const provider = lower('callable-class-provider.ts', 'export class CallableState { callback: () => void; }').module;
+    const consumer = lower(
+      'callable-class-consumer.ts',
+      `import { CallableState } from './callable-class-provider.js';
+       export interface Holder { value: CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './callable-class-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const modules = [consumer, provider];
+    const providerOutput = emitRustModuleInGraph(modules, provider, edges);
+    const consumerOutput = emitRustModuleInGraph(modules, consumer, edges);
+
+    expect(providerOutput).toContain('#[derive(Clone)]\npub struct CallableState');
+    expect(consumerOutput).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(consumerOutput).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('callable_class_provider', providerOutput, 'callable_class_consumer', consumerOutput),
+      ).not.toThrow();
+    }
+  });
+
+  it('omits Debug through an array of directly imported callable-state classes', () => {
+    const provider = lower(
+      'callable-array-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const consumer = lower(
+      'callable-array-consumer.ts',
+      `import { CallableState } from './callable-array-provider.js';
+       export interface Holder { values: CallableState[] }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './callable-array-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('omits Debug through a barrel-reexported callable-state class', () => {
+    const provider = lower(
+      'callable-barrel-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const barrel = lower('callable-barrel.ts', "export { CallableState } from './callable-barrel-provider.js';").module;
+    const consumer = lower(
+      'callable-barrel-consumer.ts',
+      `import { CallableState } from './callable-barrel.js';
+       export interface Holder { value: CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './callable-barrel-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './callable-barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, barrel, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('bounds a barrel cycle while finding its callable-state class export', () => {
+    const provider = lower(
+      'callable-cycle-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const firstBarrel = lower(
+      'callable-cycle-first.ts',
+      `export * from './callable-cycle-second.js';
+       export { CallableState } from './callable-cycle-provider.js';`,
+    ).module;
+    const secondBarrel = lower('callable-cycle-second.ts', "export * from './callable-cycle-first.js';").module;
+    const consumer = lower(
+      'callable-cycle-consumer.ts',
+      `import { CallableState } from './callable-cycle-second.js';
+       export interface Holder { value: CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(firstBarrel),
+        specifier: './callable-cycle-second.js',
+        target: getRustTestModuleIdentity(secondBarrel),
+      },
+      {
+        importer: getRustTestModuleIdentity(firstBarrel),
+        specifier: './callable-cycle-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+      {
+        importer: getRustTestModuleIdentity(secondBarrel),
+        specifier: './callable-cycle-first.js',
+        target: getRustTestModuleIdentity(firstBarrel),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './callable-cycle-second.js',
+        target: getRustTestModuleIdentity(secondBarrel),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, firstBarrel, secondBarrel, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('retains Debug for a record containing a callable-free imported class', () => {
+    const provider = lower('debug-class-provider.ts', "export class DebugState { label = 'ready'; }").module;
+    const consumer = lower(
+      'debug-class-consumer.ts',
+      `import { DebugState } from './debug-class-provider.js';
+       export interface Holder { value: DebugState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './debug-class-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('finds callable state through imported mutually recursive classes', () => {
+    const provider = lower(
+      'recursive-callable-provider.ts',
+      `export class External { child: Helper | null = null; }
+       export class Helper { parent: External | null = null; callback: () => void = () => {}; }`,
+    ).module;
+    const consumer = lower(
+      'recursive-callable-consumer.ts',
+      `import { External } from './recursive-callable-provider.js';
+       export interface Holder { value: External }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './recursive-callable-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const modules = [consumer, provider];
+    const providerOutput = emitRustModuleInGraph(modules, provider, edges);
+    const consumerOutput = emitRustModuleInGraph(modules, consumer, edges);
+
+    expect(providerOutput).toContain('#[derive(Clone)]\npub struct External');
+    expect(providerOutput).toContain('#[derive(Clone)]\npub struct Helper');
+    expect(consumerOutput).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(consumerOutput).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('terminates callable-free mutual class recursion and retains Debug', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'recursive-debug-class.ts',
+        `class Left { right: Right | null = null; }
+         class Right { left: Left | null = null; }
+         export interface Holder { value: Left }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone, Debug)]\nstruct Left');
+    expect(output).toContain('#[derive(Clone, Debug)]\nstruct Right');
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
   it('selects a represented member for a finite string key while evaluating receiver and key once', () => {
     const output = emitIrModuleRust(
       lower(

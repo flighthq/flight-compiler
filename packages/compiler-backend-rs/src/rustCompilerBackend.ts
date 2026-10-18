@@ -376,6 +376,11 @@ interface RustNamedTypeDeclarationLocation {
   readonly module: Readonly<IrModule>;
 }
 
+interface RustClassDeclarationLocation {
+  readonly declaration: Readonly<IrClassDeclaration>;
+  readonly module: Readonly<IrModule>;
+}
+
 type RustSharedClassRepresentation = Extract<
   CompilerRustReferenceRepresentation,
   'optional-null-shared-ref-cell-class' | 'optional-undefined-shared-ref-cell-class' | 'shared-ref-cell-class'
@@ -12160,34 +12165,86 @@ function getIrClassDeclarationLocationForTypeRust(
   type: Readonly<IrType> | undefined,
   context: EmitContext,
   module: Readonly<IrModule> = context.module,
-): Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }> | undefined {
+): RustClassDeclarationLocation | undefined {
   if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
-  const typeBindingId = type.reference.binding.id;
-  const local = module.declarations.find(
-    (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBindingId,
-  );
-  if (local?.kind === 'class') return { declaration: local, module };
-  const directProvider = context.sourceModules.find((candidateModule) =>
-    candidateModule.declarations.some(
-      (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBindingId,
+  const locations = getIrClassDeclarationLocationsRust(type.reference.binding, context, module, new Set());
+  return locations.length === 1 ? locations[0] : undefined;
+}
+
+// Class references retain value-space import identities in type positions. Resolve binding identity first,
+// then follow named export identities so same-named classes stay distinct and barrel cycles terminate.
+function getIrClassDeclarationLocationsRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  visited: ReadonlySet<string>,
+): readonly RustClassDeclarationLocation[] {
+  const modules = [module, ...context.sourceModules];
+  const direct = modules.flatMap((candidateModule): readonly RustClassDeclarationLocation[] => {
+    const declaration = candidateModule.declarations.find(
+      (candidate): candidate is IrClassDeclaration => candidate.kind === 'class' && candidate.binding.id === binding.id,
+    );
+    return declaration ? [{ declaration, module: candidateModule }] : [];
+  });
+  if (direct.length > 0) return getUniqueRustClassDeclarationLocations(direct);
+  const imported = modules.flatMap((importer) =>
+    importer.imports.flatMap((item) =>
+      item.bindings.flatMap((candidate) =>
+        candidate.binding.id === binding.id ? [{ candidate, importer, specifier: item.specifier }] : [],
+      ),
     ),
   );
-  const directDeclaration = directProvider?.declarations.find(
-    (candidate) => candidate.kind === 'class' && candidate.binding.id === typeBindingId,
-  );
-  if (directDeclaration?.kind === 'class' && directProvider) {
-    return { declaration: directDeclaration, module: directProvider };
-  }
-  const imported = module.imports
-    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
-    .find(({ candidate }) => candidate.binding.id === typeBindingId);
-  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
-  const target = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, module);
-  const declaration = target?.declarations.find(
-    (candidate) =>
-      candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.candidate.imported,
-  );
-  return declaration?.kind === 'class' && target ? { declaration, module: target } : undefined;
+  const locations = imported.flatMap(({ candidate, importer, specifier }) => {
+    if (candidate.imported === '*') return [];
+    const targetModule = resolveImportModuleRust(specifier, candidate.imported, context, importer);
+    return targetModule
+      ? getRustExportedClassDeclarationLocations(targetModule, candidate.imported, context, visited)
+      : [];
+  });
+  return getUniqueRustClassDeclarationLocations(locations);
+}
+
+function getRustExportedClassDeclarationLocations(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly RustClassDeclarationLocation[] {
+  const key = `${getRustModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const direct = module.declarations.flatMap((declaration): readonly RustClassDeclarationLocation[] => {
+    if (declaration.kind !== 'class' || !declaration.exported || declaration.binding.name !== exportedName) return [];
+    return [{ declaration, module }];
+  });
+  const local = module.exports.flatMap((entry): readonly RustClassDeclarationLocation[] => {
+    if (entry.kind !== 'local' || entry.exported !== exportedName) return [];
+    return getIrClassDeclarationLocationsRust(entry.binding, context, module, nextVisited);
+  });
+  const forwarded = module.exports.flatMap((entry): readonly RustClassDeclarationLocation[] => {
+    if (entry.kind !== 'all' && entry.kind !== 'reexport') return [];
+    const importedName =
+      entry.kind === 'all' ? exportedName : entry.exported === exportedName ? entry.imported : undefined;
+    if (!importedName) return [];
+    const targetModule = resolveImportModuleRust(entry.specifier, importedName, context, module);
+    return targetModule
+      ? getRustExportedClassDeclarationLocations(targetModule, importedName, context, nextVisited)
+      : [];
+  });
+  return getUniqueRustClassDeclarationLocations([...direct, ...local, ...forwarded]);
+}
+
+function getUniqueRustClassDeclarationLocations(
+  locations: readonly RustClassDeclarationLocation[],
+): readonly RustClassDeclarationLocation[] {
+  return [
+    ...new Map(
+      locations.map((location) => [
+        `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`,
+        location,
+      ]),
+    ).values(),
+  ];
 }
 
 function emitAsyncSharedClassMethodCallRust(
@@ -24365,14 +24422,15 @@ function containsIrFunctionTypeRust(
       if (
         type.reference.kind !== 'binding' ||
         type.reference.path.length > 0 ||
-        type.reference.binding.space !== 'type' ||
         type.reference.binding.kind === 'typeParameter'
       ) {
         return false;
       }
       const binding = type.reference.binding;
-      const location = getIrNamedTypeDeclarationLocationRust(binding, context, module);
-      if (location) {
+      const namedLocation =
+        binding.space === 'type' ? getIrNamedTypeDeclarationLocationRust(binding, context, module) : undefined;
+      if (namedLocation) {
+        const location = namedLocation;
         const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
         if (resolving.has(key)) return false;
         const active = new Set(resolving).add(key);
@@ -24396,17 +24454,17 @@ function containsIrFunctionTypeRust(
           false
         );
       }
-      const classDeclaration = [module, ...context.sourceModules]
-        .flatMap((candidate) => candidate.declarations)
-        .find((candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id);
-      if (classDeclaration?.kind !== 'class') return false;
-      const key = `${module.packageName}\0${module.source}\0${classDeclaration.binding.id}`;
+      const classLocation = getIrClassDeclarationLocationForTypeRust(type, context, module);
+      if (!classLocation) return false;
+      const key = `${getRustModuleIdentityKey(classLocation.module)}\0${classLocation.declaration.binding.id}`;
       if (resolving.has(key)) return false;
       const active = new Set(resolving).add(key);
       return (
-        classDeclaration.fields.some((field) => containsIrFunctionTypeRust(field.type, context, module, active)) ||
-        (classDeclaration.extends
-          ? containsIrFunctionTypeRust(classDeclaration.extends, context, module, active)
+        classLocation.declaration.fields.some((field) =>
+          containsIrFunctionTypeRust(field.type, context, classLocation.module, active),
+        ) ||
+        (classLocation.declaration.extends
+          ? containsIrFunctionTypeRust(classLocation.declaration.extends, context, classLocation.module, active)
           : false)
       );
     }
