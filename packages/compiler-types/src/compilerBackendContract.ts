@@ -9,6 +9,7 @@ import type {
   CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
 } from './compilerRuntimeContract.js';
+import type { CompilerRustModuleEvaluationExecutionPlan } from './compilerRustModuleEvaluationExecutionContract.js';
 import type { CompilerRustPublicBindingPlan } from './compilerRustPublicBindingContract.js';
 import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
@@ -74,6 +75,12 @@ export interface CompilerBackendPackageGraphFinalization {
 export interface CompilerBackendPackageGraphFinalizationResult {
   /** When present, this must replace every retained module identity and path exactly once. */
   readonly moduleFileReplacements?: readonly CompilerBackendModuleFileReplacement[] | undefined;
+  /**
+   * The backend's finalized executable startup schedule, when one exists. Rust publishes it so the
+   * public-binding plan can carry the exact order; orchestration passes it back through the
+   * public-binding request rather than letting a second planner derive a competing one.
+   */
+  readonly moduleEvaluationExecution?: CompilerRustModuleEvaluationExecutionPlan | undefined;
   readonly packageFiles: readonly CompilerBackendPackageFile[];
 }
 
@@ -111,6 +118,8 @@ export interface CompilerBackendPublicBindingRefusal {
 
 export interface CompilerBackendPublicBindingRequest<Options> extends BackendEmitContext<Options> {
   readonly facade: CompilerModuleFacadePlan;
+  /** The backend's finalized executable startup schedule, when the run produced one. */
+  readonly moduleEvaluationExecution?: CompilerRustModuleEvaluationExecutionPlan | undefined;
   readonly refusals: readonly CompilerBackendPublicBindingRefusal[];
 }
 

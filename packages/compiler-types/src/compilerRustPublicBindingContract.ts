@@ -1,5 +1,7 @@
 import type { CompilerModuleFacadeHop, CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { CompilerRustModuleEvaluationExecutionPlan } from './compilerRustModuleEvaluationExecutionContract.js';
+import type { CompilerRustModuleEvaluationRepresentationRefusal } from './compilerRustModuleEvaluationRepresentationContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export interface CompilerRustPublicCrateIdentity {
@@ -85,13 +87,50 @@ export interface CompilerRustPublicBinding {
   readonly key: string;
 }
 
-export interface CompilerRustPublicBindingPlan {
+export interface CompilerRustPublicBindingPlanV2 {
   readonly bindings: readonly CompilerRustPublicBinding[];
   readonly crates: readonly CompilerRustPublicCrateIdentity[];
   readonly dependencies: readonly CompilerRustPublicDependencyEdge[];
   readonly modules: readonly CompilerRustPublicModulePlan[];
   readonly schema: 'flight-rust-public-binding-plan/2';
 }
+
+// Whether a public name can be used immediately, must wait for a successful bootstrap, or is not
+// safely usable because the target's initialization was refused. Type-space names never require a
+// runtime bootstrap; value and module names do, because their cells exist only after evaluation.
+export type CompilerRustPublicBindingAccess =
+  | Readonly<{ kind: 'immediate' }>
+  | Readonly<{ kind: 'after-bootstrap' }>
+  | Readonly<{ kind: 'refused' }>;
+
+export interface CompilerRustPublicBindingV3 extends CompilerRustPublicBinding {
+  readonly access: CompilerRustPublicBindingAccess;
+}
+
+// The finalized executable schedule carried verbatim, or the exact reasons it could not be planned.
+// Downstream owns the one global serialized bootstrap; this plan never reorders or re-derives groups.
+export type CompilerRustPublicBindingInitialization =
+  | Readonly<{
+      availability: 'available';
+      plan: CompilerRustModuleEvaluationExecutionPlan;
+      required: 'before-value-access';
+    }>
+  | Readonly<{
+      availability: 'refused';
+      code: 'rust-public-binding-initialization-refused';
+      refusals: readonly CompilerRustModuleEvaluationRepresentationRefusal[];
+    }>;
+
+export interface CompilerRustPublicBindingPlanV3 {
+  readonly bindings: readonly CompilerRustPublicBindingV3[];
+  readonly crates: readonly CompilerRustPublicCrateIdentity[];
+  readonly dependencies: readonly CompilerRustPublicDependencyEdge[];
+  readonly initialization: CompilerRustPublicBindingInitialization;
+  readonly modules: readonly CompilerRustPublicModulePlan[];
+  readonly schema: 'flight-rust-public-binding-plan/3';
+}
+
+export type CompilerRustPublicBindingPlan = CompilerRustPublicBindingPlanV2 | CompilerRustPublicBindingPlanV3;
 
 export interface CompilerRustPublicBindingModuleRefusal {
   readonly code: string;
@@ -105,8 +144,20 @@ export interface CompilerRustPublicBindingPlanInput {
   readonly refusals?: readonly Readonly<CompilerRustPublicBindingModuleRefusal>[] | undefined;
 }
 
+export interface CompilerRustPublicBindingPlanInputV3 extends CompilerRustPublicBindingPlanInput {
+  /** The finalized Lane 1 schedule, carried verbatim; never re-derived here. */
+  readonly execution: CompilerRustModuleEvaluationExecutionPlan;
+  /** Selected runtime crate spelling, when the run named one; the execution error crate must match. */
+  readonly runtimeCrate?: string | undefined;
+}
+
 export type CompilerRustPublicBindingPlanningFailureCode =
+  | 'rust-public-binding-access-unrepresented'
   | 'rust-public-binding-collision'
+  | 'rust-public-binding-execution-missing'
+  | 'rust-public-binding-execution-projection-mismatch'
+  | 'rust-public-binding-execution-schema-mismatch'
+  | 'rust-public-binding-initialization-projection-mismatch'
   | 'rust-public-crate-collision'
   | 'rust-public-module-collision';
 

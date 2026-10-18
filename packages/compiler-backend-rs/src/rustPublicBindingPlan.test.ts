@@ -5,11 +5,18 @@ import type {
   CompilerModuleFacadePlan,
   CompilerModuleFacadeSlot,
   CompilerModuleIdentity,
+  CompilerRustModuleEvaluationExecutionPlan,
+  CompilerRustModuleEvaluationRepresentationRefusal,
+  CompilerRustPublicBindingPlan,
   CompilerRustPublicBindingPlanInput,
+  CompilerRustPublicBindingPlanInputV3,
+  CompilerRustPublicBindingPlanningFailureCode,
+  CompilerRustPublicCrateIdentity,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import {
   createCompilerRustPublicBindingPlan,
+  createCompilerRustPublicBindingPlanV3,
   isCompilerRustPublicBindingPlanningFailure,
 } from './rustPublicBindingPlan.js';
 
@@ -418,4 +425,372 @@ function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
   if (!value || typeof value !== 'object' || seen.has(value)) return true;
   seen.add(value);
   return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
+}
+
+describe('createCompilerRustPublicBindingPlanV3', () => {
+  it('carries the finalized execution plan verbatim and gates value and module access', () => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    const execution = createExecutionPlan(planV2);
+    const snapshot = structuredClone({ facade: fixture.facade, modules: fixture.modules, execution });
+
+    const plan = createCompilerRustPublicBindingPlanV3({
+      execution,
+      facade: fixture.facade,
+      modules: fixture.modules,
+    });
+
+    expect(plan.schema).toBe('flight-rust-public-binding-plan/3');
+    expect(plan.crates).toEqual(planV2.crates);
+    expect(plan.modules).toEqual(planV2.modules);
+    expect(plan.dependencies).toEqual(planV2.dependencies);
+    expect(plan.initialization).toEqual({
+      availability: 'available',
+      plan: execution,
+      required: 'before-value-access',
+    });
+    const initialization = plan.initialization;
+    if (initialization.availability !== 'available') throw new Error('Expected available initialization');
+    expect(initialization.plan).not.toBe(execution);
+    expect(JSON.stringify(initialization.plan)).toBe(JSON.stringify(execution));
+    expect(initialization.plan.phases.map((phase) => phase.kind)).toEqual(['instantiate', 'evaluate']);
+    expect(initialization.plan.entries).toEqual(execution.entries);
+    expect(initialization.plan.modules).toEqual(execution.modules);
+
+    const accessByCarrier = (carrier: string, space: 'type' | 'value') => {
+      const binding = plan.bindings.find(
+        (candidate) =>
+          candidate.binding.availability === 'available' &&
+          candidate.binding.locator.carrier === carrier &&
+          candidate.identity.space === space,
+      );
+      if (!binding) throw new Error(`Missing ${carrier} binding`);
+      return binding.access;
+    };
+    expect(accessByCarrier('interface', 'type')).toEqual({ kind: 'immediate' });
+    expect(accessByCarrier('function', 'value')).toEqual({ kind: 'after-bootstrap' });
+    expect(accessByCarrier('module', 'value')).toEqual({ kind: 'after-bootstrap' });
+    expect(plan.bindings.every((binding) => 'access' in binding)).toBe(true);
+    expect(
+      plan.bindings.every((binding) => binding.identity.space !== 'value' || binding.access.kind !== 'immediate'),
+    ).toBe(true);
+    expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+    expect(structuredClone({ facade: fixture.facade, modules: fixture.modules, execution })).toEqual(snapshot);
+  });
+
+  it('keeps type access usable while refusing value, module, and already-refused bindings', () => {
+    const fixture = createV3Fixture();
+    const refusals = [
+      { code: 'duplicate-emitted-path', message: 'source path collision', module: identity(fixture.provider) },
+    ];
+    const planV2 = createCompilerRustPublicBindingPlan({
+      facade: fixture.facade,
+      modules: fixture.modules,
+      refusals,
+    });
+    const execution = createExecutionPlan(planV2, { refusal: true });
+    const plan = createCompilerRustPublicBindingPlanV3({
+      execution,
+      facade: fixture.facade,
+      modules: fixture.modules,
+      refusals,
+    });
+
+    expect(plan.initialization).toEqual({
+      availability: 'refused',
+      code: 'rust-public-binding-initialization-refused',
+      refusals: execution.availability.outcome === 'refused' ? execution.availability.refusals : [],
+    });
+    const access = (facadeIdentity: string) => {
+      const binding = plan.bindings.find((candidate) => candidate.facadeIdentity === facadeIdentity);
+      if (!binding) throw new Error(`Missing ${facadeIdentity}`);
+      return binding;
+    };
+    const typeLocal = access('fixture:type:Local');
+    const typeRefused = access('fixture:type:Widget');
+    const valueLocal = access('fixture:value:localValue');
+    const valueRefused = access('fixture:value:makeWidget');
+    const moduleLocal = access('fixture:value:widgetsLocal');
+    expect(typeLocal.binding.availability).toBe('available');
+    expect(typeLocal.access).toEqual({ kind: 'immediate' });
+    expect(typeRefused.binding.availability).toBe('refused');
+    expect(typeRefused.access).toEqual({ kind: 'refused' });
+    expect(valueLocal.binding.availability).toBe('available');
+    expect(valueLocal.access).toEqual({ kind: 'refused' });
+    expect(valueRefused.access).toEqual({ kind: 'refused' });
+    expect(moduleLocal.binding.availability).toBe('available');
+    expect(moduleLocal.access).toEqual({ kind: 'refused' });
+  });
+
+  it.each([
+    ['the execution schema', { schema: 'flight-rust-module-evaluation-execution-plan/2' as const }],
+    ['the public binding schema', { publicBindingSchema: 'flight-rust-public-binding-plan/2' as const }],
+    [
+      'the representation schema',
+      { representationSchema: 'flight-rust-module-evaluation-representation-plan/2' as const },
+    ],
+    ['the runtime ABI schema', { runtimeAbiSchema: 'flight-rust-runtime-abi/3' as const }],
+    ['the phase order', { reversePhases: true as const }],
+  ])('rejects a stale %s in the execution plan', (_name, override) => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    const execution = createExecutionPlan(planV2, override);
+    expectV3PlanningFailure(
+      { execution, facade: fixture.facade, modules: fixture.modules },
+      'rust-public-binding-execution-schema-mismatch',
+    );
+  });
+
+  it('rejects execution crates and modules outside the public plan projection', () => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    expectV3PlanningFailure(
+      {
+        execution: createExecutionPlan(planV2, {
+          entryCrate: { cargoName: 'ghost', packageName: '@scope/ghost', rustName: 'ghost' },
+        }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+      },
+      'rust-public-binding-execution-projection-mismatch',
+    );
+    expectV3PlanningFailure(
+      {
+        execution: createExecutionPlan(planV2, {
+          entryModule: { name: 'Ghost', packageName: '@scope/ghost', source: 'packages/ghost/src/ghost.ts' },
+        }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+      },
+      'rust-public-binding-execution-projection-mismatch',
+    );
+  });
+
+  it('validates the execution error crate against the selected runtime crate', () => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    expectV3PlanningFailure(
+      {
+        execution: createExecutionPlan(planV2, { errorCrate: 'flight_runtime' }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+        runtimeCrate: 'custom_runtime',
+      },
+      'rust-public-binding-execution-projection-mismatch',
+    );
+    expect(() =>
+      createCompilerRustPublicBindingPlanV3({
+        execution: createExecutionPlan(planV2, { errorCrate: 'custom_runtime' }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+        runtimeCrate: 'custom_runtime',
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a malformed refused-availability projection', () => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    expectV3PlanningFailure(
+      {
+        execution: createExecutionPlan(planV2, { refusal: true, refusalsOverride: [] }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+      },
+      'rust-public-binding-initialization-projection-mismatch',
+    );
+    expectV3PlanningFailure(
+      {
+        execution: createExecutionPlan(planV2, {
+          refusal: true,
+          refusalsOverride: [
+            { code: 'rust-module-evaluation-entry-invocation-unbound', message: '', subject: 'entry' },
+          ],
+        }),
+        facade: fixture.facade,
+        modules: fixture.modules,
+      },
+      'rust-public-binding-initialization-projection-mismatch',
+    );
+  });
+
+  it('stays deterministic and independent of facade or module order', () => {
+    const fixture = createV3Fixture();
+    const planV2 = createCompilerRustPublicBindingPlan({ facade: fixture.facade, modules: fixture.modules });
+    const execution = createExecutionPlan(planV2);
+    const first = createCompilerRustPublicBindingPlanV3({
+      execution,
+      facade: fixture.facade,
+      modules: fixture.modules,
+    });
+    const second = createCompilerRustPublicBindingPlanV3({
+      execution,
+      facade: {
+        ...fixture.facade,
+        modules: [...fixture.facade.modules].reverse().map((module) => ({
+          ...module,
+          slots: [...module.slots].reverse(),
+        })),
+      },
+      modules: [...fixture.modules].reverse(),
+    });
+
+    expect(second).toEqual(first);
+  });
+});
+
+function createV3Fixture(): Readonly<{
+  entry: IrModule;
+  facade: CompilerModuleFacadePlan;
+  modules: readonly IrModule[];
+  provider: IrModule;
+  widgets: IrModule;
+}> {
+  const provider = lower(
+    '@scope/model',
+    'packages/model/src/widgets.ts',
+    'export interface Widget { value: number }\nexport function makeWidget(value: number): Widget { return { value }; }',
+  );
+  const widgets = lower('@scope/model', 'packages/model/src/geometry.ts', 'export const geometry = 1;');
+  const entry = lower(
+    '@scope/api',
+    'packages/api/src/contract.ts',
+    'export interface Local { id: number }\nexport const localValue = 1;',
+  );
+  const facade = createFacade(entry, [
+    bindingSlot(entry, provider, 'Widget', 'Widget', 'type'),
+    bindingSlot(entry, provider, 'makeWidget', 'makeWidget', 'value'),
+    namespaceSlot(entry, provider, 'widgets'),
+    localSlot(entry, 'Local', 'type'),
+    localSlot(entry, 'localValue', 'value'),
+    namespaceSlot(entry, widgets, 'widgetsLocal'),
+  ]);
+  return { entry, facade, modules: [entry, provider, widgets], provider, widgets };
+}
+
+const executionSignature = {
+  parameters: [],
+  result: 'Result<(), FlightModuleEvaluationError>',
+} as const;
+
+function createExecutionPlan(
+  plan: Readonly<CompilerRustPublicBindingPlan>,
+  options: {
+    entryCrate?: CompilerRustPublicCrateIdentity;
+    entryModule?: CompilerModuleIdentity;
+    errorCrate?: string;
+    refusal?: boolean;
+    refusalsOverride?: readonly CompilerRustModuleEvaluationRepresentationRefusal[];
+    reversePhases?: boolean;
+    schema?: 'flight-rust-module-evaluation-execution-plan/2';
+    publicBindingSchema?: 'flight-rust-public-binding-plan/2';
+    representationSchema?: 'flight-rust-module-evaluation-representation-plan/2';
+    runtimeAbiSchema?: 'flight-rust-runtime-abi/3';
+  } = {},
+): CompilerRustModuleEvaluationExecutionPlan {
+  const providerCrate = plan.crates.find((crate) => crate.packageName === '@scope/model')!;
+  const providerModule = plan.modules.find((module) => module.identity.packageName === '@scope/model')!;
+  const crate = options.entryCrate ?? providerCrate;
+  const module = options.entryModule ?? providerModule.identity;
+  const locator = {
+    filePath: providerModule.identity.source,
+    modulePath: providerModule.locator.modulePath,
+    packageName: providerModule.identity.packageName,
+  };
+  const refusal = {
+    code: 'rust-module-evaluation-entry-invocation-unbound' as const,
+    message: 'entry invocation is unbound',
+    subject: 'entry',
+  };
+  const refusals = options.refusalsOverride ?? [refusal];
+  const invocation = (phase: 'evaluate' | 'instantiate') => ({
+    crate,
+    cyclic: false,
+    groupIndex: 0,
+    locator: {
+      modulePath: [] as const,
+      spelling: `__flight_${phase}_group_0` as const,
+      visibility: 'public-doc-hidden' as const,
+    },
+    modules: [module],
+    signature: executionSignature,
+  });
+  const phases = options.refusal
+    ? [
+        { invocations: [], kind: 'instantiate' },
+        { invocations: [], kind: 'evaluate' },
+      ]
+    : options.reversePhases
+      ? [
+          { invocations: [invocation('evaluate')], kind: 'evaluate' },
+          { invocations: [invocation('instantiate')], kind: 'instantiate' },
+        ]
+      : [
+          { invocations: [invocation('instantiate')], kind: 'instantiate' },
+          { invocations: [invocation('evaluate')], kind: 'evaluate' },
+        ];
+  const value = {
+    availability: options.refusal ? { outcome: 'refused', refusals, subjects: ['entry'] } : { outcome: 'available' },
+    entries: options.refusal ? [] : [{ crate, groupIndex: 0, locator, module }],
+    error: {
+      crateName: options.errorCrate ?? 'flight_runtime',
+      result: executionSignature.result,
+      targetName: 'FlightModuleEvaluationError',
+    },
+    modules: options.refusal
+      ? []
+      : [
+          {
+            crate,
+            groupIndex: 0,
+            lifecycle: {
+              evaluate: { signature: executionSignature, spelling: '__flight_evaluate_once', visibility: 'crate' },
+              instantiate: {
+                signature: executionSignature,
+                spelling: '__flight_instantiate_once',
+                visibility: 'crate',
+              },
+              state: {
+                spelling: '__flight_module_evaluation_state',
+                states: ['uninstantiated', 'instantiating', 'instantiated', 'evaluating', 'evaluated', 'errored'],
+                visibility: 'private',
+              },
+            },
+            locator,
+            module,
+          },
+        ],
+    phases,
+    publicBindingSchema: options.publicBindingSchema ?? 'flight-rust-public-binding-plan/3',
+    representationSchema: options.representationSchema ?? 'flight-rust-module-evaluation-representation-plan/1',
+    runtimeAbiSchema: options.runtimeAbiSchema ?? 'flight-rust-runtime-abi/4',
+    schema: options.schema ?? 'flight-rust-module-evaluation-execution-plan/1',
+    semantics: {
+      concurrency: 'serialized-by-bootstrap',
+      facadeAccess: 'successful-bootstrap-before-value-access',
+      failure: 'cache-first-error-stop-without-retry',
+      groupOrder: 'flight-compiler-module-evaluation/1',
+      phaseOrder: ['instantiate', 'evaluate'],
+      reentrancy: 'reject',
+      repeatedInvocation: 'cache-first-result',
+      reservedNamespace: '__flight_',
+    },
+  };
+  return value as unknown as CompilerRustModuleEvaluationExecutionPlan;
+}
+
+function expectV3PlanningFailure(
+  input: Readonly<CompilerRustPublicBindingPlanInputV3>,
+  code: CompilerRustPublicBindingPlanningFailureCode,
+): void {
+  try {
+    createCompilerRustPublicBindingPlanV3(input);
+  } catch (error) {
+    expect(isCompilerRustPublicBindingPlanningFailure(error)).toBe(true);
+    if (!isCompilerRustPublicBindingPlanningFailure(error)) throw error;
+    expect(error.code).toBe(code);
+    expect([...error.subjects]).toEqual([...error.subjects].sort());
+    return;
+  }
+  throw new Error(`Expected ${code}`);
 }
