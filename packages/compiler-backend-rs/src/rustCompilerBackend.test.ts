@@ -42304,6 +42304,344 @@ export function keep(value: number): number { return value + 1; }`;
   });
 });
 
+describe('emitIrModuleRust exact Set application union construction', () => {
+  it('constructs one exact Set arm in every contextual position through closed alias chains', () => {
+    const result = lower(
+      'set-application-contexts.ts',
+      `type Text = string;
+       type Registry = Set<Text>;
+       type SetSlot = Set<string> | boolean;
+       type ReadonlySlot = ReadonlySet<boolean | undefined> | number;
+       interface Holder { slot: SetSlot; readonlySlot: ReadonlySlot }
+       class Sink { take(_slot: SetSlot): number { return 1; } }
+       function consume(_slot: SetSlot): number { return 1; }
+
+       export function returned(values: Registry): SetSlot { return values; }
+       export function passed(values: Set<string>): number { return consume(values); }
+       export function throughMethod(sink: Sink, values: Set<string>): number { return sink.take(values); }
+       export function initialized(values: Set<string>): number { const slot: SetSlot = values; return 0; }
+       export function assigned(initial: Set<string>, values: Set<string>): number {
+         let slot: SetSlot = initial;
+         slot = values;
+         return 0;
+       }
+       export function stored(holder: Holder, values: Set<string>): number { holder.slot = values; return 1; }
+       export function asserted(values: Set<string>): SetSlot { return values as SetSlot; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return SetSlot::Set(values);');
+    expect(output).toContain('consume(SetSlot::Set(values))');
+    expect(output).toContain('sink.take(SetSlot::Set(values))');
+    expect(output).toContain('let slot: SetSlot = SetSlot::Set(values);');
+    expect(output).toContain('let mut slot: SetSlot = SetSlot::Set(initial);');
+    expect(output).toContain('slot = SetSlot::Set(values)');
+    expect(output).toContain('holder.slot = SetSlot::Set(values)');
+    expect(output.match(/SetSlot::Set\(/gu)).toHaveLength(8);
+    expect(output).not.toContain('.clone()');
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum SetSlot');
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum ReadonlySlot');
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('normalizes Set and ReadonlySet with boolean, optional, and aliased scalar elements', () => {
+    const result = lower(
+      'set-application-scalar-elements.ts',
+      `type Text0 = string;
+       type Text1 = Text0;
+       type OptionalText = Text1 | undefined;
+       type NullableFlag = boolean | null;
+       type Registry = Set<Text1>;
+       type TextSlot = ReadonlySet<string> | boolean;
+       type FlagSlot = Set<boolean> | number;
+       type OptionalSlot = Set<OptionalText> | boolean;
+       type ReadonlySlot = ReadonlySet<NullableFlag> | string;
+
+       export function fromRegistry(values: Registry): TextSlot { return values; }
+       export function fromReadonly(values: ReadonlySet<Text1>): TextSlot { return values; }
+       export function flags(values: ReadonlySet<boolean>): FlagSlot { return values; }
+       export function optional(values: Set<string | undefined>): OptionalSlot { return values; }
+       export function normalized(values: ReadonlySet<OptionalText>): OptionalSlot { return values; }
+       export function nullable(values: Set<boolean | null>): ReadonlySlot { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('ReadonlySet(std::collections::HashSet<String>)');
+    expect(output.match(/return TextSlot::ReadonlySet\(values\);/gu)).toHaveLength(2);
+    expect(output).toContain('Set(std::collections::HashSet<bool>)');
+    expect(output).toContain('return FlagSlot::Set(values);');
+    expect(output).toContain('Set(std::collections::HashSet<OptionalText>)');
+    expect(output.match(/return OptionalSlot::Set\(values\);/gu)).toHaveLength(2);
+    expect(output).toContain('ReadonlySet(std::collections::HashSet<NullableFlag>)');
+    expect(output).toContain('return ReadonlySlot::ReadonlySet(values);');
+  });
+
+  it('keeps null-element and undefined-element Set arms distinct despite their shared Option carrier', () => {
+    const result = lower(
+      'set-application-sentinel-identity.ts',
+      `type Slot = Set<string | null> | Set<string | undefined> | boolean;
+       export function fromNull(values: Set<string | null>): Slot { return values; }
+       export function fromUndefined(values: Set<string | undefined>): Slot { return values; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output.match(/std::collections::HashSet<Option<String>>/gu)).toHaveLength(4);
+    expect(output).toContain('Set(std::collections::HashSet<Option<String>>)');
+    expect(output).toContain('Set2(std::collections::HashSet<Option<String>>)');
+    expect(output).toContain('return Slot::Set(values);');
+    expect(output).toContain('return Slot::Set2(values);');
+  });
+
+  it.skipIf(!rustcAvailable)('runs distinct null-element and undefined-element Set union-arm round trips', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'set-application-sentinel-round-trip.ts',
+        `type NullValues = Set<string | null>;
+         type UndefinedValues = Set<string | undefined>;
+         type Slot = NullValues | UndefinedValues | boolean;
+         export function fromNull(values: Set<string | null>): Slot { return values; }
+         export function fromUndefined(values: Set<string | undefined>): Slot { return values; }`,
+      ).module,
+    ).contents;
+
+    expect(() =>
+      runRustSource(
+        output,
+        `let mut null_values = std::collections::HashSet::new();
+         null_values.insert(None);
+         null_values.insert(Some("null".to_owned()));
+         match from_null(null_values) {
+           Slot::NullValues(values) => {
+             assert!(values.contains(&None));
+             assert!(values.contains(&Some("null".to_owned())));
+           }
+           _ => panic!("null-element Set selected the wrong union arm"),
+         }
+         let mut undefined_values = std::collections::HashSet::new();
+         undefined_values.insert(None);
+         undefined_values.insert(Some("undefined".to_owned()));
+         match from_undefined(undefined_values) {
+           Slot::UndefinedValues(values) => {
+             assert!(values.contains(&None));
+             assert!(values.contains(&Some("undefined".to_owned())));
+           }
+           _ => panic!("undefined-element Set selected the wrong union arm"),
+         }`,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    [
+      'the wrong absence sentinel',
+      `type Slot = Set<string | null> | boolean;
+       export function wrong(values: Set<string | undefined>): Slot { return values; }`,
+    ],
+    [
+      'the wrong optional scalar',
+      `type Slot = Set<string | undefined> | boolean;
+       export function wrong(values: Set<boolean | undefined>): Slot { return values; }`,
+    ],
+  ])('refuses %s as an exact Set identity match', (_name, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-optional-identity-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    ['a numeric optional element', 'Set<number | undefined>'],
+    ['mixed optional elements', 'Set<string | boolean | undefined>'],
+    ['a dual-sentinel element', 'Set<string | null | undefined>'],
+    ['an absence-only element', 'Set<undefined>'],
+    ['a structural optional element', 'Set<{ value: string } | undefined>'],
+    ['a parameterized optional alias', 'Set<Optional<string>>', 'type Optional<Value> = string | undefined;'],
+    ['a generic Set alias', 'GenericSet<string>', 'type GenericSet<Value> = Set<Value>;'],
+  ])('refuses %s before exact Set union construction', (_name, domain, prefix = '') => {
+    const source = `${prefix}\ntype Slot = ${domain} | boolean;
+export function wrong(values: ${domain}): Slot { return values; }`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-application-domain-refusal.ts', source).module))).toBe(
+      'rust-set-element-domain-unrepresented',
+    );
+  });
+
+  it('rejects cyclic and over-depth Set application aliases deterministically', () => {
+    const aliases = Array.from({ length: 10 }, (_, index) =>
+      index === 0 ? 'type Source0 = Set<string>;' : `type Source${String(index)} = Source${String(index - 1)};`,
+    ).join('\n');
+    const overDepth = `${aliases}
+type Slot = Set<string> | boolean;
+export function wrong(values: Source9): Slot { return values; }`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-application-depth-refusal.ts', overDepth).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+
+    const cyclic = structuredClone(
+      lower(
+        'set-application-cycle-refusal.ts',
+        `type Source = Set<string>;
+         type Slot = Set<string> | boolean;
+         export function wrong(values: Source): Slot { return values; }`,
+      ).module,
+    );
+    const sourceAlias = cyclic.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Source',
+    );
+    if (sourceAlias?.kind !== 'typeAlias') throw new Error('expected Source alias');
+    (sourceAlias as { type: IrType }).type = {
+      kind: 'named',
+      reference: { binding: sourceAlias.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'an optional owner',
+      `type Slot = Set<string> | boolean | undefined;
+       export function wrong(values: Set<string>): Slot { return values; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a generic owner',
+      `type Slot<Value> = Set<Value> | boolean;
+       export function wrong(values: Set<string>): Slot<string> { return values; }`,
+      'rust-set-element-domain-unrepresented',
+    ],
+    [
+      'an anonymous owner',
+      `export function wrong(values: Set<string>): Set<string> | boolean { return values; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'an active type parameter',
+      `type Slot = Set<string> | boolean;
+       export function wrong<Value extends string>(values: Set<Value>): Slot { return values; }`,
+      'rust-set-element-domain-unrepresented',
+    ],
+    [
+      'a union source',
+      `type Slot = Set<string> | boolean;
+       export function wrong(values: Set<string> | boolean): Slot { return values; }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+  ])('keeps %s outside the exact Set lane', (_name, source, expectedRule) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-application-type-refusal.ts', source).module))).toBe(
+      expectedRule,
+    );
+  });
+
+  it.each([
+    [
+      'a call',
+      `function make(values: Set<string>): Set<string> { return values; }
+       export function wrong(values: Set<string>): Slot { return make(values); }`,
+    ],
+    [
+      'a property read',
+      `interface Holder { values: Set<string> }
+       export function wrong(holder: Holder): Slot { return holder.values; }`,
+    ],
+    [
+      'a conditional',
+      `export function wrong(left: Set<string>, right: Set<string>, flag: boolean): Slot {
+         return flag ? left : right;
+       }`,
+    ],
+    [
+      'an assignment expression',
+      `export function wrong(values: Set<string>, replacement: Set<string>): Slot {
+         return (values = replacement);
+       }`,
+    ],
+  ])('rejects %s rather than evaluating it to select a Set arm', (_name, body) => {
+    const source = `type Slot = Set<string> | boolean;
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-application-operand-refusal.ts', source).module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+
+  it.each([
+    [
+      'a shared aliased Set',
+      `type Slot = Set<string | undefined> | boolean;
+       export function wrong(values: Set<string | undefined>): Slot {
+         const alias = values;
+         alias.add('a');
+         return values;
+       }`,
+      'rust-reference-shared-set-use-unrepresented',
+    ],
+    [
+      'a referent-mutated parameter',
+      `type Slot = Set<string | null> | boolean;
+       export function wrong(values: Set<string | null>): Slot {
+         values.add(null);
+         return values;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a repeated-after-move binding',
+      `type Slot = Set<boolean | undefined> | boolean;
+       export function wrong(values: Set<boolean | undefined>): number {
+         const slot: Slot = values;
+         return values.size + (slot === slot ? 0 : 1);
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a closure-captured Set',
+      `type Slot = Set<boolean | null> | boolean;
+       export function wrong(values: Set<boolean | null>): Slot {
+         const read = () => values.size;
+         read();
+         return values;
+       }`,
+      'rust-contextual-general-union-construction-unrepresented',
+    ],
+    [
+      'a module-state Set',
+      `type Slot = Set<string | undefined> | boolean;
+       const registry: Set<string | undefined> = new Set();
+       export function wrong(): Slot { return registry; }`,
+      'rust-module-constant-initializer-unsupported',
+    ],
+  ])('rejects %s as a Set-arm source', (_name, body, rule) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-application-source-refusal.ts', body).module))).toBe(rule);
+  });
+
+  it('requires one and only one exact Set-arm identity match', () => {
+    const module = structuredClone(
+      lower(
+        'set-application-duplicate-arm-refusal.ts',
+        `type OptionalText = string | undefined;
+         type Slot = Set<OptionalText> | boolean;
+         export function wrong(values: Set<string | undefined>): Slot { return values; }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const setArm = slot.type.types.find((member) => member.kind === 'named' && member.reference.kind === 'ambient');
+    if (!setArm) throw new Error('expected Set arm');
+    (slot.type.types as unknown as IrType[]).splice(1, 0, structuredClone(setArm));
+
+    expect(getEmissionRule(() => emitIrModuleRust(module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
+  });
+});
+
 describe('emitIrModuleRust exact Map application union construction', () => {
   it('constructs one exact Map arm in every contextual position through closed alias chains', () => {
     const result = lower(
@@ -42664,11 +43002,6 @@ ${body}`;
       `type Wrapped<T> = Point;
        type Slot = Map<string, Point> | boolean;
        export function wrong(values: Map<string, Wrapped<Point>>): Slot { return values; }`,
-    ],
-    [
-      'a Set arm',
-      `type Slot = Map<string, Point> | Set<string>;
-       export function wrong(values: Set<string>): Slot { return values; }`,
     ],
     [
       'an optional owner',
