@@ -24546,6 +24546,8 @@ function containsIrFunctionTypeInRustNamespaceMemberRust(
   resolving: ReadonlySet<string>,
 ): boolean {
   const namedLocations = getRustNamespaceNamedDeclarationLocationsRust(type, context, module);
+  const classLocations = getRustNamespaceClassDeclarationLocationsRust(type, context, module);
+  if (namedLocations.length + classLocations.length !== 1) return true;
   if (namedLocations.length === 1) {
     const location = namedLocations[0]!;
     const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
@@ -24576,22 +24578,18 @@ function containsIrFunctionTypeInRustNamespaceMemberRust(
       true
     );
   }
-  const classLocations = getRustNamespaceClassDeclarationLocationsRust(type, context, module);
-  if (classLocations.length === 1) {
-    const location = classLocations[0]!;
-    const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
-    if (resolving.has(key)) return false;
-    const active = new Set(resolving).add(key);
-    return (
-      location.declaration.fields.some((field) =>
-        containsIrFunctionTypeRust(field.type, context, location.module, active),
-      ) ||
-      (location.declaration.extends
-        ? containsIrFunctionTypeRust(location.declaration.extends, context, location.module, active)
-        : false)
-    );
-  }
-  return true;
+  const location = classLocations[0]!;
+  const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return false;
+  const active = new Set(resolving).add(key);
+  return (
+    location.declaration.fields.some((field) =>
+      containsIrFunctionTypeRust(field.type, context, location.module, active),
+    ) ||
+    (location.declaration.extends
+      ? containsIrFunctionTypeRust(location.declaration.extends, context, location.module, active)
+      : false)
+  );
 }
 
 function opaqueHostType(context: EmitContext): string {

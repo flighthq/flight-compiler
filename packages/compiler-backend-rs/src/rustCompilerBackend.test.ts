@@ -2360,7 +2360,7 @@ describe('emitIrModuleRust', () => {
   it('omits Debug through a namespace-qualified callable-state class', () => {
     const provider = lower(
       'namespace-class-provider.ts',
-      'export class CallableState { callback: () => void = () => {}; }',
+      'export class CallableState { callback: () => void; }',
     ).module;
     const consumer = lower(
       'namespace-class-consumer.ts',
@@ -2381,6 +2381,11 @@ describe('emitIrModuleRust', () => {
     expect(providerOutput).toContain('#[derive(Clone)]\npub struct CallableState');
     expect(consumerOutput).toContain('#[derive(Clone)]\npub struct Holder');
     expect(consumerOutput).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+    if (rustcAvailable) {
+      expect(() =>
+        compileRustModulePair('namespace_class_provider', providerOutput, 'namespace_class_consumer', consumerOutput),
+      ).not.toThrow();
+    }
   });
 
   it('omits Debug through a type-namespace-qualified callable-state interface', () => {
@@ -2472,6 +2477,102 @@ describe('emitIrModuleRust', () => {
       },
     ];
     const output = emitRustModuleInGraph([consumer, firstBarrel, secondBarrel, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it.each([
+    {
+      exports: `export * from './namespace-ambiguous-interface.js';
+                export * from './namespace-ambiguous-class.js';`,
+      name: 'interface then class',
+      reverseGraph: false,
+    },
+    {
+      exports: `export * from './namespace-ambiguous-class.js';
+                export * from './namespace-ambiguous-interface.js';`,
+      name: 'class then interface',
+      reverseGraph: true,
+    },
+  ] as const)(
+    'fails closed for cross-family namespace export ambiguity with $name ordering',
+    ({ exports, reverseGraph }) => {
+      const plainInterface = lower(
+        'namespace-ambiguous-interface.ts',
+        'export interface Shared { value: number }',
+      ).module;
+      const callableClass = lower(
+        'namespace-ambiguous-class.ts',
+        'export class Shared { callback: () => void; }',
+      ).module;
+      const barrel = lower('namespace-ambiguous-barrel.ts', exports).module;
+      const consumer = lower(
+        'namespace-ambiguous-consumer.ts',
+        `import type * as api from './namespace-ambiguous-barrel.js';
+         export interface Holder { value: api.Shared }`,
+      ).module;
+      const interfaceEdge = {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './namespace-ambiguous-interface.js',
+        target: getRustTestModuleIdentity(plainInterface),
+      };
+      const classEdge = {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './namespace-ambiguous-class.js',
+        target: getRustTestModuleIdentity(callableClass),
+      };
+      const consumerEdge = {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-ambiguous-barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      };
+      const providers = reverseGraph ? [callableClass, plainInterface] : [plainInterface, callableClass];
+      const providerEdges = reverseGraph ? [classEdge, interfaceEdge] : [interfaceEdge, classEdge];
+      const output = emitRustModuleInGraph([consumer, barrel, ...providers], consumer, [
+        consumerEdge,
+        ...providerEdges,
+      ]);
+
+      expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+      expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+    },
+  );
+
+  it('fails closed for callable-free cross-family namespace export ambiguity', () => {
+    const plainInterface = lower(
+      'namespace-plain-ambiguous-interface.ts',
+      'export interface Shared { value: number }',
+    ).module;
+    const plainClass = lower('namespace-plain-ambiguous-class.ts', 'export class Shared { value: number = 1; }').module;
+    const barrel = lower(
+      'namespace-plain-ambiguous-barrel.ts',
+      `export * from './namespace-plain-ambiguous-interface.js';
+       export * from './namespace-plain-ambiguous-class.js';`,
+    ).module;
+    const consumer = lower(
+      'namespace-plain-ambiguous-consumer.ts',
+      `import type * as api from './namespace-plain-ambiguous-barrel.js';
+       export interface Holder { value: api.Shared }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './namespace-plain-ambiguous-interface.js',
+        target: getRustTestModuleIdentity(plainInterface),
+      },
+      {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './namespace-plain-ambiguous-class.js',
+        target: getRustTestModuleIdentity(plainClass),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-plain-ambiguous-barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, barrel, plainInterface, plainClass], consumer, edges);
 
     expect(output).toContain('#[derive(Clone)]\npub struct Holder');
     expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
