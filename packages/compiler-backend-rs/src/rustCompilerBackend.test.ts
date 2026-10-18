@@ -16244,7 +16244,7 @@ export function broken(value: unknown): { value: number } { return value as { va
     }
   });
 
-  it.skipIf(!rustcAvailable)('runs the combined optional simple-class parameter checkpoint', () => {
+  it('runs the combined optional simple-class parameter checkpoint', () => {
     const output = emitIrModuleRust(
       lower(
         'optional-simple-class-parameter-checkpoint.ts',
@@ -16299,6 +16299,11 @@ export function broken(value: unknown): { value: number } { return value as { va
            constructor(child: Counter) { this.child = child; }
            selected(): Counter { return this.child; }
            maybeSelected(): Counter | null { return this.child; }
+         }
+         class WritableRetainedSnapshot {
+           child: Counter;
+           constructor(child: Counter) { this.child = child; }
+           selected(): Counter { return this.child; }
          }
          class NullableRetainedSnapshot {
            readonly child: Counter | null;
@@ -16425,7 +16430,34 @@ export function broken(value: unknown): { value: number } { return value as { va
       ).module,
     ).contents;
 
-    expect(() => runRustSource(output, 'assert!(optional_class_parameter_checkpoint());')).not.toThrow();
+    expect(output).toContain('struct WritableRetainedSnapshot {\n    pub child: Rc<RefCell<Counter>>,\n}');
+    const writableSelfAssignment = output.match(
+      /let writable_self_assigned: Rc<RefCell<Counter>> = \{ let (class_field_right(?:_\d+)?) = \{ Rc::clone\(&writable\.borrow\(\)\.child\) \}; writable\.borrow_mut\(\)\.child = Rc::clone\(&\1\); \1 \};/u,
+    )?.[0];
+    expect(writableSelfAssignment).toBeDefined();
+    expect(writableSelfAssignment?.match(/writable\.borrow\(\)\.child/gu)).toHaveLength(1);
+    expect(writableSelfAssignment?.indexOf('writable.borrow().child')).toBeLessThan(
+      writableSelfAssignment?.indexOf('writable.borrow_mut().child') ?? -1,
+    );
+    if (rustcAvailable) {
+      expect(() => runRustSource(output, 'assert!(optional_class_parameter_checkpoint());')).not.toThrow();
+    }
+  });
+
+  it('keeps unsupported same-alias class-field shapes on the existing borrow-conflict refusal', () => {
+    const module = lower(
+      'optional-simple-class-same-alias-conflict.ts',
+      `class Counter { value = 0; }
+       export function unsupportedSameAlias(): number {
+         const value = new Counter(); const alias = value;
+         alias.value = value.value + 1;
+         return alias.value;
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-reference-shared-class-borrow-conflict');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('refuses inexact constructor argument and default-parameter class carriers', () => {
