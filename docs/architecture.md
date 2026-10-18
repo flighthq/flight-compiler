@@ -10,7 +10,7 @@ checkout -> inventory/symbol graph -> semantic lowering -> neutral IR -> patches
 
 This includes concrete Haxe and Rust compiler backends. A backend may define target-only compiler models and transformations, but they sit after the neutral IR boundary.
 
-`flight-hx` and `flight-rs` own the target ecosystems around those files: compiler installation, Haxelib/Cargo layout, maintained runtime and standard-library implementations, host adapters, examples, oracle bridges, integration tests, packaging, and release workflows.
+`flight-hx` and `flight-rs` own the target ecosystems around those files: compiler installation, Haxelib/Cargo layout, maintained runtime and standard-library implementations, host adapters, examples, oracle bridges, integration tests, packaging, and release workflows. The Rust target's package-compilation and module-initialization contract is described in [Rust package compilation](rust-package-compilation.md).
 
 ## Package boundaries
 

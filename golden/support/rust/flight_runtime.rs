@@ -958,6 +958,44 @@ impl FlightDate {
 #[derive(Clone, Debug)]
 pub struct OpaqueHostValue;
 
+/// Downstream-owned in production.
+///
+/// `flight-rs` owns the real module-evaluation runtime: this error type, the reentrancy operation
+/// below, any lifecycle helpers, and the one global serialized bootstrap that drives the generated
+/// group hooks. This test double exists only so generated module-evaluation fragments compile against
+/// the ABI v4 contract. It deliberately implements no bootstrap and no module execution of its own.
+#[derive(Clone, Debug)]
+pub struct FlightModuleEvaluationError {
+    message: String,
+}
+
+impl FlightModuleEvaluationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        self.message.as_str()
+    }
+}
+
+/// The ABI v4 operation a generated lifecycle hook uses to reject re-entrant bootstrap work. The
+/// message is fixed so this double cannot hide a scheduling bug behind interpolated state.
+pub fn module_evaluation_reentrancy_error() -> FlightModuleEvaluationError {
+    FlightModuleEvaluationError::new(
+        "module evaluation was re-entered while another evaluation step was still running",
+    )
+}
+
+// ABI v4 requires the error to cross the bootstrap boundary and be recoverable by the generated
+// sticky-error state. This compile-time assertion keeps the test double honest about the trait set.
+const _: fn() = || {
+    fn assert_flight_module_evaluation_error_bounds<Value: Clone + Send + Sync + 'static>() {}
+    assert_flight_module_evaluation_error_bounds::<FlightModuleEvaluationError>();
+};
+
 #[cfg(test)]
 mod tests {
     use super::{
