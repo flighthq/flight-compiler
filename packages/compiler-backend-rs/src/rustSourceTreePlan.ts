@@ -210,13 +210,13 @@ function createRustSourceTreeFiles(
         return {
           modulePath: [...child.modulePath],
           name,
-          visibility: public_ ? 'public' : 'private',
+          visibility: public_ ? 'public' : 'crate',
         };
       })
       .sort((left, right) => compareTextCodeUnits(left.name, right.name));
     const locator = node.owner?.locator ?? createRustSourceTreeSkeletonLocator(node, multiPackage);
     const sourceFragment = children
-      .map((child) => `${child.visibility === 'public' ? 'pub ' : ''}mod ${child.name};`)
+      .map((child) => `${child.visibility === 'public' ? 'pub' : 'pub(crate)'} mod ${child.name};`)
       .join('\n');
     const ownership = node.owner
       ? node.owner.placeholder

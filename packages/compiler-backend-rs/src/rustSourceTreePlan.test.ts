@@ -22,15 +22,17 @@ describe('createCompilerRustSourceTreePlan', () => {
     const rootFile = findFile(plan, '@scope/math', []);
     const nestedFile = findFile(plan, '@scope/math', ['geometry']);
 
+    expect(rootFile.declarations).toEqual([{ modulePath: ['geometry'], name: 'geometry', visibility: 'crate' }]);
     expect(rootFile).toMatchObject({
       filePath: 'lib.rs',
       ownership: { kind: 'source', module: identity(root) },
-      sourceFragment: 'mod geometry;',
+      sourceFragment: 'pub(crate) mod geometry;',
     });
+    expect(nestedFile.declarations).toEqual([{ modulePath: ['geometry', 'line'], name: 'line', visibility: 'crate' }]);
     expect(nestedFile).toMatchObject({
       filePath: 'geometry/mod.rs',
       ownership: { kind: 'source', module: identity(nested) },
-      sourceFragment: 'mod line;',
+      sourceFragment: 'pub(crate) mod line;',
     });
     expect(plan.files).toHaveLength(3);
   });
@@ -69,10 +71,22 @@ describe('createCompilerRustSourceTreePlan', () => {
     const publicApi = lower('@scope/math', 'api/contract.ts', 'export const contract = 1;');
     const privateValue = lower('@scope/math', 'internal/value.ts', 'export const value = 1;');
     const plan = createPlan([privateValue, root, publicApi], [publicApi]);
+    const rootFile = findFile(plan, '@scope/math', []);
+    const internalFile = findFile(plan, '@scope/math', ['internal']);
 
-    expect(findFile(plan, '@scope/math', []).sourceFragment).toBe('pub mod api;\nmod internal;');
+    expect(rootFile.declarations).toEqual([
+      { modulePath: ['api'], name: 'api', visibility: 'public' },
+      { modulePath: ['internal'], name: 'internal', visibility: 'crate' },
+    ]);
+    expect(rootFile.sourceFragment).toBe('pub mod api;\npub(crate) mod internal;');
     expect(findFile(plan, '@scope/math', ['api']).sourceFragment).toBe('pub mod contract;');
-    expect(findFile(plan, '@scope/math', ['internal']).sourceFragment).toBe('mod value;');
+    expect(internalFile.declarations).toEqual([
+      { modulePath: ['internal', 'value'], name: 'value', visibility: 'crate' },
+    ]);
+    expect(internalFile).toMatchObject({
+      ownership: { kind: 'skeleton' },
+      sourceFragment: 'pub(crate) mod value;',
+    });
   });
 
   it('makes the exact target path of a namespace facade slot public', () => {
@@ -121,9 +135,9 @@ describe('createCompilerRustSourceTreePlan', () => {
       modules: [privateValue, tools, entry],
     });
 
-    expect(findFile(plan, '@scope/math', []).sourceFragment).toBe('pub mod geometry;\nmod internal;');
+    expect(findFile(plan, '@scope/math', []).sourceFragment).toBe('pub mod geometry;\npub(crate) mod internal;');
     expect(findFile(plan, '@scope/math', ['geometry']).sourceFragment).toBe('pub mod tools;');
-    expect(findFile(plan, '@scope/math', ['internal']).sourceFragment).toBe('mod value;');
+    expect(findFile(plan, '@scope/math', ['internal']).sourceFragment).toBe('pub(crate) mod value;');
   });
 
   it('plans scoped multi-package files and canonical same- and cross-crate references', () => {

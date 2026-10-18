@@ -405,7 +405,7 @@ describe('createRustCompilerBackend', () => {
     const rootFile = first.moduleFileReplacements?.find((replacement) => replacement.module.name === root.name)?.file;
     expect(rootFile?.contents).toContain('use crate::geometry::shapes::point::POINT as point;');
     expect(rootFile?.contents).toContain('use beta_types::deep::value::Value;');
-    expect(rootFile?.contents).toContain('pub mod geometry;\nmod internal;');
+    expect(rootFile?.contents).toContain('pub mod geometry;\npub(crate) mod internal;');
     expect(rootFile?.contents).not.toContain('mod filtered;');
     expect(first.moduleFileReplacements?.some((replacement) => replacement.module.name === filtered.name)).toBe(false);
     expect(first.packageFiles.map(({ file }) => file.path)).toEqual([
@@ -416,7 +416,7 @@ describe('createRustCompilerBackend', () => {
       'beta-types/src/lib.rs',
     ]);
     expect(first.packageFiles).toContainEqual({
-      file: { contents: 'mod secret;\n', path: 'alpha-math/src/internal/mod.rs' },
+      file: { contents: 'pub(crate) mod secret;\n', path: 'alpha-math/src/internal/mod.rs' },
       owner: { kind: 'package', packageName: '@alpha/math' },
       provenance: [getRustTestModuleIdentity(secret)],
     });

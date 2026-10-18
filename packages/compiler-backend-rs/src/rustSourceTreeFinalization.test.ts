@@ -71,7 +71,7 @@ describe('createCompilerRustSourceTreeFinalization', () => {
     expect(first.calls.find(({ module }) => module === root.name)).toEqual({
       module: root.name,
       references: [['./geometry/shapes/point.js', 'crate::geometry::shapes::point']],
-      sourceFragment: 'pub mod geometry;\nmod internal;',
+      sourceFragment: 'pub mod geometry;\npub(crate) mod internal;',
       targetPath: 'lib.rs',
     });
 
@@ -91,7 +91,7 @@ describe('createCompilerRustSourceTreeFinalization', () => {
         '#![allow(dead_code)]\n' +
         '#![forbid(unsafe_code)]\n' +
         'pub mod geometry;\n' +
-        'mod internal;\n\n' +
+        'pub(crate) mod internal;\n\n' +
         `pub fn emitted_${root.name.toLowerCase()}() {}\n`,
     );
     expect(pointReplacement).toMatchObject({
@@ -110,7 +110,7 @@ describe('createCompilerRustSourceTreeFinalization', () => {
       provenance: [identity(point)],
     });
     expect(first.result.packageFiles).toContainEqual({
-      file: { contents: 'mod value;\n', path: 'internal/mod.rs' },
+      file: { contents: 'pub(crate) mod value;\n', path: 'internal/mod.rs' },
       owner: { kind: 'package', packageName: '@scope/math' },
       provenance: [identity(privateValue)],
     });
@@ -283,7 +283,7 @@ describe('emitEmittedFileSourceFragmentRust', () => {
       target: identity(provider),
     });
     expect(placeholderRun.result.packageFiles.map(({ file }) => file.path)).toEqual(['lib.rs']);
-    expect(placeholderRun.result.packageFiles[0]?.file.contents).toBe('pub mod consumer;\nmod provider;\n');
+    expect(placeholderRun.result.packageFiles[0]?.file.contents).toBe('pub mod consumer;\npub(crate) mod provider;\n');
     expect(placeholderRun.result.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(['consumer.rs']);
 
     const publicRun = finalize(

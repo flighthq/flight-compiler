@@ -6,7 +6,7 @@ import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 export interface CompilerRustSourceTreeModuleDeclaration {
   readonly modulePath: readonly string[];
   readonly name: string;
-  readonly visibility: 'private' | 'public';
+  readonly visibility: 'crate' | 'public';
 }
 
 export type CompilerRustSourceTreeFileOwnership =
