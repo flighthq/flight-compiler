@@ -2637,11 +2637,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             );
           const borrows =
             binding.kind === 'borrowedMethod' || binding.kind === 'sentinelSearch' || binding.kind === 'splitCollect';
+          const optionalSetElement =
+            expression.callee.member.receiver === 'set'
+              ? getRustOptionalSetElementTypeRust(expression.callee.object, context)
+              : undefined;
           const values =
             expression.callee.member.receiver === 'dataView'
               ? emitCallArgumentsRust(expression, context)
-              : expression.arguments.map((argument) =>
-                  borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
+              : expression.arguments.map(
+                  (argument) =>
+                    emitRustOptionalSetMemberArgumentRust(argument, optionalSetElement, borrows, context) ??
+                    (borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context)),
                 );
           if (binding.kind === 'runtimeMethod') {
             const target = recordRuntimeTypeRust(binding.targetName, context);
@@ -3811,12 +3817,26 @@ function isIrTypeSupportedSharedHashCollectionRust(
     return false;
   }
   const element = type.typeArguments[0];
+  if (kind === 'set') return isRustSharedSetElementDomainRust(element);
   if (element?.kind !== 'primitive') return false;
-  if (kind === 'set') return element.name === 'boolean' || element.name === 'string';
   if (element.name !== 'string') return false;
   const value = type.typeArguments[1];
   return (
     value?.kind === 'primitive' && (value.name === 'boolean' || value.name === 'number' || value.name === 'string')
+  );
+}
+
+// A shared set carries the same scalar domains as a plain one: a primitive string or boolean, or that
+// primitive with exactly one absence member, which the emitted carrier spells `Option<T>`.
+function isRustSharedSetElementDomainRust(type: Readonly<IrType> | undefined): boolean {
+  if (type?.kind === 'primitive') return type.name === 'string' || type.name === 'boolean';
+  if (type?.kind !== 'union') return false;
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return (
+    concrete.length === 1 &&
+    type.types.length - concrete.length === 1 &&
+    concrete[0]!.kind === 'primitive' &&
+    (concrete[0]!.name === 'string' || concrete[0]!.name === 'boolean')
   );
 }
 
@@ -5830,6 +5850,61 @@ function emitLiteral(value: boolean | null | number | string): string {
     return `${String(value)}.0`;
   }
   return String(value);
+}
+
+// A Set whose source element type admits exactly one absence sentinel is carried as `Option<...>`, but
+// ambient member arguments bypass the contextual call planner. Read the receiver's element type so a
+// present value can be wrapped to enter that carrier, while an absent literal already emits `None`.
+function getRustOptionalSetElementTypeRust(
+  receiver: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const receiverType = inferIrExpressionTypeRust(receiver, context);
+  if (!receiverType) return undefined;
+  const resolved = resolveIrTypeAliasValueRust(receiverType, context, new Set());
+  if (
+    resolved.kind !== 'named' ||
+    resolved.reference.kind !== 'ambient' ||
+    (resolved.reference.name !== 'Set' && resolved.reference.name !== 'ReadonlySet') ||
+    resolved.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const element = resolveIrTypeAliasValueRust(resolved.typeArguments[0]!, context, new Set());
+  if (element.kind !== 'union') return undefined;
+  const concrete = element.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return concrete.length === 1 && element.types.length - concrete.length === 1 ? element : undefined;
+}
+
+function emitRustOptionalSetMemberArgumentRust(
+  argument: Readonly<IrExpression>,
+  elementType: Readonly<IrType> | undefined,
+  borrowed: boolean,
+  context: EmitContext,
+): string | undefined {
+  if (!elementType) return undefined;
+  if (argument.kind === 'undefinedValue' || (argument.kind === 'literal' && argument.value === null)) return undefined;
+  const argumentType = inferIrExpressionTypeRust(argument, context);
+  const resolvedArgument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
+  const concrete =
+    resolvedArgument?.kind === 'union'
+      ? resolvedArgument.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
+      : [];
+  const alreadyOptional =
+    resolvedArgument?.kind === 'union' &&
+    concrete.length === 1 &&
+    resolvedArgument.types.length - concrete.length === 1;
+  const operand = emitExpression(argument, context);
+  if (alreadyOptional) return borrowed ? `&${operand}` : operand;
+  // A string payload is owned by the Option, so a named value must be cloned to survive the member
+  // call; the source does not consume it, and a borrow of a temporary cannot outlive the statement.
+  const payload = elementType.kind === 'union' ? elementType.types : [];
+  const concretePayload = payload.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const ownsString =
+    getIrUnionPrimitiveDomainRust(concretePayload, context) === 'string' &&
+    !(argument.kind === 'literal' && typeof argument.value === 'string');
+  const wrapped = `Some(${ownsString ? `${operand}.clone()` : operand})`;
+  return borrowed ? `&${wrapped}` : wrapped;
 }
 
 function emitCallArgumentsRust(
@@ -7885,8 +7960,13 @@ function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, c
   const resolved = resolveIrTypeAliasValueRust(type, context, new Set());
   if (resolved.kind !== 'union') emissionError(context, `${subject} requires one concrete Rust Option payload`);
   const concrete = resolved.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-  if (concrete.length !== 1) emissionError(context, `${subject} requires one concrete Rust Option payload`);
-  return concrete[0]!;
+  const absence = resolved.types.length - concrete.length;
+  if (concrete.length === 1 && absence === 1) return concrete[0]!;
+  // A boolean context expands to its literal alternatives. With one absence member they still name the
+  // one primitive payload `emitType` selects for this union's `Option<...>` carrier.
+  const primitive = absence === 1 ? getIrUnionPrimitiveDomainRust(concrete, context) : undefined;
+  if (primitive) return { kind: 'primitive', name: primitive };
+  emissionError(context, `${subject} requires one concrete Rust Option payload`);
 }
 
 function emitSharedClassCarrierTypeRust(
@@ -15642,7 +15722,7 @@ function assertRustHashCollectionDomainsInTypeRust(
       ) {
         emissionError(
           context,
-          'Rust Set and ReadonlySet require string or boolean elements, or closed aliases to string or boolean; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
+          'Rust Set and ReadonlySet require string or boolean elements, their closed aliases, or one absence sentinel around either of those; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
           'rust-set-element-domain-unrepresented',
           'target-runtime',
         );
@@ -15706,9 +15786,34 @@ function isRustExactHashCollectionDomainRust(
   resolving: ReadonlySet<string>,
   depth: number,
 ): boolean {
+  return isRustHashCollectionDomainRust(type, domain, context, module, resolving, depth, true);
+}
+
+// One absent member around one scalar is exactly the `Option<T>` carrier `emitType` chooses for that
+// union, so the native HashSet stays exact. The concrete member is inspected without the optional
+// allowance: a nested union would emit `Option<Option<...>>`, and a second absence member selects the
+// dual-sentinel enum instead. A closed alias keeps the allowance so `type Slot = string | undefined`
+// passes through the same walk.
+function isRustHashCollectionDomainRust(
+  type: Readonly<IrType>,
+  domain: 'mapKey' | 'setElement',
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+  depth: number,
+  allowOptional: boolean,
+): boolean {
   if (depth > 8) return false;
   if (type.kind === 'primitive') {
     return type.name === 'string' || (domain === 'setElement' && type.name === 'boolean');
+  }
+  if (allowOptional && domain === 'setElement' && type.kind === 'union') {
+    const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return (
+      concrete.length === 1 &&
+      type.types.length - concrete.length === 1 &&
+      isRustHashCollectionDomainRust(concrete[0]!, domain, context, module, resolving, depth + 1, false)
+    );
   }
   if (
     type.kind !== 'named' ||
@@ -15726,13 +15831,14 @@ function isRustExactHashCollectionDomainRust(
   if (location.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return false;
   const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
   if (resolving.has(key)) return false;
-  return isRustExactHashCollectionDomainRust(
+  return isRustHashCollectionDomainRust(
     location.declaration.type,
     domain,
     context,
     location.module,
     new Set(resolving).add(key),
     depth + 1,
+    allowOptional,
   );
 }
 

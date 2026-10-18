@@ -8983,7 +8983,15 @@ function isRustSharedHashCollectionDomainSupported(
   type: Readonly<IrType> | undefined,
   kind: RustSharedHashCollectionKind,
 ): boolean {
-  return type?.kind === 'primitive' && (type.name === 'string' || (kind === 'set' && type.name === 'boolean'));
+  if (type?.kind === 'primitive') return type.name === 'string' || (kind === 'set' && type.name === 'boolean');
+  if (kind !== 'set' || type?.kind !== 'union') return false;
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return (
+    concrete.length === 1 &&
+    type.types.length - concrete.length === 1 &&
+    concrete[0]!.kind === 'primitive' &&
+    (concrete[0]!.name === 'string' || concrete[0]!.name === 'boolean')
+  );
 }
 
 function isRustSharedMapPrimitiveValueType(type: Readonly<IrType>): boolean {

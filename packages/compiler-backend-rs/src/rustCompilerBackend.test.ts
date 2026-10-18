@@ -41375,6 +41375,145 @@ describe('emitIrModuleRust exact Set element domain', () => {
     ).not.toThrow();
   });
 
+  it('represents single-absence optional scalar Set and ReadonlySet element domains', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-scalar-set-carriers.ts',
+        `type Slot = string | undefined;
+         export function addSlot(values: Set<Slot>, value: Slot): void { values.add(value); }
+         export function hasFlag(values: ReadonlySet<boolean | undefined>, value: boolean | undefined): boolean {
+           return values.has(value);
+         }
+         export function count(values: ReadonlySet<string | null>): number { return values.size; }
+         export function empty(): Set<string | undefined> { return new Set<string | undefined>(); }
+         export function flags(): boolean {
+           const values = new Set<boolean | undefined>();
+           values.add(true);
+           values.add(undefined);
+           return values.has(undefined) && values.size === 2;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('type Slot = Option<String>;');
+    expect(output).toContain('pub fn add_slot(values: &mut std::collections::HashSet<Slot>, value: Slot) -> ()');
+    expect(output).toContain(
+      'pub fn has_flag(values: std::collections::HashSet<Option<bool>>, value: Option<bool>) -> bool',
+    );
+    expect(output).toContain('pub fn count(values: std::collections::HashSet<Option<String>>) -> f64');
+    expect(output).toContain('pub fn empty() -> std::collections::HashSet<Option<String>>');
+    expect(output).toContain('return std::collections::HashSet::new();');
+    expect(output).toContain('.insert(value);');
+    expect(output).toContain('.contains(&value)');
+    expect(output).toContain('.insert(Some(true));');
+    expect(output).toContain('.insert(None);');
+    expect(output).toContain('.contains(&None)');
+  });
+
+  it('wraps present Set member arguments to enter the optional element carrier', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-scalar-set-arguments.ts',
+        `export function strings(): boolean {
+           const values = new Set<string | undefined>();
+           values.add('a');
+           const found = values.has('a');
+           values.delete('a');
+           return found && values.size === 0;
+         }
+         export function flags(value: boolean): boolean {
+           const values = new Set<boolean | undefined>();
+           values.add(value);
+           return values.has(value);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('values.insert(Some("a".to_owned()));');
+    expect(output).toContain('values.contains(&Some("a".to_owned()))');
+    expect(output).toContain('values.remove(&Some("a".to_owned()))');
+    expect(output).toContain('values.insert(Some(value));');
+    expect(output).toContain('values.contains(&Some(value));');
+  });
+
+  it.each([
+    ['numeric optional', `export function f(v: Set<number | undefined>): number { return v.size; }`],
+    ['mixed primitives', `export function f(v: Set<string | boolean>): number { return v.size; }`],
+    ['dual sentinel', `export function f(v: Set<string | undefined | null>): number { return v.size; }`],
+    ['structural optional', `export function f(v: Set<{ value: string } | undefined>): number { return v.size; }`],
+    ['array optional', `export function f(v: Set<readonly string[] | undefined>): number { return v.size; }`],
+    [
+      'nested alias sentinel',
+      `type Slot = string | undefined; export function f(v: Set<Slot | null>): number { return v.size; }`,
+    ],
+  ] as const)('keeps %s Set element domains refused', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('optional-scalar-set-refusal.ts', source).module),
+    );
+
+    expect(failure.rule).toBe('rust-set-element-domain-unrepresented');
+    expect(failure.message).toContain('SameValueZero');
+  });
+
+  it('represents optional element domains on the reference-planned Set call path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-scalar-set-reference-plan.ts',
+        `function addSlot(values: Set<string | undefined>, value: string | undefined): void { values.add(value); }
+         export function relay(): number {
+           const values = new Set<string | undefined>();
+           addSlot(values, 'a');
+           addSlot(values, undefined);
+           return values.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'fn add_slot(values: &mut std::collections::HashSet<Option<String>>, value: Option<String>)',
+    );
+    expect(output).toContain('std::collections::HashSet<Option<String>> = std::collections::HashSet::new();');
+  });
+
+  it.skipIf(!rustcAvailable)('runs optional scalar Set round trips for both absence sentinels', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-scalar-set-round-trip.ts',
+        `export function stringOptionalSetRoundTrip(absent: boolean): boolean {
+           const values = new Set<string | undefined>();
+           values.add('a');
+           if (absent) values.add(undefined);
+           const present = values.has('a') && values.size === (absent ? 2 : 1);
+           values.delete('a');
+           return present && !values.has('a');
+         }
+         export function booleanOptionalSetRoundTrip(absent: boolean): boolean {
+           const values = new Set<boolean | undefined>();
+           values.add(true);
+           if (absent) values.add(undefined);
+           return values.has(undefined) === absent && values.size === (absent ? 2 : 1);
+         }
+         export function namedOptionalSetRoundTrip(): boolean {
+           const values = new Set<string | undefined>();
+           const text = 'a';
+           values.add(text);
+           const found = values.has(text);
+           values.delete(text);
+           return found && !values.has(text) && text === 'a';
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('std::collections::HashSet<Option<String>>');
+    expect(output).toContain('std::collections::HashSet<Option<bool>>');
+    expect(() =>
+      runRustSource(
+        output,
+        'assert!(string_optional_set_round_trip(true)); assert!(string_optional_set_round_trip(false)); assert!(boolean_optional_set_round_trip(true)); assert!(boolean_optional_set_round_trip(false)); assert!(named_optional_set_round_trip());',
+      ),
+    ).not.toThrow();
+  });
+
   it('owns a stable target-runtime diagnostic at the containing declaration', () => {
     const module = lower(
       'set-element-diagnostic.ts',
@@ -41389,7 +41528,7 @@ export function bad(values: Set<number>): number { return values.size; }`,
     expect(first.line).toBe(2);
     expect(first.column).toBe(1);
     expect(first.message).toContain(
-      'Rust Set and ReadonlySet require string or boolean elements, or closed aliases to string or boolean; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
+      'Rust Set and ReadonlySet require string or boolean elements, their closed aliases, or one absence sentinel around either of those; other SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
     );
     expect(second).toMatchObject({
       classification: first.classification,
