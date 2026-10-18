@@ -14772,6 +14772,48 @@ it('records structural union-member evidence on discriminant switch cases', () =
   expect(statement?.kind === 'switch' ? statement.subjectDomain : undefined).toBe('string');
 });
 
+it('retains authored nominal union-member evidence for a target-typed local switch', () => {
+  const result = lower(
+    'switch-nominal-local.ts',
+    `interface Alpha { readonly kind: 'alpha'; readonly value: number }
+     interface Beta { readonly kind: 'beta'; readonly count: number }
+     type Slot = Alpha | Beta;
+     export function keep(input: Slot): Slot {
+       const slot: Slot = input;
+       switch (slot.kind) {
+         case 'alpha': return slot;
+         case 'beta': return slot;
+       }
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'keep',
+  );
+  const statement = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+  const firstReturn = statement?.kind === 'switch' ? statement.cases[0]?.statements[0] : undefined;
+  const secondReturn = statement?.kind === 'switch' ? statement.cases[1]?.statements[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(statement?.kind === 'switch' ? statement.cases[0]?.unionMemberTest : undefined).toMatchObject({
+    binding: { name: 'slot' },
+    member: { kind: 'named', reference: { binding: { name: 'Alpha' } } },
+    whenResult: true,
+  });
+  expect(statement?.kind === 'switch' ? statement.cases[1]?.unionMemberTest : undefined).toMatchObject({
+    binding: { name: 'slot' },
+    member: { kind: 'named', reference: { binding: { name: 'Beta' } } },
+    whenResult: true,
+  });
+  expect(firstReturn?.kind === 'return' ? firstReturn.expression : undefined).toMatchObject({
+    kind: 'identifier',
+    narrowedType: { kind: 'named', reference: { binding: { name: 'Alpha' } } },
+  });
+  expect(secondReturn?.kind === 'return' ? secondReturn.expression : undefined).toMatchObject({
+    kind: 'identifier',
+    narrowedType: { kind: 'named', reference: { binding: { name: 'Beta' } } },
+  });
+});
+
 it('records discriminant evidence carried by one constituent of an intersection arm', () => {
   const result = lower(
     'switch-intersection-union.ts',

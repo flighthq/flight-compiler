@@ -37687,6 +37687,71 @@ export function preserved(value: Item | undefined): Item | undefined { return va
     expect(emitIrModuleRust(result.module).contents).toBe(output);
   });
 
+  it('narrows an exact one-hop target-union carrier transfer through an exhaustive switch', () => {
+    const result = lower(
+      'discriminated-nominal-union-switch-transfer.ts',
+      `interface Alpha { readonly kind: 'alpha'; readonly value: number }
+       interface Beta { readonly kind: 'beta'; readonly count: number }
+       type Choice = Alpha | Beta;
+       function consumeAlpha(_value: Alpha): number { return 1; }
+       function consumeBeta(_value: Beta): number { return 2; }
+       function consumeChoice(_value: Choice): number { return 3; }
+       export function keep(choice: Choice): Choice {
+         const slot: Choice = choice;
+         switch (slot.kind) {
+           case 'alpha': return slot;
+           case 'beta': return slot;
+         }
+       }
+       export function consume(choice: Choice): number {
+         const slot: Choice = choice;
+         switch (slot.kind) {
+           case 'alpha': consumeChoice(slot); return consumeAlpha(slot);
+           case 'beta': consumeChoice(slot); return consumeBeta(slot);
+         }
+       }
+       export function assign(choice: Choice): Choice {
+         const slot: Choice = choice;
+         let result: Choice = slot;
+         switch (slot.kind) {
+           case 'alpha': result = slot; break;
+           case 'beta': result = slot; break;
+         }
+         return result;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    const alpha = 'match &slot { Choice::Alpha(value) => value.clone(), _ => unreachable!() }';
+    const beta = 'match &slot { Choice::Beta(value) => value.clone(), _ => unreachable!() }';
+    expect(output.match(/let slot: Choice = choice;/gu)).toHaveLength(3);
+    expect(output.match(/if matches!\(&slot, Choice::Alpha\(_\)\) \{/gu)).toHaveLength(3);
+    expect(output.match(/return slot\.clone\(\);/gu)).toHaveLength(2);
+    expect(output.match(/consume_choice\(slot\.clone\(\)\)/gu)).toHaveLength(2);
+    expect(output).toContain(`return consume_alpha(${alpha});`);
+    expect(output).toContain(`return consume_beta(${beta});`);
+    expect(output).toContain('let mut result: Choice = slot.clone();');
+    expect(output.match(/result = slot\.clone\(\)/gu)).toHaveLength(2);
+    expect(output).not.toContain('switch_value');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          `let alpha = Choice::Alpha(Alpha { kind: "alpha".to_owned(), value: 4.0 });
+           let beta = Choice::Beta(Beta { kind: "beta".to_owned(), count: 5.0 });
+           match keep(alpha.clone()) { Choice::Alpha(value) => assert_eq!(value.value, 4.0), _ => panic!() };
+           match keep(beta.clone()) { Choice::Beta(value) => assert_eq!(value.count, 5.0), _ => panic!() };
+           assert_eq!(consume(alpha.clone()), 1.0);
+           assert_eq!(consume(beta.clone()), 2.0);
+           match assign(alpha) { Choice::Alpha(value) => assert_eq!(value.value, 4.0), _ => panic!() };
+           match assign(beta) { Choice::Beta(value) => assert_eq!(value.count, 5.0), _ => panic!() };`,
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it('preserves discriminated switch case source order and allocated collision variants', () => {
     const result = lower(
       'discriminated-nominal-union-switch-order.ts',
@@ -37922,8 +37987,26 @@ export function preserved(value: Item | undefined): Item | undefined { return va
 
   it.each([
     [
-      'an alias binding',
+      'a mutable alias binding',
+      `let alias: Choice = choice;
+       switch (alias.kind) { case 'alpha': return alpha(alias); case 'beta': return beta(alias); }`,
+    ],
+    [
+      'an alias chain',
+      `const first: Choice = choice;
+       const alias: Choice = first;
+       switch (alias.kind) { case 'alpha': return alpha(alias); case 'beta': return beta(alias); }`,
+    ],
+    [
+      'an alias whose source is used again',
       `const alias: Choice = choice;
+       consumeChoice(choice);
+       switch (alias.kind) { case 'alpha': return alpha(alias); case 'beta': return beta(alias); }`,
+    ],
+    [
+      'an alias whose source referent is mutated',
+      `const alias: Choice = choice;
+       choice.shared = 1;
        switch (alias.kind) { case 'alpha': return alpha(alias); case 'beta': return beta(alias); }`,
     ],
     [
@@ -37941,18 +38024,43 @@ export function preserved(value: Item | undefined): Item | undefined { return va
   ])('refuses an exhaustive discriminated switch over %s', (_name, body) => {
     const result = lower(
       'discriminated-nominal-union-switch-binding-refusal.ts',
-      `interface Alpha { readonly kind: 'alpha'; value: number }
-       interface Beta { readonly kind: 'beta'; count: number }
+      `interface Alpha { readonly kind: 'alpha'; value: number; shared: number }
+       interface Beta { readonly kind: 'beta'; count: number; shared: number }
        type Choice = Alpha | Beta;
        interface Box { choice: Choice }
        function alpha(_value: Alpha): number { return 1; }
        function beta(_value: Beta): number { return 2; }
+       function consumeChoice(_value: Choice): number { return 3; }
        export function split(choice: Choice, replacement: Choice, box: Box): number { ${body} }`,
     );
 
     expect(result.diagnostics).toEqual([]);
     expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
       'rust-discriminated-nominal-arm-extraction-unrepresented',
+    );
+  });
+
+  it('refuses a discriminated switch alias transfer across nominal union owners', () => {
+    const result = lower(
+      'discriminated-nominal-union-switch-cross-owner-refusal.ts',
+      `interface Alpha { readonly kind: 'alpha'; value: number }
+       interface Beta { readonly kind: 'beta'; count: number }
+       type Source = Alpha | Beta;
+       type Target = Alpha | Beta;
+       function alpha(_value: Alpha): number { return 1; }
+       function beta(_value: Beta): number { return 2; }
+       export function split(choice: Source): number {
+         const slot: Target = choice;
+         switch (slot.kind) {
+           case 'alpha': return alpha(slot);
+           case 'beta': return beta(slot);
+         }
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
     );
   });
 
@@ -38291,16 +38399,20 @@ type Choice = Alpha | Beta;
 function alpha(_value: Alpha): number { return 1; }
 function beta(_value: Beta): number { return 2; }
 export function split(choice: Choice): number {
-  switch (choice.kind) {
-    case 'alpha': return alpha(choice);
-    case 'beta': return beta(choice);
+  const slot: Choice = choice;
+  switch (slot.kind) {
+    case 'alpha': return alpha(slot);
+    case 'beta': return beta(slot);
   }
 }`;
     const getSwitchAndUse = (module: IrModule, caseIndex: number) => {
       const declaration = module.declarations.find(
         (candidate) => candidate.kind === 'function' && candidate.binding.name === 'split',
       );
-      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const statement =
+        declaration?.kind === 'function'
+          ? declaration.body.find((candidate) => candidate.kind === 'switch')
+          : undefined;
       const switchCase = statement?.kind === 'switch' ? statement.cases[caseIndex] : undefined;
       const returned = switchCase?.statements[0];
       const call = returned?.kind === 'return' ? returned.expression : undefined;
@@ -38406,6 +38518,66 @@ export function keep(value: Beta): Choice { return value; }`;
     expect(placeholder.contents).toContain('enum Choice');
     expect(placeholder.contents).toContain('pub fn keep(value: Beta) -> Choice');
     expect(placeholder.contents).toContain('return Choice::Beta(value);');
+    expect(placeholder.contents).not.toContain('AnonymousUnion');
+  });
+
+  it('keeps unsupported alias-transfer refusal declaration-local during salvage', () => {
+    const source = `interface Alpha { readonly kind: 'alpha'; readonly value: number }
+interface Beta { readonly kind: 'beta'; readonly count: number }
+type Choice = Alpha | Beta;
+function alpha(_value: Alpha): number { return 1; }
+function beta(_value: Beta): number { return 2; }
+export function broken(choice: Choice): number {
+  const first: Choice = choice;
+  const slot: Choice = first;
+  switch (slot.kind) {
+    case 'alpha': return alpha(slot);
+    case 'beta': return beta(slot);
+  }
+}
+export function keep(choice: Choice): Choice {
+  const slot: Choice = choice;
+  switch (slot.kind) {
+    case 'alpha': return slot;
+    case 'beta': return slot;
+  }
+}`;
+    const module = lower('discriminated-nominal-union-alias-salvage.ts', source).module;
+    const refusal = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const repeated = captureBackendEmissionFailure(() => emitIrModuleRust(structuredClone(module)));
+    expect(refusal.rule).toBe('rust-discriminated-nominal-arm-extraction-unrepresented');
+    expect(repeated.rule).toBe(refusal.rule);
+    expect(repeated.message).toBe(refusal.message);
+
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-discriminated-nominal-arm-extraction-unrepresented',
+          message: refusal.message,
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected the Rust session to expose a refusal placeholder emitter');
+    const placeholder = emitPlaceholder(module, { message: refusal.message, sourceText: source });
+    if (!placeholder) throw new Error('expected a partial file for the refused module');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken -- source line 6');
+    expect(placeholder.contents).toContain('// refusal: rust-discriminated-nominal-arm-extraction-unrepresented');
+    expect(placeholder.contents).toContain('pub fn keep(choice: Choice) -> Choice');
+    expect(placeholder.contents).toContain('let slot: Choice = choice;');
+    expect(placeholder.contents).toContain('if matches!(&slot, Choice::Alpha(_)) {');
+    expect(placeholder.contents.match(/return slot\.clone\(\);/gu)).toHaveLength(2);
     expect(placeholder.contents).not.toContain('AnonymousUnion');
   });
 

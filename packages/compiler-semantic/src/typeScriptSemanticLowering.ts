@@ -7654,11 +7654,36 @@ function getTypeScriptUnionBindingEvidence(
 ): Readonly<{ binding: IrBindingIdentity; declared: IrType; type: Extract<IrType, { kind: 'union' }> }> | undefined {
   const symbol = context.checker.getSymbolAtLocation(node);
   const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
-  const members = declared ? getTypeScriptNarrowingAlternatives(declared, context, new Set()) : [];
+  const members = symbol ? getTypeScriptBindingNarrowingAlternatives(symbol, context, false) : [];
   const type = members[0] ? commonType([members[0], ...members.slice(1)]) : undefined;
   if (!declared || type?.kind !== 'union') return undefined;
   const reference = lowerIdentifierReference(node, context);
   return reference.kind === 'binding' ? { binding: reference.binding, declared, type } : undefined;
+}
+
+function getTypeScriptBindingNarrowingAlternatives(
+  symbol: ts.Symbol,
+  context: LoweringContext,
+  includeAuthoredParameters: boolean,
+): readonly IrType[] {
+  const recorded = context.bindingTypes.get(symbol);
+  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  const authored =
+    declaration &&
+    (ts.isVariableDeclaration(declaration) || (includeAuthoredParameters && ts.isParameter(declaration))) &&
+    declaration.type !== undefined
+      ? lowerType(declaration.type, context)
+      : undefined;
+  // A checker-derived binding type may expand a named alias into structural alternatives. Prefer the
+  // authored owner when it really is a union so discriminant evidence retains the declaration
+  // identities that the branch-local narrowing evidence also names. Anonymous unions still fall
+  // through to their recorded structural alternatives.
+  const authoredAlternatives = authored ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set()) : [];
+  return authoredAlternatives.length >= 2
+    ? authoredAlternatives
+    : recorded
+      ? getTypeScriptNarrowingAlternatives(recorded, context, new Set())
+      : [];
 }
 
 function getTypeScriptNarrowingUnionAlternatives(
@@ -8462,25 +8487,7 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
     const equalityDomain = getTypeScriptEnclosingLiteralEqualityNarrowingDomain(node, symbol, context.checker);
     if (equalityDomain) return { narrowedMember: equalityDomain };
   }
-  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
-  const authored =
-    declaration &&
-    (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
-    declaration.type !== undefined
-      ? lowerType(declaration.type, context)
-      : undefined;
-  // The checker-derived binding evidence may expand a recursive alias until its cycle becomes an empty
-  // structural object. The authored annotation retains the named owner at that cycle, and the alias
-  // resolver below can still enumerate its exact alternatives. Prefer it when it resolves as a union so
-  // narrowing never trades a declared owner for a lookalike structural carrier; otherwise retain the
-  // checker evidence that served non-union annotations before this owner-preserving lane.
-  const authoredAlternatives = authored ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set()) : [];
-  const alternatives =
-    authoredAlternatives.length >= 2
-      ? authoredAlternatives
-      : recorded
-        ? getTypeScriptNarrowingAlternatives(recorded, context, new Set())
-        : [];
+  const alternatives = getTypeScriptBindingNarrowingAlternatives(symbol, context, true);
   if (alternatives.length < 2) return {};
   let remaining = alternatives;
   let reachedAssignment = false;

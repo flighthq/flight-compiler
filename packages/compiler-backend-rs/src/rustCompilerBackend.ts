@@ -239,6 +239,11 @@ interface RustDiscriminatedNominalEnumPlan {
   }>[];
 }
 
+interface RustDiscriminatedNominalUnionAlias {
+  readonly mutable: boolean;
+  readonly source: Readonly<IrBindingIdentity>;
+}
+
 interface RustDiscriminatedNominalUnionBranch {
   readonly bindingId: string;
   readonly direct: boolean;
@@ -606,7 +611,7 @@ interface EmitContext {
     Readonly<{ length: number; element: Readonly<RustExactScalarCarrier> }>
   >;
   deepCloneUnsafeBindingIds: ReadonlySet<string>;
-  discriminatedNominalUnionAliasBindingIds: ReadonlySet<string>;
+  discriminatedNominalUnionAliases: ReadonlyMap<string, RustDiscriminatedNominalUnionAlias>;
   discriminatedNominalUnionBranch?: RustDiscriminatedNominalUnionBranch | undefined;
   discriminatedNominalUnionGuardTestBindingId?: string | undefined;
   discriminatedNominalUnionEligibleSwitchOrigins: ReadonlySet<string>;
@@ -1232,7 +1237,7 @@ function emitIrModuleRustWithContext(
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
   const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
   const denseArrayConstructorInitializers = collectRustDenseArrayConstructorInitializersRust(module);
-  const discriminatedNominalUnionAliasBindingIds = collectRustDiscriminatedNominalUnionAliasBindingIds(module);
+  const discriminatedNominalUnionAliases = collectRustDiscriminatedNominalUnionAliases(module);
   const contextSourceModules = replaceIrModuleBackendContext(sourceModules, module);
   const targetNameMaps = createRustTargetNameMaps(contextSourceModules);
   const optionalGeneratedEnumAllocations = new Map<string, RustOptionalGeneratedEnumAllocation>();
@@ -1296,7 +1301,7 @@ function emitIrModuleRustWithContext(
           : [],
       ),
     ),
-    discriminatedNominalUnionAliasBindingIds,
+    discriminatedNominalUnionAliases,
     discriminatedNominalUnionBranch: undefined,
     discriminatedNominalUnionGuardTestBindingId: undefined,
     discriminatedNominalUnionEligibleSwitchOrigins,
@@ -11079,8 +11084,10 @@ function collectIrModuleBindingTypesRust(module: Readonly<IrModule>): ReadonlyMa
   return result;
 }
 
-function collectRustDiscriminatedNominalUnionAliasBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
-  const result = new Set<string>();
+function collectRustDiscriminatedNominalUnionAliases(
+  module: Readonly<IrModule>,
+): ReadonlyMap<string, RustDiscriminatedNominalUnionAlias> {
+  const result = new Map<string, RustDiscriminatedNominalUnionAlias>();
   analyzeIrModuleTraversal(module, {
     variable(variable) {
       if (
@@ -11088,7 +11095,10 @@ function collectRustDiscriminatedNominalUnionAliasBindingIds(module: Readonly<Ir
         variable.initializer?.kind === 'identifier' &&
         variable.initializer.reference.kind === 'binding'
       ) {
-        result.add(variable.binding.id);
+        result.set(variable.binding.id, {
+          mutable: variable.mutable,
+          source: variable.initializer.reference.binding,
+        });
       }
     },
   });
@@ -11344,7 +11354,7 @@ function getRustDiscriminatedNominalUnionIfElsePlanRust(
     operatorResult === undefined ||
     evidence.whenResult !== operatorResult ||
     context.nativeAsyncFunction ||
-    context.discriminatedNominalUnionAliasBindingIds.has(testedBinding.id) ||
+    context.discriminatedNominalUnionAliases.has(testedBinding.id) ||
     context.moduleStateBindings.has(testedBinding.id) ||
     isRustBindingReferencePlannedRust(testedBinding.id, context) ||
     context.reboundBindingIds.has(testedBinding.id) ||
@@ -11468,7 +11478,7 @@ function getRustDiscriminatedNominalUnionSwitchPlanRust(
     subject.reference.kind !== 'binding' ||
     subject.reference.binding.id !== testedBinding.id ||
     context.nativeAsyncFunction ||
-    context.discriminatedNominalUnionAliasBindingIds.has(testedBinding.id) ||
+    !isRustDiscriminatedNominalUnionSwitchAliasTransferRust(testedBinding, declaredType, context) ||
     context.moduleStateBindings.has(testedBinding.id) ||
     isRustBindingReferencePlannedRust(testedBinding.id, context) ||
     context.reboundBindingIds.has(testedBinding.id) ||
@@ -11533,6 +11543,34 @@ function getRustDiscriminatedNominalUnionSwitchPlanRust(
     cases: [casePlans[0]!, casePlans[1]!],
     owner: plan.owner,
   };
+}
+
+function isRustDiscriminatedNominalUnionSwitchAliasTransferRust(
+  binding: Readonly<IrBindingIdentity>,
+  declaredType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const alias = context.discriminatedNominalUnionAliases.get(binding.id);
+  if (!alias) return true;
+  const sourceId = alias.source.id;
+  const sourceType = context.bindingTypes.get(sourceId);
+  const targetIdentity = getIrNamedTypeIdentityRust(declaredType, context);
+  const sourceIdentity = sourceType ? getIrNamedTypeIdentityRust(sourceType, context) : undefined;
+  // This is an ownership transfer, not general alias tracking: the source has the exact carrier and
+  // is consumed only by the immutable target initialization. A chain or any second source use would
+  // leave two source-level names whose referent changes the value emitter cannot keep synchronized.
+  return (
+    !alias.mutable &&
+    sourceId !== binding.id &&
+    !context.discriminatedNominalUnionAliases.has(sourceId) &&
+    !context.movedBindingIds.has(sourceId) &&
+    targetIdentity !== undefined &&
+    sourceIdentity?.key === targetIdentity.key &&
+    !context.moduleStateBindings.has(sourceId) &&
+    !isRustBindingReferencePlannedRust(sourceId, context) &&
+    !context.reboundBindingIds.has(sourceId) &&
+    !context.referentMutatedBindingIds.has(sourceId)
+  );
 }
 
 function hasRustDiscriminatedNominalUnionSwitchCaseBoundaryRust(switchCase: Readonly<IrSwitchCase>): boolean {
