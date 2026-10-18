@@ -3,14 +3,15 @@ import { createBackendEmissionFailure } from '../../compiler-emission/src/index.
 import type {
   CompilerModuleIdentity,
   CompilerRustRuntimeAbiManifest,
+  CompilerRustRuntimeAbiManifestV4,
   CompilerRustRuntimeRequirement,
-  CompilerRustRuntimeRequirementsPlan,
+  CompilerRustRuntimeRequirementsPlanV2,
 } from '../../compiler-types/src/index.js';
 import { createCompilerRustAmbientMemberBindingPlan } from './rustAmbientMemberBinding.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import { createCompilerRustRuntimeExternalSymbolBindingPlan } from './rustRuntimeExternalSymbolBinding.js';
 
-export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiManifest {
+export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiManifestV4 {
   return cloneAndFreezeRustRuntimeAbiValue({
     ambientMembers: createCompilerRustAmbientMemberBindingPlan(),
     constructors: createCompilerRuntimeExternalConstructorAbiPlanRust(),
@@ -21,7 +22,7 @@ export function createCompilerRustRuntimeAbiManifest(): CompilerRustRuntimeAbiMa
       schema: 'flight-rust-runtime-representation/1',
     },
     requirements: createCompilerRustRuntimeRequirementsPlan(),
-    schema: 'flight-rust-runtime-abi/3',
+    schema: 'flight-rust-runtime-abi/4',
   });
 }
 
@@ -39,16 +40,33 @@ export function validateCompilerRustRuntimeAbiManifest(
   const missing = [...expectedByIdentity.keys()].filter((identity) => !actualGroups.has(identity));
   const duplicate = [...actualGroups].filter(([, count]) => count > 1).map(([identity]) => identity);
   const unexpected = [...actualGroups.keys()].filter((identity) => !expectedByIdentity.has(identity));
+  // A v3 profile keeps the requirements it was built against; only v4 adds the executable
+  // module-evaluation block, and a v4 manifest that omits or alters it is not the contract the
+  // emitted lifecycle hooks are compiled against.
+  const manifestVersion = manifest.schema;
+  const requirementsVersionMatches =
+    (manifestVersion === 'flight-rust-runtime-abi/3' &&
+      manifest.requirements.schema === 'flight-rust-runtime-requirements/1') ||
+    (manifestVersion === 'flight-rust-runtime-abi/4' &&
+      manifest.requirements.schema === 'flight-rust-runtime-requirements/2');
+  const moduleEvaluation =
+    manifestVersion === 'flight-rust-runtime-abi/4'
+      ? (manifest.requirements as Readonly<{ moduleEvaluation?: unknown }>).moduleEvaluation
+      : undefined;
   const invalidPlans = [
-    ...(manifest.schema === 'flight-rust-runtime-abi/3' ? [] : [`manifest schema ${String(manifest.schema)}`]),
-    ...(manifest.requirements.schema === 'flight-rust-runtime-requirements/1'
+    ...(manifestVersion === 'flight-rust-runtime-abi/3' || manifestVersion === 'flight-rust-runtime-abi/4'
       ? []
-      : [`requirements schema ${String(manifest.requirements.schema)}`]),
+      : [`manifest schema ${String(manifestVersion)}`]),
+    ...(requirementsVersionMatches ? [] : [`requirements schema ${String(manifest.requirements.schema)}`]),
     ...(JSON.stringify(manifest.requirements.tasks) === JSON.stringify(expected.tasks) ? [] : ['task requirements']),
     ...(JSON.stringify(manifest.requirements.unsupportedCapabilities) ===
     JSON.stringify(expected.unsupportedCapabilities)
       ? []
       : ['unsupported capabilities']),
+    ...(manifestVersion === 'flight-rust-runtime-abi/4' &&
+    JSON.stringify(moduleEvaluation) !== JSON.stringify(expected.moduleEvaluation)
+      ? ['module-evaluation requirements']
+      : []),
   ];
   const problems = [
     ...missing.map((identity) => `missing ${formatRustRuntimeRequirementIdentity(identity)}`),
@@ -90,7 +108,7 @@ function cloneAndFreezeRustRuntimeAbiValue<Value>(value: Value): Value {
   return clone;
 }
 
-function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequirementsPlan {
+function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequirementsPlanV2 {
   const externalSymbols = createCompilerRustRuntimeExternalSymbolBindingPlan();
   const ambientMembers = createCompilerRustAmbientMemberBindingPlan();
   const constructors = createCompilerRuntimeExternalConstructorAbiPlanRust();
@@ -179,10 +197,25 @@ function createCompilerRustRuntimeRequirementsPlan(): CompilerRustRuntimeRequire
   addRustRuntimeRequirement(requirements, { kind: 'trait', targetName: 'FlightTask', traitName: 'Future' });
 
   return {
+    moduleEvaluation: {
+      error: {
+        targetName: 'FlightModuleEvaluationError',
+        traits: ['Clone', 'Send', 'Sync', "'static"],
+      },
+      reentrancy: {
+        operation: {
+          kind: 'function',
+          result: 'FlightModuleEvaluationError',
+          targetName: 'flight_runtime::module_evaluation_reentrancy_error',
+        },
+        policy: 'reject',
+      },
+      schema: 'flight-rust-runtime-module-evaluation-requirements/1',
+    },
     requirements: [...requirements.values()].sort((left, right) =>
       compareTextCodeUnits(getRustRuntimeRequirementIdentity(left), getRustRuntimeRequirementIdentity(right)),
     ),
-    schema: 'flight-rust-runtime-requirements/1',
+    schema: 'flight-rust-runtime-requirements/2',
     tasks: {
       adapter: {
         cancellation: 'drop-future-on-last-task-owner',

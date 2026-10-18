@@ -252,7 +252,35 @@ export interface CompilerRustRuntimeRequirementsPlan {
   readonly unsupportedCapabilities: readonly CompilerRustRuntimeUnsupportedCapability[];
 }
 
-export interface CompilerRustRuntimeAbiManifest {
+// What the executable module-evaluation plan requires from the runtime: the runtime owns the error
+// type the generated lifecycle hooks return, and the one operation that reports a rejected
+// re-entrant bootstrap. The error must cross the bootstrap boundary and be recoverable, which is what
+// the trait set states; no module execution behavior is described here.
+export interface CompilerRustModuleEvaluationRuntimeRequirements {
+  readonly error: Readonly<{
+    readonly targetName: 'FlightModuleEvaluationError';
+    readonly traits: readonly ['Clone', 'Send', 'Sync', "'static"];
+  }>;
+  readonly reentrancy: Readonly<{
+    readonly operation: Readonly<{
+      readonly kind: 'function';
+      readonly result: 'FlightModuleEvaluationError';
+      readonly targetName: 'flight_runtime::module_evaluation_reentrancy_error';
+    }>;
+    readonly policy: 'reject';
+  }>;
+  readonly schema: 'flight-rust-runtime-module-evaluation-requirements/1';
+}
+
+export interface CompilerRustRuntimeRequirementsPlanV2 {
+  readonly moduleEvaluation: CompilerRustModuleEvaluationRuntimeRequirements;
+  readonly requirements: readonly CompilerRustRuntimeRequirement[];
+  readonly schema: 'flight-rust-runtime-requirements/2';
+  readonly tasks: CompilerRustRuntimeTaskRequirements;
+  readonly unsupportedCapabilities: readonly CompilerRustRuntimeUnsupportedCapability[];
+}
+
+export interface CompilerRustRuntimeAbiManifestV3 {
   readonly ambientMembers: CompilerRustAmbientMemberBindingPlan;
   readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
   readonly externalSymbols: CompilerRustRuntimeExternalSymbolBindingPlan;
@@ -260,6 +288,17 @@ export interface CompilerRustRuntimeAbiManifest {
   readonly requirements: CompilerRustRuntimeRequirementsPlan;
   readonly schema: 'flight-rust-runtime-abi/3';
 }
+
+export interface CompilerRustRuntimeAbiManifestV4 {
+  readonly ambientMembers: CompilerRustAmbientMemberBindingPlan;
+  readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
+  readonly externalSymbols: CompilerRustRuntimeExternalSymbolBindingPlan;
+  readonly representation: CompilerRustRuntimeRepresentationPlan;
+  readonly requirements: CompilerRustRuntimeRequirementsPlanV2;
+  readonly schema: 'flight-rust-runtime-abi/4';
+}
+
+export type CompilerRustRuntimeAbiManifest = CompilerRustRuntimeAbiManifestV3 | CompilerRustRuntimeAbiManifestV4;
 
 export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest | CompilerRustRuntimeAbiManifest;
 

@@ -123,6 +123,116 @@ describe('validateCompilerRustRuntimeAbiManifest', () => {
     expect(failure.message).toContain('invalid manifest schema flight-rust-runtime-abi/2');
     expect(failure.message).toContain('invalid task requirements');
   });
+
+  it('keeps accepting a v3 profile that predates the module-evaluation requirements', () => {
+    const module = lower('export const value = 1;');
+    const manifest = createCompilerRustRuntimeAbiManifest();
+    const v3: CompilerRustRuntimeAbiManifest = {
+      ambientMembers: manifest.ambientMembers,
+      constructors: manifest.constructors,
+      externalSymbols: manifest.externalSymbols,
+      representation: manifest.representation,
+      requirements: {
+        requirements: manifest.requirements.requirements,
+        schema: 'flight-rust-runtime-requirements/1',
+        tasks: manifest.requirements.tasks,
+        unsupportedCapabilities: manifest.requirements.unsupportedCapabilities,
+      },
+      schema: 'flight-rust-runtime-abi/3',
+    };
+
+    expect(() => validateCompilerRustRuntimeAbiManifest(module, v3)).not.toThrow();
+  });
+
+  it('rejects a v4 manifest whose module-evaluation requirements are absent', () => {
+    const module = lower('export const value = 1;');
+    const manifest = createCompilerRustRuntimeAbiManifest();
+    const incomplete = {
+      ...manifest,
+      requirements: {
+        requirements: manifest.requirements.requirements,
+        schema: 'flight-rust-runtime-requirements/2',
+        tasks: manifest.requirements.tasks,
+        unsupportedCapabilities: manifest.requirements.unsupportedCapabilities,
+      },
+    } as unknown as CompilerRustRuntimeAbiManifest;
+
+    const failure = captureBackendEmissionFailure(() => validateCompilerRustRuntimeAbiManifest(module, incomplete));
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
+    expect(failure.message).toContain('invalid module-evaluation requirements');
+  });
+
+  it.each([
+    [
+      'a missing trait',
+      (manifest: ReturnType<typeof createCompilerRustRuntimeAbiManifest>) => ({
+        ...manifest.requirements.moduleEvaluation.error,
+        traits: ['Clone', 'Send', "'static"],
+      }),
+    ],
+    [
+      'a reordered trait set',
+      (manifest: ReturnType<typeof createCompilerRustRuntimeAbiManifest>) => ({
+        ...manifest.requirements.moduleEvaluation.error,
+        traits: ['Send', 'Clone', 'Sync', "'static"],
+      }),
+    ],
+    [
+      'a different reentrancy operation',
+      (manifest: ReturnType<typeof createCompilerRustRuntimeAbiManifest>) => ({
+        ...manifest.requirements.moduleEvaluation,
+        reentrancy: {
+          operation: {
+            ...manifest.requirements.moduleEvaluation.reentrancy.operation,
+            targetName: 'flight_runtime::module_evaluation_reentered',
+          },
+          policy: 'reject',
+        },
+      }),
+    ],
+    [
+      'a different reentrancy policy',
+      (manifest: ReturnType<typeof createCompilerRustRuntimeAbiManifest>) => ({
+        ...manifest.requirements.moduleEvaluation,
+        reentrancy: {
+          ...manifest.requirements.moduleEvaluation.reentrancy,
+          policy: 'retry',
+        },
+      }),
+    ],
+    [
+      'a different module-evaluation schema',
+      (manifest: ReturnType<typeof createCompilerRustRuntimeAbiManifest>) => ({
+        ...manifest.requirements.moduleEvaluation,
+        schema: 'flight-rust-runtime-module-evaluation-requirements/2',
+      }),
+    ],
+  ])('rejects a v4 manifest with %s', (_name, mutate) => {
+    const module = lower('export const value = 1;');
+    const manifest = createCompilerRustRuntimeAbiManifest();
+    const malformed = {
+      ...manifest,
+      requirements: { ...manifest.requirements, moduleEvaluation: mutate(manifest) },
+    } as unknown as CompilerRustRuntimeAbiManifest;
+
+    const failure = captureBackendEmissionFailure(() => validateCompilerRustRuntimeAbiManifest(module, malformed));
+    expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
+    expect(failure.message).toContain('invalid module-evaluation requirements');
+  });
+
+  it('rejects a v4 manifest carrying the v3 requirements schema', () => {
+    const module = lower('export const value = 1;');
+    const manifest = createCompilerRustRuntimeAbiManifest();
+    const mismatched = {
+      ...manifest,
+      requirements: { ...manifest.requirements, schema: 'flight-rust-runtime-requirements/1' },
+    } as unknown as CompilerRustRuntimeAbiManifest;
+
+    const failure = captureBackendEmissionFailure(() => validateCompilerRustRuntimeAbiManifest(module, mismatched));
+    expect(failure.rule).toBe('rust-runtime-abi-requirement-incomplete');
+    expect(failure.message).toContain('invalid requirements schema flight-rust-runtime-requirements/1');
+  });
 });
 
 describe('createCompilerRustRuntimeAbiManifest', () => {
@@ -142,7 +252,22 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
         schema: 'flight-rust-runtime-representation/1',
       },
       requirements: {
-        schema: 'flight-rust-runtime-requirements/1',
+        moduleEvaluation: {
+          error: {
+            targetName: 'FlightModuleEvaluationError',
+            traits: ['Clone', 'Send', 'Sync', "'static"],
+          },
+          reentrancy: {
+            operation: {
+              kind: 'function',
+              result: 'FlightModuleEvaluationError',
+              targetName: 'flight_runtime::module_evaluation_reentrancy_error',
+            },
+            policy: 'reject',
+          },
+          schema: 'flight-rust-runtime-module-evaluation-requirements/1',
+        },
+        schema: 'flight-rust-runtime-requirements/2',
         tasks: {
           adapter: {
             cancellation: 'drop-future-on-last-task-owner',
@@ -175,7 +300,7 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
           taskType: 'FlightTask',
         },
       },
-      schema: 'flight-rust-runtime-abi/3',
+      schema: 'flight-rust-runtime-abi/4',
     });
     expect(manifest.externalSymbols.bindings).toContainEqual({
       capability: 'task',
