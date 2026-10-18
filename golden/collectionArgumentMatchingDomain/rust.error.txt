@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/collectionArgumentMatchingDomain.ts: anonymous union used as a Rust HashSet element requires PartialEq, Eq, and Hash, but cannot prove Eq + Hash: number payload storage uses f64, which implements neither Eq nor Hash
+rust emission failed for @flighthq/golden/packages/golden/src/collectionArgumentMatchingDomain.ts: Rust Set and ReadonlySet require string elements or closed aliases to string; SameValueZero and reference-identity element domains cannot use the native HashSet carrier

@@ -168,7 +168,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     const output = emitIrModuleRust(
       lower(
         `export function createMap(): Map<string, number> { return new Map(); }
-         export function createSet(): Set<number> { return new Set(); }`,
+         export function createSet(): Set<string> { return new Set(); }`,
       ),
     ).contents;
 
@@ -215,7 +215,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
       'export function create(): Map<string, number> { return new Map([["key", 1]]); }',
       'Map[value](1)',
     ],
-    ['Set with an iterable', 'export function create(): Set<number> { return new Set([1]); }', 'Set[value](1)'],
+    ['Set with an iterable', 'export function create(): Set<string> { return new Set(["value"]); }', 'Set[value](1)'],
   ])('refuses %s before Rust source emission', (_name, source, missing) => {
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(lower(source)));
 
@@ -228,7 +228,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     const output = emitIrModuleRust(
       lower(
         `export function createMap(): Map<string, number> { return new Map(); }
-         export function createSet(): Set<number> { return new Set(); }`,
+         export function createSet(): Set<string> { return new Set(); }`,
       ),
     ).contents;
 

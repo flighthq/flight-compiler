@@ -11473,7 +11473,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
   it('emits new Set() as runtime type construction', () => {
     const output = emitIrModuleRust(
-      lower('new-set.ts', `export function makeSet(): Set<number> { return new Set(); }`).module,
+      lower('new-set.ts', `export function makeSet(): Set<string> { return new Set(); }`).module,
     ).contents;
     expect(output).toContain('new');
   });
@@ -31805,7 +31805,7 @@ describe('emitIrModuleRust ambient constructor argument derivation', () => {
     const result = lower(
       'ambient-zero-constructors.ts',
       `export function createMap(): Map<string, number> { return new Map(); }
-       export function createSet(): Set<number> { return new Set(); }`,
+       export function createSet(): Set<string> { return new Set(); }`,
     );
 
     expect(result.diagnostics).toEqual([]);
@@ -35442,7 +35442,7 @@ describe('emitIrModuleRust static Array.from', () => {
     {
       rule: 'rust-array-from-source-carrier-unrepresented',
       source:
-        'export function values(input: Set<number>): number[] { return Array.from(input, (value: number): number => value); }',
+        'export function values(input: Set<string>): number[] { return Array.from(input, (value: string): number => value.length); }',
     },
     {
       rule: 'rust-array-from-sparse-source-unrepresented',
@@ -35792,15 +35792,16 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     expect(output.match(/\.clone\(\)\.unwrap\(\)/gu)).toHaveLength(2);
   });
 
-  it('hands the guarded payload to Set and Map once in receiver-key-value order', () => {
+  it('hands guarded string and union payloads to Set and Map once in receiver-key-value order', () => {
     const result = lower(
       'anonymous-single-sentinel-collection-handoff.ts',
       `interface Alpha { value: string }
        interface Beta { other: boolean }
        function pick(): Alpha | Beta | undefined { return undefined; }
+       function pickText(): string | undefined { return undefined; }
        function nextKey(): string { return 'key'; }
-       export function add(target: Set<Alpha | Beta>): void {
-         const found = pick();
+       export function add(target: Set<string>): void {
+         const found = pickText();
          if (found === undefined) return;
          target.add(found);
        }
@@ -35813,16 +35814,17 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
 
     expect(result.diagnostics).toEqual([]);
     const output = emitIrModuleRust(result.module).contents;
-    expect(output.match(/\bpick\(\)/gu)).toHaveLength(3);
+    expect(output.match(/\bpick\(\)/gu)).toHaveLength(2);
+    expect(output.match(/\bpick_text\(\)/gu)).toHaveLength(2);
     expect(output.match(/\bnext_key\(\)/gu)).toHaveLength(2);
     expect(output).toMatch(/target[^;]*\.insert\(found\.clone\(\)\.unwrap\(\)\)/u);
     expect(output).toMatch(/lookup[^;]*\.insert\(next_key\(\), value\.clone\(\)\.unwrap\(\)\)/u);
-    expect(output).toContain('#[derive(Clone, PartialEq, Eq, Hash)]\npub enum AnonymousUnion');
-    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Alpha');
-    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Beta');
+    expect(output).not.toContain('PartialEq');
+    expect(output).not.toContain(', Eq');
+    expect(output).not.toContain(', Hash');
   });
 
-  it('propagates canonical deduplicated HashSet and record Debug traits through nested unions', () => {
+  it('keeps canonical deduplicated Debug traits independent from a supported Set', () => {
     const records = `interface LeafA { text: string }
                      interface LeafB { flag: boolean }
                      interface Wrapped { nested: LeafA | LeafB }
@@ -35832,7 +35834,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
         'anonymous-union-traits-holder-first.ts',
         `${records}
          interface Holder { slot: Wrapped | Other }
-         export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+         export function add(target: Set<string>, value: string): void {
            target.add(value);
          }`,
       ).module,
@@ -35841,7 +35843,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
       lower(
         'anonymous-union-traits-set-first.ts',
         `${records}
-         export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+         export function add(target: Set<string>, value: string): void {
            target.add(value);
          }
          interface Holder { slot: Wrapped | Other }`,
@@ -35850,14 +35852,17 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     const derives = (output: string): string[] =>
       [...output.matchAll(/#\[derive\(([^)]+)\)\]\npub enum AnonymousUnion\d*/gu)].map((match) => match[1]!);
 
-    expect(derives(first)).toEqual(['Clone, Debug, PartialEq, Eq, Hash', 'Clone, Debug, PartialEq, Eq, Hash']);
+    expect(derives(first)).toEqual(['Clone, Debug', 'Clone, Debug']);
     expect(derives(second)).toEqual(derives(first));
     for (const derive of derives(first)) {
       const traits = derive.split(', ');
       expect(new Set(traits).size).toBe(traits.length);
     }
-    expect(first).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Wrapped');
-    expect(first).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct LeafA');
+    expect(first).toContain('#[derive(Clone, Debug)]\npub struct Wrapped');
+    expect(first).toContain('#[derive(Clone, Debug)]\npub struct LeafA');
+    expect(first).not.toContain('PartialEq');
+    expect(first).not.toContain(', Eq');
+    expect(first).not.toContain(', Hash');
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(first)).not.toThrow();
   });
 
@@ -35886,21 +35891,23 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
   });
 
-  it('attaches HashSet traits to a named record alias rather than accepting anonymous structural carriers', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'anonymous-union-named-record-alias-traits.ts',
-        `type NamedShape = { value: string };
+  it('refuses named record aliases before they can acquire structural Eq and Hash derives', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'anonymous-union-named-record-alias-traits.ts',
+          `type NamedShape = { value: string };
          interface Other { flag: boolean }
          export function add(target: Set<NamedShape | Other>, value: NamedShape | Other): void {
            target.add(value);
          }`,
-      ).module,
-    ).contents;
+        ).module,
+      ),
+    );
 
-    expect(output).toContain('#[derive(Clone, PartialEq, Eq, Hash)]\npub enum AnonymousUnion');
-    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct NamedShape');
-    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Other');
+    expect(failure.rule).toBe('rust-set-element-domain-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('SameValueZero');
   });
 
   it.each([
@@ -35953,22 +35960,24 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
        }`,
       'anonymous intersection payload',
     ],
-  ] as const)('refuses HashSet Eq/Hash proof through %s', (_name, source, reason) => {
+  ] as const)('refuses an unrepresentable Set element domain through %s', (_name, source, _reason) => {
     const module = lower('anonymous-union-structural-hash-refusal.ts', source).module;
     const first = captureBackendEmissionFailure(() => emitIrModuleRust(module));
     const second = captureBackendEmissionFailure(() => emitIrModuleRust(module));
 
-    expect(first.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
-    expect(first.message).toContain(reason);
+    expect(first.rule).toBe('rust-set-element-domain-unrepresented');
+    expect(first.classification).toBe('target-runtime');
+    expect(first.message).toContain('SameValueZero');
     expect({ message: second.message, rule: second.rule }).toEqual({ message: first.message, rule: first.rule });
   });
 
-  it('refuses external, generic, unknown, and recursive Eq/Hash boundaries deterministically', () => {
-    const assertDeterministicRefusal = (emit: () => unknown, reason: string): void => {
+  it('refuses external, generic, unknown, and recursive Set element domains deterministically', () => {
+    const assertDeterministicRefusal = (emit: () => unknown): void => {
       const first = captureBackendEmissionFailure(emit);
       const second = captureBackendEmissionFailure(emit);
-      expect(first.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
-      expect(first.message).toContain(reason);
+      expect(first.rule).toBe('rust-set-element-domain-unrepresented');
+      expect(first.classification).toBe('target-runtime');
+      expect(first.message).toContain('SameValueZero');
       expect({ message: second.message, rule: second.rule }).toEqual({ message: first.message, rule: first.rule });
     };
 
@@ -35980,7 +35989,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
          target.add(value);
        }`,
     ).module;
-    assertDeterministicRefusal(() => emitIrModuleRust(generic), 'generic payload Box');
+    assertDeterministicRefusal(() => emitIrModuleRust(generic));
 
     const recursive = lower(
       'anonymous-union-recursive-hash-refusal.ts',
@@ -35991,7 +36000,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
          target.add(value);
        }`,
     ).module;
-    assertDeterministicRefusal(() => emitIrModuleRust(recursive), 'recursive payload');
+    assertDeterministicRefusal(() => emitIrModuleRust(recursive));
 
     const unknown = lower(
       'anonymous-union-unknown-hash-refusal.ts',
@@ -36011,7 +36020,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
       kind: 'union',
       types: [{ kind: 'unknown', source: 'unknown' }, unknownUnion.types[1]!],
     };
-    assertDeterministicRefusal(() => emitIrModuleRust(unknown), 'unknown payload');
+    assertDeterministicRefusal(() => emitIrModuleRust(unknown));
 
     const providerSource = ts.createSourceFile(
       '/flight/packages/math/src/anonymous-union-external-provider.ts',
@@ -36061,10 +36070,10 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
       modules: [providerResult!.module, consumerResult!.module],
       options: {},
     });
-    assertDeterministicRefusal(() => externalSession.emitModule(consumerResult!.module), 'external payload');
+    assertDeterministicRefusal(() => externalSession.emitModule(consumerResult!.module));
   });
 
-  it('attributes a failed Eq/Hash proof to its declaration and discards every partial trait addition', () => {
+  it('attributes a refused Set element domain to its declaration without leaking Eq or Hash derives', () => {
     const source = `interface Good { value: string }
        interface Recursive { children: Recursive[] }
        interface CallableHolder { callback: () => number }
@@ -36085,8 +36094,8 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
       placeholderModules: [module],
       refusals: [
         {
-          code: 'rust-anonymous-union-trait-obligation-unrepresented',
-          message: 'anonymous union trait obligation refused for the witness',
+          code: 'rust-set-element-domain-unrepresented',
+          message: 'invalid Set element domain',
           module: getRustTestModuleIdentity(module),
         },
       ],
@@ -36094,15 +36103,15 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     const emitPlaceholder = session.emitRefusalPlaceholder;
     if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
     const placeholder = emitPlaceholder(module, {
-      classification: 'compiler-restriction',
-      message: 'anonymous union trait obligation refused for the witness',
-      rule: 'rust-anonymous-union-trait-obligation-unrepresented',
+      classification: 'target-runtime',
+      message: 'invalid Set element domain',
+      rule: 'rust-set-element-domain-unrepresented',
       sourceText: source,
     });
     if (!placeholder) throw new Error('expected a partial file for the refused declaration');
 
     expect(placeholder.contents).toContain('// NOT GENERATED: function broken');
-    expect(placeholder.contents).toContain('// refusal: rust-anonymous-union-trait-obligation-unrepresented');
+    expect(placeholder.contents).toContain('// refusal: rust-set-element-domain-unrepresented [target-runtime]');
     expect(placeholder.contents).toContain('pub fn keep(value: Good) -> String');
     expect(placeholder.contents).toContain('#[derive(Clone, Debug)]\npub struct Good');
     expect(placeholder.contents).toContain('#[derive(Clone)]\npub struct CallableHolder');
@@ -36110,32 +36119,33 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     expect(placeholder.contents).not.toContain('pub enum AnonymousUnion');
   });
 
-  it('keeps ReadonlySet on the exact supported Set trait path', () => {
-    const emit = (collection: 'ReadonlySet' | 'Set'): string =>
-      emitIrModuleRust(
-        lower(
-          `anonymous-union-${collection.toLowerCase()}-traits.ts`,
-          `interface Alpha { text: string }
+  it('keeps ReadonlySet on the exact refused Set element-domain path', () => {
+    const emit = (collection: 'ReadonlySet' | 'Set'): ReturnType<typeof captureBackendEmissionFailure> =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleRust(
+          lower(
+            `anonymous-union-${collection.toLowerCase()}-traits.ts`,
+            `interface Alpha { text: string }
            interface Beta { flag: boolean }
            export function has(target: ${collection}<Alpha | Beta>, value: Alpha | Beta): boolean {
              return target.has(value);
            }`,
-        ).module,
-      ).contents;
-    const derives = (output: string): string[] =>
-      [...output.matchAll(/#\[derive\(([^)]+)\)\]\npub (?:enum AnonymousUnion|struct (?:Alpha|Beta))/gu)].map(
-        (match) => match[1]!,
+          ).module,
+        ),
       );
 
-    expect(derives(emit('ReadonlySet'))).toEqual(derives(emit('Set')));
-    expect(derives(emit('ReadonlySet'))).toEqual([
-      'Clone, PartialEq, Eq, Hash',
-      'Clone, Debug, PartialEq, Eq, Hash',
-      'Clone, Debug, PartialEq, Eq, Hash',
-    ]);
+    const mutable = emit('Set');
+    const readonly = emit('ReadonlySet');
+    expect(readonly).toMatchObject({
+      classification: mutable.classification,
+      rule: mutable.rule,
+    });
+    expect(readonly.rule).toBe('rust-set-element-domain-unrepresented');
+    expect(readonly.message).toContain('SameValueZero');
+    expect(mutable.message).toContain('SameValueZero');
   });
 
-  it('refuses an anonymous HashSet union when a payload transitively stores f64', () => {
+  it('refuses an anonymous Set union before f64 can require structural Eq and Hash', () => {
     const module = lower(
       'anonymous-union-hash-trait-refusal.ts',
       `interface Numeric { value: number }
@@ -36146,9 +36156,9 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
 
-    expect(failure.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
-    expect(failure.message).toContain('cannot prove Eq + Hash');
-    expect(failure.message).toContain('f64');
+    expect(failure.rule).toBe('rust-set-element-domain-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('SameValueZero');
   });
 
   it('omits Debug from a containing record and union when one payload is callable', () => {
@@ -36219,7 +36229,7 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     [
       'shared generic carriers',
       `interface Alpha { value: number }
-       export function refused(): Map<string, Alpha> | Set<Alpha> | undefined { return undefined; }`,
+       export function refused(): Map<string, Alpha> | Set<string> | undefined { return undefined; }`,
     ],
     [
       'a mismatched sentinel expression',
@@ -40460,6 +40470,270 @@ export function wrong(handler: () => Result9): Slot { return handler; }`;
   });
 });
 
+describe('emitIrModuleRust exact Set element domain', () => {
+  const expectedRule = 'rust-set-element-domain-unrepresented';
+
+  it.each([
+    ['parameter', 'export function bad(values: Set<number>): number { return values.size; }'],
+    ['return', 'export function bad(): ReadonlySet<number> { return new Set(); }'],
+    [
+      'local annotation',
+      'export function bad(): number { const values: Set<number> = new Set(); return values.size; }',
+    ],
+    [
+      'inferred constructor local',
+      'export function bad(): number { const values = new Set<number>(); return values.size; }',
+    ],
+    ['type alias', 'export type Bad = Set<number>;'],
+    ['interface property', 'export interface Bad { values: Set<number> }'],
+    ['record property', 'export type Bad = { values: Set<number> };'],
+    ['array element', 'export type Bad = Set<number>[];'],
+    ['tuple element', 'export type Bad = [Set<number>];'],
+    ['callable parameter', 'export type Bad = (values: Set<number>) => string;'],
+    ['optional payload', 'export type Bad = Set<number> | undefined;'],
+    ['general union arm', 'export type Bad = Set<number> | boolean;'],
+  ])('refuses an invalid Set carrier in a %s', (_placement, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-element-placement.ts', source).module))).toBe(
+      expectedRule,
+    );
+  });
+
+  it.each([
+    ['number', 'export type Bad = Set<number>;'],
+    ['closed number alias', 'type Value0 = number; type Value1 = Value0; export type Bad = Set<Value1>;'],
+    ['numeric literal', 'export type Bad = Set<1>;'],
+    ['string literal', "export type Bad = Set<'a'>;"],
+    ['mixed union', 'export type Bad = Set<string | number>;'],
+    ['literal union', "export type Bad = Set<'a' | 'b'>;"],
+    ['unknown', 'export type Bad = Set<unknown>;'],
+    ['any', 'export type Bad = Set<any>;'],
+    ['boolean', 'export type Bad = Set<boolean>;'],
+    ['bigint', 'export type Bad = Set<bigint>;'],
+    ['symbol', 'export type Bad = Set<symbol>;'],
+    ['object', 'export type Bad = Set<object>;'],
+    ['record', 'export type Bad = Set<{ id: string }>;'],
+    ['nested Map', 'export type Bad = Set<Map<number, string>>;'],
+    ['type parameter', 'export type Bad<Value> = Set<Value>;'],
+    ['string-constrained type parameter', 'export type Bad<Value extends string> = Set<Value>;'],
+    ['parameterized string alias', 'type Value<Unused> = string; export type Bad = Set<Value<number>>;'],
+    [
+      'generic Set alias instantiated with string',
+      'type GenericSet<Value> = Set<Value>; export type Bad = GenericSet<string>;',
+    ],
+  ])('refuses the %s element domain', (_domain, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('set-element-domain.ts', source).module))).toBe(expectedRule);
+  });
+
+  it('bounds exact-string alias proof and rejects a cycle', () => {
+    const aliases = Array.from({ length: 10 }, (_, index) =>
+      index === 0 ? 'type Value0 = string;' : `type Value${String(index)} = Value${String(index - 1)};`,
+    ).join('\n');
+    expect(
+      getEmissionRule(() =>
+        emitIrModuleRust(lower('set-element-depth.ts', `${aliases}\nexport type Bad = Set<Value9>;`).module),
+      ),
+    ).toBe(expectedRule);
+
+    const cyclic = structuredClone(
+      lower('set-element-cycle.ts', 'type Value = string; export type Bad = Set<Value>;').module,
+    );
+    const value = cyclic.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Value',
+    );
+    if (value?.kind !== 'typeAlias') throw new Error('expected Value alias');
+    (value as { type: IrType }).type = {
+      kind: 'named',
+      reference: { binding: value.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(expectedRule);
+  });
+
+  it('resolves supported and refused aliases through type imports and reexports', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/set-element-provider.ts',
+      `export type Text = string;
+       export type Numeric = number;
+       export type BadSet = Set<Numeric>;
+       export type GenericSet<Value> = Set<Value>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/set-element-facade.ts',
+      `export type { Text, BadSet, GenericSet } from './set-element-provider.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const goodSource = ts.createSourceFile(
+      '/flight/packages/math/src/set-element-good.ts',
+      `import type { Text } from './set-element-facade.js';
+       export type TextSet = Set<Text>;
+       export function keep(values: ReadonlySet<Text>): ReadonlySet<Text> { return values; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const badAliasSource = ts.createSourceFile(
+      '/flight/packages/math/src/set-element-bad-alias.ts',
+      `import type { BadSet } from './set-element-facade.js';
+       export function bad(values: BadSet): number { return values.size; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const badGenericSource = ts.createSourceFile(
+      '/flight/packages/math/src/set-element-bad-generic.ts',
+      `import type { GenericSet } from './set-element-facade.js';
+       export function bad(values: GenericSet<string>): number { return values.size; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Set-element-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/set-element-facade.ts',
+          },
+          specifier: './set-element-provider.js',
+          target: {
+            name: 'Set-element-provider',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/set-element-provider.ts',
+          },
+        },
+        ...['good', 'bad-alias', 'bad-generic'].map((name) => ({
+          importer: {
+            name: `Set-element-${name}`,
+            packageName: '@flighthq/math',
+            source: `packages/math/src/set-element-${name}.ts`,
+          },
+          specifier: './set-element-facade.js',
+          target: {
+            name: 'Set-element-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/set-element-facade.ts',
+          },
+        })),
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, facadeResult, goodResult, badAliasResult, badGenericResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: goodSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: badAliasSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: badGenericSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const provider = providerResult!.module;
+    const facade = facadeResult!.module;
+    const good = goodResult!.module;
+    const badAlias = badAliasResult!.module;
+    const badGeneric = badGenericResult!.module;
+
+    const goodOutput = emitRustModuleInGraph([good, facade, provider], good, [...moduleResolution.edges]);
+    expect(goodOutput).toContain('std::collections::HashSet<Text>');
+    expect(
+      getEmissionRule(() => emitRustModuleInGraph([badAlias, facade, provider], badAlias, [...moduleResolution.edges])),
+    ).toBe(expectedRule);
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([badGeneric, facade, provider], badGeneric, [...moduleResolution.edges]),
+      ),
+    ).toBe(expectedRule);
+  });
+
+  it('preserves direct, readonly, and closed-alias string element carriers', () => {
+    const result = lower(
+      'set-element-controls.ts',
+      `type Text0 = string;
+       type Text1 = Text0;
+       export type Mutable = Set<Text1>;
+       export type Frozen = ReadonlySet<string>;
+       export function keep(values: Set<string>): ReadonlySet<string> { return values; }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub type Mutable = std::collections::HashSet<Text1>;');
+    expect(output).toContain('pub type Frozen = std::collections::HashSet<String>;');
+    expect(output).toContain(
+      'pub fn keep(values: std::collections::HashSet<String>) -> std::collections::HashSet<String>',
+    );
+    if (rustcAvailable) compileRustSourceAgainstRuntime(output);
+  });
+
+  it('owns a stable target-runtime diagnostic at the containing declaration', () => {
+    const module = lower(
+      'set-element-diagnostic.ts',
+      `type Good = Set<string>;
+export function bad(values: Set<number>): number { return values.size; }`,
+    ).module;
+    const first = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const second = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(first.rule).toBe(expectedRule);
+    expect(first.classification).toBe('target-runtime');
+    expect(first.line).toBe(2);
+    expect(first.column).toBe(1);
+    expect(first.message).toContain(
+      'Rust Set and ReadonlySet require string elements or closed aliases to string; SameValueZero and reference-identity element domains cannot use the native HashSet carrier',
+    );
+    expect(second).toMatchObject({
+      classification: first.classification,
+      column: first.column,
+      line: first.line,
+      message: first.message,
+      rule: first.rule,
+    });
+  });
+
+  it('salvages the refused declaration without changing a supported sibling', () => {
+    const source = `export function bad(values: Set<number>): number { return values.size; }
+export function keep(value: number): number { return value + 1; }`;
+    const mixed = lower('set-element-salvage.ts', source).module;
+    const control = lower(
+      'set-element-salvage-control.ts',
+      'export function keep(value: number): number { return value + 1; }',
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [mixed],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([mixed]),
+      moduleFiles: [],
+      placeholderModules: [mixed],
+      refusals: [
+        {
+          code: expectedRule,
+          message: 'invalid Set element domain',
+          module: getRustTestModuleIdentity(mixed),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected a Rust refusal placeholder emitter');
+    const placeholder = emitPlaceholder(mixed, {
+      classification: 'target-runtime',
+      message: 'invalid Set element domain',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial Rust module');
+
+    expect(placeholder.contents).toContain('// refusal: rust-set-element-domain-unrepresented [target-runtime]');
+    expect(placeholder.contents).not.toContain('pub fn bad');
+    const controlContents = emitIrModuleRust(control).contents;
+    expect(placeholder.contents.slice(placeholder.contents.indexOf('pub fn keep')).trimEnd()).toBe(
+      controlContents.slice(controlContents.indexOf('pub fn keep')).trimEnd(),
+    );
+  });
+});
+
 describe('emitIrModuleRust exact Map key domain', () => {
   const expectedRule = 'rust-map-key-domain-unrepresented';
 
@@ -40500,6 +40774,7 @@ describe('emitIrModuleRust exact Map key domain', () => {
     ['symbol', 'export type Bad = Map<symbol, string>;'],
     ['object', 'export type Bad = Map<object, string>;'],
     ['record', 'export type Bad = Map<{ id: string }, string>;'],
+    ['nested Set', 'export type Bad = Map<Set<number>, string>;'],
     ['type parameter', 'export type Bad<Key> = Map<Key, string>;'],
     ['string-constrained type parameter', 'export type Bad<Key extends string> = Map<Key, string>;'],
     ['parameterized string alias', 'type Key<Value> = string; export type Bad = Map<Key<number>, string>;'],
