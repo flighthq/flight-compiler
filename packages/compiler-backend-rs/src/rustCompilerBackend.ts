@@ -12245,6 +12245,63 @@ function getUniqueRustClassDeclarationLocations(
   ];
 }
 
+interface RustNamespaceExportTarget {
+  readonly exportedName: string;
+  readonly module: Readonly<IrModule>;
+}
+
+// `import * as ns` retains a namespace binding, and a qualified type such as `ns.Member` carries that
+// binding plus the member name in its path. Resolve the namespace's target modules so the member is
+// looked up through the same exported-declaration traversal a named import uses. A path deeper than one
+// segment names a nested namespace export, which this resolver does not prove.
+function getRustNamespaceExportTargetsRust(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+): readonly RustNamespaceExportTarget[] {
+  if (type.reference.kind !== 'binding' || type.reference.path.length !== 1) return [];
+  const binding = type.reference.binding;
+  const exportedName = type.reference.path[0]!;
+  const targets = [module, ...context.sourceModules].flatMap((importer) =>
+    importer.imports.flatMap((item) =>
+      item.bindings.flatMap((candidate) => {
+        if (candidate.binding.id !== binding.id || candidate.imported !== '*') return [];
+        const targetModule = resolveImportModuleRust(item.specifier, candidate.imported, context, importer);
+        return targetModule ? [{ exportedName, module: targetModule }] : [];
+      }),
+    ),
+  );
+  return [
+    ...new Map(
+      targets.map((target) => [`${getRustModuleIdentityKey(target.module)}\0${target.exportedName}`, target]),
+    ).values(),
+  ];
+}
+
+function getRustNamespaceNamedDeclarationLocationsRust(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+): readonly RustNamedTypeDeclarationLocation[] {
+  return getUniqueRustNamedTypeDeclarationLocations(
+    getRustNamespaceExportTargetsRust(type, context, module).flatMap(({ exportedName, module: targetModule }) =>
+      getRustExportedNamedTypeDeclarationLocations(targetModule, exportedName, context, new Set()),
+    ),
+  );
+}
+
+function getRustNamespaceClassDeclarationLocationsRust(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+): readonly RustClassDeclarationLocation[] {
+  return getUniqueRustClassDeclarationLocations(
+    getRustNamespaceExportTargetsRust(type, context, module).flatMap(({ exportedName, module: targetModule }) =>
+      getRustExportedClassDeclarationLocations(targetModule, exportedName, context, new Set()),
+    ),
+  );
+}
+
 function emitAsyncSharedClassMethodCallRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -24417,12 +24474,11 @@ function containsIrFunctionTypeRust(
       if (type.typeArguments.some((argument) => containsIrFunctionTypeRust(argument, context, module, resolving))) {
         return true;
       }
-      if (
-        type.reference.kind !== 'binding' ||
-        type.reference.path.length > 0 ||
-        type.reference.binding.kind === 'typeParameter'
-      ) {
+      if (type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
         return false;
+      }
+      if (type.reference.path.length > 0) {
+        return containsIrFunctionTypeInRustNamespaceMemberRust(type, context, module, resolving);
       }
       const binding = type.reference.binding;
       const namedLocation =
@@ -24478,6 +24534,64 @@ function containsIrFunctionTypeRust(
     case 'unknown':
       return false;
   }
+}
+
+// A namespace-qualified member (`ns.Member`) names a declaration only through its namespace import, so
+// resolve that member before deciding Debug. An unresolved or ambiguous path fails closed: omitting
+// Debug is safe when the member might carry a callable, while retaining it can emit an invalid derive.
+function containsIrFunctionTypeInRustNamespaceMemberRust(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): boolean {
+  const namedLocations = getRustNamespaceNamedDeclarationLocationsRust(type, context, module);
+  if (namedLocations.length === 1) {
+    const location = namedLocations[0]!;
+    const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+    if (resolving.has(key)) return false;
+    const active = new Set(resolving).add(key);
+    if (location.declaration.kind === 'typeAlias') {
+      try {
+        const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+        return containsIrFunctionTypeRust(
+          resolveIrTypeStructuralSubstitution(location.declaration.type, plan),
+          context,
+          location.module,
+          active,
+        );
+      } catch (error) {
+        if (isCompilerStructuralTypeSubstitutionFailure(error)) return true;
+        throw error;
+      }
+    }
+    const declarationType: Readonly<IrType> = {
+      kind: 'named',
+      reference: { binding: location.declaration.binding, kind: 'binding', path: [] },
+      typeArguments: type.typeArguments,
+    };
+    const properties = getIrObjectTypePropertiesRust(declarationType, context, location.module, resolving);
+    return (
+      properties?.some((property) => containsIrFunctionTypeRust(property.type, context, location.module, active)) ??
+      true
+    );
+  }
+  const classLocations = getRustNamespaceClassDeclarationLocationsRust(type, context, module);
+  if (classLocations.length === 1) {
+    const location = classLocations[0]!;
+    const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
+    if (resolving.has(key)) return false;
+    const active = new Set(resolving).add(key);
+    return (
+      location.declaration.fields.some((field) =>
+        containsIrFunctionTypeRust(field.type, context, location.module, active),
+      ) ||
+      (location.declaration.extends
+        ? containsIrFunctionTypeRust(location.declaration.extends, context, location.module, active)
+        : false)
+    );
+  }
+  return true;
 }
 
 function opaqueHostType(context: EmitContext): string {

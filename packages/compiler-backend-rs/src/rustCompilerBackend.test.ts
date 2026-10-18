@@ -2357,6 +2357,155 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
   });
 
+  it('omits Debug through a namespace-qualified callable-state class', () => {
+    const provider = lower(
+      'namespace-class-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const consumer = lower(
+      'namespace-class-consumer.ts',
+      `import * as states from './namespace-class-provider.js';
+       export interface Holder { value: states.CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-class-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const modules = [consumer, provider];
+    const providerOutput = emitRustModuleInGraph(modules, provider, edges);
+    const consumerOutput = emitRustModuleInGraph(modules, consumer, edges);
+
+    expect(providerOutput).toContain('#[derive(Clone)]\npub struct CallableState');
+    expect(consumerOutput).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(consumerOutput).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('omits Debug through a type-namespace-qualified callable-state interface', () => {
+    const provider = lower(
+      'namespace-shape-provider.ts',
+      'export interface CallableShape { callback: () => void }',
+    ).module;
+    const consumer = lower(
+      'namespace-shape-consumer.ts',
+      `import type * as shapes from './namespace-shape-provider.js';
+       export interface Holder { value: shapes.CallableShape }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-shape-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+    const modules = [consumer, provider];
+    const providerOutput = emitRustModuleInGraph(modules, provider, edges);
+    const consumerOutput = emitRustModuleInGraph(modules, consumer, edges);
+
+    expect(providerOutput).toContain('#[derive(Clone)]\npub struct CallableShape');
+    expect(consumerOutput).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(consumerOutput).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('retains Debug for namespace-qualified callable-free classes and interfaces', () => {
+    const provider = lower(
+      'namespace-plain-provider.ts',
+      `export class PlainState { value: number = 1; }
+       export interface PlainShape { value: number }`,
+    ).module;
+    const consumer = lower(
+      'namespace-plain-consumer.ts',
+      `import type * as shapes from './namespace-plain-provider.js';
+       export interface Holder { state: shapes.PlainState; shape: shapes.PlainShape }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-plain-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+    ];
+
+    expect(emitRustModuleInGraph([consumer, provider], consumer, edges)).toContain(
+      '#[derive(Clone, Debug)]\npub struct Holder',
+    );
+  });
+
+  it('finds namespace-qualified callable state through a cyclic barrel and terminates', () => {
+    const provider = lower(
+      'namespace-cycle-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const firstBarrel = lower(
+      'namespace-cycle-first.ts',
+      `export * from './namespace-cycle-second.js';
+       export { CallableState } from './namespace-cycle-provider.js';`,
+    ).module;
+    const secondBarrel = lower('namespace-cycle-second.ts', "export * from './namespace-cycle-first.js';").module;
+    const consumer = lower(
+      'namespace-cycle-consumer.ts',
+      `import * as api from './namespace-cycle-second.js';
+       export interface Holder { value: api.CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(firstBarrel),
+        specifier: './namespace-cycle-second.js',
+        target: getRustTestModuleIdentity(secondBarrel),
+      },
+      {
+        importer: getRustTestModuleIdentity(firstBarrel),
+        specifier: './namespace-cycle-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+      {
+        importer: getRustTestModuleIdentity(secondBarrel),
+        specifier: './namespace-cycle-first.js',
+        target: getRustTestModuleIdentity(firstBarrel),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-cycle-second.js',
+        target: getRustTestModuleIdentity(secondBarrel),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, firstBarrel, secondBarrel, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('fails closed for a namespace path it cannot resolve', () => {
+    const provider = lower(
+      'namespace-deep-provider.ts',
+      'export class CallableState { callback: () => void = () => {}; }',
+    ).module;
+    const barrel = lower('namespace-deep-barrel.ts', "export * as Nested from './namespace-deep-provider.js';").module;
+    const consumer = lower(
+      'namespace-deep-consumer.ts',
+      `import * as root from './namespace-deep-barrel.js';
+       export interface Holder { value: root.Nested.CallableState }`,
+    ).module;
+    const edges = [
+      {
+        importer: getRustTestModuleIdentity(barrel),
+        specifier: './namespace-deep-provider.js',
+        target: getRustTestModuleIdentity(provider),
+      },
+      {
+        importer: getRustTestModuleIdentity(consumer),
+        specifier: './namespace-deep-barrel.js',
+        target: getRustTestModuleIdentity(barrel),
+      },
+    ];
+    const output = emitRustModuleInGraph([consumer, barrel, provider], consumer, edges);
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
   it('selects a represented member for a finite string key while evaluating receiver and key once', () => {
     const output = emitIrModuleRust(
       lower(
