@@ -2645,14 +2645,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             expression.callee.member.receiver === 'set'
               ? getRustOptionalSetElementTypeRust(expression.callee.object, context)
               : undefined;
+          const optionalMapKey =
+            expression.callee.member.receiver === 'map'
+              ? getRustOptionalMapKeyDomainRust(expression.callee.object, context)
+              : undefined;
+          const memberArgument = (argument: Readonly<IrExpression>, index: number, borrowed: boolean): string =>
+            (index === 0
+              ? emitRustOptionalScalarMemberArgumentRust(argument, optionalMapKey, borrowed, context)
+              : undefined) ??
+            emitRustOptionalScalarMemberArgumentRust(argument, optionalSetElement, borrowed, context) ??
+            (borrowed ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context));
           const values =
             expression.callee.member.receiver === 'dataView'
               ? emitCallArgumentsRust(expression, context)
-              : expression.arguments.map(
-                  (argument) =>
-                    emitRustOptionalSetMemberArgumentRust(argument, optionalSetElement, borrows, context) ??
-                    (borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context)),
-                );
+              : expression.arguments.map((argument, index) => memberArgument(argument, index, borrows));
           if (binding.kind === 'runtimeMethod') {
             const target = recordRuntimeTypeRust(binding.targetName, context);
             return `${target}(&${receiver}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
@@ -2689,7 +2695,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|s| s.to_string()).collect::<Vec<String>>()`;
           }
           if (binding.kind === 'optionalLookup') {
-            const borrowed = expression.arguments.map((argument) => emitBorrowedTextRust(argument, context));
+            const borrowed = expression.arguments.map((argument, index) => memberArgument(argument, index, true));
             return `${receiver}.${binding.targetName}(${borrowed.join(', ')}).cloned()`;
           }
           const leading = binding.kind === 'method' ? (binding.leadingArguments ?? []) : [];
@@ -3821,18 +3827,18 @@ function isIrTypeSupportedSharedHashCollectionRust(
     return false;
   }
   const element = type.typeArguments[0];
-  if (kind === 'set') return isRustSharedSetElementDomainRust(element);
-  if (element?.kind !== 'primitive') return false;
-  if (element.name !== 'string') return false;
+  if (!isRustSharedHashCollectionDomainRust(element)) return false;
+  if (kind === 'set') return true;
   const value = type.typeArguments[1];
   return (
     value?.kind === 'primitive' && (value.name === 'boolean' || value.name === 'number' || value.name === 'string')
   );
 }
 
-// A shared set carries the same scalar domains as a plain one: a primitive string or boolean, or that
-// primitive with exactly one absence member, which the emitted carrier spells `Option<T>`.
-function isRustSharedSetElementDomainRust(type: Readonly<IrType> | undefined): boolean {
+// A shared hash collection carries the same scalar key/element domains as a plain one: a primitive
+// string or boolean, or that primitive with exactly one absence member, which the carrier spells
+// `Option<T>`.
+function isRustSharedHashCollectionDomainRust(type: Readonly<IrType> | undefined): boolean {
   if (type?.kind === 'primitive') return type.name === 'string' || type.name === 'boolean';
   if (type?.kind !== 'union') return false;
   const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
@@ -5856,6 +5862,30 @@ function emitLiteral(value: boolean | null | number | string): string {
   return String(value);
 }
 
+// A Map whose source key type admits exactly one absence sentinel is carried as `Option<...>`, so the
+// key argument of set/get/has/delete needs the same conversion a Set member does. Only argument 0
+// names the key; a Map value passes through unchanged.
+function getRustOptionalMapKeyDomainRust(
+  receiver: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const receiverType = inferIrExpressionTypeRust(receiver, context);
+  if (!receiverType) return undefined;
+  const resolved = resolveIrTypeAliasValueRust(receiverType, context, new Set());
+  if (
+    resolved.kind !== 'named' ||
+    resolved.reference.kind !== 'ambient' ||
+    (resolved.reference.name !== 'Map' && resolved.reference.name !== 'ReadonlyMap') ||
+    resolved.typeArguments.length !== 2
+  ) {
+    return undefined;
+  }
+  const key = resolveIrTypeAliasValueRust(resolved.typeArguments[0]!, context, new Set());
+  if (key.kind !== 'union') return undefined;
+  const concrete = key.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return concrete.length === 1 && key.types.length - concrete.length === 1 ? key : undefined;
+}
+
 // A Set whose source element type admits exactly one absence sentinel is carried as `Option<...>`, but
 // ambient member arguments bypass the contextual call planner. Read the receiver's element type so a
 // present value can be wrapped to enter that carrier, while an absent literal already emits `None`.
@@ -5880,13 +5910,16 @@ function getRustOptionalSetElementTypeRust(
   return concrete.length === 1 && element.types.length - concrete.length === 1 ? element : undefined;
 }
 
-function emitRustOptionalSetMemberArgumentRust(
+// A Set element or Map key whose source type admits exactly one absence sentinel enters an
+// `Option<...>` carrier. A present value is wrapped, an absent literal already emits `None`, and a
+// named string payload is cloned so the source value survives the member call.
+function emitRustOptionalScalarMemberArgumentRust(
   argument: Readonly<IrExpression>,
-  elementType: Readonly<IrType> | undefined,
+  optionDomain: Readonly<IrType> | undefined,
   borrowed: boolean,
   context: EmitContext,
 ): string | undefined {
-  if (!elementType) return undefined;
+  if (!optionDomain) return undefined;
   if (argument.kind === 'undefinedValue' || (argument.kind === 'literal' && argument.value === null)) return undefined;
   const argumentType = inferIrExpressionTypeRust(argument, context);
   const resolvedArgument = argumentType ? resolveIrTypeAliasValueRust(argumentType, context, new Set()) : undefined;
@@ -5906,7 +5939,7 @@ function emitRustOptionalSetMemberArgumentRust(
   }
   // A string payload is owned by the Option, so a named value must be cloned to survive the member
   // call; the source does not consume it, and a borrow of a temporary cannot outlive the statement.
-  const payload = elementType.kind === 'union' ? elementType.types : [];
+  const payload = optionDomain.kind === 'union' ? optionDomain.types : [];
   const concretePayload = payload.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   const ownsString =
     getIrUnionPrimitiveDomainRust(concretePayload, context) === 'string' &&
@@ -10740,9 +10773,10 @@ function hasRustExactZeroArgumentCallableUnionArmRust(
 
 // An ambient Map application is identified by its carrier family and by the declarations its concrete
 // key and value reach: Map and ReadonlyMap are two source views of the same keyed map, a closed alias
-// chain is observational, and Rust's own HashMap spelling is not consulted. Only a string key and a
-// primitive or non-generic record value are in this lane; everything else keeps the established
-// contextual refusal.
+// chain is observational, and Rust's own HashMap spelling is not consulted. Only a string or boolean
+// key and a primitive or non-generic record value are in this lane; everything else keeps the
+// established contextual refusal, including an optional key whose sentinel-aware identity is not
+// proven here.
 function getRustExactMapApplicationIdentityRust(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -10790,7 +10824,9 @@ function resolveRustExactMapApplicationIdentityRust(
   }
   const key = resolveRustExactMapArgumentIdentityRust(type.typeArguments[0]!, context, resolving, depth + 1);
   const value = resolveRustExactMapArgumentIdentityRust(type.typeArguments[1]!, context, resolving, depth + 1);
-  if (!key || !value || key.kind !== 'primitive' || key.name !== 'string') return undefined;
+  if (!key || !value || key.kind !== 'primitive' || (key.name !== 'string' && key.name !== 'boolean')) {
+    return undefined;
+  }
   return { key, value };
 }
 
@@ -15713,11 +15749,11 @@ function assertRustHashCollectionDomainsInTypeRust(
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Map' || type.reference.name === 'ReadonlyMap') &&
         type.typeArguments.length === 2 &&
-        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'mapKey', context, module, new Set(), 0)
+        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, context, module, new Set(), 0)
       ) {
         emissionError(
           context,
-          'Rust Map and ReadonlyMap require string keys or closed aliases to string; other key domains cannot use the native HashMap carrier',
+          'Rust Map and ReadonlyMap require string or boolean keys, their closed aliases, or one absence sentinel around either of those; other key domains cannot use the native HashMap carrier',
           'rust-map-key-domain-unrepresented',
           'target-runtime',
         );
@@ -15726,7 +15762,7 @@ function assertRustHashCollectionDomainsInTypeRust(
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Set' || type.reference.name === 'ReadonlySet') &&
         type.typeArguments.length === 1 &&
-        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'setElement', context, module, new Set(), 0)
+        !isRustExactHashCollectionDomainRust(type.typeArguments[0]!, context, module, new Set(), 0)
       ) {
         emissionError(
           context,
@@ -15788,23 +15824,21 @@ function assertRustHashCollectionDomainsInTypeRust(
 
 function isRustExactHashCollectionDomainRust(
   type: Readonly<IrType>,
-  domain: 'mapKey' | 'setElement',
   context: EmitContext,
   module: Readonly<IrModule>,
   resolving: ReadonlySet<string>,
   depth: number,
 ): boolean {
-  return isRustHashCollectionDomainRust(type, domain, context, module, resolving, depth, true);
+  return isRustHashCollectionDomainRust(type, context, module, resolving, depth, true);
 }
 
 // One absent member around one scalar is exactly the `Option<T>` carrier `emitType` chooses for that
-// union, so the native HashSet stays exact. The concrete member is inspected without the optional
-// allowance: a nested union would emit `Option<Option<...>>`, and a second absence member selects the
-// dual-sentinel enum instead. A closed alias keeps the allowance so `type Slot = string | undefined`
-// passes through the same walk.
+// union, so the native HashSet/HashMap stays exact. The concrete member is inspected without the
+// optional allowance: a nested union would emit `Option<Option<...>>`, and a second absence member
+// selects the dual-sentinel enum instead. A closed alias keeps the allowance so
+// `type Slot = string | undefined` passes through the same walk.
 function isRustHashCollectionDomainRust(
   type: Readonly<IrType>,
-  domain: 'mapKey' | 'setElement',
   context: EmitContext,
   module: Readonly<IrModule>,
   resolving: ReadonlySet<string>,
@@ -15813,14 +15847,14 @@ function isRustHashCollectionDomainRust(
 ): boolean {
   if (depth > 8) return false;
   if (type.kind === 'primitive') {
-    return type.name === 'string' || (domain === 'setElement' && type.name === 'boolean');
+    return type.name === 'string' || type.name === 'boolean';
   }
-  if (allowOptional && domain === 'setElement' && type.kind === 'union') {
+  if (allowOptional && type.kind === 'union') {
     const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
     return (
       concrete.length === 1 &&
       type.types.length - concrete.length === 1 &&
-      isRustHashCollectionDomainRust(concrete[0]!, domain, context, module, resolving, depth + 1, false)
+      isRustHashCollectionDomainRust(concrete[0]!, context, module, resolving, depth + 1, false)
     );
   }
   if (
@@ -15841,7 +15875,6 @@ function isRustHashCollectionDomainRust(
   if (resolving.has(key)) return false;
   return isRustHashCollectionDomainRust(
     location.declaration.type,
-    domain,
     context,
     location.module,
     new Set(resolving).add(key),
@@ -24404,7 +24437,7 @@ function visitRustAnonymousUnionTraitObligations(
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Map' || type.reference.name === 'ReadonlyMap') &&
         type.typeArguments.length === 2 &&
-        isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'mapKey', visit.context, visit.module, new Set(), 0)
+        isRustExactHashCollectionDomainRust(type.typeArguments[0]!, visit.context, visit.module, new Set(), 0)
       ) {
         return visitRustAnonymousUnionTraitTypes(type.typeArguments, visit);
       }

@@ -4998,14 +4998,14 @@ function addRustSharedHashCollectionRefusals(
         subject,
         `shared ${collectionName} binding ${evidence.binding.name} must retain its exact ambient ${collectionName} type in the focused Rust carrier plan`,
       );
-    } else if (!isRustSharedHashCollectionDomainSupported(arguments_[0], kind)) {
+    } else if (!isRustSharedHashCollectionDomainSupported(arguments_[0])) {
       addRustReferenceRefusal(
         refusals,
         kind === 'map'
           ? 'rust-reference-shared-map-key-unrepresented'
           : 'rust-reference-shared-set-element-unrepresented',
         subject,
-        `shared ${collectionName} binding ${evidence.binding.name} requires ${kind === 'map' ? 'an exact string key' : 'an exact string or boolean element'}; other SameValueZero and object identity domains are not represented by the focused Rust carrier`,
+        `shared ${collectionName} binding ${evidence.binding.name} requires an exact string or boolean ${kind === 'map' ? 'key' : 'element'}, or one absence sentinel around either; other SameValueZero and object identity domains are not represented by the focused Rust carrier`,
       );
     }
     if (kind === 'map' && arguments_?.[1] && !isRustSharedMapPrimitiveValueType(arguments_[1])) {
@@ -8975,16 +8975,13 @@ function isRustSharedHashCollectionTypeSupported(
   kind: RustSharedHashCollectionKind,
 ): boolean {
   const arguments_ = getRustAmbientHashCollectionTypeArguments(type, kind);
-  if (!arguments_ || !isRustSharedHashCollectionDomainSupported(arguments_[0], kind)) return false;
+  if (!arguments_ || !isRustSharedHashCollectionDomainSupported(arguments_[0])) return false;
   return kind === 'set' || (arguments_[1] !== undefined && isRustSharedMapPrimitiveValueType(arguments_[1]));
 }
 
-function isRustSharedHashCollectionDomainSupported(
-  type: Readonly<IrType> | undefined,
-  kind: RustSharedHashCollectionKind,
-): boolean {
-  if (type?.kind === 'primitive') return type.name === 'string' || (kind === 'set' && type.name === 'boolean');
-  if (kind !== 'set' || type?.kind !== 'union') return false;
+function isRustSharedHashCollectionDomainSupported(type: Readonly<IrType> | undefined): boolean {
+  if (type?.kind === 'primitive') return type.name === 'string' || type.name === 'boolean';
+  if (type?.kind !== 'union') return false;
   const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   return (
     concrete.length === 1 &&

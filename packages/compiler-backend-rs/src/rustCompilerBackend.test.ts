@@ -41852,7 +41852,6 @@ describe('emitIrModuleRust exact Map key domain', () => {
     ['literal union', "export type Bad = Map<'a' | 'b', string>;"],
     ['unknown', 'export type Bad = Map<unknown, string>;'],
     ['any', 'export type Bad = Map<any, string>;'],
-    ['boolean', 'export type Bad = Map<boolean, string>;'],
     ['bigint', 'export type Bad = Map<bigint, string>;'],
     ['symbol', 'export type Bad = Map<symbol, string>;'],
     ['object', 'export type Bad = Map<object, string>;'],
@@ -42057,6 +42056,148 @@ export function keep(values: Map<string, number>): ReadonlyMap<string, number> {
     if (rustcAvailable) compileRustSourceAgainstRuntime(output);
   });
 
+  it('represents boolean and single-absence optional scalar Map key domains', () => {
+    const result = lower(
+      'map-key-scalar-domains.ts',
+      `type FlagKey = boolean | undefined;
+       interface Point { value: number }
+       export function flags(entries: Map<boolean, number>, key: boolean): number {
+         entries.set(true, 1);
+         entries.set(false, 2);
+         entries.set(true, 3);
+         entries.delete(false);
+         return entries.has(key) ? entries.size : -1;
+       }
+       export function optionalText(entries: Map<string | undefined, number>, key: string | undefined): number {
+         entries.set(undefined, 0);
+         entries.set('a', 1);
+         entries.set(key, 2);
+         return entries.size;
+       }
+       export function aliased(entries: ReadonlyMap<FlagKey, Point>, key: FlagKey): Point | undefined {
+         return entries.get(key);
+       }
+       export function nullKey(view: ReadonlyMap<boolean | null, number>): boolean { return view.has(null); }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('type FlagKey = Option<bool>;');
+    expect(output).toContain('std::collections::HashMap<bool, f64>');
+    expect(output).toContain('std::collections::HashMap<Option<String>, f64>');
+    expect(output).toContain('std::collections::HashMap<FlagKey, Point>');
+    expect(output).toContain('std::collections::HashMap<Option<bool>, f64>');
+    expect(output).toContain('entries.insert(true, 1.0);');
+    expect(output).toContain('entries.insert(false, 2.0);');
+    expect(output).toContain('entries.remove(&false);');
+    expect(output).toContain('entries.contains_key(&key)');
+    expect(output).toContain('entries.insert(None, 0.0);');
+    expect(output).toContain('entries.insert(Some("a".to_owned()), 1.0);');
+    expect(output).toContain('entries.insert(key.clone(), 2.0);');
+    expect(output).toContain('view.contains_key(&None)');
+    if (rustcAvailable) compileRustSourceAgainstRuntime(output);
+  });
+
+  it('wraps present Map key arguments and clones named String keys for set and lookup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-key-argument-conversion.ts',
+        `export function strings(entries: Map<string | undefined, number>, key: string): boolean {
+           entries.set('a', 1);
+           entries.set(undefined, 2);
+           entries.set(key, 3);
+           const found = entries.get('a');
+           entries.delete('a');
+           return entries.has(key) && found !== undefined;
+         }
+         export function flags(entries: Map<boolean | undefined, number>, key: boolean): number {
+           entries.set(key, 1);
+           entries.set(undefined, 2);
+           entries.delete(key);
+           return entries.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('entries.insert(Some("a".to_owned()), 1.0);');
+    expect(output).toContain('entries.insert(None, 2.0);');
+    expect(output).toContain('entries.insert(Some(key.clone()), 3.0);');
+    expect(output).toContain('entries.get(&Some("a".to_owned())).cloned()');
+    expect(output).toContain('entries.remove(&Some("a".to_owned()));');
+    expect(output).toContain('entries.contains_key(&Some(key.clone()))');
+    expect(output).toContain('entries.insert(Some(key), 1.0);');
+    expect(output).toContain('entries.remove(&Some(key));');
+  });
+
+  it('represents boolean and optional keys on the represented shared Map path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-key-shared.ts',
+        `function putFlag(entries: Map<boolean, number>, key: boolean): void { entries.set(key, 1); }
+         function putText(entries: Map<string | undefined, number>, key: string | undefined): void { entries.set(key, 1); }
+         export function relayFlags(): number {
+           const entries = new Map<boolean, number>();
+           putFlag(entries, true);
+           return entries.size;
+         }
+         export function relayText(key: string): number {
+           const entries = new Map<string | undefined, number>();
+           putText(entries, key);
+           return entries.size;
+         }
+         export function sharedAlias(): number {
+           const entries = new Map<boolean, number>();
+           const alias = entries;
+           alias.set(true, 1);
+           return entries.size;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('&mut std::collections::HashMap<bool, f64>');
+    expect(output).toContain('&mut std::collections::HashMap<Option<String>, f64>');
+    expect(output).toContain('Rc<RefCell<std::collections::HashMap<bool, f64>>>');
+    expect(output).toContain('put_flag(&mut entries, true);');
+    expect(output).toContain('put_text(&mut entries, Some(key));');
+    expect(output).toContain('alias.borrow_mut().insert(true, 1.0);');
+  });
+
+  it.each([
+    ['a numeric optional key', 'Map<number | undefined, string>'],
+    ['a mixed primitive key', 'Map<string | boolean, string>'],
+    ['a dual-sentinel key', 'Map<string | undefined | null, string>'],
+    ['a null-only key', 'Map<null, string>'],
+    ['an undefined-only key', 'Map<undefined, string>'],
+    ['a structural optional key', 'Map<{ value: string } | undefined, string>'],
+  ])('keeps %s refused', (_name, domain) => {
+    expect(
+      getEmissionRule(() =>
+        emitIrModuleRust(
+          lower('map-key-scalar-refusal.ts', `export function f(v: ${domain}): number { return v.size; }`).module,
+        ),
+      ),
+    ).toBe(expectedRule);
+  });
+
+  it('keeps the empty constructor and refuses an iterable Map constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-key-constructor.ts',
+        `export function empty(): Map<boolean, string> { return new Map(); }
+         export function emptyOptional(): Map<string | undefined, number> { return new Map(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub fn empty() -> std::collections::HashMap<bool, String>');
+    expect(output).toContain('pub fn empty_optional() -> std::collections::HashMap<Option<String>, f64>');
+    expect(output).toContain('return std::collections::HashMap::new();');
+
+    const iterable = lower(
+      'map-key-iterable-constructor.ts',
+      `export function bad(): Map<boolean, string> { return new Map([[true, 'a']]); }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(iterable))).toBe('rust-runtime-external-constructor-abi-incomplete');
+  });
+
   it('owns a stable target-runtime diagnostic at the containing declaration', () => {
     const module = lower(
       'map-key-diagnostic.ts',
@@ -42071,7 +42212,7 @@ export function bad(values: Map<number, string>): number { return values.size; }
     expect(first.line).toBe(2);
     expect(first.column).toBe(1);
     expect(first.message).toContain(
-      'Rust Map and ReadonlyMap require string keys or closed aliases to string; other key domains cannot use the native HashMap carrier',
+      'Rust Map and ReadonlyMap require string or boolean keys, their closed aliases, or one absence sentinel around either of those; other key domains cannot use the native HashMap carrier',
     );
     expect(second).toMatchObject({
       classification: first.classification,
@@ -42124,6 +42265,41 @@ export function keep(value: number): number { return value + 1; }`;
       controlContents.slice(controlContents.indexOf('pub fn keep')).trimEnd(),
     );
   });
+
+  it.skipIf(!rustcAvailable)('runs boolean and optional key Map round trips', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-key-round-trip.ts',
+        `export function booleanKeyRoundTrip(): boolean {
+           const entries = new Map<boolean, number>();
+           entries.set(true, 1);
+           entries.set(false, 2);
+           entries.set(true, 3);
+           const top = entries.get(true);
+           const ok = entries.size === 2 && entries.has(false) && top !== undefined && top === 3;
+           entries.delete(false);
+           return ok && !entries.has(false) && entries.size === 1;
+         }
+         export function optionalKeyRoundTrip(): boolean {
+           const entries = new Map<string | undefined, number>();
+           const key = 'a';
+           entries.set(undefined, 0);
+           entries.set(key, 1);
+           entries.set(key, 2);
+           const found = entries.get(key);
+           const ok = found !== undefined && found === 2 && entries.has(undefined) && entries.size === 2;
+           entries.delete(key);
+           return ok && !entries.has(key) && key === 'a' && entries.size === 1;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('std::collections::HashMap<bool, f64>');
+    expect(output).toContain('std::collections::HashMap<Option<String>, f64>');
+    expect(() =>
+      runRustSource(output, 'assert!(boolean_key_round_trip()); assert!(optional_key_round_trip());'),
+    ).not.toThrow();
+  });
 });
 
 describe('emitIrModuleRust exact Map application union construction', () => {
@@ -42165,6 +42341,34 @@ describe('emitIrModuleRust exact Map application union construction', () => {
     expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
     expect(emitIrModuleRust(result.module).contents).toBe(output);
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
+  });
+
+  it('constructs one exact Map arm for boolean keys and keeps optional-key arms refused', () => {
+    const result = lower(
+      'map-application-boolean-key.ts',
+      `interface Point { value: number }
+       type MapSlot = Map<boolean, Point> | boolean;
+       export function returned(values: Map<boolean, Point>): MapSlot { return values; }
+       export function initialized(values: Map<boolean, Point>): number {
+         const slot: MapSlot = values;
+         return 0;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Map(std::collections::HashMap<bool, Point>)');
+    expect(output).toContain('return MapSlot::Map(values);');
+    expect(output).toContain('let slot: MapSlot = MapSlot::Map(values);');
+
+    const optional = lower(
+      'map-application-optional-key.ts',
+      `interface Point { value: number }
+       type MapSlot = Map<string | undefined, Point> | boolean;
+       export function wrong(values: Map<string | undefined, Point>): MapSlot { return values; }`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(optional))).toBe(
+      'rust-contextual-general-union-construction-unrepresented',
+    );
   });
 
   it('matches Map and ReadonlyMap carriers and alias-normalized primitive or record values', () => {
