@@ -193,8 +193,14 @@ interface RustAnonymousUnionEnum {
 type RustAnonymousUnionTrait = 'Debug' | 'PartialEq' | 'Eq' | 'Hash';
 
 interface RustAnonymousUnionTraitObligationPlan {
+  readonly refusalsByDeclaration: ReadonlyMap<Readonly<IrDeclaration>, RustAnonymousUnionTraitRefusal>;
   readonly recordTraitsByBindingId: ReadonlyMap<string, ReadonlySet<RustAnonymousUnionTrait>>;
   readonly unionTraitsByIdentity: ReadonlyMap<string, ReadonlySet<RustAnonymousUnionTrait>>;
+}
+
+interface RustAnonymousUnionTraitRefusal {
+  readonly message: string;
+  readonly rule: 'rust-anonymous-union-trait-obligation-unrepresented';
 }
 
 interface RustDualSentinelNominalEnumPlan {
@@ -1234,6 +1240,7 @@ function emitIrModuleRustWithContext(
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     anonymousUnionTraitObligations: {
+      refusalsByDeclaration: new Map(),
       recordTraitsByBindingId: new Map(),
       unionTraitsByIdentity: new Map(),
     },
@@ -1482,7 +1489,10 @@ function emitIrModuleRustWithContext(
   for (const call of collectIrModuleAdaptedNativeFutureReturnCallsRust(module, context)) {
     adaptedNativeFutureReturnCalls.add(call);
   }
-  context.anonymousUnionTraitObligations = createRustAnonymousUnionTraitObligationPlanRust(context);
+  context.anonymousUnionTraitObligations = createRustAnonymousUnionTraitObligationPlanRust(
+    context,
+    salvage !== undefined,
+  );
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayConstructorSemanticsRust(module, context);
   assertArrayIsArraySemanticsRust(module, context);
@@ -22789,6 +22799,17 @@ function emitSalvagedDeclarationRust(
 ): string[] {
   const snapshot = createRustSalvageContextSnapshotRust(context);
   try {
+    const anonymousUnionTraitRefusal = context.anonymousUnionTraitObligations.refusalsByDeclaration.get(declaration);
+    if (anonymousUnionTraitRefusal) {
+      emissionRuleError(
+        {
+          ...context,
+          currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+        },
+        anonymousUnionTraitRefusal.message,
+        anonymousUnionTraitRefusal.rule,
+      );
+    }
     if (moduleConstantDependency) {
       throw createBackendEmissionFailure(
         'rust',
@@ -23937,6 +23958,7 @@ interface RustAnonymousUnionTraitVisit {
   readonly mode: 'Debug' | 'EqHash';
   readonly module: Readonly<IrModule>;
   readonly plan: RustAnonymousUnionTraitObligationAccumulator;
+  readonly requiresTraitSupport: boolean;
   readonly resolving: ReadonlySet<string>;
 }
 
@@ -23949,6 +23971,7 @@ type RustAnonymousUnionNamedPayload =
       typeParameters: readonly IrTypeParameter[];
     }>
   | Readonly<{
+      bindingId: string;
       kind: 'resolved';
       module: Readonly<IrModule>;
       type: Readonly<IrType>;
@@ -23963,8 +23986,43 @@ const RUST_HASH_ELEMENT_TRAITS = ['PartialEq', 'Eq', 'Hash'] as const;
 // Anonymous enums are allocated while source is emitted, but a payload record can be rendered before
 // the Set use that imposes Eq + Hash is encountered. Plan the closed obligation graph first so every
 // derive line sees the same complete answer regardless of declaration or use order.
-function createRustAnonymousUnionTraitObligationPlanRust(context: EmitContext): RustAnonymousUnionTraitObligationPlan {
+function createRustAnonymousUnionTraitObligationPlanRust(
+  context: EmitContext,
+  salvage: boolean,
+): RustAnonymousUnionTraitObligationPlan {
   const plan = createRustAnonymousUnionTraitObligationAccumulator();
+  // Salvage omits whole declarations. Keep their successful obligations pending until every use in
+  // that declaration is known to be sound, so a later refusal cannot leak partial derives into a
+  // retained sibling.
+  const pendingByDeclaration = new Map<Readonly<IrDeclaration>, RustAnonymousUnionTraitObligationAccumulator>();
+  const refusalsByDeclaration = new Map<Readonly<IrDeclaration>, RustAnonymousUnionTraitRefusal>();
+
+  const planObligation = (
+    declaration: Readonly<IrDeclaration> | undefined,
+    type: Readonly<IrType>,
+    visit: Omit<RustAnonymousUnionTraitVisit, 'plan'>,
+    describeFailure: (failure: RustAnonymousUnionTraitFailure) => string,
+  ): void => {
+    if (declaration && refusalsByDeclaration.has(declaration)) return;
+    const additions = createRustAnonymousUnionTraitObligationAccumulator();
+    const failure = visitRustAnonymousUnionTraitObligations(type, { ...visit, plan: additions });
+    if (failure) {
+      const refusal: RustAnonymousUnionTraitRefusal = {
+        message: describeFailure(failure),
+        rule: 'rust-anonymous-union-trait-obligation-unrepresented',
+      };
+      if (!salvage || !declaration) emissionRuleError(visit.context, refusal.message, refusal.rule);
+      refusalsByDeclaration.set(declaration, refusal);
+      return;
+    }
+    if (!declaration) {
+      mergeRustAnonymousUnionTraitObligations(plan, additions);
+      return;
+    }
+    const pending = pendingByDeclaration.get(declaration) ?? createRustAnonymousUnionTraitObligationAccumulator();
+    mergeRustAnonymousUnionTraitObligations(pending, additions);
+    pendingByDeclaration.set(declaration, pending);
+  };
 
   for (const declaration of context.module.declarations) {
     let types: readonly Readonly<IrType>[] | undefined;
@@ -23988,24 +24046,21 @@ function createRustAnonymousUnionTraitObligationPlanRust(context: EmitContext): 
       activeTypeParameters: typeParameters,
       currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
     };
-    for (const type of types.filter((candidate) => containsDirectRustAnonymousUnionCarrier(candidate, context))) {
-      const additions = createRustAnonymousUnionTraitObligationAccumulator();
-      const failure = visitRustAnonymousUnionTraitObligations(type, {
-        activeTypeParameters: typeParameters,
-        context: declarationContext,
-        mode: 'Debug',
-        module: context.module,
-        plan: additions,
-        resolving: new Set(),
-      });
-      if (failure) {
-        emissionRuleError(
-          declarationContext,
+    for (const type of types) {
+      planObligation(
+        declaration,
+        type,
+        {
+          activeTypeParameters: typeParameters,
+          context: declarationContext,
+          mode: 'Debug',
+          module: context.module,
+          requiresTraitSupport: false,
+          resolving: new Set(),
+        },
+        (failure) =>
           `anonymous union nested in record ${'binding' in declaration ? declaration.binding.name : '(binding)'} cannot implement Rust Debug: ${failure.reason}`,
-          'rust-anonymous-union-trait-obligation-unrepresented',
-        );
-      }
-      mergeRustAnonymousUnionTraitObligations(plan, additions);
+      );
     }
   }
 
@@ -24028,27 +24083,28 @@ function createRustAnonymousUnionTraitObligationPlanRust(context: EmitContext): 
         activeTypeParameters: typeParameters,
         ...(owner ? { currentOrigin: { column: owner.origin.column, line: owner.origin.line } } : {}),
       };
-      const additions = createRustAnonymousUnionTraitObligationAccumulator();
-      const failure = visitRustAnonymousUnionTraitObligations(type.typeArguments[0], {
-        activeTypeParameters: typeParameters,
-        context: obligationContext,
-        mode: 'EqHash',
-        module: context.module,
-        plan: additions,
-        resolving: new Set(),
-      });
-      if (failure) {
-        emissionRuleError(
-          obligationContext,
+      planObligation(
+        owner,
+        type.typeArguments[0],
+        {
+          activeTypeParameters: typeParameters,
+          context: obligationContext,
+          mode: 'EqHash',
+          module: context.module,
+          requiresTraitSupport: true,
+          resolving: new Set(),
+        },
+        (failure) =>
           `anonymous union used as a Rust HashSet element requires PartialEq, Eq, and Hash, but cannot prove Eq + Hash: ${failure.reason}`,
-          'rust-anonymous-union-trait-obligation-unrepresented',
-        );
-      }
-      mergeRustAnonymousUnionTraitObligations(plan, additions);
+      );
     },
   });
 
-  return plan;
+  for (const [declaration, pending] of pendingByDeclaration) {
+    if (!refusalsByDeclaration.has(declaration)) mergeRustAnonymousUnionTraitObligations(plan, pending);
+  }
+
+  return { ...plan, refusalsByDeclaration };
 }
 
 function createRustAnonymousUnionTraitObligationAccumulator(): RustAnonymousUnionTraitObligationAccumulator {
@@ -24082,23 +24138,6 @@ function getRustDeclarationTypeParametersForTraitPlan(
   }
 }
 
-function containsDirectRustAnonymousUnionCarrier(type: Readonly<IrType>, context: EmitContext): boolean {
-  switch (type.kind) {
-    case 'array':
-      return containsDirectRustAnonymousUnionCarrier(type.element, context);
-    case 'intersection':
-      return type.types.some((member) => containsDirectRustAnonymousUnionCarrier(member, context));
-    case 'object':
-      return type.properties.some((property) => containsDirectRustAnonymousUnionCarrier(property.type, context));
-    case 'tuple':
-      return type.elements.some((element) => containsDirectRustAnonymousUnionCarrier(element.type, context));
-    case 'union':
-      return isDirectRustAnonymousUnionCarrier(type, context);
-    default:
-      return false;
-  }
-}
-
 function isDirectRustAnonymousUnionCarrier(type: Readonly<IrType>, context: EmitContext): boolean {
   if (type.kind !== 'union') return false;
   const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
@@ -24120,23 +24159,32 @@ function visitRustAnonymousUnionTraitObligations(
   type: Readonly<IrType>,
   visit: RustAnonymousUnionTraitVisit,
 ): RustAnonymousUnionTraitFailure | undefined {
+  // A Debug walk starts in discovery mode because an ordinary unsupported field is irrelevant to
+  // anonymous unions. Reaching a general union switches on proof mode for every payload below it.
   switch (type.kind) {
     case 'array':
       return visitRustAnonymousUnionTraitObligations(type.element, visit);
     case 'function':
-      return { reason: 'callable payloads use Rc<dyn Fn>, which does not implement the required trait' };
+      return visit.requiresTraitSupport
+        ? { reason: 'callable payloads use Rc<dyn Fn>, which does not implement the required trait' }
+        : undefined;
     case 'intersection': {
       const primitive = getIrTypePrimitiveDomainRust(type, visit.context, visit.module, visit.resolving);
       if (primitive) {
         return visitRustAnonymousUnionTraitObligations({ kind: 'primitive', name: primitive }, visit);
       }
       const properties = getIrObjectTypePropertiesRust(type, visit.context, visit.module, visit.resolving);
+      if (properties && visit.mode === 'EqHash' && visit.requiresTraitSupport) {
+        return { reason: 'an anonymous intersection payload has no attachable Rust equality/hash derive obligation' };
+      }
       return properties
         ? visitRustAnonymousUnionTraitProperties(properties, visit)
-        : { reason: 'an intersection payload has no closed Rust record carrier' };
+        : visit.requiresTraitSupport
+          ? { reason: 'an intersection payload has no closed Rust record carrier' }
+          : undefined;
     }
     case 'literal':
-      return visit.mode === 'EqHash' && typeof type.value === 'number'
+      return visit.requiresTraitSupport && visit.mode === 'EqHash' && typeof type.value === 'number'
         ? { reason: 'numeric literal storage uses f64, which implements neither Eq nor Hash' }
         : undefined;
     case 'named': {
@@ -24148,22 +24196,29 @@ function visitRustAnonymousUnionTraitObligations(
         return visitRustAnonymousUnionTraitObligations(type.typeArguments[0], visit);
       }
       const payload = resolveRustAnonymousUnionNamedPayload(type, visit);
-      if (payload.kind === 'unsupported') return { reason: payload.reason };
+      if (payload.kind === 'unsupported') {
+        return visit.requiresTraitSupport ? { reason: payload.reason } : undefined;
+      }
       if (payload.kind === 'external') {
-        return visit.mode === 'Debug'
+        return !visit.requiresTraitSupport || visit.mode === 'Debug'
           ? undefined
           : { reason: 'an external payload has no shared equality/hash derive obligation' };
       }
+      const key = `${getRustModuleIdentityKey(payload.module)}\0${payload.bindingId}\0${visit.mode}`;
+      if (visit.resolving.has(key)) {
+        return visit.requiresTraitSupport && visit.mode === 'EqHash'
+          ? { reason: 'a recursive payload has no finite trait proof' }
+          : undefined;
+      }
+      const nestedVisit = { ...visit, resolving: new Set(visit.resolving).add(key) };
       if (payload.kind === 'resolved') {
         return visitRustAnonymousUnionTraitObligations(payload.type, {
-          ...visit,
+          ...nestedVisit,
           activeTypeParameters: payload.typeParameters,
           module: payload.module,
         });
       }
-      const key = `${getRustModuleIdentityKey(payload.module)}\0${payload.bindingId}\0${visit.mode}`;
-      if (visit.resolving.has(key)) return { reason: 'a recursive payload has no finite trait proof' };
-      if (visit.mode === 'EqHash') {
+      if (visit.requiresTraitSupport && visit.mode === 'EqHash') {
         addRustAnonymousUnionTraitsToMap(
           visit.plan.recordTraitsByBindingId,
           payload.bindingId,
@@ -24171,10 +24226,9 @@ function visitRustAnonymousUnionTraitObligations(
         );
       }
       return visitRustAnonymousUnionTraitProperties(payload.properties, {
-        ...visit,
+        ...nestedVisit,
         activeTypeParameters: payload.typeParameters,
         module: payload.module,
-        resolving: new Set(visit.resolving).add(key),
       });
     }
     case 'never':
@@ -24182,12 +24236,17 @@ function visitRustAnonymousUnionTraitObligations(
     case 'undefined':
       return undefined;
     case 'object':
+      if (visit.mode === 'EqHash' && visit.requiresTraitSupport) {
+        return { reason: 'an anonymous object payload has no attachable Rust equality/hash derive obligation' };
+      }
       return visitRustAnonymousUnionTraitProperties(type.properties, visit);
     case 'primitive':
       if (type.name === 'symbol') {
-        return { reason: 'symbol trait support is not proven by the Rust runtime contract' };
+        return visit.requiresTraitSupport
+          ? { reason: 'symbol trait support is not proven by the Rust runtime contract' }
+          : undefined;
       }
-      return visit.mode === 'EqHash' && type.name === 'number'
+      return visit.requiresTraitSupport && visit.mode === 'EqHash' && type.name === 'number'
         ? { reason: 'number payload storage uses f64, which implements neither Eq nor Hash' }
         : undefined;
     case 'tuple':
@@ -24205,7 +24264,7 @@ function visitRustAnonymousUnionTraitObligations(
         return visitRustAnonymousUnionTraitObligations({ kind: 'primitive', name: primitive }, visit);
       }
       if (isRustPrimitiveUnionEnumType(concrete)) {
-        return visit.mode === 'Debug'
+        return !visit.requiresTraitSupport || visit.mode === 'Debug'
           ? undefined
           : { reason: 'the primitive-union carrier has no equality/hash derive plan' };
       }
@@ -24223,7 +24282,7 @@ function visitRustAnonymousUnionTraitObligations(
             member.kind !== 'null' &&
             member.kind !== 'undefined',
         ),
-        visit,
+        { ...visit, requiresTraitSupport: true },
       );
     }
     case 'conditionalFacet':
@@ -24231,7 +24290,9 @@ function visitRustAnonymousUnionTraitObligations(
     case 'keyof':
     case 'typeOf':
     case 'unknown':
-      return { reason: `${type.kind} payload trait support is not statically proven` };
+      return visit.requiresTraitSupport
+        ? { reason: `${type.kind} payload trait support is not statically proven` }
+        : undefined;
   }
 }
 
@@ -24313,6 +24374,7 @@ function resolveRustAnonymousUnionNamedPayload(
           typeParameters: location.declaration.typeParameters,
         }
       : {
+          bindingId: location.declaration.binding.id,
           kind: 'resolved',
           module: location.module,
           type: resolved,

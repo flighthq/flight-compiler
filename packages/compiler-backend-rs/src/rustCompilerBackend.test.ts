@@ -35861,6 +35861,280 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(first)).not.toThrow();
   });
 
+  it('propagates record Debug through closed aliases and nested alias containers only to the reached union', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anonymous-union-debug-alias-chain.ts',
+        `interface Alpha { text: string }
+         interface Beta { flag: boolean }
+         type Direct = Alpha | Beta;
+         type Chained = Direct;
+         type Nested = readonly [Chained[], Direct];
+         interface Holder { direct: Direct; chained: Chained; nested: Nested }
+         interface SourceAlpha { source: string }
+         interface SourceBeta { other: boolean }
+         export function acceptSource(value: SourceAlpha | SourceBeta): void { void value; }`,
+      ).module,
+    ).contents;
+    const derives = [...output.matchAll(/#\[derive\(([^)]+)\)\]\n(?:pub )?enum (?:Direct|AnonymousUnion\d*)/gu)].map(
+      (match) => match[1]!,
+    );
+
+    expect(derives).toEqual(['Clone', 'Clone, Debug']);
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum Direct');
+    expect(output).toContain('#[derive(Clone)]\npub enum AnonymousUnion');
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('attaches HashSet traits to a named record alias rather than accepting anonymous structural carriers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anonymous-union-named-record-alias-traits.ts',
+        `type NamedShape = { value: string };
+         interface Other { flag: boolean }
+         export function add(target: Set<NamedShape | Other>, value: NamedShape | Other): void {
+           target.add(value);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone, PartialEq, Eq, Hash)]\npub enum AnonymousUnion');
+    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct NamedShape');
+    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Other');
+  });
+
+  it.each([
+    [
+      'a direct anonymous object',
+      `interface Other { flag: boolean }
+       export function add(
+         target: Set<{ value: string } | Other>,
+         value: { value: string } | Other,
+       ): void { target.add(value); }`,
+      'anonymous object payload',
+    ],
+    [
+      'a direct anonymous intersection',
+      `interface Base { value: string }
+       interface Other { flag: boolean }
+       export function add(
+         target: Set<(Base & { kind: 'base' }) | Other>,
+         value: (Base & { kind: 'base' }) | Other,
+       ): void { target.add(value); }`,
+      'anonymous intersection payload',
+    ],
+    [
+      'an anonymous object nested through arrays and tuples',
+      `interface Wrapped { values: readonly [{ value: string }[]] }
+       interface Other { flag: boolean }
+       export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+         target.add(value);
+       }`,
+      'anonymous object payload',
+    ],
+    [
+      'an anonymous object nested through an alias',
+      `type AnonymousItems = { value: string }[];
+       interface Wrapped { values: AnonymousItems }
+       interface Other { flag: boolean }
+       export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+         target.add(value);
+       }`,
+      'anonymous object payload',
+    ],
+    [
+      'an anonymous intersection nested through an alias and array',
+      `interface Base { value: string }
+       type AnonymousIntersections = (Base & { kind: 'base' })[];
+       interface Wrapped { values: AnonymousIntersections }
+       interface Other { flag: boolean }
+       export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+         target.add(value);
+       }`,
+      'anonymous intersection payload',
+    ],
+  ] as const)('refuses HashSet Eq/Hash proof through %s', (_name, source, reason) => {
+    const module = lower('anonymous-union-structural-hash-refusal.ts', source).module;
+    const first = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const second = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(first.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
+    expect(first.message).toContain(reason);
+    expect({ message: second.message, rule: second.rule }).toEqual({ message: first.message, rule: first.rule });
+  });
+
+  it('refuses external, generic, unknown, and recursive Eq/Hash boundaries deterministically', () => {
+    const assertDeterministicRefusal = (emit: () => unknown, reason: string): void => {
+      const first = captureBackendEmissionFailure(emit);
+      const second = captureBackendEmissionFailure(emit);
+      expect(first.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
+      expect(first.message).toContain(reason);
+      expect({ message: second.message, rule: second.rule }).toEqual({ message: first.message, rule: first.rule });
+    };
+
+    const generic = lower(
+      'anonymous-union-generic-hash-refusal.ts',
+      `interface Box<Value> { value: Value }
+       interface Other { flag: boolean }
+       export function add<Value>(target: Set<Box<Value> | Other>, value: Box<Value> | Other): void {
+         target.add(value);
+       }`,
+    ).module;
+    assertDeterministicRefusal(() => emitIrModuleRust(generic), 'generic payload Box');
+
+    const recursive = lower(
+      'anonymous-union-recursive-hash-refusal.ts',
+      `type RecursiveAlias = RecursiveAlias[];
+       interface Recursive { children: RecursiveAlias }
+       interface Other { flag: boolean }
+       export function add(target: Set<Recursive | Other>, value: Recursive | Other): void {
+         target.add(value);
+       }`,
+    ).module;
+    assertDeterministicRefusal(() => emitIrModuleRust(recursive), 'recursive payload');
+
+    const unknown = lower(
+      'anonymous-union-unknown-hash-refusal.ts',
+      `interface Alpha { text: string }
+       interface Other { flag: boolean }
+       export function add(target: Set<Alpha | Other>, value: Alpha | Other): void {
+         target.add(value);
+       }`,
+    ).module;
+    const unknownFunction = unknown.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'add',
+    );
+    const unknownSet = unknownFunction?.kind === 'function' ? unknownFunction.parameters[0]?.type : undefined;
+    const unknownUnion = unknownSet?.kind === 'named' ? unknownSet.typeArguments[0] : undefined;
+    if (unknownSet?.kind !== 'named' || unknownUnion?.kind !== 'union') throw new Error('expected Set union parameter');
+    (unknownSet as unknown as { typeArguments: IrType[] }).typeArguments[0] = {
+      kind: 'union',
+      types: [{ kind: 'unknown', source: 'unknown' }, unknownUnion.types[1]!],
+    };
+    assertDeterministicRefusal(() => emitIrModuleRust(unknown), 'unknown payload');
+
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/anonymous-union-external-provider.ts',
+      'export interface External { text: string }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/anonymous-union-external-consumer.ts',
+      `import { External } from './anonymous-union-external-provider.js';
+       interface Local { flag: boolean }
+       export function add(target: Set<External | Local>, value: External | Local): void {
+         target.add(value);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Anonymous-union-external-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/anonymous-union-external-consumer.ts',
+          },
+          specifier: './anonymous-union-external-provider.js',
+          target: {
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/anonymous-union-external-provider.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const externalSession = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      moduleResolution,
+      modules: [providerResult!.module, consumerResult!.module],
+      options: {},
+    });
+    assertDeterministicRefusal(() => externalSession.emitModule(consumerResult!.module), 'external payload');
+  });
+
+  it('attributes a failed Eq/Hash proof to its declaration and discards every partial trait addition', () => {
+    const source = `interface Good { value: string }
+       interface Recursive { children: Recursive[] }
+       interface CallableHolder { callback: () => number }
+       export function broken(target: Set<Good | Recursive>, value: Good | Recursive): void {
+         target.add(value);
+       }
+       export function keep(value: Good): string { return value.value; }`;
+    const module = lower('anonymous-union-trait-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-anonymous-union-trait-obligation-unrepresented',
+          message: 'anonymous union trait obligation refused for the witness',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const placeholder = emitPlaceholder(module, {
+      classification: 'compiler-restriction',
+      message: 'anonymous union trait obligation refused for the witness',
+      rule: 'rust-anonymous-union-trait-obligation-unrepresented',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial file for the refused declaration');
+
+    expect(placeholder.contents).toContain('// NOT GENERATED: function broken');
+    expect(placeholder.contents).toContain('// refusal: rust-anonymous-union-trait-obligation-unrepresented');
+    expect(placeholder.contents).toContain('pub fn keep(value: Good) -> String');
+    expect(placeholder.contents).toContain('#[derive(Clone, Debug)]\npub struct Good');
+    expect(placeholder.contents).toContain('#[derive(Clone)]\npub struct CallableHolder');
+    expect(placeholder.contents).not.toMatch(/#\[derive\([^)]*PartialEq/gu);
+    expect(placeholder.contents).not.toContain('pub enum AnonymousUnion');
+  });
+
+  it('keeps ReadonlySet on the exact supported Set trait path', () => {
+    const emit = (collection: 'ReadonlySet' | 'Set'): string =>
+      emitIrModuleRust(
+        lower(
+          `anonymous-union-${collection.toLowerCase()}-traits.ts`,
+          `interface Alpha { text: string }
+           interface Beta { flag: boolean }
+           export function has(target: ${collection}<Alpha | Beta>, value: Alpha | Beta): boolean {
+             return target.has(value);
+           }`,
+        ).module,
+      ).contents;
+    const derives = (output: string): string[] =>
+      [...output.matchAll(/#\[derive\(([^)]+)\)\]\npub (?:enum AnonymousUnion|struct (?:Alpha|Beta))/gu)].map(
+        (match) => match[1]!,
+      );
+
+    expect(derives(emit('ReadonlySet'))).toEqual(derives(emit('Set')));
+    expect(derives(emit('ReadonlySet'))).toEqual([
+      'Clone, PartialEq, Eq, Hash',
+      'Clone, Debug, PartialEq, Eq, Hash',
+      'Clone, Debug, PartialEq, Eq, Hash',
+    ]);
+  });
+
   it('refuses an anonymous HashSet union when a payload transitively stores f64', () => {
     const module = lower(
       'anonymous-union-hash-trait-refusal.ts',
@@ -35883,14 +36157,16 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
         'anonymous-union-debug-trait-boundary.ts',
         `interface Callback { run: () => number }
          interface Textual { value: string }
-         export interface Holder { slot: Callback | Textual }`,
+         type CallbackChoice = Callback | Textual;
+         type CallbackAlias = CallbackChoice;
+         export interface Holder { slot: CallbackAlias }`,
       ).module,
     ).contents;
 
-    expect(output).toContain('#[derive(Clone)]\npub enum AnonymousUnion');
+    expect(output).toContain('#[derive(Clone)]\nenum CallbackChoice');
     expect(output).toContain('#[derive(Clone)]\npub struct Callback');
     expect(output).toContain('#[derive(Clone)]\npub struct Holder');
-    expect(output).not.toContain('#[derive(Clone, Debug)]\npub enum AnonymousUnion');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\nenum CallbackChoice');
   });
 
   it.each([
