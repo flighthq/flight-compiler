@@ -161,21 +161,21 @@ export function collectIrModuleMovedBindingIdsRust(module: Readonly<IrModule>): 
   return moved;
 }
 
-// Which parameters the caller sees mutated through. A parameter the body assigns into is one; so is a
-// parameter handed to a function that mutates through the position it was handed to, which is why
-// this closes over the module's calls rather than reading one function at a time. The set decides
-// which bindings are already `&mut` parameters, so propagation elects only parameters; an owned local
-// is elected by the binding-level set below, which is what makes its declaration mutable.
-export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
-  return createIrModuleReferentMutatedBindingIdsRust(module).parameterIds;
-}
-
 // Which bindings a caller sees mutated through, for local binding mutability. It carries the same
 // direct evidence and fixes the same call graph, but every argument binding is elected, so an owned
 // local handed to a mutating function is declared mutable even though only a parameter is already
 // borrowed at a nested call site.
 export function collectIrModuleReferentMutatedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
   return createIrModuleReferentMutatedBindingIdsRust(module).bindingIds;
+}
+
+// Which parameters the caller sees mutated through. A parameter the body assigns into is one; so is a
+// parameter handed to a function that mutates through the position it was handed to, which is why
+// this closes over the module's calls rather than reading one function at a time. The set decides
+// which bindings are already `&mut` parameters, so propagation elects only parameters; an owned local
+// is elected by the binding-level set above, which is what makes its declaration mutable.
+export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  return createIrModuleReferentMutatedBindingIdsRust(module).parameterIds;
 }
 
 function createIrModuleReferentMutatedBindingIdsRust(module: Readonly<IrModule>): Readonly<{
