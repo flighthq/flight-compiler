@@ -16436,12 +16436,19 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     !hasIrTypeUndefinedMemberRust(declaration.type) &&
     !getIrUnionPrimitiveDomainRust(declaration.type.types, typeContext)
   ) {
+    // Named general unions are emitted eagerly rather than through the anonymous-union allocator, so
+    // consume the same planned identity here when a containing record requires Debug.
     return emitGeneralUnionRust(
       getBindingTargetNameRust(declaration.binding, context),
       createGeneralUnionVariantsRust(declaration.type.types, typeContext),
       declaration.typeParameters,
       isRustDeclarationExportedRust(declaration, context),
       typeContext,
+      [
+        ...(context.anonymousUnionTraitObligations.unionTraitsByIdentity.get(
+          getRustAnonymousUnionIdentityRust(declaration.type.types, declaration.typeParameters),
+        ) ?? []),
+      ],
     );
   }
   const recordProperties = isIrTypeRecordMaterializationRust(declaration.type)
@@ -24393,6 +24400,14 @@ function visitRustAnonymousUnionTraitObligations(
     case 'literal':
       return undefined;
     case 'named': {
+      if (
+        type.reference.kind === 'ambient' &&
+        (type.reference.name === 'Map' || type.reference.name === 'ReadonlyMap') &&
+        type.typeArguments.length === 2 &&
+        isRustExactHashCollectionDomainRust(type.typeArguments[0]!, 'mapKey', visit.context, visit.module, new Set(), 0)
+      ) {
+        return visitRustAnonymousUnionTraitTypes(type.typeArguments, visit);
+      }
       if (
         type.reference.kind === 'ambient' &&
         (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&

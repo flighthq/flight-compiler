@@ -36451,6 +36451,147 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
   });
 
+  it('proves Map and ReadonlyMap Debug through closed aliases in discovery and payload modes', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anonymous-union-map-debug.ts',
+        `interface Alpha { value: number }
+         interface Beta { label: string }
+         type Text = string;
+         type Direct = Map<string, Alpha> | boolean;
+         type Frozen = ReadonlyMap<Text, Beta> | boolean;
+         type FrozenAlias = Frozen;
+         interface Holder {
+           direct: Direct;
+           frozen: FrozenAlias;
+           nested: Map<Text, Alpha | Beta>;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum Direct');
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum Frozen');
+    expect(output).toMatch(/#\[derive\(Clone, Debug\)\]\npub enum AnonymousUnion\d*/u);
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it.each([
+    [
+      'a generic Map value',
+      'interface Holder<Value> { slot: Map<string, Value> | boolean }',
+      'generic or qualified payload trait bounds are not proven',
+    ],
+    [
+      'an unknown Map value',
+      'interface Holder { slot: Map<string, unknown> | boolean }',
+      'unknown payload trait support is not statically proven',
+    ],
+    [
+      'an unsupported Map key',
+      'interface Point { value: number } interface Holder { slot: Map<number, Point> | boolean }',
+      'ambient Map payload traits are not proven',
+    ],
+    [
+      'an unrelated ambient carrier',
+      'interface Point { value: number } interface Holder { slot: Promise<Point> | boolean }',
+      'ambient Promise payload traits are not proven',
+    ],
+  ] as const)('keeps %s outside the native Map Debug proof', (_name, source, reason) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('anonymous-union-map-debug-refusal.ts', source).module),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'rust-anonymous-union-trait-obligation-unrepresented',
+    });
+    expect(failure.message).toContain(reason);
+  });
+
+  it('keeps callable Map values on the existing non-Debug record path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anonymous-union-map-callable-debug.ts',
+        `type Slot = Map<string, () => number> | boolean;
+         interface Holder { slot: Slot }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone)]\nenum Slot');
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\nenum Slot');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Holder');
+  });
+
+  it('keeps malformed Map arity on the ambient trait-refusal path', () => {
+    const module = structuredClone(
+      lower(
+        'anonymous-union-map-arity-refusal.ts',
+        `interface Point { value: number }
+         type Slot = Map<string, Point> | boolean;
+         interface Holder { slot: Slot }`,
+      ).module,
+    );
+    const slot = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Slot',
+    );
+    if (slot?.kind !== 'typeAlias' || slot.type.kind !== 'union') throw new Error('expected Slot union');
+    const map = slot.type.types.find(
+      (member) => member.kind === 'named' && member.reference.kind === 'ambient' && member.reference.name === 'Map',
+    );
+    if (map?.kind !== 'named') throw new Error('expected Map payload');
+    (map as unknown as { typeArguments: IrType[] }).typeArguments = map.typeArguments.slice(0, 1);
+
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    expect(failure.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
+    expect(failure.message).toContain('ambient Map payload traits are not proven');
+  });
+
+  it('keeps successful Map Debug additions while salvaging an unrelated ambient refusal', () => {
+    const source = `interface Point { value: number }
+       type GoodSlot = Map<string, Point> | boolean;
+       interface GoodHolder { slot: GoodSlot }
+       type BadSlot = Promise<Point> | boolean;
+       interface BadHolder { slot: BadSlot }
+       export function keep(value: Point): number { return value.value; }`;
+    const module = lower('anonymous-union-map-debug-salvage.ts', source).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [module],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([module]),
+      moduleFiles: [],
+      placeholderModules: [module],
+      refusals: [
+        {
+          code: 'rust-anonymous-union-trait-obligation-unrepresented',
+          message: 'anonymous union trait obligation refused for the witness',
+          module: getRustTestModuleIdentity(module),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected refusal placeholder emission');
+    const placeholder = emitPlaceholder(module, {
+      classification: 'compiler-restriction',
+      message: 'anonymous union trait obligation refused for the witness',
+      rule: 'rust-anonymous-union-trait-obligation-unrepresented',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial Rust module');
+
+    expect(placeholder.contents).toContain('#[derive(Clone, Debug)]\nenum GoodSlot');
+    expect(placeholder.contents).toContain('#[derive(Clone, Debug)]\npub struct GoodHolder');
+    expect(placeholder.contents).toContain('#[derive(Clone)]\nenum BadSlot');
+    expect(placeholder.contents).not.toContain('#[derive(Clone, Debug)]\nenum BadSlot');
+    expect(placeholder.contents).toContain('// NOT GENERATED: interface BadHolder -- source line 5');
+    expect(placeholder.contents).not.toContain('// NOT GENERATED: interface GoodHolder');
+    expect(placeholder.contents).toContain('pub fn keep(value: Point) -> f64');
+  });
+
   it('refuses named record aliases before they can acquire structural Eq and Hash derives', () => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(
@@ -42020,7 +42161,10 @@ describe('emitIrModuleRust exact Map application union construction', () => {
     expect(output).toContain('holder.slot = MapSlot::Map(values)');
     expect(output.match(/MapSlot::Map\(/gu)).toHaveLength(8);
     expect(output).not.toContain('.clone()');
+    expect(output).toContain('#[derive(Clone, Debug)]\nenum MapSlot');
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Holder');
     expect(emitIrModuleRust(result.module).contents).toBe(output);
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(output)).not.toThrow();
   });
 
   it('matches Map and ReadonlyMap carriers and alias-normalized primitive or record values', () => {
