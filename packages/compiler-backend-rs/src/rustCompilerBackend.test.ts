@@ -35795,8 +35795,8 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
   it('hands the guarded payload to Set and Map once in receiver-key-value order', () => {
     const result = lower(
       'anonymous-single-sentinel-collection-handoff.ts',
-      `interface Alpha { value: number }
-       interface Beta { other: number }
+      `interface Alpha { value: string }
+       interface Beta { other: boolean }
        function pick(): Alpha | Beta | undefined { return undefined; }
        function nextKey(): string { return 'key'; }
        export function add(target: Set<Alpha | Beta>): void {
@@ -35817,6 +35817,80 @@ describe('emitIrModuleRust exact anonymous single-sentinel general-union identit
     expect(output.match(/\bnext_key\(\)/gu)).toHaveLength(2);
     expect(output).toMatch(/target[^;]*\.insert\(found\.clone\(\)\.unwrap\(\)\)/u);
     expect(output).toMatch(/lookup[^;]*\.insert\(next_key\(\), value\.clone\(\)\.unwrap\(\)\)/u);
+    expect(output).toContain('#[derive(Clone, PartialEq, Eq, Hash)]\npub enum AnonymousUnion');
+    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Alpha');
+    expect(output).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Beta');
+  });
+
+  it('propagates canonical deduplicated HashSet and record Debug traits through nested unions', () => {
+    const records = `interface LeafA { text: string }
+                     interface LeafB { flag: boolean }
+                     interface Wrapped { nested: LeafA | LeafB }
+                     interface Other { label: string }`;
+    const first = emitIrModuleRust(
+      lower(
+        'anonymous-union-traits-holder-first.ts',
+        `${records}
+         interface Holder { slot: Wrapped | Other }
+         export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+           target.add(value);
+         }`,
+      ).module,
+    ).contents;
+    const second = emitIrModuleRust(
+      lower(
+        'anonymous-union-traits-set-first.ts',
+        `${records}
+         export function add(target: Set<Wrapped | Other>, value: Wrapped | Other): void {
+           target.add(value);
+         }
+         interface Holder { slot: Wrapped | Other }`,
+      ).module,
+    ).contents;
+    const derives = (output: string): string[] =>
+      [...output.matchAll(/#\[derive\(([^)]+)\)\]\npub enum AnonymousUnion\d*/gu)].map((match) => match[1]!);
+
+    expect(derives(first)).toEqual(['Clone, Debug, PartialEq, Eq, Hash', 'Clone, Debug, PartialEq, Eq, Hash']);
+    expect(derives(second)).toEqual(derives(first));
+    for (const derive of derives(first)) {
+      const traits = derive.split(', ');
+      expect(new Set(traits).size).toBe(traits.length);
+    }
+    expect(first).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct Wrapped');
+    expect(first).toContain('#[derive(Clone, Debug, PartialEq, Eq, Hash)]\npub struct LeafA');
+    if (rustcAvailable) expect(() => compileRustSourceAgainstRuntime(first)).not.toThrow();
+  });
+
+  it('refuses an anonymous HashSet union when a payload transitively stores f64', () => {
+    const module = lower(
+      'anonymous-union-hash-trait-refusal.ts',
+      `interface Numeric { value: number }
+       interface Textual { value: string }
+       export function add(target: Set<Numeric | Textual>, value: Numeric | Textual): void {
+         target.add(value);
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-anonymous-union-trait-obligation-unrepresented');
+    expect(failure.message).toContain('cannot prove Eq + Hash');
+    expect(failure.message).toContain('f64');
+  });
+
+  it('omits Debug from a containing record and union when one payload is callable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anonymous-union-debug-trait-boundary.ts',
+        `interface Callback { run: () => number }
+         interface Textual { value: string }
+         export interface Holder { slot: Callback | Textual }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone)]\npub enum AnonymousUnion');
+    expect(output).toContain('#[derive(Clone)]\npub struct Callback');
+    expect(output).toContain('#[derive(Clone)]\npub struct Holder');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub enum AnonymousUnion');
   });
 
   it.each([
@@ -36097,6 +36171,8 @@ describe('emitIrModuleRust exact contextual union-subset conversion', () => {
     const sourceOwner = signature[1]!;
     const targetOwner = signature[2]!;
     expect(sourceOwner).not.toBe(targetOwner);
+    expect(output).toContain(`#[derive(Clone)]\npub enum ${sourceOwner}`);
+    expect(output).toContain(`#[derive(Clone, Debug)]\npub enum ${targetOwner}`);
     const movedMatch = `match value { ${sourceOwner}::Alpha(value) => ${targetOwner}::Alpha(value), ${sourceOwner}::Beta(value) => ${targetOwner}::Beta(value), }`;
     const clonedMatch = movedMatch.replace('match value', 'match value.clone()');
     expect(output).toContain(`return ${movedMatch};`);

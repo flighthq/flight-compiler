@@ -184,9 +184,17 @@ interface PrimitiveUnionEnum {
 }
 
 interface RustAnonymousUnionEnum {
+  readonly deriveTraits: readonly RustAnonymousUnionTrait[];
   readonly name: string;
   readonly typeParameters: readonly IrTypeParameter[];
   readonly variants: RustGeneralUnionVariant[];
+}
+
+type RustAnonymousUnionTrait = 'Debug' | 'PartialEq' | 'Eq' | 'Hash';
+
+interface RustAnonymousUnionTraitObligationPlan {
+  readonly recordTraitsByBindingId: ReadonlyMap<string, ReadonlySet<RustAnonymousUnionTrait>>;
+  readonly unionTraitsByIdentity: ReadonlyMap<string, ReadonlySet<RustAnonymousUnionTrait>>;
 }
 
 interface RustDualSentinelNominalEnumPlan {
@@ -541,6 +549,7 @@ interface EmitContext {
   activeTypeParameters: readonly IrTypeParameter[];
   assertedUnknownBindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  anonymousUnionTraitObligations: RustAnonymousUnionTraitObligationPlan;
   anonymousUnionEnums: Map<string, RustAnonymousUnionEnum>;
   arrayElementBindingIds: ReadonlySet<string>;
   arrayElementOptionReads: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
@@ -1224,6 +1233,10 @@ function emitIrModuleRustWithContext(
     assignableBindingIds,
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    anonymousUnionTraitObligations: {
+      recordTraitsByBindingId: new Map(),
+      unionTraitsByIdentity: new Map(),
+    },
     anonymousUnionEnums: new Map(),
     apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module, moduleExportBindingIds),
     moduleExportBindingIds,
@@ -1469,6 +1482,7 @@ function emitIrModuleRustWithContext(
   for (const call of collectIrModuleAdaptedNativeFutureReturnCallsRust(module, context)) {
     adaptedNativeFutureReturnCalls.add(call);
   }
+  context.anonymousUnionTraitObligations = createRustAnonymousUnionTraitObligationPlanRust(context);
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayConstructorSemanticsRust(module, context);
   assertArrayIsArraySemanticsRust(module, context);
@@ -1539,7 +1553,10 @@ function emitIrModuleRustWithContext(
     lines.push('', ...emitPrimitiveUnionEnumRust(union));
   });
   context.anonymousUnionEnums.forEach((union) => {
-    lines.push('', ...emitGeneralUnionRust(union.name, union.variants, union.typeParameters, true, context));
+    lines.push(
+      '',
+      ...emitGeneralUnionRust(union.name, union.variants, union.typeParameters, true, context, union.deriveTraits),
+    );
   });
   context.callableObjectRecords.forEach((record) => {
     lines.push('', ...emitCallableObjectRecordRust(record, context));
@@ -1655,6 +1672,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     emitRustRecordDerive(
       [...instanceFields.map((field) => field.type), ...(declaration.extends ? [declaration.extends] : [])],
       context,
+      declaration.binding.id,
     ),
     `${structVisibility}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
@@ -5432,6 +5450,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
     declaration.typeParameters,
     declaration.exported,
     context,
+    declaration.binding.id,
   );
 }
 
@@ -15062,6 +15081,7 @@ function emitRecord(
   typeParameters: readonly IrTypeParameter[],
   exported: boolean,
   context: EmitContext,
+  bindingId?: string,
 ): string[] {
   // A record a public function names has to be at least as visible as that function, and a record
   // the source did not export is still named by one often enough that hiding it only produces a
@@ -15072,6 +15092,7 @@ function emitRecord(
     emitRustRecordDerive(
       properties.map((property) => property.type),
       typeContext,
+      bindingId,
     ),
     `pub struct ${targetName}${emitTypeParameters(typeParameters, context)} {`,
   ];
@@ -16145,6 +16166,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       declaration.typeParameters,
       isRustDeclarationExportedRust(declaration, context),
       context,
+      declaration.binding.id,
     );
   }
   return [
@@ -23900,14 +23922,450 @@ function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {
   }
 }
 
+interface RustAnonymousUnionTraitObligationAccumulator {
+  readonly recordTraitsByBindingId: Map<string, Set<RustAnonymousUnionTrait>>;
+  readonly unionTraitsByIdentity: Map<string, Set<RustAnonymousUnionTrait>>;
+}
+
+interface RustAnonymousUnionTraitFailure {
+  readonly reason: string;
+}
+
+interface RustAnonymousUnionTraitVisit {
+  readonly activeTypeParameters: readonly IrTypeParameter[];
+  readonly context: EmitContext;
+  readonly mode: 'Debug' | 'EqHash';
+  readonly module: Readonly<IrModule>;
+  readonly plan: RustAnonymousUnionTraitObligationAccumulator;
+  readonly resolving: ReadonlySet<string>;
+}
+
+type RustAnonymousUnionNamedPayload =
+  | Readonly<{
+      bindingId: string;
+      kind: 'record';
+      module: Readonly<IrModule>;
+      properties: readonly Readonly<IrObjectTypeProperty>[];
+      typeParameters: readonly IrTypeParameter[];
+    }>
+  | Readonly<{
+      kind: 'resolved';
+      module: Readonly<IrModule>;
+      type: Readonly<IrType>;
+      typeParameters: readonly IrTypeParameter[];
+    }>
+  | Readonly<{ kind: 'external' }>
+  | Readonly<{ kind: 'unsupported'; reason: string }>;
+
+const RUST_DERIVE_TRAIT_ORDER = ['Clone', 'Debug', 'PartialEq', 'Eq', 'Hash'] as const;
+const RUST_HASH_ELEMENT_TRAITS = ['PartialEq', 'Eq', 'Hash'] as const;
+
+// Anonymous enums are allocated while source is emitted, but a payload record can be rendered before
+// the Set use that imposes Eq + Hash is encountered. Plan the closed obligation graph first so every
+// derive line sees the same complete answer regardless of declaration or use order.
+function createRustAnonymousUnionTraitObligationPlanRust(context: EmitContext): RustAnonymousUnionTraitObligationPlan {
+  const plan = createRustAnonymousUnionTraitObligationAccumulator();
+
+  for (const declaration of context.module.declarations) {
+    let types: readonly Readonly<IrType>[] | undefined;
+    let typeParameters: readonly IrTypeParameter[] = [];
+    if (declaration.kind === 'interface' && !hasIrModuleClassImplementingRust(declaration, context)) {
+      types = declaration.properties.map((property) => property.type);
+      typeParameters = declaration.typeParameters;
+    } else if (declaration.kind === 'class' && !declaration.abstract) {
+      types = [
+        ...declaration.fields.filter((field) => !field.static).map((field) => field.type),
+        ...(declaration.extends ? [declaration.extends] : []),
+      ];
+      typeParameters = declaration.typeParameters;
+    } else if (declaration.kind === 'typeAlias' && isIrTypeRecordMaterializationRust(declaration.type)) {
+      types = getIrObjectTypePropertiesRust(declaration.type, context)?.map((property) => property.type);
+      typeParameters = declaration.typeParameters;
+    }
+    if (!types || types.some((type) => containsIrFunctionTypeRust(type, context))) continue;
+    const declarationContext: EmitContext = {
+      ...context,
+      activeTypeParameters: typeParameters,
+      currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+    };
+    for (const type of types.filter((candidate) => containsDirectRustAnonymousUnionCarrier(candidate, context))) {
+      const additions = createRustAnonymousUnionTraitObligationAccumulator();
+      const failure = visitRustAnonymousUnionTraitObligations(type, {
+        activeTypeParameters: typeParameters,
+        context: declarationContext,
+        mode: 'Debug',
+        module: context.module,
+        plan: additions,
+        resolving: new Set(),
+      });
+      if (failure) {
+        emissionRuleError(
+          declarationContext,
+          `anonymous union nested in record ${'binding' in declaration ? declaration.binding.name : '(binding)'} cannot implement Rust Debug: ${failure.reason}`,
+          'rust-anonymous-union-trait-obligation-unrepresented',
+        );
+      }
+      mergeRustAnonymousUnionTraitObligations(plan, additions);
+    }
+  }
+
+  analyzeIrModuleTraversal(context.module, {
+    type(type, traversalPath) {
+      if (
+        type.kind !== 'named' ||
+        type.reference.kind !== 'ambient' ||
+        (type.reference.name !== 'Set' && type.reference.name !== 'ReadonlySet') ||
+        type.typeArguments.length !== 1 ||
+        !type.typeArguments[0] ||
+        !isDirectRustAnonymousUnionCarrier(type.typeArguments[0], context)
+      ) {
+        return;
+      }
+      const owner = getRustTraversalDeclarationRust(context.module, traversalPath);
+      const typeParameters = owner ? getRustDeclarationTypeParametersForTraitPlan(owner) : [];
+      const obligationContext: EmitContext = {
+        ...context,
+        activeTypeParameters: typeParameters,
+        ...(owner ? { currentOrigin: { column: owner.origin.column, line: owner.origin.line } } : {}),
+      };
+      const additions = createRustAnonymousUnionTraitObligationAccumulator();
+      const failure = visitRustAnonymousUnionTraitObligations(type.typeArguments[0], {
+        activeTypeParameters: typeParameters,
+        context: obligationContext,
+        mode: 'EqHash',
+        module: context.module,
+        plan: additions,
+        resolving: new Set(),
+      });
+      if (failure) {
+        emissionRuleError(
+          obligationContext,
+          `anonymous union used as a Rust HashSet element requires PartialEq, Eq, and Hash, but cannot prove Eq + Hash: ${failure.reason}`,
+          'rust-anonymous-union-trait-obligation-unrepresented',
+        );
+      }
+      mergeRustAnonymousUnionTraitObligations(plan, additions);
+    },
+  });
+
+  return plan;
+}
+
+function createRustAnonymousUnionTraitObligationAccumulator(): RustAnonymousUnionTraitObligationAccumulator {
+  return { recordTraitsByBindingId: new Map(), unionTraitsByIdentity: new Map() };
+}
+
+function mergeRustAnonymousUnionTraitObligations(
+  target: RustAnonymousUnionTraitObligationAccumulator,
+  source: RustAnonymousUnionTraitObligationAccumulator,
+): void {
+  for (const [key, traits] of source.recordTraitsByBindingId) {
+    addRustAnonymousUnionTraitsToMap(target.recordTraitsByBindingId, key, traits);
+  }
+  for (const [key, traits] of source.unionTraitsByIdentity) {
+    addRustAnonymousUnionTraitsToMap(target.unionTraitsByIdentity, key, traits);
+  }
+}
+
+function getRustDeclarationTypeParametersForTraitPlan(
+  declaration: Readonly<IrDeclaration>,
+): readonly IrTypeParameter[] {
+  switch (declaration.kind) {
+    case 'class':
+    case 'function':
+    case 'interface':
+    case 'typeAlias':
+      return declaration.typeParameters;
+    case 'enum':
+    case 'variable':
+      return [];
+  }
+}
+
+function containsDirectRustAnonymousUnionCarrier(type: Readonly<IrType>, context: EmitContext): boolean {
+  switch (type.kind) {
+    case 'array':
+      return containsDirectRustAnonymousUnionCarrier(type.element, context);
+    case 'intersection':
+      return type.types.some((member) => containsDirectRustAnonymousUnionCarrier(member, context));
+    case 'object':
+      return type.properties.some((property) => containsDirectRustAnonymousUnionCarrier(property.type, context));
+    case 'tuple':
+      return type.elements.some((element) => containsDirectRustAnonymousUnionCarrier(element.type, context));
+    case 'union':
+      return isDirectRustAnonymousUnionCarrier(type, context);
+    default:
+      return false;
+  }
+}
+
+function isDirectRustAnonymousUnionCarrier(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'union') return false;
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type)) return true;
+  if (concrete.length === 1 && concrete.length !== type.types.length) return false;
+  if (getIrUnionPrimitiveDomainRust(concrete, context)) return false;
+  return !isRustPrimitiveUnionEnumType(concrete);
+}
+
+function isRustPrimitiveUnionEnumType(types: readonly Readonly<IrType>[]): boolean {
+  return types.every(
+    (member) =>
+      member.kind === 'primitive' &&
+      (member.name === 'boolean' || member.name === 'number' || member.name === 'string'),
+  );
+}
+
+function visitRustAnonymousUnionTraitObligations(
+  type: Readonly<IrType>,
+  visit: RustAnonymousUnionTraitVisit,
+): RustAnonymousUnionTraitFailure | undefined {
+  switch (type.kind) {
+    case 'array':
+      return visitRustAnonymousUnionTraitObligations(type.element, visit);
+    case 'function':
+      return { reason: 'callable payloads use Rc<dyn Fn>, which does not implement the required trait' };
+    case 'intersection': {
+      const primitive = getIrTypePrimitiveDomainRust(type, visit.context, visit.module, visit.resolving);
+      if (primitive) {
+        return visitRustAnonymousUnionTraitObligations({ kind: 'primitive', name: primitive }, visit);
+      }
+      const properties = getIrObjectTypePropertiesRust(type, visit.context, visit.module, visit.resolving);
+      return properties
+        ? visitRustAnonymousUnionTraitProperties(properties, visit)
+        : { reason: 'an intersection payload has no closed Rust record carrier' };
+    }
+    case 'literal':
+      return visit.mode === 'EqHash' && typeof type.value === 'number'
+        ? { reason: 'numeric literal storage uses f64, which implements neither Eq nor Hash' }
+        : undefined;
+    case 'named': {
+      if (
+        type.reference.kind === 'ambient' &&
+        (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+        type.typeArguments[0]
+      ) {
+        return visitRustAnonymousUnionTraitObligations(type.typeArguments[0], visit);
+      }
+      const payload = resolveRustAnonymousUnionNamedPayload(type, visit);
+      if (payload.kind === 'unsupported') return { reason: payload.reason };
+      if (payload.kind === 'external') {
+        return visit.mode === 'Debug'
+          ? undefined
+          : { reason: 'an external payload has no shared equality/hash derive obligation' };
+      }
+      if (payload.kind === 'resolved') {
+        return visitRustAnonymousUnionTraitObligations(payload.type, {
+          ...visit,
+          activeTypeParameters: payload.typeParameters,
+          module: payload.module,
+        });
+      }
+      const key = `${getRustModuleIdentityKey(payload.module)}\0${payload.bindingId}\0${visit.mode}`;
+      if (visit.resolving.has(key)) return { reason: 'a recursive payload has no finite trait proof' };
+      if (visit.mode === 'EqHash') {
+        addRustAnonymousUnionTraitsToMap(
+          visit.plan.recordTraitsByBindingId,
+          payload.bindingId,
+          RUST_HASH_ELEMENT_TRAITS,
+        );
+      }
+      return visitRustAnonymousUnionTraitProperties(payload.properties, {
+        ...visit,
+        activeTypeParameters: payload.typeParameters,
+        module: payload.module,
+        resolving: new Set(visit.resolving).add(key),
+      });
+    }
+    case 'never':
+    case 'null':
+    case 'undefined':
+      return undefined;
+    case 'object':
+      return visitRustAnonymousUnionTraitProperties(type.properties, visit);
+    case 'primitive':
+      if (type.name === 'symbol') {
+        return { reason: 'symbol trait support is not proven by the Rust runtime contract' };
+      }
+      return visit.mode === 'EqHash' && type.name === 'number'
+        ? { reason: 'number payload storage uses f64, which implements neither Eq nor Hash' }
+        : undefined;
+    case 'tuple':
+      return visitRustAnonymousUnionTraitTypes(
+        type.elements.map((element) => element.type),
+        visit,
+      );
+    case 'union': {
+      const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+      if (concrete.length === 1 && concrete.length !== type.types.length) {
+        return visitRustAnonymousUnionTraitObligations(concrete[0]!, visit);
+      }
+      const primitive = getIrUnionPrimitiveDomainRust(concrete, visit.context);
+      if (primitive) {
+        return visitRustAnonymousUnionTraitObligations({ kind: 'primitive', name: primitive }, visit);
+      }
+      if (isRustPrimitiveUnionEnumType(concrete)) {
+        return visit.mode === 'Debug'
+          ? undefined
+          : { reason: 'the primitive-union carrier has no equality/hash derive plan' };
+      }
+      const unionTypes = hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type) ? type.types : concrete;
+      addRustAnonymousUnionTraitsToMap(
+        visit.plan.unionTraitsByIdentity,
+        getRustAnonymousUnionIdentityRust(unionTypes, visit.activeTypeParameters),
+        visit.mode === 'Debug' ? ['Debug'] : RUST_HASH_ELEMENT_TRAITS,
+      );
+      return visitRustAnonymousUnionTraitTypes(
+        unionTypes.filter(
+          (member) =>
+            member.kind !== 'literal' &&
+            member.kind !== 'never' &&
+            member.kind !== 'null' &&
+            member.kind !== 'undefined',
+        ),
+        visit,
+      );
+    }
+    case 'conditionalFacet':
+    case 'indexedAccess':
+    case 'keyof':
+    case 'typeOf':
+    case 'unknown':
+      return { reason: `${type.kind} payload trait support is not statically proven` };
+  }
+}
+
+function visitRustAnonymousUnionTraitProperties(
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+  visit: RustAnonymousUnionTraitVisit,
+): RustAnonymousUnionTraitFailure | undefined {
+  return visitRustAnonymousUnionTraitTypes(
+    properties.map((property) => property.type),
+    visit,
+  );
+}
+
+function visitRustAnonymousUnionTraitTypes(
+  types: readonly Readonly<IrType>[],
+  visit: RustAnonymousUnionTraitVisit,
+): RustAnonymousUnionTraitFailure | undefined {
+  for (const type of types) {
+    const failure = visitRustAnonymousUnionTraitObligations(type, visit);
+    if (failure) return failure;
+  }
+  return undefined;
+}
+
+function resolveRustAnonymousUnionNamedPayload(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  visit: RustAnonymousUnionTraitVisit,
+): RustAnonymousUnionNamedPayload {
+  if (type.reference.kind === 'ambient') {
+    return { kind: 'unsupported', reason: `ambient ${type.reference.name} payload traits are not proven` };
+  }
+  if (
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return { kind: 'unsupported', reason: 'generic or qualified payload trait bounds are not proven' };
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, visit.context, visit.module);
+  if (!location) {
+    return {
+      kind: 'unsupported',
+      reason: `payload ${type.reference.binding.name} has no resolved Rust type declaration`,
+    };
+  }
+  if (!isRustCompilerModuleIdentityEqual(location.module, visit.context.module)) return { kind: 'external' };
+  if (location.declaration.typeParameters.length > 0) {
+    return {
+      kind: 'unsupported',
+      reason: `generic payload ${type.reference.binding.name} has no emitted trait bounds`,
+    };
+  }
+  if (location.declaration.kind === 'typeAlias') {
+    let resolved: IrType;
+    try {
+      const substitution = createIrTypeParameterSubstitutionPlan(
+        location.declaration.typeParameters,
+        type.typeArguments,
+      );
+      resolved = resolveIrTypeStructuralSubstitution(location.declaration.type, substitution);
+    } catch (error) {
+      if (isCompilerStructuralTypeSubstitutionFailure(error)) {
+        return {
+          kind: 'unsupported',
+          reason: `payload ${type.reference.binding.name} could not resolve its type arguments`,
+        };
+      }
+      throw error;
+    }
+    const properties = isIrTypeRecordMaterializationRust(location.declaration.type)
+      ? getIrObjectTypePropertiesRust(resolved, visit.context, location.module, visit.resolving)
+      : undefined;
+    return properties
+      ? {
+          bindingId: location.declaration.binding.id,
+          kind: 'record',
+          module: location.module,
+          properties,
+          typeParameters: location.declaration.typeParameters,
+        }
+      : {
+          kind: 'resolved',
+          module: location.module,
+          type: resolved,
+          typeParameters: location.declaration.typeParameters,
+        };
+  }
+  if (hasIrModuleClassImplementingRust(location.declaration, visit.context)) {
+    return {
+      kind: 'unsupported',
+      reason: `payload ${type.reference.binding.name} emits as a trait rather than a record`,
+    };
+  }
+  const properties = getIrObjectTypePropertiesRust(type, visit.context, visit.module, visit.resolving);
+  return properties
+    ? {
+        bindingId: location.declaration.binding.id,
+        kind: 'record',
+        module: location.module,
+        properties,
+        typeParameters: location.declaration.typeParameters,
+      }
+    : {
+        kind: 'unsupported',
+        reason: `payload ${type.reference.binding.name} has no closed record shape`,
+      };
+}
+
+function addRustAnonymousUnionTraitsToMap(
+  map: Map<string, Set<RustAnonymousUnionTrait>>,
+  key: string,
+  additions: Iterable<RustAnonymousUnionTrait>,
+): void {
+  const traits = map.get(key) ?? new Set<RustAnonymousUnionTrait>();
+  for (const trait_ of additions) traits.add(trait_);
+  map.set(key, traits);
+}
+
+function emitRustDeriveAttributeRust(traits: readonly (RustAnonymousUnionTrait | 'Clone')[]): string {
+  const requested = new Set(traits);
+  return `#[derive(${RUST_DERIVE_TRAIT_ORDER.filter((trait_) => requested.has(trait_)).join(', ')})]`;
+}
+
 // `Rc<dyn Fn>` is cloneable but the callable trait object does not implement `Debug`. Deriving
 // `Debug` for a record that contains one directly, through a container, or through a resolved source
-// type therefore makes otherwise valid generated Rust fail to compile. Retain the useful derive for
-// every record where no callable is proven, and omit only the unsupported bound.
-function emitRustRecordDerive(types: readonly Readonly<IrType>[], context: EmitContext): string {
-  return types.some((type) => containsIrFunctionTypeRust(type, context))
-    ? '#[derive(Clone)]'
-    : '#[derive(Clone, Debug)]';
+// type therefore makes otherwise valid generated Rust fail to compile. Hash-collection union use can
+// add stronger traits, but only after the obligation planner has proven every transitive field.
+function emitRustRecordDerive(types: readonly Readonly<IrType>[], context: EmitContext, bindingId?: string): string {
+  const traits: (RustAnonymousUnionTrait | 'Clone')[] = ['Clone'];
+  if (!types.some((type) => containsIrFunctionTypeRust(type, context))) traits.push('Debug');
+  if (bindingId) {
+    traits.push(...(context.anonymousUnionTraitObligations.recordTraitsByBindingId.get(bindingId) ?? []));
+  }
+  return emitRustDeriveAttributeRust(traits);
 }
 
 function containsIrFunctionTypeRust(
@@ -26081,13 +26539,11 @@ function getOrCreateAnonymousUnionEnumRust(
   types: readonly Readonly<IrType>[],
   context: EmitContext,
 ): RustAnonymousUnionEnum {
-  const key = JSON.stringify({
-    parameters: context.activeTypeParameters.map((parameter) => parameter.binding.id),
-    types,
-  });
+  const key = getRustAnonymousUnionIdentityRust(types, context.activeTypeParameters);
   const existing = context.anonymousUnionEnums.get(key);
   if (existing) return existing;
   const record: RustAnonymousUnionEnum = {
+    deriveTraits: [...(context.anonymousUnionTraitObligations.unionTraitsByIdentity.get(key) ?? [])],
     name: getGeneratedTargetNameRust('AnonymousUnion', context),
     typeParameters: context.activeTypeParameters,
     variants: [],
@@ -26097,6 +26553,16 @@ function getOrCreateAnonymousUnionEnumRust(
   context.anonymousUnionEnums.set(key, record);
   record.variants.push(...createGeneralUnionVariantsRust(types, context));
   return record;
+}
+
+function getRustAnonymousUnionIdentityRust(
+  types: readonly Readonly<IrType>[],
+  typeParameters: readonly IrTypeParameter[],
+): string {
+  return JSON.stringify({
+    parameters: typeParameters.map((parameter) => parameter.binding.id),
+    types,
+  });
 }
 
 function createGeneralUnionVariantsRust(
@@ -26184,9 +26650,13 @@ function emitGeneralUnionRust(
   typeParameters: readonly IrTypeParameter[],
   exported: boolean,
   context: EmitContext,
+  deriveTraits: readonly RustAnonymousUnionTrait[] = [],
 ): string[] {
   const visibility = exported ? 'pub ' : '';
-  const lines = ['#[derive(Clone)]', `${visibility}enum ${targetName}${emitTypeParameters(typeParameters, context)} {`];
+  const lines = [
+    emitRustDeriveAttributeRust(['Clone', ...deriveTraits]),
+    `${visibility}enum ${targetName}${emitTypeParameters(typeParameters, context)} {`,
+  ];
   for (const variant of variants) {
     if (variant.kind === 'unit') {
       lines.push(`  ${variant.name},`);
