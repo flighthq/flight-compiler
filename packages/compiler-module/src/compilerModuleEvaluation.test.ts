@@ -97,7 +97,7 @@ describe('createCompilerModuleEvaluationPlan', () => {
     });
     expect(byName.get('Choice')).toMatchObject({
       access: 'available-after-instantiation',
-      initialization: { kind: 'instantiation', value: 'undefined' },
+      initialization: { kind: 'evaluation', step: 4 },
       mutation: 'mutable',
     });
     expect(byName.get('left')?.initialization).toEqual({ kind: 'evaluation', step: 5 });
@@ -135,6 +135,47 @@ describe('createCompilerModuleEvaluationPlan', () => {
     ]);
     expect(input).toEqual(snapshot);
     expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
+  });
+
+  it('links numeric and string enum bindings to their exact evaluation steps', () => {
+    const module = lowerModule(
+      'enums.ts',
+      `
+        export function ready(): number { return 1; }
+        export var pending: number;
+        export enum NumericChoice { first }
+        export enum StringChoice { first = 'first' }
+      `,
+    );
+    const input = createInput([module], [], [module]);
+    const snapshot = structuredClone(input);
+    const plan = createCompilerModuleEvaluationPlan(input);
+    const modulePlan = plan.modules[0]!;
+    const byName = new Map(modulePlan.bindings.map((binding) => [binding.binding.name, binding]));
+
+    for (const [name, step] of [
+      ['NumericChoice', 0],
+      ['StringChoice', 1],
+    ] as const) {
+      const binding = byName.get(name)!;
+      expect(binding.initialization).toEqual({ kind: 'evaluation', step });
+      expect(modulePlan.steps[step]).toMatchObject({
+        action: 'assign',
+        bindings: [{ id: binding.binding.id }],
+        declaration: 'enum',
+      });
+    }
+    expect(byName.get('ready')).toMatchObject({
+      access: 'available-after-instantiation',
+      initialization: { kind: 'instantiation', value: 'function' },
+    });
+    expect(byName.get('pending')).toMatchObject({
+      access: 'available-after-instantiation',
+      initialization: { kind: 'instantiation', value: 'undefined' },
+    });
+    expect(modulePlan.steps).toHaveLength(2);
+    expect(createCompilerModuleEvaluationPlan(input)).toEqual(plan);
+    expect(input).toEqual(snapshot);
   });
 
   it('orders dependency-first cycle groups from explicit entry and request order', () => {

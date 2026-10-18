@@ -638,7 +638,8 @@ function addCompilerModuleEvaluationDeclaration(
       );
       return;
     }
-    case 'enum':
+    case 'enum': {
+      const step = steps.length;
       steps.push({
         action: 'assign',
         bindings: [declaration.binding],
@@ -652,13 +653,14 @@ function addCompilerModuleEvaluationDeclaration(
         {
           access: 'available-after-instantiation',
           binding: declaration.binding,
-          initialization: { kind: 'instantiation', value: 'undefined' },
+          initialization: { kind: 'evaluation', step },
           kind: 'local',
           mutation: 'mutable',
         },
         module,
       );
       return;
+    }
     case 'function':
       addCompilerModuleEvaluationBinding(
         bindings,
