@@ -41403,11 +41403,40 @@ describe('emitIrModuleRust exact Set element domain', () => {
     expect(output).toContain('pub fn count(values: std::collections::HashSet<Option<String>>) -> f64');
     expect(output).toContain('pub fn empty() -> std::collections::HashSet<Option<String>>');
     expect(output).toContain('return std::collections::HashSet::new();');
-    expect(output).toContain('.insert(value);');
+    expect(output).toContain('.insert(value.clone());');
     expect(output).toContain('.contains(&value)');
     expect(output).toContain('.insert(Some(true));');
     expect(output).toContain('.insert(None);');
     expect(output).toContain('.contains(&None)');
+  });
+
+  it('preserves reused optional string Set arguments across insertion and lookup', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-string-set-reuse.ts',
+        `export function reuse(value: string | undefined): boolean {
+           const values = new Set<string | undefined>();
+           values.add(value);
+           return values.has(value) && (value === undefined || value.length >= 0);
+         }
+         export function reuseNull(value: string | null): boolean {
+           const values = new Set<string | null>();
+           values.add(value);
+           return values.has(value) && (value === null || value.length >= 0);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/values\.insert\(value\.clone\(\)\);/gu)).toHaveLength(2);
+    expect(output.match(/values\.contains\(&value\)/gu)).toHaveLength(2);
+    if (rustcAvailable) {
+      expect(() =>
+        runRustSource(
+          output,
+          'assert!(reuse(Some("a".to_owned()))); assert!(reuse(None)); assert!(reuse_null(Some("a".to_owned()))); assert!(reuse_null(None));',
+        ),
+      ).not.toThrow();
+    }
   });
 
   it('wraps present Set member arguments to enter the optional element carrier', () => {

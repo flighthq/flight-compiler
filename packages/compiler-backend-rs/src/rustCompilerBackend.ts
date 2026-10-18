@@ -5895,7 +5895,11 @@ function emitRustOptionalSetMemberArgumentRust(
     concrete.length === 1 &&
     resolvedArgument.types.length - concrete.length === 1;
   const operand = emitExpression(argument, context);
-  if (alreadyOptional) return borrowed ? `&${operand}` : operand;
+  if (alreadyOptional) {
+    if (borrowed) return `&${operand}`;
+    // Insertion must retain an optional String argument for subsequent source uses.
+    return getIrUnionPrimitiveDomainRust(concrete, context) === 'string' ? `${operand}.clone()` : operand;
+  }
   // A string payload is owned by the Option, so a named value must be cloned to survive the member
   // call; the source does not consume it, and a borrow of a temporary cannot outlive the statement.
   const payload = elementType.kind === 'union' ? elementType.types : [];
