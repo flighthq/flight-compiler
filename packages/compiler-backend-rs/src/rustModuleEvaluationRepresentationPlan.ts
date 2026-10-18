@@ -1,5 +1,6 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
+import { createCompilerModuleFacadePlan } from '../../compiler-module/src/index.js';
 import type {
   CompilerBackendModuleFile,
   CompilerModuleEvaluationBinding,
@@ -73,14 +74,24 @@ export function createCompilerRustModuleEvaluationRepresentationPlan(
   const sourceTreeModules = createRustModuleEvaluationUniqueIdentityMap(input.sourceTree.modules, 'sourceTree.modules');
   const sourceFiles = createRustModuleEvaluationSourceFiles(input.sourceTree.files);
   const locators = createRustModuleEvaluationLocators(retainedModules, retainedFiles, sourceTreeModules, sourceFiles);
-  const facadeModules = createRustModuleEvaluationUniqueIdentityMap(
+  const publicFacadeModules = createRustModuleEvaluationUniqueIdentityMap(
     input.finalization.facade.modules,
     'facade.modules',
+  );
+  assertRustModuleEvaluationContainsProjection(
+    neutralModules,
+    publicFacadeModules,
+    'moduleEvaluation.modules',
+    'facade.modules',
+  );
+  const facadeModules = createRustModuleEvaluationUniqueIdentityMap(
+    createCompilerModuleFacadePlan({ evaluation, modules: input.modules }).modules,
+    'evaluation facade modules',
   );
   assertRustModuleEvaluationExactProjection(
     facadeModules,
     neutralModules,
-    'facade.modules',
+    'evaluation facade modules',
     'moduleEvaluation.modules',
   );
   const constantModules = createRustModuleEvaluationUniqueIdentityMap(

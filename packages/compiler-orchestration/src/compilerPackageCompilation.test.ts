@@ -8,6 +8,7 @@ import type {
   CompilerModuleIdentity,
   CompilerPackageCompilationProgress,
   CompilerPackageGraph,
+  CompilerRustModuleEvaluationExecutionPlan,
   TypeScriptPackageGraphSource,
 } from '../../compiler-types/src/index.js';
 import { parseTypeScriptSource } from './compilerOrchestration.js';
@@ -398,7 +399,7 @@ describe('compileTypeScriptPackageGraph', () => {
         for (const module of modules) {
           for (const exported of module.exports) {
             if (exported.kind === 'local') {
-              ownerSources.set(`${module.packageName} ${exported.exported}`, module.source);
+              ownerSources.set(`${module.packageName}\0${exported.exported}`, module.source);
             }
           }
         }
@@ -410,7 +411,7 @@ describe('compileTypeScriptPackageGraph', () => {
                   .flatMap((imported) =>
                     imported.bindings.map(
                       (binding) =>
-                        `${binding.imported} = ${ownerSources.get(`${module.packageName} ${binding.imported}`) ?? 'unresolved'}`,
+                        `${binding.imported} = ${ownerSources.get(`${module.packageName}\0${binding.imported}`) ?? 'unresolved'}`,
                     ),
                   )
                   .join('\n'),
@@ -677,6 +678,92 @@ describe('compileTypeScriptPackageGraph', () => {
       path: 'package/summary.txt',
       provenance: [entryIdentity, ownerIdentity],
     });
+  });
+
+  it('clones and freezes target initialization once before passing that exact plan to public bindings', () => {
+    const input = source('@local/source', 'source', 'input.ts', 'export const value = 1;');
+    const targetInitialization = {
+      availability: { outcome: 'available' as const },
+      entries: [],
+      error: {
+        crateName: 'selected_runtime',
+        result: 'Result<(), FlightModuleEvaluationError>' as const,
+        targetName: 'FlightModuleEvaluationError' as const,
+      },
+      modules: [],
+      phases: [
+        { invocations: [], kind: 'instantiate' as const },
+        { invocations: [], kind: 'evaluate' as const },
+      ],
+      publicBindingSchema: 'flight-rust-public-binding-plan/3' as const,
+      representationSchema: 'flight-rust-module-evaluation-representation-plan/1' as const,
+      runtimeAbiSchema: 'flight-rust-runtime-abi/4' as const,
+      schema: 'flight-rust-module-evaluation-execution-plan/1' as const,
+      semantics: {
+        concurrency: 'serialized-by-bootstrap' as const,
+        facadeAccess: 'successful-bootstrap-before-value-access' as const,
+        failure: 'cache-first-error-stop-without-retry' as const,
+        groupOrder: 'flight-compiler-module-evaluation/1' as const,
+        phaseOrder: ['instantiate', 'evaluate'] as const,
+        reentrancy: 'reject' as const,
+        repeatedInvocation: 'cache-first-result' as const,
+        reservedNamespace: '__flight_' as const,
+      },
+    } satisfies CompilerRustModuleEvaluationExecutionPlan;
+    let received: Readonly<CompilerRustModuleEvaluationExecutionPlan> | undefined;
+    const result = compileTypeScriptPackageGraph({
+      backend: {
+        createEmissionSession: () => ({
+          emitModule: () => [{ contents: 'input', path: 'Input.txt' }],
+          finalizePackageGraph: () => ({ packageFiles: [], targetInitialization }),
+        }),
+        createPublicBindingPlan(request) {
+          received = request.targetInitialization;
+          if (received === undefined) {
+            return {
+              bindings: [],
+              crates: [],
+              dependencies: [],
+              modules: [],
+              schema: 'flight-rust-public-binding-plan/2',
+            };
+          }
+          return {
+            bindings: [],
+            crates: [],
+            dependencies: [],
+            initialization: { availability: 'available', plan: received, required: 'before-value-access' },
+            modules: [],
+            schema: 'flight-rust-public-binding-plan/3',
+          };
+        },
+        emitModule: () => [],
+        name: 'rust',
+      } satisfies CompilerBackend,
+      backendOptions: {},
+      graph: graph(
+        [identity(input, 'Input')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: input.packageRoot }],
+      ),
+      sources: [input],
+    });
+
+    expect(received).toEqual(targetInitialization);
+    expect(received).not.toBe(targetInitialization);
+    expect(isDeeplyFrozen(received, new WeakSet())).toBe(true);
+    expect(result.report.publicBindings).toMatchObject({ schema: 'flight-rust-public-binding-plan/3' });
+    if (
+      result.report.publicBindings?.schema !== 'flight-rust-public-binding-plan/3' ||
+      result.report.publicBindings.initialization.availability !== 'available'
+    ) {
+      throw new Error('Target initialization must reach public-binding schema 3');
+    }
+    expect(result.report.publicBindings.initialization.plan).toBe(received);
+    expect(result.report.initialization.schema).toBe('flight-compiler-module-evaluation/1');
+    expect(result.report.initialization).not.toBe(received);
+    Reflect.set(targetInitialization.error, 'crateName', 'mutated_runtime');
+    expect(received?.error.crateName).toBe('selected_runtime');
   });
 
   it('requires exact complete retained module replacements and rejects their output collisions', () => {
@@ -2185,6 +2272,12 @@ function identity(source: Readonly<TypeScriptPackageGraphSource>, name: string):
     packageName: source.packageName,
     source: source.sourceFile.fileName.slice('/flight/'.length),
   };
+}
+
+function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return true;
+  seen.add(value);
+  return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
 }
 
 function source(

@@ -1,6 +1,9 @@
 import ts from 'typescript';
 
-import { createCompilerModuleEvaluationPlan, createCompilerModuleFacadePlan } from '../../compiler-module/src/index.js';
+import {
+  createCompilerModuleEvaluationPlan,
+  createCompilerModuleFacadePlan,
+} from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendPackageGraphFinalization,
@@ -136,6 +139,33 @@ describe('createCompilerRustModuleEvaluationRepresentationPlan', () => {
       ['Provider', 'binding'],
       ['Provider', 'binding'],
     ]);
+  });
+
+  it('uses the complete evaluation facade while retaining an entry-only public facade', () => {
+    const provider = lower('@scope/math', 'provider.ts', 'export const value = 1;');
+    const entry = lower(
+      '@scope/math',
+      'entry.ts',
+      "import { value } from './provider.js'; export const result = value + 1;",
+    );
+    const dependency: CompilerModuleLinkDependency = {
+      importedNames: ['value'],
+      importer: identity(entry),
+      specifier: './provider.js',
+      target: identity(provider),
+    };
+    const input = createInput([entry, provider], [entry], [dependency]);
+    input.finalization.facade.modules = input.finalization.facade.modules.filter(
+      ({ module }) => module.name === entry.name,
+    );
+
+    const plan = createCompilerRustModuleEvaluationRepresentationPlan(input);
+
+    expect(input.finalization.facade.modules.map(({ module }) => module.name)).toEqual(['Entry']);
+    expect(plan.modules.map(({ module }) => module.name)).toEqual(['Entry', 'Provider']);
+    expect(getModulePlan(plan, entry).bindings.find(({ kind }) => kind === 'import')).toMatchObject({
+      provider: { module: { name: 'Provider' }, route: { binding: { name: 'value' } } },
+    });
   });
 
   it('classifies function items, proven constants, private scalar state, TDZ storage, and exact step erasure', () => {

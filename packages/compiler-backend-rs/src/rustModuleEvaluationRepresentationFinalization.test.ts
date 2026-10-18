@@ -23,6 +23,22 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     const repeat = session.finalizePackageGraph!(finalization);
 
     expect(repeat).toEqual(first);
+    expect(repeat.targetInitialization).toBe(first.targetInitialization);
+    expect(isDeeplyFrozen(first.targetInitialization, new WeakSet())).toBe(true);
+    expect(first.targetInitialization).toMatchObject({
+      availability: { outcome: 'available' },
+      error: { crateName: 'flight_runtime' },
+      schema: 'flight-rust-module-evaluation-execution-plan/1',
+    });
+    expect(
+      first.targetInitialization?.phases.map(({ invocations, kind }) => ({
+        groups: invocations.map(({ groupIndex }) => groupIndex),
+        kind,
+      })),
+    ).toEqual([
+      { groups: [], kind: 'instantiate' },
+      { groups: [], kind: 'evaluate' },
+    ]);
     expect(repeat.moduleFileReplacements?.[0]?.file.contents).toBe(first.moduleFileReplacements?.[0]?.file.contents);
   });
 
@@ -51,6 +67,22 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
       first.moduleFileReplacements?.find(({ file }) => file.path === 'item.rs')?.file.contents ?? '';
 
     expect(repeat).toEqual(first);
+    expect(repeat.targetInitialization).toBe(first.targetInitialization);
+    expect(isDeeplyFrozen(first.targetInitialization, new WeakSet())).toBe(true);
+    expect(first.targetInitialization).toMatchObject({
+      availability: { outcome: 'available' },
+      error: { crateName: 'selected_runtime' },
+      schema: 'flight-rust-module-evaluation-execution-plan/1',
+    });
+    expect(
+      first.targetInitialization?.phases.map(({ invocations, kind }) => ({
+        groups: invocations.map(({ groupIndex }) => groupIndex),
+        kind,
+      })),
+    ).toEqual([
+      { groups: [0, 1], kind: 'instantiate' },
+      { groups: [0, 1], kind: 'evaluate' },
+    ]);
     expect(rootContents.indexOf('pub mod item;')).toBeLessThan(
       rootContents.indexOf('enum __FlightModuleEvaluationState'),
     );
@@ -86,6 +118,14 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
 
     expect(result.moduleFileReplacements?.map(({ file }) => file.path)).toEqual(['retained.rs']);
     expect(collectFinalizedSource(result)).not.toContain('__flight_');
+    expect(result.targetInitialization).toMatchObject({
+      availability: {
+        outcome: 'refused',
+        refusals: [expect.objectContaining({ code: 'rust-module-evaluation-output-scope-incomplete' })],
+      },
+      phases: [{ invocations: [] }, { invocations: [] }],
+      schema: 'flight-rust-module-evaluation-execution-plan/1',
+    });
   });
 
   it('keeps placeholder declaration salvage output unchanged', () => {
@@ -100,7 +140,7 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
       modules: [module],
     });
     const session = createSession([module], moduleEvaluation);
-    session.finalizePackageGraph!({
+    const finalized = session.finalizePackageGraph!({
       facade: createFacade([module]),
       moduleEvaluation,
       moduleFiles: [],
@@ -122,6 +162,13 @@ describe('createCompilerRustModuleEvaluationRepresentationFinalizationState', ()
     expect(placeholder?.contents).toContain('pub fn keep');
     expect(placeholder?.contents).toContain('// NOT GENERATED: function broken -- source line 1');
     expect(placeholder?.contents).not.toContain('__flight_');
+    expect(finalized.targetInitialization).toMatchObject({
+      availability: {
+        outcome: 'refused',
+        refusals: [expect.objectContaining({ code: 'rust-module-evaluation-output-scope-incomplete' })],
+      },
+      phases: [{ invocations: [] }, { invocations: [] }],
+    });
   });
 
   it('wraps changed repeat provenance and preserves the first successful cache', () => {
@@ -299,6 +346,12 @@ function countText(source: string, needle: string): number {
 
 function identity(module: Readonly<IrModule>): CompilerModuleIdentity {
   return { name: module.name, packageName: module.packageName, source: module.source };
+}
+
+function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return true;
+  seen.add(value);
+  return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
 }
 
 function lower(file: string, source: string): IrModule {

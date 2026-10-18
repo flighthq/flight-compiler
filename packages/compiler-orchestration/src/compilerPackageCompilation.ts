@@ -278,6 +278,9 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
           compareTextCodeUnits(left.code, right.code) ||
           compareTextCodeUnits(left.message, right.message),
       ),
+    ...(finalizationResult.targetInitialization === undefined
+      ? {}
+      : { targetInitialization: finalizationResult.targetInitialization }),
   });
 
   // Every module refused for its own reasons gets a replaceable file at its own path, so a best-effort run
@@ -560,9 +563,12 @@ function createCompilerBackendPackageGraphFinalizationResult(
     owner: { kind: 'package', packageName: artifact.owner.packageName },
     provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
   }));
+  const targetInitialization =
+    result?.targetInitialization === undefined ? undefined : structuredClone(result.targetInitialization);
   return freezeCompilerBackendPackageGraphValue({
     ...(moduleFileReplacements === undefined ? {} : { moduleFileReplacements }),
     packageFiles,
+    ...(targetInitialization === undefined ? {} : { targetInitialization }),
   });
 }
 

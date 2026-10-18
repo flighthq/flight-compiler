@@ -37,13 +37,31 @@ describe('createRustCompilerPublicBindingBackend', () => {
       modules: [],
       schema: 'flight-rust-public-binding-plan/2',
     });
+    const finalized = backend.createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [],
+      options: {},
+    }).finalizePackageGraph?.({ moduleEvaluation: emptyModuleEvaluation, facade: emptyFacade, moduleFiles: [] });
+    expect(finalized).toMatchObject({
+      moduleFileReplacements: [],
+      packageFiles: [],
+      targetInitialization: {
+        availability: { outcome: 'available' },
+        schema: 'flight-rust-module-evaluation-execution-plan/1',
+      },
+    });
     expect(
-      backend.createEmissionSession!({
-        moduleEvaluation: emptyModuleEvaluation,
+      backend.createPublicBindingPlan?.({
+        facade: emptyFacade,
         modules: [],
         options: {},
-      }).finalizePackageGraph?.({ moduleEvaluation: emptyModuleEvaluation, facade: emptyFacade, moduleFiles: [] }),
-    ).toEqual({ moduleFileReplacements: [], packageFiles: [] });
+        refusals: [],
+        targetInitialization: finalized?.targetInitialization,
+      }),
+    ).toMatchObject({
+      initialization: { availability: 'available', required: 'before-value-access' },
+      schema: 'flight-rust-public-binding-plan/3',
+    });
   });
 });
 

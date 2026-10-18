@@ -86,7 +86,7 @@ describe('@flighthq/tool-compiler', () => {
         packageRoot: '/flight/packages/math',
         sourceFile: parseTypeScriptSource(
           '/flight/packages/math/src/nested/add.ts',
-          'export function add(left: number, right: number): number { return left + right; }',
+          'export interface Operands { left: number; right: number } export function add(left: number, right: number): number { return left + right; }',
         ),
         upstreamDirectory: '/flight',
       },
@@ -123,8 +123,44 @@ describe('@flighthq/tool-compiler', () => {
         expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'add'] }) }),
         expect.objectContaining({ locator: expect.objectContaining({ modulePath: ['nested', 'scale'] }) }),
       ]),
-      schema: 'flight-rust-public-binding-plan/2',
+      schema: 'flight-rust-public-binding-plan/3',
     });
+    const publicBindings = first.report.publicBindings;
+    if (publicBindings?.schema !== 'flight-rust-public-binding-plan/3') {
+      throw new Error('Finalized Rust compilation must produce public-binding schema 3');
+    }
+    expect(publicBindings.initialization).toMatchObject({
+      availability: 'available',
+      required: 'before-value-access',
+    });
+    if (publicBindings.initialization.availability !== 'available') {
+      throw new Error('Expected available Rust initialization');
+    }
+    expect(publicBindings.initialization.plan).toMatchObject({
+      availability: { outcome: 'available' },
+      error: { crateName: 'flight_runtime' },
+      schema: 'flight-rust-module-evaluation-execution-plan/1',
+    });
+    expect(
+      publicBindings.initialization.plan.phases.map(({ invocations }) =>
+        invocations.map(({ groupIndex }) => groupIndex),
+      ),
+    ).toEqual([
+      [0, 1],
+      [0, 1],
+    ]);
+    expect(first.report.initialization.schema).toBe('flight-compiler-module-evaluation/1');
+    expect(first.report.initialization).not.toEqual(publicBindings.initialization.plan);
+    expect(
+      publicBindings.bindings.find(
+        ({ identity }) => identity.space === 'type' && identity.exportRoute.includes(JSON.stringify('Operands')),
+      )?.access,
+    ).toEqual({ kind: 'immediate' });
+    expect(
+      publicBindings.bindings.find(
+        ({ identity }) => identity.space === 'value' && identity.exportRoute.includes(JSON.stringify('add')),
+      )?.access,
+    ).toEqual({ kind: 'after-bootstrap' });
   });
 
   it('reports a namespace module locator that agrees with finalized files reaching target compilation', () => {
@@ -189,6 +225,7 @@ describe('@flighthq/tool-compiler', () => {
     expect(first.result.report.publicBindings).toMatchObject({
       bindings: [
         {
+          access: { kind: 'after-bootstrap' },
           binding: {
             availability: 'available',
             locator: {
@@ -208,7 +245,7 @@ describe('@flighthq/tool-compiler', () => {
           target: { modulePath: ['geometry', 'tools'] },
         },
       ],
-      schema: 'flight-rust-public-binding-plan/2',
+      schema: 'flight-rust-public-binding-plan/3',
     });
   });
 
@@ -473,7 +510,12 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
         bestEffort: true,
         ...(emitPathPrefixes === undefined ? {} : { emitPathPrefixes }),
         graph: {
-          entries: [{ name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' }],
+          entries: [
+            { name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' },
+            ...(emitPathPrefixes === undefined
+              ? [{ name: 'Surface', packageName: '@scope/math', source: 'packages/math/src/surface.ts' }]
+              : []),
+          ],
           moduleDependencies: [
             {
               importer: { name: 'Consumer', packageName: '@scope/math', source: 'packages/math/src/consumer.ts' },
@@ -484,7 +526,7 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
           packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
           schema: 'flight-compiler-package-graph/1',
         },
-        sources,
+        sources: [...sources, ...(emitPathPrefixes === undefined ? [surface] : [])],
       });
       return { result };
     } catch (error) {
@@ -518,6 +560,15 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     ),
     upstreamDirectory: '/flight',
   };
+  const surface = {
+    packageName: '@scope/math',
+    packageRoot: '/flight/packages/math',
+    sourceFile: parseTypeScriptSource(
+      '/flight/packages/math/src/surface.ts',
+      'export interface Shape { value: number } export const VERSION = 1;',
+    ),
+    upstreamDirectory: '/flight',
+  };
 
   it('leaves a refusal placeholder for an imported refused module instead of aborting', () => {
     const first = rustBestEffortRun([consumer, provider]);
@@ -525,7 +576,7 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
 
     expect('error' in first ? first.error : undefined).toBeUndefined();
     const files = 'result' in first ? first.result.compilation.files : [];
-    expect(files.map((file) => file.path)).toEqual(['consumer.rs', 'lib.rs', 'provider.rs']);
+    expect(files.map((file) => file.path)).toEqual(['consumer.rs', 'lib.rs', 'provider.rs', 'surface.rs']);
     const placeholder = files.find((file) => file.path === 'provider.rs');
     expect(placeholder?.contents).toContain('// PARTIAL:');
     expect(placeholder?.contents).toContain('// NOT GENERATED: function convert -- source line 1');
@@ -536,6 +587,35 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
     const skeleton = files.find((file) => file.path === 'lib.rs');
     expect(skeleton?.contents).toContain('mod consumer;');
     expect(skeleton?.contents).toContain('mod provider;');
+    expect(skeleton?.contents).toContain('mod surface;');
+    expect(files.every(({ contents }) => !contents.includes('__flight_'))).toBe(true);
+    const report = 'result' in first ? first.result.report : undefined;
+    expect(report?.initialization).toMatchObject({
+      modules: [{ module: expect.objectContaining({ name: 'Surface' }) }],
+      schema: 'flight-compiler-module-evaluation/1',
+    });
+    expect(report?.publicBindings).toMatchObject({
+      initialization: {
+        availability: 'refused',
+        code: 'rust-public-binding-initialization-refused',
+        refusals: [expect.objectContaining({ code: 'rust-module-evaluation-output-scope-incomplete' })],
+      },
+      schema: 'flight-rust-public-binding-plan/3',
+    });
+    if (report?.publicBindings?.schema !== 'flight-rust-public-binding-plan/3') {
+      throw new Error('Best-effort Rust compilation must preserve public-binding schema 3');
+    }
+    expect(
+      report.publicBindings.bindings.find(
+        ({ identity }) => identity.space === 'type' && identity.exportRoute.includes(JSON.stringify('Shape')),
+      )?.access,
+    ).toEqual({ kind: 'immediate' });
+    expect(
+      report.publicBindings.bindings.find(
+        ({ identity }) => identity.space === 'value' && identity.exportRoute.includes(JSON.stringify('VERSION')),
+      )?.access,
+    ).toEqual({ kind: 'refused' });
+    expect(report.publicBindings.initialization).not.toHaveProperty('plan');
     expect('result' in second ? second.result.compilation.files : []).toEqual(files);
   });
 

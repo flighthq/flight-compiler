@@ -849,7 +849,7 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
             moduleEvaluationRepresentationFinalizationState = pendingModuleEvaluationRepresentationFinalizationState;
             moduleEvaluationExecutionPlan = pendingModuleEvaluationExecutionPlan;
             moduleEvaluationEmissionPlan = pendingModuleEvaluationEmissionPlan;
-            return result;
+            return Object.freeze({ ...result, targetInitialization: pendingModuleEvaluationExecutionPlan });
           } catch (error) {
             // These failure kinds belong to the run and a caller may branch on them. Anything else -- a
             // contract TypeError, an invariant -- is a defect and keeps its own identity.
