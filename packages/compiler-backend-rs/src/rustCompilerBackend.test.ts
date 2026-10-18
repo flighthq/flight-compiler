@@ -40031,6 +40031,314 @@ export function wrong(handler: () => Result9): Slot { return handler; }`;
   });
 });
 
+describe('emitIrModuleRust exact Map key domain', () => {
+  const expectedRule = 'rust-map-key-domain-unrepresented';
+
+  it.each([
+    ['parameter', 'export function bad(values: Map<number, string>): number { return values.size; }'],
+    ['return', 'export function bad(): ReadonlyMap<number, string> { return new Map(); }'],
+    [
+      'local annotation',
+      'export function bad(): number { const values: Map<number, string> = new Map(); return values.size; }',
+    ],
+    [
+      'inferred constructor local',
+      'export function bad(): number { const values = new Map<number, string>(); return values.size; }',
+    ],
+    ['type alias', 'export type Bad = Map<number, string>;'],
+    ['interface property', 'export interface Bad { values: Map<number, string> }'],
+    ['record property', 'export type Bad = { values: Map<number, string> };'],
+    ['array element', 'export type Bad = Map<number, string>[];'],
+    ['tuple element', 'export type Bad = [Map<number, string>];'],
+    ['callable parameter', 'export type Bad = (values: Map<number, string>) => string;'],
+    ['optional payload', 'export type Bad = Map<number, string> | undefined;'],
+    ['general union arm', 'export type Bad = Map<number, string> | boolean;'],
+  ])('refuses an invalid Map carrier in a %s', (_placement, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-key-placement.ts', source).module))).toBe(expectedRule);
+  });
+
+  it.each([
+    ['number', 'export type Bad = Map<number, string>;'],
+    ['closed number alias', 'type Key0 = number; type Key1 = Key0; export type Bad = Map<Key1, string>;'],
+    ['numeric literal', 'export type Bad = Map<1, string>;'],
+    ['string literal', "export type Bad = Map<'a', string>;"],
+    ['mixed union', 'export type Bad = Map<string | number, string>;'],
+    ['literal union', "export type Bad = Map<'a' | 'b', string>;"],
+    ['unknown', 'export type Bad = Map<unknown, string>;'],
+    ['any', 'export type Bad = Map<any, string>;'],
+    ['boolean', 'export type Bad = Map<boolean, string>;'],
+    ['bigint', 'export type Bad = Map<bigint, string>;'],
+    ['symbol', 'export type Bad = Map<symbol, string>;'],
+    ['object', 'export type Bad = Map<object, string>;'],
+    ['record', 'export type Bad = Map<{ id: string }, string>;'],
+    ['type parameter', 'export type Bad<Key> = Map<Key, string>;'],
+    ['string-constrained type parameter', 'export type Bad<Key extends string> = Map<Key, string>;'],
+    ['parameterized string alias', 'type Key<Value> = string; export type Bad = Map<Key<number>, string>;'],
+    [
+      'generic key alias instantiated with string',
+      'type GenericMap<Key> = Map<Key, string>; export type Bad = GenericMap<string>;',
+    ],
+  ])('refuses the %s key domain', (_domain, source) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-key-domain.ts', source).module))).toBe(expectedRule);
+  });
+
+  it('rejects path-qualified, unresolved, ambiguous, cyclic, and over-depth key aliases', () => {
+    const createModule = () =>
+      structuredClone(lower('map-key-proof.ts', 'type Key = string; export type Bad = Map<Key, string>;').module);
+    const getKey = (module: IrModule) => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Bad',
+      );
+      if (declaration?.kind !== 'typeAlias' || declaration.type.kind !== 'named') {
+        throw new Error('expected Bad Map alias');
+      }
+      const key = declaration.type.typeArguments[0];
+      if (key?.kind !== 'named' || key.reference.kind !== 'binding') throw new Error('expected named Map key');
+      return { declaration, key };
+    };
+
+    const pathQualified = createModule();
+    const pathKey = getKey(pathQualified).key;
+    if (pathKey.reference.kind !== 'binding') throw new Error('expected binding Map key');
+    (pathKey as { reference: typeof pathKey.reference }).reference = {
+      ...pathKey.reference,
+      path: ['Nested'],
+    };
+    expect(getEmissionRule(() => emitIrModuleRust(pathQualified))).toBe(expectedRule);
+
+    const unresolved = lower(
+      'map-key-unresolved.ts',
+      `import type { Missing } from './missing.js'; export type Bad = Map<Missing, string>;`,
+    ).module;
+    expect(getEmissionRule(() => emitIrModuleRust(unresolved))).toBe(expectedRule);
+
+    const cyclic = createModule();
+    const cyclicKey = getKey(cyclic).key;
+    const cyclicDeclaration = cyclic.declarations.find(
+      (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === 'Key',
+    );
+    if (cyclicDeclaration?.kind !== 'typeAlias') throw new Error('expected Key alias');
+    (cyclicDeclaration as { type: IrType }).type = structuredClone(cyclicKey);
+    expect(getEmissionRule(() => emitIrModuleRust(cyclic))).toBe(expectedRule);
+
+    const ambiguous = createModule();
+    const ambiguousKey = getKey(ambiguous).key;
+    if (ambiguousKey.reference.kind !== 'binding') throw new Error('expected binding Map key');
+    if (ambiguousKey.reference.binding.space !== 'type') throw new Error('expected type-space Map key');
+    const duplicate = structuredClone(lower('map-key-proof-duplicate.ts', 'export type Other = string;').module);
+    const duplicateDeclaration = duplicate.declarations.find((candidate) => candidate.kind === 'typeAlias');
+    if (duplicateDeclaration?.kind !== 'typeAlias') throw new Error('expected duplicate alias');
+    (duplicateDeclaration as { binding: typeof duplicateDeclaration.binding }).binding = {
+      ...ambiguousKey.reference.binding,
+    };
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [ambiguous, duplicate],
+      options: {},
+    });
+    expect(getEmissionRule(() => session.emitModule(ambiguous))).toBe(expectedRule);
+
+    const aliases = Array.from({ length: 10 }, (_, index) =>
+      index === 0 ? 'type Key0 = string;' : `type Key${String(index)} = Key${String(index - 1)};`,
+    ).join('\n');
+    const overDepth = lower('map-key-depth.ts', `${aliases}\nexport type Bad = Map<Key9, string>;`).module;
+    expect(getEmissionRule(() => emitIrModuleRust(overDepth))).toBe(expectedRule);
+  });
+
+  it('resolves supported and refused aliases through type imports and reexports', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-key-provider.ts',
+      `export type TextKey = string;
+       export type NumberKey = number;
+       export type BadMap = Map<NumberKey, string>;
+       export type GenericMap<Key> = Map<Key, string>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const facadeSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-key-facade.ts',
+      `export type { TextKey, BadMap, GenericMap } from './map-key-provider.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const goodSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-key-good.ts',
+      `import type { TextKey } from './map-key-facade.js';
+       export type ValueMap<Value> = Map<TextKey, Value>;
+       export function keep(values: ReadonlyMap<TextKey, number>): ReadonlyMap<TextKey, number> { return values; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const badAliasSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-key-bad-alias.ts',
+      `import type { BadMap } from './map-key-facade.js';
+       export function bad(values: BadMap): number { return values.size; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const badGenericSource = ts.createSourceFile(
+      '/flight/packages/math/src/map-key-bad-generic.ts',
+      `import type { GenericMap } from './map-key-facade.js';
+       export function bad(values: GenericMap<string>): number { return values.size; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Map-key-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/map-key-facade.ts',
+          },
+          specifier: './map-key-provider.js',
+          target: {
+            name: 'Map-key-provider',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/map-key-provider.ts',
+          },
+        },
+        ...['good', 'bad-alias', 'bad-generic'].map((name) => ({
+          importer: {
+            name: `Map-key-${name}`,
+            packageName: '@flighthq/math',
+            source: `packages/math/src/map-key-${name}.ts`,
+          },
+          specifier: './map-key-facade.js',
+          target: {
+            name: 'Map-key-facade',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/map-key-facade.ts',
+          },
+        })),
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, facadeResult, goodResult, badAliasResult, badGenericResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: facadeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: goodSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: badAliasSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: badGenericSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const provider = providerResult!.module;
+    const facade = facadeResult!.module;
+    const good = goodResult!.module;
+    const badAlias = badAliasResult!.module;
+    const badGeneric = badGenericResult!.module;
+
+    const goodOutput = emitRustModuleInGraph([good, facade, provider], good, [...moduleResolution.edges]);
+    expect(goodOutput).toContain('std::collections::HashMap<TextKey, Value>');
+    expect(goodOutput).toContain('std::collections::HashMap<TextKey, f64>');
+    const badAliasFailure = captureBackendEmissionFailure(() =>
+      emitRustModuleInGraph([badAlias, facade, provider], badAlias, [...moduleResolution.edges]),
+    );
+    expect(badAliasFailure).toMatchObject({
+      classification: 'target-runtime',
+      column: 8,
+      line: 2,
+      rule: expectedRule,
+      source: 'packages/math/src/map-key-bad-alias.ts',
+    });
+    expect(
+      getEmissionRule(() =>
+        emitRustModuleInGraph([badGeneric, facade, provider], badGeneric, [...moduleResolution.edges]),
+      ),
+    ).toBe(expectedRule);
+  });
+
+  it('preserves direct, readonly, closed-alias, and value-generic string-key carriers', () => {
+    const source = `interface Point { value: number }
+type Text0 = string;
+type Text1 = Text0;
+export type Mutable = Map<Text1, number>;
+export type Frozen = ReadonlyMap<string, Point>;
+export type ValueMap<Value> = Map<string, Value>;
+export function keep(values: Map<string, number>): ReadonlyMap<string, number> { return values; }`;
+    const result = lower('map-key-controls.ts', source);
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub type Mutable = std::collections::HashMap<Text1, f64>;');
+    expect(output).toContain('pub type Frozen = std::collections::HashMap<String, Point>;');
+    expect(output).toContain('pub type ValueMap<Value: Clone> = std::collections::HashMap<String, Value>;');
+    expect(output).toContain(
+      'pub fn keep(values: std::collections::HashMap<String, f64>) -> std::collections::HashMap<String, f64>',
+    );
+    if (rustcAvailable) compileRustSourceAgainstRuntime(output);
+  });
+
+  it('owns a stable target-runtime diagnostic at the containing declaration', () => {
+    const module = lower(
+      'map-key-diagnostic.ts',
+      `type Good = Map<string, number>;
+export function bad(values: Map<number, string>): number { return values.size; }`,
+    ).module;
+    const first = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+    const second = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(first.rule).toBe(expectedRule);
+    expect(first.classification).toBe('target-runtime');
+    expect(first.line).toBe(2);
+    expect(first.column).toBe(1);
+    expect(first.message).toContain(
+      'Rust Map and ReadonlyMap require string keys or closed aliases to string; other key domains cannot use the native HashMap carrier',
+    );
+    expect(second).toMatchObject({
+      classification: first.classification,
+      column: first.column,
+      line: first.line,
+      message: first.message,
+      rule: first.rule,
+    });
+  });
+
+  it('salvages the refused declaration without changing a supported sibling', () => {
+    const source = `export function bad(values: Map<number, string>): number { return values.size; }
+export function keep(value: number): number { return value + 1; }`;
+    const mixed = lower('map-key-salvage.ts', source).module;
+    const control = lower(
+      'map-key-salvage-control.ts',
+      'export function keep(value: number): number { return value + 1; }',
+    ).module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleEvaluation: emptyModuleEvaluation,
+      modules: [mixed],
+      options: {},
+    });
+    session.finalizePackageGraph!({
+      moduleEvaluation: emptyModuleEvaluation,
+      facade: createRustSourceTreeFacade([mixed]),
+      moduleFiles: [],
+      placeholderModules: [mixed],
+      refusals: [
+        {
+          code: expectedRule,
+          message: 'invalid Map key domain',
+          module: getRustTestModuleIdentity(mixed),
+        },
+      ],
+    });
+    const emitPlaceholder = session.emitRefusalPlaceholder;
+    if (!emitPlaceholder) throw new Error('expected a Rust refusal placeholder emitter');
+    const placeholder = emitPlaceholder(mixed, {
+      classification: 'target-runtime',
+      message: 'invalid Map key domain',
+      sourceText: source,
+    });
+    if (!placeholder) throw new Error('expected a partial Rust module');
+
+    expect(placeholder.contents).toContain('// refusal: rust-map-key-domain-unrepresented [target-runtime]');
+    expect(placeholder.contents).not.toContain('pub fn bad');
+    const controlContents = emitIrModuleRust(control).contents;
+    expect(placeholder.contents.slice(placeholder.contents.indexOf('pub fn keep')).trimEnd()).toBe(
+      controlContents.slice(controlContents.indexOf('pub fn keep')).trimEnd(),
+    );
+  });
+});
+
 describe('emitIrModuleRust exact Map application union construction', () => {
   it('constructs one exact Map arm in every contextual position through closed alias chains', () => {
     const result = lower(
@@ -40172,6 +40480,15 @@ describe('emitIrModuleRust exact Map application union construction', () => {
       `type Slot = Map<'a', Point> | boolean;
        export function wrong(values: Map<'a', Point>): Slot { return values; }`,
     ],
+  ])('refuses %s before exact Map union construction', (_name, body) => {
+    const source = `interface Point { value: number }
+${body}`;
+    expect(getEmissionRule(() => emitIrModuleRust(lower('map-key-union-refusal.ts', source).module))).toBe(
+      'rust-map-key-domain-unrepresented',
+    );
+  });
+
+  it.each([
     [
       'a union value',
       `interface Circle { radius: number }

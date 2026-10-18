@@ -15368,6 +15368,138 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
   return statements.flatMap((statement) => emitStatement(statement, context));
 }
 
+function assertRustMapKeyDomainRust(type: Readonly<IrType>, context: EmitContext): void {
+  assertRustMapKeyDomainInTypeRust(type, context, context.module, new Set(), 0);
+}
+
+// Rust's native HashMap carrier requires Eq + Hash, which excludes the f64 carrier used for source
+// numbers. Validate the source Map while its identity is still available: after external-name mapping,
+// Map<number, V> is only HashMap<f64, V> and the reason it is invalid has already been lost.
+//
+// A named alias does not render its target at each use, so inspect the declaration template too. This
+// keeps a generic Map<K, V> invalid even at an apparently concrete MapAlias<string, V> use, while a
+// value-generic Map<string, V> remains representable. The walk is read-only and follows the same unique
+// import/reexport resolution as the rest of the backend.
+function assertRustMapKeyDomainInTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+  aliasDepth: number,
+): void {
+  switch (type.kind) {
+    case 'array':
+      assertRustMapKeyDomainInTypeRust(type.element, context, module, resolving, aliasDepth);
+      return;
+    case 'function':
+      type.parameters.forEach((parameter) =>
+        assertRustMapKeyDomainInTypeRust(parameter.type, context, module, resolving, aliasDepth),
+      );
+      assertRustMapKeyDomainInTypeRust(type.returns, context, module, resolving, aliasDepth);
+      return;
+    case 'intersection':
+    case 'union':
+      type.types.forEach((member) => assertRustMapKeyDomainInTypeRust(member, context, module, resolving, aliasDepth));
+      return;
+    case 'named': {
+      if (
+        type.reference.kind === 'ambient' &&
+        (type.reference.name === 'Map' || type.reference.name === 'ReadonlyMap') &&
+        type.typeArguments.length === 2 &&
+        !isRustExactStringMapKeyRust(type.typeArguments[0]!, context, module, new Set(), 0)
+      ) {
+        emissionError(
+          context,
+          'Rust Map and ReadonlyMap require string keys or closed aliases to string; other key domains cannot use the native HashMap carrier',
+          'rust-map-key-domain-unrepresented',
+          'target-runtime',
+        );
+      }
+      type.typeArguments.forEach((argument) =>
+        assertRustMapKeyDomainInTypeRust(argument, context, module, resolving, aliasDepth),
+      );
+      if (
+        type.reference.kind !== 'binding' ||
+        type.reference.path.length > 0 ||
+        type.reference.binding.space !== 'type' ||
+        type.reference.binding.kind === 'typeParameter' ||
+        aliasDepth > 8
+      ) {
+        return;
+      }
+      const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, module, new Set());
+      if (locations.length !== 1) return;
+      const location = locations[0]!;
+      if (location.declaration.kind !== 'typeAlias') return;
+      const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
+      if (resolving.has(key)) return;
+      assertRustMapKeyDomainInTypeRust(
+        location.declaration.type,
+        context,
+        location.module,
+        new Set(resolving).add(key),
+        aliasDepth + 1,
+      );
+      return;
+    }
+    case 'object':
+      type.properties.forEach((property) =>
+        assertRustMapKeyDomainInTypeRust(property.type, context, module, resolving, aliasDepth),
+      );
+      return;
+    case 'tuple':
+      type.elements.forEach((element) =>
+        assertRustMapKeyDomainInTypeRust(element.type, context, module, resolving, aliasDepth),
+      );
+      return;
+    case 'conditionalFacet':
+    case 'indexedAccess':
+    case 'keyof':
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return;
+  }
+}
+
+function isRustExactStringMapKeyRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+  depth: number,
+): boolean {
+  if (depth > 8) return false;
+  if (type.kind === 'primitive') return type.name === 'string';
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.typeArguments.length > 0
+  ) {
+    return false;
+  }
+  const locations = getIrNamedTypeDeclarationLocationsRust(type.reference.binding, context, module, new Set());
+  if (locations.length !== 1) return false;
+  const location = locations[0]!;
+  if (location.declaration.kind !== 'typeAlias' || location.declaration.typeParameters.length > 0) return false;
+  const key = `${getRustModuleIdentityKey(location.module)}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return false;
+  return isRustExactStringMapKeyRust(
+    location.declaration.type,
+    context,
+    location.module,
+    new Set(resolving).add(key),
+    depth + 1,
+  );
+}
+
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
   switch (type.kind) {
     case 'array':
@@ -15415,6 +15547,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'literal':
       return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'f64' : 'String';
     case 'named': {
+      assertRustMapKeyDomainRust(type, context);
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
       if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
         return emitType(type.typeArguments[0], context);
